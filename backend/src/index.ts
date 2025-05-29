@@ -19,7 +19,7 @@ app.get('/api/health', (_, res) => {
 });
 
 app.use('/api/anime', animeRouter);
-app.use('/api', authRouter); // /api/register • /api/login
+app.use('/api/auth', authRouter);
 
 app.listen(PORT, () => {
   console.log(`Backend listening on http://localhost:${PORT}`);
