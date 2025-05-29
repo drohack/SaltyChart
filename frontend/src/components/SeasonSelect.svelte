@@ -1,29 +1,83 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
 
-  export let season: 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
+  // --- Props ---
+  export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
+  export let season: Season;
   export let year: number;
+  export let hideSequels: boolean = false;
+
+  // --- Constants ---
+  const SEASONS: Array<{ value: Season; label: string }> = [
+    { value: 'WINTER', label: 'Winter' },
+    { value: 'SPRING', label: 'Spring' },
+    { value: 'SUMMER', label: 'Summer' },
+    { value: 'FALL', label: 'Fall' }
+  ];
+
+  const currentYear: number = new Date().getFullYear();
+  // Provide a selectable range of years (current ±10 years)
+  const years: number[] = Array.from({ length: 21 }, (_, i) => currentYear - 10 + i);
 
   const dispatch = createEventDispatcher();
 
-  function updateSeason(event: Event) {
-    season = (event.target as HTMLSelectElement).value as any;
-    dispatch('change');
+  function selectSeason(s: Season) {
+    if (season !== s) {
+      season = s;
+      dispatch('change');
+    }
   }
 
   function updateYear(event: Event) {
-    year = Number((event.target as HTMLInputElement).value);
+    const newVal = Number((event.target as HTMLSelectElement).value);
+    if (!Number.isNaN(newVal) && year !== newVal) {
+      year = newVal;
+      dispatch('change');
+    }
+  }
+
+  function toggleSequels() {
+    hideSequels = !hideSequels;
     dispatch('change');
   }
 </script>
 
-<div class="flex gap-4 items-center mb-6">
-  <select class="select select-bordered" bind:value={season} on:change={updateSeason}>
-    <option value="WINTER">Winter</option>
-    <option value="SPRING">Spring</option>
-    <option value="SUMMER">Summer</option>
-    <option value="FALL">Fall</option>
-  </select>
+<div class="flex flex-wrap items-center mb-6 justify-between w-full gap-y-2">
+  <!-- Left controls: season buttons + year dropdown -->
+  <div class="flex gap-4 items-center">
+    <!-- Season buttons -->
+    <div class="flex gap-2">
+      {#each SEASONS as { value, label }}
+        <button
+          type="button"
+          class={`btn btn-sm ${season === value ? 'btn-primary' : 'btn-ghost'}`}
+          on:click={() => selectSeason(value)}
+        >
+          {label}
+        </button>
+      {/each}
+    </div>
 
-  <input type="number" class="input input-bordered w-28" bind:value={year} min="1900" max="2100" on:input={updateYear} />
+    <!-- Year dropdown -->
+    <select
+      class="select select-bordered w-28"
+      bind:value={year}
+      on:change={updateYear}
+    >
+      {#each years as y}
+        <option value={y}>{y}</option>
+      {/each}
+    </select>
+  </div>
+
+  <!-- Right-aligned Hide sequels toggle -->
+  <label class="flex items-center gap-2 text-sm select-none cursor-pointer">
+    <input
+      type="checkbox"
+      class="checkbox checkbox-sm"
+      bind:checked={hideSequels}
+      on:change={toggleSequels}
+    />
+    Hide Sequels
+  </label>
 </div>

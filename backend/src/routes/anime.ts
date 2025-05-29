@@ -6,19 +6,20 @@ const router = Router();
 interface SeasonQuery {
   season?: string;
   year?: string;
+  format?: string;
 }
 
 router.get('/', async (req, res) => {
-  const { season, year } = req.query as SeasonQuery;
+  const { season, year, format } = req.query as SeasonQuery;
 
   if (!season || !year) {
     return res.status(400).json({ error: 'Missing "season" or "year" query param' });
   }
 
   const query = /* GraphQL */ `
-    query ($season: MediaSeason, $seasonYear: Int) {
-      Page(perPage: 50) {
-        media(season: $season, seasonYear: $seasonYear, type: ANIME) {
+    query ($season: MediaSeason, $seasonYear: Int, $format: MediaFormat) {
+      Page(perPage: 100) {
+        media(season: $season, seasonYear: $seasonYear, type: ANIME, format: $format) {
           id
           title {
             romaji
@@ -36,6 +37,17 @@ router.get('/', async (req, res) => {
             site
             thumbnail
           }
+          format
+          season
+          seasonYear
+          status
+          nextAiringEpisode {
+            airingAt
+            episode
+          }
+          episodes
+          startDate { year month day }
+          endDate { year month day }
           relations {
             edges {
               relationType
@@ -57,7 +69,8 @@ router.get('/', async (req, res) => {
         query,
         variables: {
           season: season.toUpperCase(),
-          seasonYear: Number(year)
+          seasonYear: Number(year),
+          format: format ? format.toUpperCase() : null
         }
       },
       {

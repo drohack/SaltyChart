@@ -1,5 +1,6 @@
 <script lang="ts">
   export let anime: any[] = [];
+  export let hideSequels: boolean = false;
 
   // id of trailer currently open in modal (null = none)
   let modal: string | null = null;
@@ -13,31 +14,128 @@
     modal = null;
     document.body.style.overflow = '';
   }
+
+  // relation type -> label mapping
+  const TAG_LABELS: Record<string, string> = {
+    SEQUEL: 'Sequel',
+    PREQUEL: 'Prequel',
+    SIDE_STORY: 'Side-story',
+    SPINOFF: 'Spin-off'
+  };
+
+  function relationTags(rel: any): string[] {
+    if (!rel?.edges) return [];
+    const uniq: string[] = [];
+    for (const edge of rel.edges) {
+      const t = edge?.relationType;
+      if (t && TAG_LABELS[t] && !uniq.includes(t)) uniq.push(t);
+    }
+    return uniq;
+  }
+  // Helper to determine if a show has sequel/prequel relation
+  function isSequel(show: any): boolean {
+    return relationTags(show.relations).length > 0;
+  }
+
+  $: displayedAnime = hideSequels ? anime.filter((s) => !isSequel(s)) : anime;
+
+  // --- Equalize title heights per grid row ---
+  import { afterUpdate, onMount } from 'svelte';
+
+  function equalizeTitles() {
+    const titles: HTMLElement[] = Array.from(document.querySelectorAll('.anime-title'));
+    // Reset heights first
+    titles.forEach((t) => (t.style.height = 'auto'));
+
+    // Group by offsetTop (row)
+    const groups: Record<number, HTMLElement[]> = {};
+    for (const el of titles) {
+      const top = el.offsetTop;
+      (groups[top] ||= []).push(el);
+    }
+    // Set each group's titles to max height
+    Object.values(groups).forEach((list) => {
+      const max = Math.max(...list.map((e) => e.offsetHeight));
+      list.forEach((e) => (e.style.height = max + 'px'));
+    });
+  }
+
+  onMount(() => {
+    equalizeTitles();
+    window.addEventListener('resize', equalizeTitles);
+    return () => window.removeEventListener('resize', equalizeTitles);
+  });
+
+  afterUpdate(equalizeTitles);
+
+  function formatDate(ts: number): string {
+    const date = new Date(ts * 1000);
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric'
+    });
+  }
+
+  const MONTHS = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  function formatUnix(ts: number): string {
+    return formatDate(ts);
+  }
+
+  function formatYMD(d: any): string {
+    if (!d || !d.year) return '';
+    if (d.day) {
+      return `${MONTHS[d.month - 1]} ${d.day}, ${d.year}`;
+    }
+    if (d.month) {
+      return `${MONTHS[d.month - 1]} ${d.year}`;
+    }
+    return String(d.year);
+  }
+
+  function approxMonthYear(d: any, season?: string): string {
+    if (d && d.month) return `${MONTHS[d.month - 1]} ${d.year}`;
+    if (season && d?.year) return `${capitalize(season.toLowerCase())} ${d.year}`;
+    return d?.year ? String(d.year) : '';
+  }
+
+  function capitalize(s: string): string {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
 </script>
 
 <!-- grid of horizontal cards -->
 <div class="grid gap-6 md:grid-cols-3">
-  {#each anime as show (show.id)}
+  {#each displayedAnime as show (show.id)}
     {#key show.id}
-    <div class="flex bg-base-100 shadow rounded-lg overflow-hidden h-full">
-      <!-- thumbnail -->
-      <div class="relative shrink-0 w-32 md:w-40">
-        <img src={show.coverImage.large} alt={show.title.romaji} class="object-cover w-full h-auto" />
+    <!-- Card -->
+    <div class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full">
+      <!-- Title row spanning full width -->
+      <h3
+        class="anime-title text-xl md:text-xl px-3 py-2 leading-snug whitespace-normal border-b border-base-300"
+        title={show.title.english ?? show.title.romaji}
+      >
+        {show.title.english ?? show.title.romaji}
+      </h3>
 
-        <!-- floating title -->
-        <h3
-          class="absolute bottom-0 left-0 w-full text-xs md:text-sm font-semibold text-white bg-black/70 px-2 py-1 leading-tight whitespace-normal"
-          title={show.title.english ?? show.title.romaji}
-        >
-          {show.title.english ?? show.title.romaji}
-        </h3>
-      </div>
+      <!-- Row 1: Cover & YouTube thumbnail (equal width/height) -->
+      <div class="flex gap-3 p-3">
+        <!-- Cover image (maintains full image, matches height of trailer) -->
+        <div class="shrink-0 w-32 md:w-40 rounded overflow-hidden flex items-stretch">
+          <img
+            src={show.coverImage.large}
+            alt={show.title.romaji}
+            class="object-contain w-full h-full"
+          />
+        </div>
 
-      <!-- right column -->
-      <div class="flex flex-col gap-2 p-3 flex-1 overflow-hidden">
+        <!-- YouTube thumbnail (clickable) -->
         {#if show.trailer?.site === 'youtube'}
           <button
-            class="relative w-full aspect-video rounded overflow-hidden"
+            class="relative flex-1 aspect-video rounded overflow-hidden"
             on:click={() => openModal(show.trailer.id)}
           >
             <img
@@ -54,18 +152,51 @@
               <path d="M8 5v14l11-7z" />
             </svg>
           </button>
-        {/if}
-
-        {#if show.relations?.edges?.some(e => e.relationType === 'SEQUEL')}
-          <span class="self-start badge badge-accent text-xs">Sequel</span>
-        {/if}
-
-        {#if show.description}
-          <div class="text-sm overflow-y-auto max-h-40 pr-1 prose prose-sm dark:prose-invert">
-            {@html show.description}
+        {:else}
+          <!-- placeholder if no trailer -->
+          <div class="flex-1 aspect-video rounded bg-base-200 flex items-center justify-center text-sm text-base-content/60">
+            No trailer
           </div>
         {/if}
       </div>
+
+      <!-- Airing information -->
+      {#if show.nextAiringEpisode}
+        <div class="px-3 py-1 text-sm text-base-content/70">
+          Next episode {show.nextAiringEpisode.episode} airs {formatUnix(show.nextAiringEpisode.airingAt)}
+        </div>
+      {:else if show.status === 'FINISHED'}
+        <div class="px-3 py-1 text-sm text-base-content/70">
+          {#if show.episodes}
+            {show.episodes} episodes
+          {/if}
+          aired on {formatYMD(show.endDate) || formatYMD(show.startDate)}
+        </div>
+      {:else if show.status === 'NOT_YET_RELEASED'}
+        <div class="px-3 py-1 text-sm text-base-content/70">
+          {#if show.startDate?.day}
+            Airing on {formatYMD(show.startDate)}
+          {:else}
+            Airing in {approxMonthYear(show.startDate, show.season)}
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Row 2: Relation tags -->
+      {#if relationTags(show.relations).length > 0}
+        <div class="px-3 flex flex-wrap gap-1 pb-2">
+          {#each relationTags(show.relations) as tag}
+            <span class="badge badge-accent text-xs">{TAG_LABELS[tag]}</span>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Row 3: Summary -->
+      {#if show.description}
+        <div class="px-3 pb-3 text-sm overflow-y-auto max-h-40 prose prose-sm dark:prose-invert">
+          {@html show.description}
+        </div>
+      {/if}
     </div>
     {/key}
   {/each}
