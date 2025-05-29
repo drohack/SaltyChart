@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  backend:
+    build: ./backend
+    container_name: saltychart-backend
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+      - ./backend/dev.db:/app/prisma/data.db
+      - ./backend/tsconfig.json:/app/tsconfig.json:ro
+    ports:
+      - "3000:3000"
+    environment:
+      - JWT_SECRET=SUPER_SECRET_KEY
+      - DATABASE_URL=file:./prisma/data.db
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./frontend
+      target: deps
+    container_name: saltychart-frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    command: npm run dev -- --host

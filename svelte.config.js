@@ -1,0 +1,24 @@
+import adapter from '@sveltejs/adapter-node';
+import preprocess from 'svelte-preprocess';
+
+/** @type {import('@sveltejs/kit').Config} */
+const config = {
+  preprocess: [
+    preprocess({
+      postcss: true,
+      typescript: true
+    })
+  ],
+
+  kit: {
+    adapter: adapter({
+      out: 'build'
+    }),
+    alias: {
+      $components: './src/lib/components',
+      $lib: './src/lib'
+    }
+  }
+};
+
+export default config;

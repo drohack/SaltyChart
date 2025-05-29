@@ -1,0 +1,18 @@
+// Prisma schema for user accounts
+// Run `npx prisma migrate dev --name init` to create the SQLite database.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  password  String   // hashed with bcrypt
+  createdAt DateTime @default(now())
+}
