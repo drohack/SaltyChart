@@ -1,6 +1,8 @@
 <script lang="ts">
   export let anime: any[] = [];
   export let hideSequels: boolean = false;
+  export let hideInList: boolean = false;
+  export let inListIds: Set<number> = new Set();
 
   // id of trailer currently open in modal (null = none)
   let modal: string | null = null;
@@ -37,10 +39,15 @@
     return relationTags(show.relations).length > 0;
   }
 
-  $: displayedAnime = hideSequels ? anime.filter((s) => !isSequel(s)) : anime;
+  $: displayedAnime = (() => {
+    let arr = hideSequels ? anime.filter((s) => !isSequel(s)) : anime;
+    if (hideInList) arr = arr.filter((a) => !inListIds.has(a.id));
+    return arr;
+  })();
 
   // --- Equalize title heights per grid row ---
   import { afterUpdate, onMount } from 'svelte';
+  import { dragged } from '../stores/drag';
 
   function equalizeTitles() {
     const titles: HTMLElement[] = Array.from(document.querySelectorAll('.anime-title'));
@@ -112,7 +119,16 @@
   {#each displayedAnime as show (show.id)}
     {#key show.id}
     <!-- Card -->
-    <div class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full">
+    <div
+      class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full"
+      class:opacity-50={inListIds.has(show.id)}
+      draggable={!inListIds.has(show.id)}
+      on:dragstart={(e) => {
+        dragged.set(show);
+        e.dataTransfer?.setData('text/plain', String(show.id));
+      }}
+      on:dragend={() => dragged.set(null)}
+    >
       <!-- Title row spanning full width -->
       <h3
         class="anime-title text-xl md:text-xl px-3 py-2 leading-snug whitespace-normal border-b border-base-300"

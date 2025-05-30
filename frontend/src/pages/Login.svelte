@@ -24,9 +24,9 @@ import { authToken, userName } from '../stores/auth';
       error = data.error || 'Login failed';
       return;
     }
-    const { token } = await res.json();
-    authToken.set(token);
-    userName.set(username);
+    const data = await res.json();
+    authToken.set(data.token);
+    userName.set(data.username);
     // Navigate home
     window.history.pushState({}, '', '/');
     const navEvent = new PopStateEvent('popstate');

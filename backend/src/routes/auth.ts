@@ -23,7 +23,7 @@ router.post('/signup', async (req, res) => {
     const hashed = await bcrypt.hash(password, SALT_ROUNDS);
     const user = await prisma.user.create({ data: { username, password: hashed } });
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token });
+    res.json({ token, username });
   } catch (e: any) {
     if (e.code === 'P2002') {
       return res.status(409).json({ error: 'Username already exists' });
@@ -49,7 +49,7 @@ router.post('/login', async (req, res) => {
   if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token });
+  res.json({ token, username });
 });
 
 export default router;

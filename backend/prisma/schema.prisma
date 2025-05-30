@@ -15,4 +15,20 @@ model User {
   username  String   @unique
   password  String   // hashed with bcrypt
   createdAt DateTime @default(now())
+
+  lists     WatchList[]
+}
+
+model WatchList {
+  id        Int      @id @default(autoincrement())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    Int
+
+  season    String
+  year      Int
+  mediaId   Int
+  order     Int
+  createdAt DateTime @default(now())
+
+  @@unique([userId, season, year, mediaId])
 }

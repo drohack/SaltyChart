@@ -21,9 +21,9 @@ import { authToken, userName } from '../stores/auth';
       error = data.error || 'Sign-up failed';
       return;
     }
-    const { token } = await res.json();
-    authToken.set(token);
-    userName.set(username);
+    const data = await res.json();
+    authToken.set(data.token);
+    userName.set(data.username);
     window.history.pushState({}, '', '/');
     dispatchEvent(new PopStateEvent('popstate'));
   }

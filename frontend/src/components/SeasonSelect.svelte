@@ -6,6 +6,8 @@
   export let season: Season;
   export let year: number;
   export let hideSequels: boolean = false;
+  export let hideInList: boolean = false;
+  export let showListToggle: boolean = true;
 
   // --- Constants ---
   const SEASONS: Array<{ value: Season; label: string }> = [
@@ -36,13 +38,10 @@
     }
   }
 
-  function toggleSequels() {
-    hideSequels = !hideSequels;
-    dispatch('change');
-  }
+  // No extra toggle functions; bind:checked updates props automatically.
 </script>
 
-<div class="flex flex-wrap items-center mb-6 justify-between w-full gap-y-2">
+<div class="flex flex-wrap items-center mb-6 justify-between w-full gap-y-2 relative z-10">
   <!-- Left controls: season buttons + year dropdown -->
   <div class="flex gap-4 items-center">
     <!-- Season buttons -->
@@ -70,14 +69,28 @@
     </select>
   </div>
 
-  <!-- Right-aligned Hide sequels toggle -->
-  <label class="flex items-center gap-2 text-sm select-none cursor-pointer">
-    <input
-      type="checkbox"
-      class="checkbox checkbox-sm"
-      bind:checked={hideSequels}
-      on:change={toggleSequels}
-    />
-    Hide Sequels
-  </label>
+  <!-- Right-aligned toggles -->
+  <div class="flex items-center gap-6 text-sm">
+    <label class="flex items-center gap-2 select-none cursor-pointer">
+      <input
+        type="checkbox"
+        class="checkbox checkbox-sm"
+        bind:checked={hideSequels}
+        on:change={() => dispatch('change')}
+      />
+      Hide sequels
+    </label>
+
+    {#if showListToggle}
+      <label class="flex items-center gap-2 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          bind:checked={hideInList}
+          on:change={() => dispatch('change')}
+        />
+        Hide in My List
+      </label>
+    {/if}
+  </div>
 </div>
