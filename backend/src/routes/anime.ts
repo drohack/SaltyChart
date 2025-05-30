@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import axios from 'axios';
 import { setTimeout as delay } from 'timers/promises';
+import { PrismaClient } from '@prisma/client';
 
 const router = Router();
+const prisma = new PrismaClient();
 
 interface SeasonQuery {
   season?: string;
@@ -68,6 +70,39 @@ router.get('/', async (req, res) => {
   `;
 
   try {
+    // Ensure cache table exists (in case initial bootstrap didn't run yet)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "SeasonCache" (
+        "season" TEXT NOT NULL,
+        "year"   INTEGER NOT NULL,
+        "format" TEXT,
+        "data"   TEXT NOT NULL,
+        "updatedAt" DATETIME NOT NULL,
+        PRIMARY KEY ("season", "year", "format")
+      );
+    `);
+
+    // ---------------------- Cache lookup ----------------------
+    const cacheKeyFormat = format ?? '';
+    const cached = await prisma.$queryRawUnsafe<{
+      data: string;
+      updatedAt: string;
+    }[]>(
+      `SELECT data, updatedAt FROM "SeasonCache" WHERE season = ? AND year = ? AND format IS ? LIMIT 1`,
+      season.toUpperCase(),
+      Number(year),
+      cacheKeyFormat === '' ? null : cacheKeyFormat.toUpperCase()
+    );
+
+    const ONE_HOUR = 60 * 60 * 1000;
+    if (cached.length) {
+      const updated = new Date(cached[0].updatedAt).getTime();
+      if (Date.now() - updated < ONE_HOUR) {
+        return res.json(JSON.parse(cached[0].data));
+      }
+    }
+
+    // ---------------------- Fetch from AniList ----------------------
     const allMedia: any[] = [];
     let page = 1;
     const perPage = 50;
@@ -139,6 +174,16 @@ router.get('/', async (req, res) => {
       hasNext = pageData?.pageInfo?.hasNextPage ?? false;
       page += 1;
     }
+
+    // Save/replace cache
+    await prisma.$executeRawUnsafe(
+      `INSERT OR REPLACE INTO "SeasonCache" (season, year, format, data, updatedAt)
+       VALUES (?, ?, ?, ?, datetime('now'))`,
+      season.toUpperCase(),
+      Number(year),
+      cacheKeyFormat === '' ? null : cacheKeyFormat.toUpperCase(),
+      JSON.stringify(allMedia)
+    );
 
     res.json(allMedia);
   } catch (error) {
