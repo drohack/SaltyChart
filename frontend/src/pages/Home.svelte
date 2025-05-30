@@ -60,21 +60,15 @@ import { authToken, userName } from '../stores/auth';
   async function fetchAnime() {
     loading = true;
     try {
-      const formats = ['TV', 'TV_SHORT', 'MOVIE', 'OVA', 'ONA', 'SPECIAL'];
-      const formatRequests = formats.map((fmt) =>
-        fetch(`/api/anime?season=${season}&year=${year}&format=${fmt}`)
-      );
+      const currentReq = fetch(`/api/anime?season=${season}&year=${year}`);
       const prev = prevSeasonYear(season, year);
       const prevReq = fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`);
 
-      const responses = await Promise.all([...formatRequests, prevReq]);
-      const jsonData = await Promise.all(responses.map((r) => r.json()));
+      const [currentData, prevData] = await Promise.all([currentReq, prevReq]).then((resps) =>
+        Promise.all(resps.map((r) => r.json()))
+      );
 
-      const prevData = jsonData.pop();
-      const merged: Record<number, any> = {};
-      jsonData.flat().forEach((m) => (merged[m.id] = m));
-
-      anime = Object.values(merged);
+      anime = currentData;
       prevSeasonAnime = prevData;
     } catch (e) {
       console.error(e);
