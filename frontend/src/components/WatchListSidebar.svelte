@@ -4,7 +4,7 @@
   import { authToken } from '../stores/auth';
 
   import { createEventDispatcher } from 'svelte';
-import { beforeUpdate, afterUpdate } from 'svelte';
+import { beforeUpdate, afterUpdate, tick } from 'svelte';
   const dispatch = createEventDispatcher();
 
   /* --------------------------------------------------------------
@@ -61,11 +61,21 @@ import { beforeUpdate, afterUpdate } from 'svelte';
   let modal: HTMLDialogElement;
   let editingItem: any = null; // item currently being renamed
   let modalName: string = '';
+  let nameInput: HTMLInputElement;
+
+  // Whether to open rename dialog automatically when adding from grid (bound from parent)
+  export let autoRename: boolean = false;
 
   function openNameModal(item: any) {
     editingItem = item;
     modalName = customNames[item.id] ?? '';
     modal?.showModal();
+
+    // Focus the input after modal renders
+    tick().then(() => {
+      nameInput?.focus();
+      nameInput?.select();
+    });
   }
 
   function closeModal() {
@@ -89,6 +99,16 @@ import { beforeUpdate, afterUpdate } from 'svelte';
       list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
     );
 
+    closeModal();
+  }
+
+  function removeEditingItem() {
+    if (!editingItem) return;
+    list = list.filter((it) => it.id !== editingItem.id);
+    dispatch(
+      'update',
+      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
+    );
     closeModal();
   }
 
@@ -200,6 +220,7 @@ $: {
     if (fromGrid && $dragged) {
       const idx = placeholder === -1 ? list.length : placeholder;
       addItemAt($dragged, idx);
+      if (autoRename) openNameModal($dragged);
     } else if (!fromGrid && placeholder !== -1) {
       move(dragIdx, placeholder);
     }
@@ -211,7 +232,7 @@ $: {
     stopAutoScroll();
   }}
 >
-  <div class="flex items-center gap-1 mb-2">
+  <div class="flex items-start justify-between gap-2 mb-2">
     <h3 class="text-lg font-bold">My List</h3>
     <span
       class="tooltip tooltip-bottom text-left whitespace-pre-line relative z-[10000]"
@@ -231,6 +252,13 @@ $: {
       </svg>
     </span>
   </div>
+
+  {#if $authToken}
+    <label class="flex items-center gap-2 text-sm mb-3 select-none cursor-pointer">
+      <input type="checkbox" class="checkbox checkbox-sm" bind:checked={autoRename} />
+      Prompt rename when adding
+    </label>
+  {/if}
 
   {#if list.length === 0}
     <div class="text-sm text-base-content/60">Drag series here</div>
@@ -277,6 +305,7 @@ $: {
             const fromGrid = dragIdx === -1;
             if (fromGrid && $dragged) {
               addItemAt($dragged, placeholder === -1 ? list.length : placeholder);
+              if (autoRename) openNameModal($dragged);
             } else if (!fromGrid && placeholder !== -1) {
               move(dragIdx, placeholder);
             }
@@ -303,8 +332,9 @@ $: {
             on:dblclick={() => {
               openNameModal(item);
             }}
-            on:keyup={(e) => {
+            on:keydown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
                 openNameModal(item);
               }
             }}
@@ -357,20 +387,30 @@ $: {
               placeholder="Enter name…"
               bind:value={modalName}
               class="input input-bordered w-full"
+              bind:this={nameInput}
               on:keydown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
+                  e.stopPropagation();
                   saveName();
                 }
+              }}
+              on:keyup={(e) => {
+                // Prevent the bubbling Enter key from reopening modal
+                if (e.key === 'Enter') e.stopPropagation();
               }}
             />
           </div>
         </div>
       </div>
 
-      <div class="modal-action mt-6">
-        <button class="btn btn-ghost" on:click={closeModal}>Cancel</button>
-        <button class="btn btn-primary" on:click={saveName}>Save</button>
+      <div class="modal-action mt-6 flex items-center justify-between flex-wrap gap-3">
+        <button class="btn btn-error" on:click={removeEditingItem}>Remove from My List</button>
+
+        <div class="flex gap-2 ml-auto">
+          <button class="btn btn-ghost" on:click={closeModal}>Cancel</button>
+          <button class="btn btn-primary" on:click={saveName}>Save</button>
+        </div>
       </div>
     </div>
   {/if}

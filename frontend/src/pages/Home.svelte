@@ -1,6 +1,5 @@
 <script lang="ts">
   // Extracted original App.svelte content
-  import { onMount } from 'svelte';
 import SeasonSelect from '../components/SeasonSelect.svelte';
 import AnimeGrid from '../components/AnimeGrid.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
@@ -27,6 +26,53 @@ import { authToken, userName } from '../stores/auth';
   let loading = false;
   let hideSequels = false;
   let hideInList = false;
+  let autoRename = false;
+
+  // Persist user preferences in localStorage per user
+  import { onMount } from 'svelte';
+
+  function prefsKey(user: string | null): string {
+    return user ? `prefs-${user}` : 'prefs-guest';
+  }
+
+  function loadPrefs(user: string | null) {
+    try {
+      const raw = localStorage.getItem(prefsKey(user));
+      if (raw) {
+        const obj = JSON.parse(raw);
+        hideSequels = obj.hideSequels ?? hideSequels;
+        hideInList = obj.hideInList ?? hideInList;
+        autoRename = obj.autoRename ?? autoRename;
+      }
+    } catch {}
+  }
+
+  function savePrefs(user: string | null) {
+    try {
+      const obj = { hideSequels, hideInList, autoRename };
+      localStorage.setItem(prefsKey(user), JSON.stringify(obj));
+    } catch {}
+  }
+
+  // Load on mount and whenever user logs in/out
+  onMount(() => loadPrefs($userName));
+
+  $: if ($userName) {
+    // Whenever the logged in user changes, reload prefs
+    loadPrefs($userName);
+  }
+
+  // If not logged in, force Hide-in-MyList off (no list available)
+  $: if (!$authToken) hideInList = false;
+
+  // Save whenever any preference changes (and user is logged in)
+  $: if ($userName) {
+    // dependencies
+    hideSequels;
+    hideInList;
+    autoRename;
+    savePrefs($userName);
+  }
 
   // watch list state
   let watchList: any[] = [];
@@ -144,6 +190,7 @@ import { authToken, userName } from '../stores/auth';
   {#if $authToken}
     <WatchListSidebar
       list={sidebarList}
+      bind:autoRename
       on:update={(e) => {
         watchList = e.detail;
         saveList();
