@@ -203,6 +203,9 @@ import { authToken, userName } from '../stores/auth';
   {#if $authToken}
     <WatchListSidebar
       list={sidebarList}
+      season={season}
+      year={year}
+      user={$userName}
       bind:autoRename
       on:update={(e) => {
         watchList = e.detail;

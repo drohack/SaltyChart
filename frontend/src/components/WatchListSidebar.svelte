@@ -1,11 +1,119 @@
 <script lang="ts">
   export let list: any[] = [];
+  // Season & year of the current list (e.g. "SPRING", 2025)
+  export let season: string;
+  export let year: number;
+  // Current user's display name (nullable when not logged in)
+  export let user: string | null = null;
   import { dragged } from '../stores/drag';
   import { authToken } from '../stores/auth';
 
   import { createEventDispatcher } from 'svelte';
 import { beforeUpdate, afterUpdate, tick } from 'svelte';
   const dispatch = createEventDispatcher();
+
+  /* --------------------------------------------------------------
+   * Share-as-image helper
+   * ------------------------------------------------------------*/
+  let sidebarEl: HTMLElement; // reference to <aside>
+
+  async function shareMyList() {
+    if (!sidebarEl) return;
+
+    // Target the <ul> so we can temporarily expand it
+    const ul = listEl;
+    if (!ul) return;
+
+    // Save original inline styles so we can restore them later
+    const ulOriginal = {
+      maxHeight: ul.style.maxHeight,
+      overflowY: ul.style.overflowY,
+      whiteSpace: ul.style.whiteSpace,
+      width: ul.style.width
+    } as Record<string, string>;
+
+    const sidebarOriginalWidth = sidebarEl.style.width;
+
+    // Expand to show full list with no scrollbars & keep titles on one line
+    ul.style.maxHeight = 'none';
+    ul.style.overflowY = 'visible';
+    ul.style.whiteSpace = 'nowrap';
+    ul.style.width = 'max-content';
+    sidebarEl.style.width = 'max-content';
+
+    // Hide the share button itself so it doesn't appear in the capture
+    const shareBtn = sidebarEl.querySelector('[data-share-btn]') as HTMLElement | null;
+    const btnDisplay = shareBtn?.style.display ?? '';
+    if (shareBtn) shareBtn.style.display = 'none';
+
+    try {
+      // Dynamically import only when user clicks Share so html-to-image is
+      // not loaded during initial page render. Package is present in
+      // dependencies so Vite can resolve it without extra directives.
+      // Dynamically import html-to-image; use variable specifier so Vite does
+      // not try to pre-bundle. Fallback to CDN if not installed inside the
+      // container (e.g. node_modules volume wasn’t rebuilt).
+      // Lazy-load html-to-image with a literal specifier so Vite can analyse
+      // the import and keep quiet.
+      // Import html2canvas from a CDN; it is more tolerant and avoids the
+      // blank-image issue we've observed with html-to-image.
+      const html2canvas = (
+        await import(
+          /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/+esm'
+        )
+      ).default;
+      // Ensure we capture from the very top so the heading is fully visible.
+      sidebarEl.scrollTop = 0;
+
+      // Work-around for html2canvas occasionally clipping text: force a
+      // slightly larger line-height on the heading during capture.
+      const headingEl = sidebarEl.querySelector('h3');
+      const prevLineHeight = headingEl ? headingEl.style.lineHeight : '';
+      const prevPadding = headingEl ? headingEl.style.paddingBottom : '';
+      if (headingEl) {
+        headingEl.style.lineHeight = '1.4';
+        headingEl.style.paddingBottom = '4px'; // add descent space
+      }
+
+      // Temporarily hide poster <img> elements to avoid CORS-tainted canvas
+      // (remote images cause the captured canvas to be cleared, resulting in
+      // a blank white output). They are restored in the finally block.
+      const posters: HTMLImageElement[] = Array.from(
+        sidebarEl.querySelectorAll('img')
+      );
+      const posterDisplay = posters.map((p) => p.style.display);
+      posters.forEach((p) => (p.style.display = 'none'));
+
+      const canvas = await html2canvas(sidebarEl, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true
+      });
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+      const w = window.open();
+      if (w) {
+        // Write a complete HTML document so the browser renders the image
+        // immediately instead of keeping a blank about:blank page.
+        w.document.open();
+        w.document.write(`<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>My Anime List</title><style>html,body{margin:0;padding:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#fff} img{max-width:100vw;max-height:100vh;width:auto;height:auto}</style></head><body><img src=\"${dataUrl}\" alt=\"My List\" /></body></html>`);
+        w.document.close();
+      }
+    } catch (e) {
+      console.error('Failed to export list', e);
+    } finally {
+      // Restore original styles no matter what
+      Object.assign(ul.style, ulOriginal);
+      sidebarEl.style.width = sidebarOriginalWidth;
+      if (shareBtn) shareBtn.style.display = btnDisplay;
+      // restore heading line-height
+      if (headingEl) {
+        headingEl.style.lineHeight = prevLineHeight;
+        headingEl.style.paddingBottom = prevPadding;
+      }
+      posters.forEach((p, idx) => (p.style.display = posterDisplay[idx]));
+    }
+  }
 
   /* --------------------------------------------------------------
    * List manipulation helpers
@@ -187,6 +295,7 @@ $: {
 
 
 <aside
+  bind:this={sidebarEl}
   class="fixed right-4 top-24 bottom-4 z-[9999] min-w-[16rem] w-[calc(12.5vw-1rem)] max-w-[24rem] bg-base-200 p-3 rounded shadow-lg overflow-visible flex flex-col"
   on:dragover={(e) => {
     e.preventDefault();
@@ -240,7 +349,25 @@ $: {
   }}
 >
   <div class="flex items-start justify-between gap-2 mb-2">
-    <h3 class="text-lg font-bold">My List</h3>
+    <div class="flex-1 min-w-0">
+      <h3 class="text-lg font-bold leading-tight truncate">
+        {season} {year} – {user ?? 'Guest'}
+      </h3>
+      <div class="text-sm opacity-70">My List</div>
+    </div>
+
+    <!-- Share button -->
+    <button
+      class="btn btn-xs btn-ghost" title="Share list as image" on:click={shareMyList} data-share-btn
+    >
+      <!-- simple share icon -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">
+        <path
+          d="M15 8a3 3 0 10-2.83-4H12a3 3 0 100 6h.17A3 3 0 0015 8zm-6 8a3 3 0 10-2.83-4H6a3 3 0 100 6h.17A3 3 0 009 16zm9 5a3 3 0 100-6 3 3 0 000 6zm-9-4.38l7.55 3.78a3 3 0 000-1.83l-7.55-3.78a3 3 0 000 1.83z"
+        />
+      </svg>
+    </button>
+
     <span
       class="tooltip tooltip-bottom text-left whitespace-pre-line relative z-[10000]"
       data-tip={`Drag series here from the main grid\nDouble-click an item in My List to change its title`}
