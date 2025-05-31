@@ -1,5 +1,5 @@
 {
-  "extends": "@sveltejs/kit/tsconfig.json",
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
     "types": ["svelte"],
     "lib": ["DOM", "ES2021"],
@@ -7,8 +7,9 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "$lib/*": ["src/lib/*"],
-      "$components/*": ["src/lib/components/*"]
+      "$lib": ["./src/lib"],
+      "$lib/*": ["./src/lib/*"],
+      "$components/*": ["./src/lib/components/*"]
     }
   }
 }

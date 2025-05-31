@@ -1,0 +1,39 @@
+# --- Node & SvelteKit -------------------------------------------------------
+node_modules/
+
+# SvelteKit build & intermediate artefacts
+/.svelte-kit/
+/build/
+
+# Production/platform specific build folders (optional)
+/.vercel/
+/.netlify/
+
+# Coverage directories
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Environment files — keep secrets out of source control
+.env
+.env.*.local
+.env.local
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# TypeScript incremental build files
+*.tsbuildinfo
+
+# Docker override file (optional, often local-only)
+docker-compose.override.yml
