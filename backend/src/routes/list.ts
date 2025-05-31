@@ -22,18 +22,30 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, items } = req.body as {
     season?: string;
     year?: number;
-    items?: number[];
+    items?: Array<{ mediaId: number; customName?: string } | number>;
   };
   if (!season || !year || !Array.isArray(items)) {
     return res.status(400).json({ error: 'Bad body' });
   }
 
   // delete existing then recreate
+  // Normalize items into objects with mediaId + optional customName
+  const normalized = items.map((it) =>
+    typeof it === 'number' ? { mediaId: it } : it
+  );
+
   await prisma.$transaction([
     prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year } }),
-    ...items.map((mediaId, idx) =>
+    ...normalized.map((entry, idx) =>
       prisma.watchList.create({
-        data: { userId: req.userId!, season, year, mediaId, order: idx }
+        data: {
+          userId: req.userId!,
+          season,
+          year,
+          mediaId: entry.mediaId,
+          customName: entry.customName ?? null,
+          order: idx
+        }
       })
     )
   ]);

@@ -23,15 +23,45 @@ import { authToken, userName } from './stores/auth';
 </script>
 
 <header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
-  <h1 class="text-3xl font-bold cursor-pointer" on:click={() => goto('/')}>SaltyChart</h1>
+  <!-- Logo / Home link -->
+  <h1 class="text-3xl font-bold">
+    <a
+      href="/"
+      class="cursor-pointer"
+      on:click|preventDefault={() => goto('/')}
+    >
+      SaltyChart
+    </a>
+  </h1>
 
   <div class="flex items-center gap-4">
     {#if $authToken}
       <span>{$userName}</span>
-      <button class="link" on:click={() => { authToken.set(null); userName.set(null); }}>Logout</button>
+      <button
+        type="button"
+        class="link"
+        on:click={() => {
+          authToken.set(null);
+          userName.set(null);
+        }}
+      >
+        Logout
+      </button>
     {:else}
-      <a class="link" on:click={() => goto('/login')}>Login</a>
-      <a class="link" on:click={() => goto('/signup')}>Sign Up</a>
+      <a
+        href="/login"
+        class="link"
+        on:click|preventDefault={() => goto('/login')}
+      >
+        Login
+      </a>
+      <a
+        href="/signup"
+        class="link"
+        on:click|preventDefault={() => goto('/signup')}
+      >
+        Sign Up
+      </a>
     {/if}
   </div>
 </header>

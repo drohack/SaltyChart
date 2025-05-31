@@ -33,20 +33,21 @@ import { authToken, userName } from '../stores/auth';
 
   $: sidebarList = watchList
     .map((w) => {
-      const id = w.mediaId ?? w.id;
-      return anime.find((a) => a.id === id);
+      const a = anime.find((a) => a.id === w.mediaId);
+      return a ? { ...a, customName: w.customName ?? null } : null;
     })
     .filter(Boolean);
   function saveList() {
     if (!$authToken) return;
-    const ids = watchList.map((w) => w.mediaId || w.id || w.mediaId);
+    const payload = watchList.map(({ mediaId, customName }) => ({ mediaId, customName }));
+
     fetch('/api/list', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${$authToken}`
       },
-      body: JSON.stringify({ season, year, items: ids })
+      body: JSON.stringify({ season, year, items: payload })
     });
   }
 
@@ -141,14 +142,12 @@ import { authToken, userName } from '../stores/auth';
   </div>
 
   {#if $authToken}
-    {#key watchList}
-      <WatchListSidebar
-        list={sidebarList}
-        on:update={(e) => {
-          watchList = e.detail;
-          saveList();
-        }}
-      />
-    {/key}
+    <WatchListSidebar
+      list={sidebarList}
+      on:update={(e) => {
+        watchList = e.detail;
+        saveList();
+      }}
+    />
   {/if}
 </main>

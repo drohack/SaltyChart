@@ -123,6 +123,7 @@
       class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full"
       class:opacity-50={inListIds.has(show.id)}
       draggable={!inListIds.has(show.id)}
+      role="listitem"
       on:dragstart={(e) => {
         dragged.set(show);
         e.dataTransfer?.setData('text/plain', String(show.id));
@@ -164,7 +165,10 @@
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 24 24"
               class="absolute inset-0 m-auto h-12 w-12 fill-white/90"
+              aria-labelledby="play-title"
+              role="img"
             >
+              <title id="play-title">Play trailer</title>
               <path d="M8 5v14l11-7z" />
             </svg>
           </button>
@@ -222,7 +226,20 @@
 {#if modal}
   <div
     class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="0"
     on:click|self={closeModal}
+    on:keydown={(e) => {
+      if (e.key === 'Escape') {
+        closeModal();
+      }
+    }}
+    on:keyup={(e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        closeModal();
+      }
+    }}
   >
     <div class="w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video">
       <iframe

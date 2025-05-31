@@ -28,6 +28,7 @@ model WatchList {
   year      Int
   mediaId   Int
   order     Int
+  customName String?
   createdAt DateTime @default(now())
 
   @@unique([userId, season, year, mediaId])

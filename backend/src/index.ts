@@ -24,7 +24,9 @@ async function ensureDatabaseSchema() {
   const prisma = new PrismaClient();
   try {
     const rows: Array<{ name: string }> = await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='WatchList' LIMIT 1;`;
-    if (rows.length === 0) {
+    const tableMissing = rows.length === 0;
+
+    if (tableMissing) {
       console.log('[DB] Creating WatchList table');
 
       await prisma.$executeRawUnsafe(`
@@ -39,6 +41,11 @@ async function ensureDatabaseSchema() {
           FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
       `);
+
+      // ────────────────────────────────────────────────────────────
+      // Schema upgrade: add `customName` column if missing
+      // ────────────────────────────────────────────────────────────
+      // (Column migration handled globally below)
 
       await prisma.$executeRawUnsafe(`
         CREATE UNIQUE INDEX IF NOT EXISTS "WatchList_userId_season_year_mediaId" 
@@ -57,7 +64,16 @@ async function ensureDatabaseSchema() {
         );
       `);
 
+
       console.log('[DB] WatchList table created ✅');
+    }
+
+    // Column migrations (run regardless of table creation)
+    const columns: Array<{ name: string }> = await prisma.$queryRaw`PRAGMA table_info('WatchList');`;
+    const hasCustom = columns.some((c) => c.name === 'customName');
+    if (!hasCustom) {
+      console.log('[DB] Adding customName column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "customName" TEXT`);
     }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
