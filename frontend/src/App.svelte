@@ -2,6 +2,7 @@
   import Home from './pages/Home.svelte';
   import Login from './pages/Login.svelte';
   import SignUp from './pages/SignUp.svelte';
+  import Randomize from './pages/Randomize.svelte';
 import { authToken, userName } from './stores/auth';
 
   // simple client-side router using location.pathname
@@ -19,7 +20,13 @@ import { authToken, userName } from './stores/auth';
     route = path;
   }
 
-  $: Page = route === '/login' ? Login : route === '/signup' ? SignUp : Home;
+  $: Page = route === '/login'
+    ? Login
+    : route === '/signup'
+    ? SignUp
+    : route === '/random'
+    ? Randomize
+    : Home;
 </script>
 
 <header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
@@ -33,6 +40,11 @@ import { authToken, userName } from './stores/auth';
       SaltyChart
     </a>
   </h1>
+
+  <nav class="flex items-center gap-6 text-lg">
+    <a href="/" class="link" on:click|preventDefault={() => goto('/')}>Anime</a>
+    <a href="/random" class="link" on:click|preventDefault={() => goto('/random')}>Randomize</a>
+  </nav>
 
   <div class="flex items-center gap-4">
     {#if $authToken}

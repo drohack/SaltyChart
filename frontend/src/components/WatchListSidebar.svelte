@@ -352,6 +352,8 @@ $: {
   {/if}
 </aside>
 
+
+
 <!-- Custom name modal (uses native <dialog>) -->
 <dialog class="modal" bind:this={modal} on:cancel={closeModal}>
   {#if editingItem}

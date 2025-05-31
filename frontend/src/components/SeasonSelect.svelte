@@ -8,6 +8,7 @@
   export let hideSequels: boolean = false;
   export let hideInList: boolean = false;
   export let showListToggle: boolean = true;
+  export let showSequelToggle: boolean = true;
 
   // --- Constants ---
   const SEASONS: Array<{ value: Season; label: string }> = [
@@ -71,15 +72,17 @@
 
   <!-- Right-aligned toggles -->
   <div class="flex items-center gap-6 text-sm">
-    <label class="flex items-center gap-2 select-none cursor-pointer">
-      <input
-        type="checkbox"
-        class="checkbox checkbox-sm"
-        bind:checked={hideSequels}
-        on:change={() => dispatch('change')}
-      />
-      Hide sequels
-    </label>
+    {#if showSequelToggle}
+      <label class="flex items-center gap-2 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          bind:checked={hideSequels}
+          on:change={() => dispatch('change')}
+        />
+        Hide sequels
+      </label>
+    {/if}
 
     {#if showListToggle}
       <label class="flex items-center gap-2 select-none cursor-pointer">
