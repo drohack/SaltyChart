@@ -2,8 +2,6 @@
   import SeasonSelect from '../components/SeasonSelect.svelte';
   import { authToken } from '../stores/auth';
 
-import { onMount } from 'svelte';
-
   export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
 
   let season: Season = 'SPRING';
@@ -38,36 +36,49 @@ import { onMount } from 'svelte';
     if (res.ok) anime = await res.json();
   }
 
-  const debouncedFetch = (fn: () => void, delay = 300) => {
-    let t: any;
-    return () => {
-      clearTimeout(t);
-      t = setTimeout(fn, delay);
-    };
-  };
-
-  const fetchDelayed = debouncedFetch(fetchList, 350);
 
   const fetchBoth = async () => {
     await Promise.all([fetchList(), fetchAnime()]);
   };
 
-  onMount(fetchBoth);
+  // Track last fetched year/season to avoid duplicate loads.
+  let lastSeasonYearKey: string | null = null;
 
-  // Refetch when season/year change
-  $: seasonYearKey = `${season}-${year}`;
-  $: if (seasonYearKey) {
-    fetchDelayed();
-    fetchAnime();
+  // Initial & subsequent fetches.
+  $: {
+    const key = `${season}-${year}`;
+    if (key !== lastSeasonYearKey) {
+      lastSeasonYearKey = key;
+      fetchBoth();
+    }
   }
 
-  // Build wheel items with full anime data
-  $: wheelItems = watchList
+  // Separate entries into watched/unwatched for easier handling
+  $: unwatchedEntries = watchList.filter((w) => !w.watched);
+  $: watchedEntries = watchList.filter((w) => w.watched);
+
+  // Build wheel items with full anime data, but only for entries that have
+  // NOT been watched yet so we never spin on already-watched shows.
+  $: wheelItems = unwatchedEntries
     .map((w) => {
       const data = anime.find((a) => a.id === w.mediaId);
       return data ? { ...data, customName: w.customName ?? null } : null;
     })
     .filter(Boolean);
+
+  // Build a detailed list for the watched sidebar
+  $: watchedDetailed = watchedEntries
+    .map((w) => {
+      const data = anime.find((a) => a.id === w.mediaId);
+      return data ? { ...data, customName: w.customName ?? null, watchedAt: w.watchedAt } : null;
+    })
+    .filter(Boolean)
+    // Sort so oldest watchedAt at top, newest at bottom
+    .sort((a, b) => {
+      const t1 = a.watchedAt ? new Date(a.watchedAt).getTime() : 0;
+      const t2 = b.watchedAt ? new Date(b.watchedAt).getTime() : 0;
+      return t1 - t2;
+    });
 
   // Derived values for wheel rendering
   $: sliceAngle = wheelItems.length ? 360 / wheelItems.length : 0;
@@ -115,28 +126,40 @@ import { onMount } from 'svelte';
 
   let showModal = false;
 
+  /**
+   * Mark the currently selected series as watched.
+   *
+   * 1. Update local state so the UI reflects the change immediately.
+   * 2. Notify backend so the change is persisted.
+   */
   async function markWatched() {
     if (!selected) return;
-    // remove from list locally
-    watchList = watchList.filter((w) => w.mediaId !== selected.id);
 
-    // Reset wheel orientation after removal to keep slices aligned
-    // leave wheel orientation unchanged
-
-    // Send update to backend
-    if ($authToken) {
-      const payload = watchList.map(({ mediaId, customName }) => ({ mediaId, customName }));
-      fetch('/api/list', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${$authToken}`
-        },
-        body: JSON.stringify({ season, year, items: payload })
-      });
-    }
-
+    await toggleWatched(selected.id, true);
     showModal = false;
+  }
+
+  /** Toggle watched flag for a given mediaId */
+  async function toggleWatched(id: number, watched: boolean) {
+    // update local state
+    watchList = watchList.map((w) =>
+      w.mediaId === id ? { ...w, watched, watchedAt: watched ? new Date().toISOString() : null } : w
+    );
+
+    if ($authToken) {
+      try {
+        await fetch('/api/list/watched', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${$authToken}`
+          },
+          body: JSON.stringify({ season, year, mediaId: id, watched })
+        });
+      } catch (err) {
+        console.error('Failed to update watched flag', err);
+      }
+    }
   }
 
   // Helper to build SVG arc path
@@ -158,19 +181,29 @@ import { onMount } from 'svelte';
   }
 </script>
 
-<main class="p-4 w-full md:w-3/4 mx-auto flex flex-col gap-8 items-center">
-  <SeasonSelect bind:season bind:year showListToggle={false} showSequelToggle={false} hideSequels={false} hideInList={false} />
+<main class="p-4 w-full md:w-3/4 mx-auto flex flex-col gap-8">
+  <SeasonSelect
+    bind:season
+    bind:year
+    showListToggle={false}
+    showSequelToggle={false}
+    hideSequels={false}
+    hideInList={false}
+  />
 
-  {#if !wheelItems.length}
-    <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
-  {:else}
-    <!-- Wheel -->
-    <div
-      class="relative mt-6 mx-auto overflow-visible"
-      style="width:95vmin;height:95vmin;max-width:900px;max-height:900px;"
-    >
-      <!-- Clipped wheel -->
-      <div class="overflow-hidden rounded-full w-full h-full">
+  <!-- Container: wheel centered in page; watched sidebar positioned absolutely so it doesn't shift wheel -->
+  <div class="relative w-full flex justify-center">
+    <div class="flex flex-col items-center mx-auto">
+      {#if !wheelItems.length}
+        <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
+      {:else}
+        <!-- Wheel -->
+        <div
+          class="relative mt-6 mx-auto overflow-visible"
+          style="width:95vmin;height:95vmin;max-width:900px;max-height:900px;"
+        >
+          <!-- Clipped wheel -->
+          <div class="overflow-hidden rounded-full w-full h-full">
         <svg
           bind:this={wheelEl}
           viewBox="-50 -50 100 100"
@@ -217,6 +250,41 @@ import { onMount } from 'svelte';
 
     <button class="btn btn-primary mt-8" on:click={spin} disabled={spinning}>Spin</button>
   {/if}
+    
+  </div> <!-- end wheel column -->
+
+    <!-- Watched list sidebar (absolute so it doesn’t affect wheel centering) -->
+    <aside class="hidden md:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
+      {#if watchedDetailed.length}
+        <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
+        <ul class="flex flex-col gap-3">
+          {#each watchedDetailed as item (item.id)}
+            <li class="flex items-center gap-3 group" >
+              <img
+                src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
+                alt=""
+                class="w-12 h-16 object-cover rounded shrink-0"
+              />
+              <!-- Display custom label; show tooltip with real title on hover -->
+              <span
+                class="text-sm flex-1 whitespace-normal break-words force-wrap"
+                title={item.title?.english || item.title?.romaji || item.title?.native || ''}
+              >
+                {item.customName || item.title?.english || item.title?.romaji}
+              </span>
+
+              <!-- Remove (unwatch) button, appears on hover -->
+              <button
+                class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
+                on:click={() => toggleWatched(item.id, false)}
+                aria-label="Mark as unwatched"
+              >✕</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </aside>
+  </div> <!-- end flex container -->
 
   {#if showModal && selected}
     <dialog open class="modal">
@@ -243,5 +311,9 @@ import { onMount } from 'svelte';
   /* Prevent text from being selectable while spinning */
   .spin-disable * {
     user-select: none;
+  }
+  /* Ensure extremely long words wrap while still preferring spaces */
+  .force-wrap {
+    overflow-wrap: anywhere; /* allows break inside long words only if needed */
   }
 </style>

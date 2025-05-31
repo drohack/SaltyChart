@@ -31,5 +31,11 @@ model WatchList {
   customName String?
   createdAt DateTime @default(now())
 
+  /// Whether the user has marked this series as watched.
+  watched Boolean @default(false)
+
+  /// Timestamp when user marked series as watched (null = not watched yet)
+  watchedAt DateTime?
+
   @@unique([userId, season, year, mediaId])
 }

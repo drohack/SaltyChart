@@ -23,7 +23,7 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
 
     dispatch(
       'update',
-      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
+      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null, watchedAt: a.watchedAt ?? null }))
     );
   }
 
@@ -42,7 +42,7 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     // scroll restoration handled globally
     dispatch(
       'update',
-      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
+      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null, watchedAt: a.watchedAt ?? null }))
     );
   }
 
@@ -96,7 +96,7 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     // notify parent so it can persist
     dispatch(
       'update',
-      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
+      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null, watchedAt: a.watchedAt ?? null }))
     );
 
     closeModal();
@@ -107,7 +107,7 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     list = list.filter((it) => it.id !== editingItem.id);
     dispatch(
       'update',
-      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null }))
+      list.map((a) => ({ mediaId: a.id, customName: customNames[a.id] ?? null, watchedAt: a.watchedAt ?? null }))
     );
     closeModal();
   }
@@ -175,6 +175,13 @@ $: {
 
 
 </script>
+
+<style>
+  /* allow long single-word titles to wrap when needed */
+  .force-wrap {
+    overflow-wrap: anywhere;
+  }
+</style>
 
 <!-- global wheel handler to allow scrolling while dragging -->
 
@@ -327,7 +334,7 @@ $: {
 
           <button
             type="button"
-            class="flex-1 whitespace-normal break-words text-left bg-transparent p-0 border-none focus:outline-none"
+            class="flex-1 whitespace-normal break-words force-wrap text-left bg-transparent p-0 border-none focus:outline-none"
             title={item.title?.english ?? item.title?.romaji}
             on:dblclick={() => {
               openNameModal(item);

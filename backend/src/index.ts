@@ -37,6 +37,9 @@ async function ensureDatabaseSchema() {
           "year"      INTEGER NOT NULL,
           "mediaId"   INTEGER NOT NULL,
           "order"     INTEGER NOT NULL,
+          "customName" TEXT,
+          "watched"    BOOLEAN NOT NULL DEFAULT 0,
+          "watchedAt" DATETIME,
           "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
@@ -75,6 +78,18 @@ async function ensureDatabaseSchema() {
       console.log('[DB] Adding customName column');
       await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "customName" TEXT`);
     }
+
+    const hasWatched = columns.some((c) => c.name === 'watched');
+    if (!hasWatched) {
+      console.log('[DB] Adding watched column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watched" BOOLEAN NOT NULL DEFAULT 0`);
+    }
+
+    const hasWatchedAt = columns.some((c) => c.name === 'watchedAt');
+    if (!hasWatchedAt) {
+      console.log('[DB] Adding watchedAt column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watchedAt" DATETIME`);
+    }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
   } finally {
@@ -82,21 +97,21 @@ async function ensureDatabaseSchema() {
   }
 }
 
-// Fire-and-forget; Express can start immediately.
-ensureDatabaseSchema();
+// Ensure DB schema first, then start server
+ensureDatabaseSchema().then(() => {
+  // ────────────────────────────────────────────────────────────────────────────
+  // Routes
+  // ────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Routes
-// ─────────────────────────────────────────────────────────────────────────────
+  app.get('/api/health', (_, res) => {
+    res.json({ status: 'ok' });
+  });
 
-app.get('/api/health', (_, res) => {
-  res.json({ status: 'ok' });
-});
+  app.use('/api/anime', animeRouter);
+  app.use('/api/auth', authRouter);
+  app.use('/api/list', listRouter);
 
-app.use('/api/anime', animeRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/list', listRouter);
-
-app.listen(PORT, () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
+  app.listen(PORT, () => {
+    console.log(`Backend listening on http://localhost:${PORT}`);
+  });
 });

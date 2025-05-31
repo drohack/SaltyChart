@@ -17,12 +17,42 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
   res.json(list);
 });
 
+// Mark a list entry as watched/unwatched
+router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
+  const { season, year, mediaId, watched } = req.body as {
+    season?: string;
+    year?: number;
+    mediaId?: number;
+    watched?: boolean;
+  };
+
+  if (!season || !year || typeof mediaId !== 'number') {
+    return res.status(400).json({ error: 'Bad body' });
+  }
+
+  try {
+    const updated = await prisma.watchList.updateMany({
+      where: { userId: req.userId!, season, year, mediaId },
+      data: {
+        watched: watched ?? true,
+        watchedAt: watched ? new Date() : null
+      }
+    });
+
+    // updated.count indicates how many rows modified
+    return res.json({ updated: updated.count });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to update' });
+  }
+});
+
 // Replace list (send array of mediaIds in desired order)
 router.put('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, items } = req.body as {
     season?: string;
     year?: number;
-    items?: Array<{ mediaId: number; customName?: string } | number>;
+    items?: Array<{ mediaId: number; customName?: string; watched?: boolean; watchedAt?: string | Date | null } | number>;
   };
   if (!season || !year || !Array.isArray(items)) {
     return res.status(400).json({ error: 'Bad body' });
@@ -30,9 +60,15 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
 
   // delete existing then recreate
   // Normalize items into objects with mediaId + optional customName
-  const normalized = items.map((it) =>
-    typeof it === 'number' ? { mediaId: it } : it
-  );
+  const normalized = items.map((it) => {
+    if (typeof it === 'number') return { mediaId: it, watched: false, watchedAt: null };
+    return {
+      mediaId: it.mediaId,
+      customName: it.customName ?? null,
+      watched: it.watched ?? Boolean(it.watchedAt),
+      watchedAt: it.watchedAt ?? (it.watched ? new Date() : null)
+    };
+  });
 
   await prisma.$transaction([
     prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year } }),
@@ -44,6 +80,8 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
           year,
           mediaId: entry.mediaId,
           customName: entry.customName ?? null,
+          watched: entry.watched ?? false,
+          watchedAt: entry.watchedAt ?? null,
           order: idx
         }
       })

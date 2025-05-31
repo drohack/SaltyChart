@@ -3,7 +3,6 @@
 import SeasonSelect from '../components/SeasonSelect.svelte';
 import AnimeGrid from '../components/AnimeGrid.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
-import { debounce } from '../debounce';
 import { authToken, userName } from '../stores/auth';
 
   type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
@@ -80,12 +79,19 @@ import { authToken, userName } from '../stores/auth';
   $: sidebarList = watchList
     .map((w) => {
       const a = anime.find((a) => a.id === w.mediaId);
-      return a ? { ...a, customName: w.customName ?? null } : null;
+      return a
+        ? {
+            ...a,
+            customName: w.customName ?? null,
+            watchedAt: w.watchedAt ?? null,
+            watched: w.watched ?? Boolean(w.watchedAt)
+          }
+        : null;
     })
     .filter(Boolean);
   function saveList() {
     if (!$authToken) return;
-    const payload = watchList.map(({ mediaId, customName }) => ({ mediaId, customName }));
+    const payload = watchList.map(({ mediaId, customName, watchedAt }) => ({ mediaId, customName, watchedAt }));
 
     fetch('/api/list', {
       method: 'PUT',
@@ -137,13 +143,20 @@ import { authToken, userName } from '../stores/auth';
 
   $: inListIds = new Set(watchList.map((w) => w.mediaId));
 
-  const debouncedFetch = debounce(fetchAnime, 350);
 
-  onMount(fetchAnime);
+  // Keep track of the last (season,year) combo we fetched so we only hit the
+  // network when it actually changes.
+  let lastSeasonYearKey: string | null = null;
 
-  // Automatically refetch when season or year change (debounced)
-  $: seasonYearKey = `${season}-${year}`;
-  $: if (seasonYearKey) debouncedFetch();
+  // Reactive block will run on initial mount *and* whenever season/year
+  // variables change via the bound SeasonSelect component.
+  $: {
+    const key = `${season}-${year}`;
+    if (key !== lastSeasonYearKey) {
+      lastSeasonYearKey = key;
+      fetchAnime(); // no debounce needed – user interaction is limited
+    }
+  }
 </script>
 
 <main class="p-4 w-full md:w-3/4 mx-auto flex flex-col gap-4">
