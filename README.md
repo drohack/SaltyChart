@@ -1,80 +1,109 @@
-# SaltyChart
+# SaltyChart – Local Build & Unraid Deployment
 
-SaltyChart is a season-based anime calendar inspired by [AniChart](https://anichart.net/).  
-It shows every TV anime airing in a given season (Winter, Spring, Summer, Fall) together with
+These are the steps we use in development:
 
-* Title & cover image
-* Sequel tag (if the show continues another entry)
-* Short description
-* Embedded YouTube trailer
-
-The data is fetched on-demand from the public [AniList GraphQL API](https://docs.anilist.co/).
+1. Build both images (backend & frontend) on your workstation
+2. Bundle them into a single `.tar` archive
+3. Copy the archive to the Unraid box
+4. `docker load` the images and run the containers
 
 ---
 
-## Project layout
+## 1  Build locally
 
-```
-SaltyChart/
-├── backend/          # Node.js(Express) API – TypeScript
-│   ├── src/
-│   │   ├── index.ts  # app entry, registers routes
-│   │   ├── routes/
-│   │   │   ├── anime.ts   # /api/anime
-│   │   │   └── auth.ts    # /api/register • /api/login
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── Dockerfile
-├── frontend/         # SvelteKit SPA – TypeScript + Tailwind (daisyUI)
-│   ├── src/
-│   ├── svelte.config.js
-│   ├── vite.config.ts
-│   ├── package.json
-│   └── Dockerfile
-├── docker-compose.yml # dev & production orchestration
-└── README.md          # this file
+```powershell
+# Backend – adapter-node output (listens on port 3000 **inside**)
+docker build -t saltychart-backend:YYYYMMDD .
+
+# Frontend – static assets served by Nginx (listens on port 80 **inside**)
+cd frontend
+docker build -t saltychart-frontend:YYYYMMDD .
+cd ..
+
+# Bundle both images into one archive
+docker save -o saltychart_YYYYMMDD.tar \ 
+  saltychart-backend:YYYYMMDD            \ 
+  saltychart-frontend:YYYYMMDD
 ```
 
-### Why two containers?
+*Replace `YYYYMMDD` with the build date or a git commit SHA; unique tags make
+versioning and rollback easy.*
 
-* **frontend** – purely static web bundle + SSR capabilities.
-* **backend** – hides your AniList token (if ever needed) and stores future per-user data.
+Optionally test the production build locally:
+
+```powershell
+docker network create salty-net 2>$null | Out-Null
+
+# Run backend
+docker run -d --name saltychart-backend --network salty-net \
+  -e DATABASE_URL=file:/data/data.db             \
+  -v saltychart_db:/data                         \
+  saltychart-backend:YYYYMMDD
+
+# Run frontend on host-port 8085
+docker run -d --name saltychart-frontend --network salty-net \
+  -p 8085:80                                      \
+  saltychart-frontend:YYYYMMDD
+
+# Browse http://localhost:8085/ – should render the season page with data.
+```
 
 ---
 
-## Quick start (development)
+## 2  Copy to the Unraid server
+
+Use any method (SCP, SMB, WinSCP) to place `saltychart_YYYYMMDD.tar` on the
+Unraid box (for example `/mnt/user/tmp/`).
+
+---
+
+## 3  Load & run on Unraid
 
 ```bash
-# 1) Start both services with hot reload:
-docker compose up --build
+# SSH / WebTerminal on Unraid
 
-# 2) Visit the web UI
-open http://localhost:5173  # Vite dev server
-# Backend should be on http://localhost:3000
+# 1  Import both images
+docker load -i /mnt/user/tmp/saltychart_YYYYMMDD.tar
+
+# 2  Network (create once – no harm if it already exists)
+docker network create salty-net 2>/dev/null || true
+
+# 3  Backend
+docker run -d --name saltychart-backend \
+  --network salty-net \
+  -v saltychart_db:/data \
+  -e DATABASE_URL=file:/data/data.db \
+  saltychart-backend:YYYYMMDD
+
+# 4  Frontend – publish on 8085
+docker run -d --name saltychart-frontend \
+  --network salty-net \
+  -p 8085:80 \
+  saltychart-frontend:YYYYMMDD
+
+# The site is now live at
+#   http://<unraid-ip>:8085/
 ```
 
-The first run installs all dependencies, so it may take a minute.
+### Updating
+
+1. Repeat the local build with a **new** tag.
+2. `docker load` the new tar on Unraid.
+3. `docker rm -f saltychart-frontend` (and/or backend) then run with the new tag.
+
+Old images can be pruned later with `docker image rm` or `docker image prune`.
 
 ---
 
-## Production build
+## Troubleshooting
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
-```
-
----
-
-## Authentication note
-
-AniList **does** offer OAuth – you can let users sign-in with their existing AniList
-accounts.  For the moment the backend contains a minimal username/password
-implementation with hashed credentials stored in SQLite (via Prisma).
-
-Replacing it with the official AniList OAuth flow later will be straightforward – we would
-only need to swap the `auth.ts` route handlers.
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Browser shows *Cannot GET /** | Frontend container started, but backend unreachable | Check `docker ps` – make sure backend is running and frontend env/proxy points to `saltychart-backend:3000` |
+| `err_connection_refused` | Host-port not published | `-p 8085:80` (frontend) or `-p 8085:3000` for the Node build |
+| Frontend blank but UI loads | `/api` proxy mis-configured | Ensure `nginx.conf` `proxy_pass http://saltychart-backend:3000;` (no trailing slash) |
+| Container stops instantly | Look at `docker logs <container>` – usually a missing env var or wrong command | Provide required env-vars, fix CMD |
 
 ---
 
-Happy hacking!  
-*Created with the help of OpenAI codex*
+Happy charting!
