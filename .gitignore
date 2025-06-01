@@ -37,3 +37,6 @@ Thumbs.db
 
 # Docker override file (optional, often local-only)
 docker-compose.override.yml
+
+# Build archives
+*.tar
