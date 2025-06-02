@@ -80,6 +80,14 @@
       return t1 - t2;
     });
 
+  // Detailed list of items that remain unwatched, preserving original order
+  $: unwatchedDetailed = unwatchedEntries
+    .map((w) => {
+      const data = anime.find((a) => a.id === w.mediaId);
+      return data ? { ...data, customName: w.customName ?? null } : null;
+    })
+    .filter(Boolean);
+
   // Derived values for wheel rendering
   $: sliceAngle = wheelItems.length ? 360 / wheelItems.length : 0;
 
@@ -252,6 +260,42 @@
   {/if}
     
   </div> <!-- end wheel column -->
+
+    <!-- Unwatched list sidebar (absolute so it doesn’t affect wheel centering) -->
+    <aside class="hidden md:block absolute left-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
+      {#if unwatchedDetailed.length}
+        <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
+        <ul class="flex flex-col gap-3">
+          {#each unwatchedDetailed as item (item.id)}
+            <li class="flex items-center gap-3 group">
+              <img
+                src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
+                alt=""
+                class="w-12 h-16 object-cover rounded shrink-0"
+              />
+
+              <!-- Display custom or original title -->
+              <span
+                class="text-sm flex-1 whitespace-normal break-words force-wrap"
+                title={item.title?.english || item.title?.romaji || item.title?.native || ''}
+              >
+                {item.customName || item.title?.english || item.title?.romaji}
+              </span>
+
+              <!-- Mark as watched button, appears on hover -->
+              <button
+                class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
+                on:click={() => {
+                  selected = item;
+                  showModal = true;
+                }}
+                aria-label="Mark as watched"
+              >✓</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </aside>
 
     <!-- Watched list sidebar (absolute so it doesn’t affect wheel centering) -->
     <aside class="hidden md:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
