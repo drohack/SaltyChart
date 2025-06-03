@@ -225,8 +225,12 @@
 
 <!-- Modal overlay for large trailer player -->
 {#if modal}
+  <!--
+    Bring the trailer modal above every other UI layer. The watch-list
+    sidebar uses z-[9999], so we give the modal a higher literal value.
+  -->
   <div
-    class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+    class="fixed inset-0 bg-black/80 flex items-center justify-center z-[10000]"
     role="dialog"
     aria-modal="true"
     tabindex="0"
