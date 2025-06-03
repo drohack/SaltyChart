@@ -1,64 +1,49 @@
-# ---- SaltyChart backend Dockerfile (Debian base) ----
+################  Backend – multi-stage build ################
 
-# Use a Debian-based image instead of Alpine so we get glibc and a recent
-# OpenSSL version out-of-the-box, avoiding the missing `libssl.so.1.1` problem
-# that Prisma's query engine has on musl.
+# 1) builder  – installs dev deps, generates Prisma client, compiles TS
+# 2) runtime  – Alpine + production node_modules copied from builder
 
-# ---------- 1. Install dependencies & run prisma generate ----------
-FROM node:18-slim AS deps
-
+# ---------- builder ---------------------------------------------------------
+FROM node:20-slim AS builder
 WORKDIR /app
 
-# Install OpenSSL libraries – Prisma engine links to them at runtime.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl \
-  && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci                        # includes devDependencies (tsc, prisma)
 
-COPY package.json ./
-RUN npm install --production=false
+# Copy source and build
+COPY . .
+RUN npm run generate && npm run build
 
-# Generate Prisma client with engines for the current platform (glibc)
-COPY prisma ./prisma
-RUN npx prisma generate
+# Remove dev dependencies to slim down node_modules we copy later
+RUN npm prune --production
 
-# ---------- 2. Build the TypeScript project ----------
-FROM node:18-slim AS builder
-
+# ---------- runtime ---------------------------------------------------------
+FROM node:20-slim AS runtime
 WORKDIR /app
 
-# OpenSSL again (needed if Prisma runs during build scripts)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl \
+  && apt-get install -y --no-install-recommends curl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json ./
-COPY tsconfig.json ./
-COPY src ./src
+# Always provide DATABASE_URL so Prisma connects even when not passed via
+# docker run or compose.
+# The Prisma SQLite connection string must use the `file:` URL scheme. Using an
+# *absolute* path (e.g. `file:/app/prisma/data.db`) triggers the Rust `url`
+# parser inside Prisma to reject the string with "Error parsing connection
+# string". Switching to a *relative* path solves the issue while still pointing
+# at the same location at runtime (`/app/prisma/data.db`).
 
-RUN npm run build
+ENV NODE_ENV=production \
+    DATABASE_URL=file:./prisma/data.db
 
-# ---------- 3. Create the runtime image ----------
-FROM node:18-slim
-
-WORKDIR /app
-
-ENV NODE_ENV production
-
-# Runtime dependencies (OpenSSL for Prisma)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl \
-  && rm -rf /var/lib/apt/lists/*
-
-# Copy compiled app and required files
+# copy pruned production deps and compiled JS
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=deps /app/node_modules ./node_modules
-COPY prisma ./prisma
-COPY package.json ./
-
-# Add prisma & other project binaries to PATH for interactive shells
-ENV PATH="/app/node_modules/.bin:${PATH}"
+COPY --from=builder /app/prisma ./prisma
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
 
 CMD ["node", "dist/index.js"]

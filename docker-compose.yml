@@ -5,27 +5,33 @@ services:
     build: ./backend
     container_name: saltychart-backend
     volumes:
-      - ./backend/src:/app/src
-      - ./backend/prisma:/app/prisma
       - ./backend/dev.db:/app/prisma/data.db
-      - ./backend/tsconfig.json:/app/tsconfig.json:ro
     ports:
       - "3000:3000"
     environment:
       - JWT_SECRET=SUPER_SECRET_KEY
-      - DATABASE_URL=file:./prisma/data.db
-    command: npm run dev
+# DATABASE_URL is baked into the runtime image; override only if you need a
+# different location.  The image now uses a *relative* path (file:./prisma/data.db)
+# because the Prisma SQLite driver rejects absolute paths that start with a
+# slash.
+    # use the image's default CMD (node dist/index.js)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 5s          # probe every 5 seconds
+      timeout: 3s
+      start_period: 0s      # start probing immediately
+      retries: 3
+    restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      target: deps
+    build: ./frontend
     container_name: saltychart-frontend
     volumes:
       - ./frontend:/app
       - /app/node_modules
     ports:
-      - "5173:5173"
+      - "5173:80"
     depends_on:
-      - backend
-    command: npm run dev -- --host
+      backend:
+        condition: service_healthy
+    # production nginx serves static build; default CMD is fine

@@ -109,15 +109,18 @@
     .filter(Boolean);
 
   // Derived values for wheel rendering
-  $: sliceAngle = wheelItems.length ? 360 / wheelItems.length : 0;
+  import SliceWorker from '../workers/slice-worker?worker';
+  const sliceWorker: Worker = new SliceWorker();
 
-  // build slice data for SVG (startAngle, endAngle, color)
-  $: sliceData = wheelItems.map((_, i) => {
-    const start = i * sliceAngle;
-    const end = start + sliceAngle;
-    const hue = (i * 360) / wheelItems.length;
-    return { start, end, color: `hsl(${hue},80%,55%)` };
-  });
+  let sliceAngle = 0;
+  let sliceData: { start: number; end: number; color: string }[] = [];
+
+  sliceWorker.onmessage = (ev) => {
+    sliceAngle = ev.data.sliceAngle;
+    sliceData = ev.data.sliceData;
+  };
+
+  $: sliceWorker.postMessage({ count: wheelItems.length });
 
   // radial distance for label (in SVG units, radius is 50)
   const LABEL_R_OUTER = 48; // near rim (SVG units, radius is 50)
@@ -292,6 +295,7 @@
                 src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
                 alt=""
                 class="w-12 h-16 object-cover rounded shrink-0"
+                loading="lazy"
               />
 
               <!-- Display custom or original title -->
@@ -328,6 +332,7 @@
                 src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
                 alt=""
                 class="w-12 h-16 object-cover rounded shrink-0"
+                loading="lazy"
               />
               <!-- Display custom label; show tooltip with real title on hover -->
               <span

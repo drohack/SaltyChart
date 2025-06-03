@@ -106,10 +106,7 @@ router.get('/', async (req, res) => {
     // values it behaves like "=", but some SQLite/driver versions optimise it
     // differently.  Splitting the query removes all doubt.
 
-    const cached = await prisma.$queryRawUnsafe<{
-      data: string;
-      updatedEpoch: string | number;
-    }[]>(
+    const cached = await prisma.$queryRawUnsafe(
       `SELECT data, strftime('%s', updatedAt) AS updatedEpoch
        FROM   "SeasonCache"
        WHERE  season = ?
@@ -119,7 +116,7 @@ router.get('/', async (req, res) => {
       season.toUpperCase(),
       Number(year),
       cacheKeyFormat
-    );
+    ) as { data: string; updatedEpoch: string | number }[];
 
     const ONE_HOUR_SECONDS = 60 * 60; // 1 h
     if (cached.length) {

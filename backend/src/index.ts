@@ -1,24 +1,44 @@
+import dotenv from 'dotenv';
+// Load env variables FIRST so later imports (Prisma client) see final value.
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 
 import animeRouter from './routes/anime';
 import authRouter from './routes/auth';
 import listRouter from './routes/list';
 import prisma from './db';
 
-// Load env vars (optional in dev)
-dotenv.config();
-
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 const app = express();
 
+// Trust only loopback proxies (our internal Nginx). This prevents forged
+// X-Forwarded-For headers from external requests while still allowing the
+// rate-limit middleware to see the real client IP.
+app.set('trust proxy', 'loopback');
+
 app.use(cors());
 app.use(helmet());
 app.use(compression());
+
+// ────────────────────────────────────────────────────────────────────────────
+// Rate limiting
+// ────────────────────────────────────────────────────────────────────────────
+
+// General limiter: 120 requests per minute per IP
+const generalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+app.use(generalLimiter);
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +48,13 @@ async function ensureDatabaseSchema() {
   // Re-use the singleton Prisma instance so we keep a single connection pool
   // across the entire application.
   try {
+    // Increase SQLite in-memory page cache (~8 MB) to reduce disk I/O on slow
+    // volumes.  Negative value expresses size in kibibytes.
+    try {
+      await prisma.$executeRawUnsafe('PRAGMA cache_size = -8000;'); // 8 MiB
+    } catch (e) {
+      console.warn('[DB] Failed to set PRAGMA cache_size', e);
+    }
     // -------------------------- User table ---------------------------
     const userRows: Array<{ name: string }> =
       await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='User' LIMIT 1;`;
@@ -146,7 +173,15 @@ ensureDatabaseSchema().then(() => {
   });
 
   app.use('/api/anime', animeRouter);
-  app.use('/api/auth', authRouter);
+  const authLimiter = rateLimit({
+    windowMs: 60_000, // 1 minute
+    max: 20,
+    message: { error: 'Too many requests, please slow down.' },
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+
+  app.use('/api/auth', authLimiter, authRouter);
   app.use('/api/list', listRouter);
 
   app.listen(PORT, () => {

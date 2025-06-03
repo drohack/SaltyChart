@@ -146,6 +146,7 @@
             src={show.coverImage.large}
             alt={show.title.romaji}
             class="object-contain w-full h-full"
+            loading="lazy"
           />
         </div>
 
@@ -159,7 +160,7 @@
               src={`https://i.ytimg.com/vi/${show.trailer.id}/hqdefault.jpg`}
               alt="Trailer thumbnail"
               class="absolute inset-0 object-cover w-full h-full"
-              loading="lazy"
+              loading="lazy" fetchpriority="low"
             />
             <svg
               xmlns="http://www.w3.org/2000/svg"
