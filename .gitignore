@@ -1,9 +1,22 @@
 # --- Node & SvelteKit -------------------------------------------------------
 node_modules/
 
+# Local SQLite databases (development only)
+*.db
+backend/dev.db
+backend/prisma/**/*.db
+
 # SvelteKit build & intermediate artefacts
 /.svelte-kit/
 /build/
+legacy/
+# Remove old prototype artefacts (kept out of the way)
+/src/
+/svelte.config.js
+/vite.config.js
+/tailwind.config.cjs
+/postcss.config.cjs
+/tsconfig.json
 
 # Production/platform specific build folders (optional)
 /.vercel/

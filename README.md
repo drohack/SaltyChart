@@ -1,109 +1,75 @@
-# SaltyChart – Local Build & Unraid Deployment
+# SaltyChart – Monorepo Overview
 
-These are the steps we use in development:
+This repository contains the _two_ production images that make up the
+SaltyChart deployment:
 
-1. Build both images (backend & frontend) on your workstation
-2. Bundle them into a single `.tar` archive
-3. Copy the archive to the Unraid box
-4. `docker load` the images and run the containers
+1. **`backend/`** – Express + TypeScript REST API
+2. **`frontend/`** – Svelte + Vite **SPA** that consumes the API
 
----
+Both are built and orchestrated locally with **Docker Compose**.  Each package
+is fully independent ‑ it ships its own `package.json`, lock-file and
+configuration.  Keeping them isolated avoids the usual confusion that comes
+with "mega" root‐level configuration files while still allowing a single
+Git repository.
 
-## 1  Build locally
-
-```powershell
-# Backend – adapter-node output (listens on port 3000 **inside**)
-docker build -t saltychart-backend:YYYYMMDD .
-
-# Frontend – static assets served by Nginx (listens on port 80 **inside**)
-cd frontend
-docker build -t saltychart-frontend:YYYYMMDD .
-cd ..
-
-# Bundle both images into one archive
-docker save -o saltychart_YYYYMMDD.tar \ 
-  saltychart-backend:YYYYMMDD            \ 
-  saltychart-frontend:YYYYMMDD
 ```
-
-*Replace `YYYYMMDD` with the build date or a git commit SHA; unique tags make
-versioning and rollback easy.*
-
-Optionally test the production build locally:
-
-```powershell
-docker network create salty-net 2>$null | Out-Null
-
-# Run backend
-docker run -d --name saltychart-backend --network salty-net \
-  -e DATABASE_URL=file:/data/data.db             \
-  -v saltychart_db:/data                         \
-  saltychart-backend:YYYYMMDD
-
-# Run frontend on host-port 8085
-docker run -d --name saltychart-frontend --network salty-net \
-  -p 8085:80                                      \
-  saltychart-frontend:YYYYMMDD
-
-# Browse http://localhost:8085/ – should render the season page with data.
+.
+├── backend         # Express API & Prisma SQLite database
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/ …
+├── frontend        # Svelte + Tailwind single-page app
+│   ├── Dockerfile  # multi-stage – dev & prod
+│   ├── package.json
+│   └── src/ …
+├── docker-compose.yml  # `docker compose up --build`
+└── README.md       # you are here
 ```
 
 ---
 
-## 2  Copy to the Unraid server
-
-Use any method (SCP, SMB, WinSCP) to place `saltychart_YYYYMMDD.tar` on the
-Unraid box (for example `/mnt/user/tmp/`).
-
----
-
-## 3  Load & run on Unraid
+## Quick start (developer machine)
 
 ```bash
-# SSH / WebTerminal on Unraid
+# 1  Build & start both services (hot-reload enabled)
+docker compose up --build
 
-# 1  Import both images
-docker load -i /mnt/user/tmp/saltychart_YYYYMMDD.tar
-
-# 2  Network (create once – no harm if it already exists)
-docker network create salty-net 2>/dev/null || true
-
-# 3  Backend
-docker run -d --name saltychart-backend \
-  --network salty-net \
-  -v saltychart_db:/data \
-  -e DATABASE_URL=file:/data/data.db \
-  saltychart-backend:YYYYMMDD
-
-# 4  Frontend – publish on 8085
-docker run -d --name saltychart-frontend \
-  --network salty-net \
-  -p 8085:80 \
-  saltychart-frontend:YYYYMMDD
-
-# The site is now live at
-#   http://<unraid-ip>:8085/
+# 2  Browse the app
+open http://localhost:5173
 ```
 
-### Updating
-
-1. Repeat the local build with a **new** tag.
-2. `docker load` the new tar on Unraid.
-3. `docker rm -f saltychart-frontend` (and/or backend) then run with the new tag.
-
-Old images can be pruned later with `docker image rm` or `docker image prune`.
+The **frontend** Vite dev-server proxies all `/api/*` requests to the **backend**
+container, so no additional environment configuration is required.
 
 ---
 
-## Troubleshooting
+## Production build
 
-| Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| Browser shows *Cannot GET /** | Frontend container started, but backend unreachable | Check `docker ps` – make sure backend is running and frontend env/proxy points to `saltychart-backend:3000` |
-| `err_connection_refused` | Host-port not published | `-p 8085:80` (frontend) or `-p 8085:3000` for the Node build |
-| Frontend blank but UI loads | `/api` proxy mis-configured | Ensure `nginx.conf` `proxy_pass http://saltychart-backend:3000;` (no trailing slash) |
-| Container stops instantly | Look at `docker logs <container>` – usually a missing env var or wrong command | Provide required env-vars, fix CMD |
+Each sub-directory ships a **multi-stage Dockerfile** that produces a minimal
+runtime image.
+
+```bash
+# Back-end – Express (listens on 3000 inside)
+docker build -t saltychart-backend:$(date +%Y%m%d) ./backend
+
+# Front-end – Static assets served by Nginx (listens on 80 inside)
+docker build -t saltychart-frontend:$(date +%Y%m%d) ./frontend
+
+# Optional: bundle into a single archive for off-line transfer
+docker save -o saltychart_$(date +%Y%m%d).tar \
+  saltychart-backend:$(date +%Y%m%d)            \
+  saltychart-frontend:$(date +%Y%m%d)
+```
+
+> The image tags use the build date, but a Git commit SHA works just as well.
 
 ---
 
-Happy charting!
+## House-keeping
+
+Old development artefacts from an **earlier SvelteKit prototype** were removed
+(`src/`, `build/`, root-level `Dockerfile`, etc.).  All user-facing
+functionality lives exclusively in the two folders listed above which should
+make day-to-day navigation and onboarding much simpler.
+
+Happy charting 🚀

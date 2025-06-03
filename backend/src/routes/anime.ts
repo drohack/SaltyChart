@@ -70,18 +70,6 @@ router.get('/', async (req, res) => {
   `;
 
   try {
-    // Ensure cache table exists (in case initial bootstrap didn't run yet)
-    await prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "SeasonCache" (
-        "season" TEXT NOT NULL,
-        "year"   INTEGER NOT NULL,
-        "format" TEXT,
-        "data"   TEXT NOT NULL,
-        "updatedAt" DATETIME NOT NULL,
-        PRIMARY KEY ("season", "year", "format")
-      );
-    `);
-
     // ---------------------- Cache lookup ----------------------
     // Use empty string to represent "no format filter" because NULL values are
     // not allowed in composite PRIMARY KEY columns in SQLite.  Using '' keeps

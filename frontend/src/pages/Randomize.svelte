@@ -19,6 +19,26 @@
   // Selected item after spin
   let selected: any = null;
 
+  // ------------------------------------------------------------------
+  // Guard: page only makes sense when the user is logged-in.  When the
+  // token disappears (logout) we reset state *and* navigate away to the
+  // home page so users don’t interact with a stale wheel.
+  // ------------------------------------------------------------------
+
+  $: if (!$authToken) {
+    // Clear all derived lists and UI state
+    watchList = [];
+    anime = [];
+    rotation = 0;
+    selected = null;
+
+    // If user somehow reached this page while logged-out, kick back home
+    if (typeof window !== 'undefined' && window.location.pathname === '/random') {
+      history.replaceState({}, '', '/');
+      dispatchEvent(new PopStateEvent('popstate'));
+    }
+  }
+
   // Fetch list from backend
   async function fetchList() {
     if (!$authToken) {

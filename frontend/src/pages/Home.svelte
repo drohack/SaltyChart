@@ -64,6 +64,13 @@ import { authToken, userName } from '../stores/auth';
   // If not logged in, force Hide-in-MyList off (no list available)
   $: if (!$authToken) hideInList = false;
 
+  // When user logs out clear any previously loaded list so grid no longer
+  // shows greyed-out items.  (watchList is only fetched when a valid token is
+  // present, therefore stale entries would otherwise stick around.)
+  $: if (!$authToken && watchList.length) {
+    watchList = [];
+  }
+
   // Save whenever any preference changes (and user is logged in)
   $: if ($userName) {
     // dependencies

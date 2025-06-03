@@ -23,6 +23,22 @@ app.use(express.json());
 async function ensureDatabaseSchema() {
   const prisma = new PrismaClient();
   try {
+    // -------------------------- User table ---------------------------
+    const userRows: Array<{ name: string }> =
+      await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='User' LIMIT 1;`;
+    if (userRows.length === 0) {
+      console.log('[DB] Creating User table');
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "User" (
+          "id"        INTEGER PRIMARY KEY AUTOINCREMENT,
+          "username"  TEXT    NOT NULL UNIQUE,
+          "password"  TEXT    NOT NULL,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      console.log('[DB] User table created ✅');
+    }
+
     const rows: Array<{ name: string }> = await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='WatchList' LIMIT 1;`;
     const tableMissing = rows.length === 0;
 
@@ -69,6 +85,23 @@ async function ensureDatabaseSchema() {
 
 
       console.log('[DB] WatchList table created ✅');
+    }
+
+    // ----------------------- SeasonCache table -----------------------
+    const cacheRows: Array<{ name: string }> =
+      await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='SeasonCache' LIMIT 1;`;
+    if (cacheRows.length === 0) {
+      console.log('[DB] Creating SeasonCache table');
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SeasonCache" (
+          "season"    TEXT    NOT NULL,
+          "year"      INTEGER NOT NULL,
+          "format"    TEXT,
+          "data"      TEXT    NOT NULL,
+          "updatedAt" DATETIME NOT NULL,
+          PRIMARY KEY ("season", "year", "format")
+        );
+      `);
     }
 
     // Column migrations (run regardless of table creation)

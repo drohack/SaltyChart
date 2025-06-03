@@ -43,7 +43,9 @@ import { authToken, userName } from './stores/auth';
 
   <nav class="flex items-center gap-6 text-lg">
     <a href="/" class="link" on:click|preventDefault={() => goto('/')}>Anime</a>
-    <a href="/random" class="link" on:click|preventDefault={() => goto('/random')}>Randomize</a>
+    {#if $authToken}
+      <a href="/random" class="link" on:click|preventDefault={() => goto('/random')}>Randomize</a>
+    {/if}
   </nav>
 
   <div class="flex items-center gap-4">
