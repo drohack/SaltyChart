@@ -1,8 +1,6 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-
-const prisma = new PrismaClient();
 const router = Router();
 
 // Get list for season/year

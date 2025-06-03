@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import axios from 'axios';
 import { setTimeout as delay } from 'timers/promises';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db';
+import { LRUCache } from 'lru-cache';
 
 const router = Router();
-const prisma = new PrismaClient();
+// In-memory cache to avoid hitting SQLite (and AniList) for hot requests.
+// 20 keys ≈ two years of data including format variants; each payload is a
+// couple of hundred kilobytes at most → memory footprint is negligible.
+const memory = new LRUCache<string, any[]>({ max: 20, ttl: 1000 * 60 * 60 });
 
 interface SeasonQuery {
   season?: string;
@@ -70,6 +74,13 @@ router.get('/', async (req, res) => {
   `;
 
   try {
+    // -------------------------- Memory cache ---------------------------
+    const memKey = `${season}-${year}-${format ?? ''}`.toUpperCase();
+    const cachedMem = memory.get(memKey);
+    if (cachedMem) {
+      return res.json(cachedMem);
+    }
+
     // ---------------------- Cache lookup ----------------------
     // Use empty string to represent "no format filter" because NULL values are
     // not allowed in composite PRIMARY KEY columns in SQLite.  Using '' keeps
@@ -202,6 +213,8 @@ router.get('/', async (req, res) => {
       cacheKeyFormat,
       JSON.stringify(allMedia)
     );
+
+    memory.set(memKey, allMedia);
 
     res.json(allMedia);
   } catch (error) {

@@ -1,14 +1,17 @@
 <script lang="ts">
-  import Home from './pages/Home.svelte';
-  import Login from './pages/Login.svelte';
-  import SignUp from './pages/SignUp.svelte';
-  import Randomize from './pages/Randomize.svelte';
+  // Pages are lazy-loaded so the initial bundle stays small
+  let Home: any;
+  let Login: any;
+  let SignUp: any;
+  let Randomize: any;
 import { authToken, userName } from './stores/auth';
 
   // simple client-side router using location.pathname
   import { onMount } from 'svelte';
 
   let route = window.location.pathname;
+
+  let Page: any = null;
 
   onMount(() => {
     window.addEventListener('popstate', () => (route = window.location.pathname));
@@ -20,13 +23,26 @@ import { authToken, userName } from './stores/auth';
     route = path;
   }
 
-  $: Page = route === '/login'
-    ? Login
-    : route === '/signup'
-    ? SignUp
-    : route === '/random'
-    ? Randomize
-    : Home;
+  async function loadPage(path: string) {
+    switch (path) {
+      case '/login':
+        Login = Login || (await import('./pages/Login.svelte')).default;
+        return Login;
+      case '/signup':
+        SignUp = SignUp || (await import('./pages/SignUp.svelte')).default;
+        return SignUp;
+      case '/random':
+        Randomize = Randomize || (await import('./pages/Randomize.svelte')).default;
+        return Randomize;
+      default:
+        Home = Home || (await import('./pages/Home.svelte')).default;
+        return Home;
+    }
+  }
+
+  $: (async () => {
+    Page = await loadPage(route);
+  })();
 </script>
 
 <header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
@@ -80,4 +96,6 @@ import { authToken, userName } from './stores/auth';
   </div>
 </header>
 
-<svelte:component this={Page} />
+{#if Page}
+  <svelte:component this={Page} />
+{/if}

@@ -235,7 +235,7 @@
         <svg
           bind:this={wheelEl}
           viewBox="-50 -50 100 100"
-          style="width:100%;height:100%;transform:rotate({rotation}deg);"
+          style="width:100%;height:100%;will-change:transform;backface-visibility:hidden;transform:translateZ(0) rotate({rotation}deg);"
           class="transition-transform pointer-events-none"
         on:transitionend={() => {
           if (spinning) {
