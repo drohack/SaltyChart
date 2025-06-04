@@ -1,3 +1,17 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Combobox tweaks for Compare page */
+.svelte-select {
+  @apply input w-full bg-base-200 text-gray-700;
+}
+.svelte-select .list {
+  @apply w-full bg-base-200;
+}
+.svelte-select .item.hover {
+  @apply bg-blue-300 text-white !important;
+}
+.svelte-select .item.active {
+  @apply bg-blue-600 text-white !important;
+}

@@ -4,6 +4,7 @@
   let Login: any;
   let SignUp: any;
   let Randomize: any;
+  let Compare: any;
 import { authToken, userName } from './stores/auth';
 
   // simple client-side router using location.pathname
@@ -34,6 +35,9 @@ import { authToken, userName } from './stores/auth';
       case '/random':
         Randomize = Randomize || (await import('./pages/Randomize.svelte')).default;
         return Randomize;
+      case '/compare':
+        Compare = Compare || (await import('./pages/Compare.svelte')).default;
+        return Compare;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;
@@ -61,6 +65,7 @@ import { authToken, userName } from './stores/auth';
     <a href="/" class="link" on:click|preventDefault={() => goto('/')}>Anime</a>
     {#if $authToken}
       <a href="/random" class="link" on:click|preventDefault={() => goto('/random')}>Randomize</a>
+      <a href="/compare" class="link" on:click|preventDefault={() => goto('/compare')}>Compare</a>
     {/if}
   </nav>
 

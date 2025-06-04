@@ -145,7 +145,15 @@ import { authToken, userName } from '../stores/auth';
     const res = await fetch(`/api/list?season=${season}&year=${year}`, {
       headers: { Authorization: `Bearer ${$authToken}` }
     });
-    if (res.ok) watchList = await res.json();
+    if (res.status === 401) {
+      // Invalid or expired token: clear auth and exit
+      authToken.set(null);
+      userName.set(null);
+      return;
+    }
+    if (res.ok) {
+      watchList = await res.json();
+    }
   }
 
   $: inListIds = new Set(watchList.map((w) => w.mediaId));

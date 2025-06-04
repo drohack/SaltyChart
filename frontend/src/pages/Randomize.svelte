@@ -377,10 +377,6 @@
 </main>
 
 <style>
-  /* Prevent text from being selectable while spinning */
-  .spin-disable * {
-    user-select: none;
-  }
   /* Ensure extremely long words wrap while still preferring spaces */
   .force-wrap {
     overflow-wrap: anywhere; /* allows break inside long words only if needed */

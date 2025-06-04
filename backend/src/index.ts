@@ -11,6 +11,8 @@ import rateLimit from 'express-rate-limit';
 import animeRouter from './routes/anime';
 import authRouter from './routes/auth';
 import listRouter from './routes/list';
+import publicListRouter from './routes/publicList';
+import usersRouter from './routes/users';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -157,8 +159,6 @@ async function ensureDatabaseSchema() {
     }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
-  } finally {
-    await prisma.$disconnect();
   }
 }
 
@@ -183,6 +183,8 @@ ensureDatabaseSchema().then(() => {
 
   app.use('/api/auth', authLimiter, authRouter);
   app.use('/api/list', listRouter);
+  app.use('/api/public-list', publicListRouter);
+  app.use('/api/users', usersRouter);
 
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);

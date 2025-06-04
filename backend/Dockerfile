@@ -7,6 +7,11 @@
 FROM node:20-slim AS builder
 WORKDIR /app
 
+# Install OpenSSL to satisfy Prisma client generation requirements
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl libssl-dev \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 RUN npm ci                        # includes devDependencies (tsc, prisma)
 
@@ -22,7 +27,8 @@ FROM node:20-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl \
+  && apt-get install -y --no-install-recommends \
+     curl openssl libssl-dev \
   && rm -rf /var/lib/apt/lists/*
 
 # Always provide DATABASE_URL so Prisma connects even when not passed via
