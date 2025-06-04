@@ -26,6 +26,8 @@ import { authToken, userName } from '../stores/auth';
   let hideSequels = false;
   let hideInList = false;
   let autoRename = false;
+  // Hide adult (18+) content
+  let hideAdult = true;
 
   // Persist user preferences in localStorage per user
   import { onMount } from 'svelte';
@@ -42,13 +44,14 @@ import { authToken, userName } from '../stores/auth';
         hideSequels = obj.hideSequels ?? hideSequels;
         hideInList = obj.hideInList ?? hideInList;
         autoRename = obj.autoRename ?? autoRename;
+        hideAdult = obj.hideAdult ?? hideAdult;
       }
     } catch {}
   }
 
   function savePrefs(user: string | null) {
     try {
-      const obj = { hideSequels, hideInList, autoRename };
+      const obj = { hideSequels, hideInList, autoRename, hideAdult };
       localStorage.setItem(prefsKey(user), JSON.stringify(obj));
     } catch {}
   }
@@ -77,6 +80,7 @@ import { authToken, userName } from '../stores/auth';
     hideSequels;
     hideInList;
     autoRename;
+    hideAdult;
     savePrefs($userName);
   }
 
@@ -183,6 +187,8 @@ import { authToken, userName } from '../stores/auth';
       bind:year
       bind:hideSequels
       bind:hideInList
+      bind:hideAdult
+      showAdultToggle={true}
       showListToggle={$authToken != null}
     />
   {#if loading}
@@ -190,27 +196,27 @@ import { authToken, userName } from '../stores/auth';
   {:else}
     {#if tvAnime.length}
       <h2 class="text-2xl font-bold mt-20 mb-8">TV</h2>
-      <AnimeGrid anime={tvAnime} {hideSequels} {hideInList} {inListIds} />
+      <AnimeGrid anime={tvAnime} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
     {#if tvShorts.length}
       <h2 class="text-2xl font-bold mt-20 mb-8">TV Short</h2>
-      <AnimeGrid anime={tvShorts} {hideSequels} {hideInList} {inListIds} />
+      <AnimeGrid anime={tvShorts} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
     {#if leftovers.length}
       <h2 class="text-2xl font-bold mt-20 mb-8">Leftovers</h2>
-      <AnimeGrid anime={leftovers} {hideSequels} {hideInList} {inListIds} />
+      <AnimeGrid anime={leftovers} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
     {#if ovaOnaSpecial.length}
       <h2 class="text-2xl font-bold mt-20 mb-8">OVA / ONA / Special</h2>
-      <AnimeGrid anime={ovaOnaSpecial} {hideSequels} {hideInList} {inListIds} />
+      <AnimeGrid anime={ovaOnaSpecial} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
     {#if movies.length}
       <h2 class="text-2xl font-bold mt-20 mb-8">Movies</h2>
-      <AnimeGrid anime={movies} {hideSequels} {hideInList} {inListIds} />
+      <AnimeGrid anime={movies} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
   {/if}
   </div>

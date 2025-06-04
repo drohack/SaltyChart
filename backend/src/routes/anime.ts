@@ -122,9 +122,11 @@ router.get('/', async (req, res) => {
     if (cached.length) {
       const currentEpoch = Math.floor(Date.now() / 1000);
       const ageSeconds = currentEpoch - Number(cached[0].updatedEpoch);
-
       if (ageSeconds < ONE_HOUR_SECONDS) {
-        return res.json(JSON.parse(cached[0].data));
+        // Serve from DB cache and populate in-memory cache for faster subsequent calls
+        const data = JSON.parse(cached[0].data);
+        memory.set(memKey, data);
+        return res.json(data);
       }
     }
 

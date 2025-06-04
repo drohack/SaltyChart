@@ -9,6 +9,9 @@
   export let hideInList: boolean = false;
   export let showListToggle: boolean = true;
   export let showSequelToggle: boolean = true;
+  // Toggle to hide adult (18+) content
+  export let hideAdult: boolean = false;
+  export let showAdultToggle: boolean = false;
 
   // --- Constants ---
   const SEASONS: Array<{ value: Season; label: string }> = [
@@ -72,6 +75,17 @@
 
   <!-- Right-aligned toggles -->
   <div class="flex items-center gap-6 text-sm">
+    {#if showAdultToggle}
+      <label class="flex items-center gap-2 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          bind:checked={hideAdult}
+          on:change={() => dispatch('change')}
+        />
+        Hide 18+
+      </label>
+    {/if}
     {#if showSequelToggle}
       <label class="flex items-center gap-2 select-none cursor-pointer">
         <input

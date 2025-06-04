@@ -2,6 +2,8 @@
   export let anime: any[] = [];
   export let hideSequels: boolean = false;
   export let hideInList: boolean = false;
+  // Hide adult (18+) content
+  export let hideAdult: boolean = false;
   export let inListIds: Set<number> = new Set();
 
   // id of trailer currently open in modal (null = none)
@@ -40,7 +42,9 @@
   }
 
   $: displayedAnime = (() => {
-    let arr = hideSequels ? anime.filter((s) => !isSequel(s)) : anime;
+    let arr = anime;
+    if (hideAdult) arr = arr.filter((a) => !a.isAdult);
+    if (hideSequels) arr = arr.filter((s) => !isSequel(s));
     if (hideInList) arr = arr.filter((a) => !inListIds.has(a.id));
     return arr;
   })();
