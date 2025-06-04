@@ -107,22 +107,52 @@
   // kick initial userA on mount / auth change
   $: userA = $userName;
 
+  // ------------------------------------------------------------------
+  // Logout handler – when the auth token disappears we should:
+  //   • Clear any stored comparison target in localStorage.
+  //   • Reset local component state (selectedOther, lists, etc.).
+  //   • Navigate the user back to the main anime page (/).
+  // ------------------------------------------------------------------
+
+  $: if (!$authToken) {
+    // Clear persisted compare user
+    try {
+      localStorage.removeItem('compare-other');
+    } catch {}
+
+    // Reset local UI state
+    selectedOther = null;
+    otherInput = '';
+    suggestions = [];
+    listA = null;
+    listB = null;
+
+    // If currently on /compare, redirect to home page.
+    if (typeof window !== 'undefined' && window.location.pathname === '/compare') {
+      history.replaceState({}, '', '/');
+      dispatchEvent(new PopStateEvent('popstate'));
+    }
+  }
+
   // Remove automatic reactive fetch upon selection; we trigger fetch manually
 
   // restore previous comparison target from localStorage and seed the dropdown
   onMount(async () => {
     const prev = localStorage.getItem('compare-other');
     if (prev) {
-      otherInput = prev;
+      // Restore previously selected user but keep the search box blank so the
+      // full user list is shown when the dropdown is opened.
+
       selectedOther = { value: prev, label: prev }; // wrap as object
+      otherInput = '';
 
       try {
-        await fetchSuggestions();
-        if (!suggestions.some(s => s.value === prev)) {
-		  suggestions = [{ value: prev, label: prev }, ...suggestions];
-		}
+        await fetchSuggestions(); // fetch all users
+        if (!suggestions.some((s) => s.value === prev)) {
+          suggestions = [{ value: prev, label: prev }, ...suggestions];
+        }
       } catch {
-        // ignore
+        /* ignore */
       }
 
       fetchLists();
@@ -131,17 +161,31 @@
   // preload all users for the dropdown combobox
   queueSuggest();
   
-  // persist comparison target
-  $: {
-	const val = typeof selectedOther === 'string'
-	  ? selectedOther
-	  : (selectedOther?.value ?? selectedOther?.label ?? '');
+  // ────────────────────────────────────────────────────────────────────────────
+  // Persist comparison target to localStorage
+  //
+  // This block used to run as soon as the component module was evaluated, i.e.
+  // before `onMount`.  At that time `selectedOther` is still `null`, so we
+  // ended up calling `localStorage.removeItem('compare-other')` and erasing the
+  // value we actually wanted to restore on first render.
+  //
+  // We now wait until the component is mounted in the browser (signalled by
+  // the `mounted` flag) before running the persistence logic.
+  // ────────────────────────────────────────────────────────────────────────────
 
-	if (val) {
-	  localStorage.setItem('compare-other', val);
-	} else {
-	  localStorage.removeItem('compare-other');
-	}
+  let mounted = false;
+  onMount(() => (mounted = true));
+
+  $: if (mounted) {
+    const val = typeof selectedOther === 'string'
+      ? selectedOther
+      : (selectedOther?.value ?? selectedOther?.label ?? '');
+
+    if (val) {
+      localStorage.setItem('compare-other', val);
+    } else {
+      localStorage.removeItem('compare-other');
+    }
   }
   
   // Derived helpers ----------------------------------------------------------
