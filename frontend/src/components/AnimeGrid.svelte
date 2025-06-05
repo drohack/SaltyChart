@@ -5,6 +5,17 @@
   // Hide adult (18+) content
   export let hideAdult: boolean = false;
   export let inListIds: Set<number> = new Set();
+  // Toast notification state
+  let toastVisible: boolean = false;
+  let toastMessage: string = '';
+
+  function showToast(msg: string) {
+    toastMessage = msg;
+    toastVisible = true;
+    setTimeout(() => {
+      toastVisible = false;
+    }, 2000);
+  }
 
   // id of trailer currently open in modal (null = none)
   let modal: string | null = null;
@@ -51,6 +62,7 @@
 
   // --- Equalize title heights per grid row ---
   import { afterUpdate, onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { dragged } from '../stores/drag';
 
   function equalizeTitles() {
@@ -126,6 +138,7 @@
     <div
       class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full"
       class:opacity-50={inListIds.has(show.id)}
+      class:cursor-grab={!inListIds.has(show.id)}
       draggable={!inListIds.has(show.id)}
       role="listitem"
       on:dragstart={(e) => {
@@ -134,13 +147,29 @@
       }}
       on:dragend={() => dragged.set(null)}
     >
-      <!-- Title row spanning full width -->
-      <h3
-        class="anime-title text-xl md:text-xl px-3 py-2 leading-snug whitespace-normal border-b border-base-300"
-        title={show.title.english ?? show.title.romaji}
-      >
-        {show.title.english ?? show.title.romaji}
-      </h3>
+      <!-- Title row with copy button -->
+      <div class="flex items-center justify-between px-3 py-2 border-b border-base-300">
+        <h3
+          class="anime-title text-xl md:text-xl leading-snug whitespace-normal"
+          title={show.title.english ?? show.title.romaji}
+        >
+          {show.title.english ?? show.title.romaji}
+        </h3>
+        <button
+          class="btn btn-ghost btn-sm p-1"
+          aria-label="Copy title"
+          on:click={() => {
+            const text = show.title.english ?? show.title.romaji;
+            navigator.clipboard.writeText(text);
+            showToast(`${text} copied to clipboard`);
+          }}
+        >
+          <!-- Using Material Design file_copy icon for a familiar Windows feel -->
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+          </svg>
+        </button>
+      </div>
 
       <!-- Row 1: Cover & YouTube thumbnail (equal width/height) -->
       <div class="flex gap-3 p-3">
@@ -157,7 +186,7 @@
         <!-- YouTube thumbnail (clickable) -->
         {#if show.trailer?.site === 'youtube'}
           <button
-            class="relative flex-1 aspect-video rounded overflow-hidden"
+            class="relative flex-1 aspect-video rounded overflow-hidden cursor-pointer"
             on:click={() => openModal(show.trailer.id)}
           >
             <img
@@ -259,5 +288,15 @@
         on:click|stopPropagation
       />
     </div>
+  </div>
+{/if}
+<!-- Toast notification -->
+{#if toastVisible}
+  <div
+    in:fade={{ duration: 300 }}
+    out:fade={{ duration: 300 }}
+    class="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-base-200 text-base-content px-4 py-2 rounded shadow"
+  >
+    {toastMessage}
   </div>
 {/if}
