@@ -32,7 +32,13 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
       width: ul.style.width
     } as Record<string, string>;
 
+    // Save original inline styles for the sidebar so we can restore them later
     const sidebarOriginalWidth = sidebarEl.style.width;
+    const sidebarOriginalHeight = sidebarEl.style.height;
+    const sidebarOriginalTop = sidebarEl.style.top;
+    const sidebarOriginalBottom = sidebarEl.style.bottom;
+    const sidebarOriginalMinWidth = sidebarEl.style.minWidth;
+    const sidebarOriginalMaxWidth = sidebarEl.style.maxWidth;
 
     // Expand to show full list with no scrollbars & keep titles on one line
     ul.style.maxHeight = 'none';
@@ -40,11 +46,19 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     ul.style.whiteSpace = 'nowrap';
     ul.style.width = 'max-content';
     sidebarEl.style.width = 'max-content';
+    // Allow full-content width by removing class-based min/max constraints
+    sidebarEl.style.minWidth = '0';
+    sidebarEl.style.maxWidth = 'none';
 
     // Hide the share button itself so it doesn't appear in the capture
     const shareBtn = sidebarEl.querySelector('[data-share-btn]') as HTMLElement | null;
     const btnDisplay = shareBtn?.style.display ?? '';
     if (shareBtn) shareBtn.style.display = 'none';
+
+    // Expand aside to fit full content height (override fixed-top/bottom constraints)
+    sidebarEl.style.height = `${sidebarEl.scrollHeight}px`;
+    sidebarEl.style.top = 'auto';
+    sidebarEl.style.bottom = 'auto';
 
     try {
       // Dynamically import only when user clicks Share so html-to-image is
@@ -104,7 +118,14 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     } finally {
       // Restore original styles no matter what
       Object.assign(ul.style, ulOriginal);
+      // Restore sidebar width and remove overrides
       sidebarEl.style.width = sidebarOriginalWidth;
+      sidebarEl.style.minWidth = sidebarOriginalMinWidth;
+      sidebarEl.style.maxWidth = sidebarOriginalMaxWidth;
+      // Restore sidebar height and positioning
+      sidebarEl.style.height = sidebarOriginalHeight;
+      sidebarEl.style.top = sidebarOriginalTop;
+      sidebarEl.style.bottom = sidebarOriginalBottom;
       if (shareBtn) shareBtn.style.display = btnDisplay;
       // restore heading line-height
       if (headingEl) {
@@ -360,29 +381,29 @@ $: {
     <button
       class="btn btn-xs btn-ghost" title="Share list as image" on:click={shareMyList} data-share-btn
     >
-      <!-- simple share icon -->
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">
-        <path
-          d="M15 8a3 3 0 10-2.83-4H12a3 3 0 100 6h.17A3 3 0 0015 8zm-6 8a3 3 0 10-2.83-4H6a3 3 0 100 6h.17A3 3 0 009 16zm9 5a3 3 0 100-6 3 3 0 000 6zm-9-4.38l7.55 3.78a3 3 0 000-1.83l-7.55-3.78a3 3 0 000 1.83z"
-        />
+      <!-- Material Design share icon, matching main grid copy icon style -->
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.03-.47-.09-.7l7.02-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7l-7.02 4.11c-.54-.5-1.25-.81-2.04-.81-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.17c-.05.21-.08.43-.08.65 0 1.72 1.39 3.11 3.11 3.11 1.72 0 3.11-1.39 3.11-3.11s-1.39-3.11-3.11-3.11z"/>
       </svg>
     </button>
 
     <span
-      class="tooltip tooltip-bottom text-left whitespace-pre-line relative z-[10000]"
+      class="tooltip tooltip-left text-left whitespace-pre-line relative z-[10000]"
       data-tip={`Drag series here from the main grid\nDouble-click an item in My List to change its title`}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 20 20"
+        class="h-4 w-4 opacity-60 cursor-help"
         fill="currentColor"
-        class="w-4 h-4 opacity-60 cursor-help"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
       >
-        <path
-          fill-rule="evenodd"
-          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-9 3a1 1 0 012 0v1a1 1 0 11-2 0v-1zm1-8a1 1 0 00-1 1v1a1 1 0 102 0V6a1 1 0 00-1-1z"
-          clip-rule="evenodd"
-        />
+        <path fill="none" d="M0 0h24v24H0z"/>
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10
+                 10-4.48 10-10S17.52 2 12 2zm0 18
+                 c-4.41 0-8-3.59-8-8s3.59-8 8-8
+                 8 3.59 8 8-3.59 8-8 8z"/>
+        <path d="M11 16h2v-2h-2v2zm0-4h2V7h-2v5z"/>
       </svg>
     </span>
   </div>
