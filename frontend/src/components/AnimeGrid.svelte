@@ -128,6 +128,61 @@
   function capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
+  let iframeElement: HTMLIFrameElement | null = null;
+
+  /**
+   * Listen for state change messages from the YouTube iframe.
+   * When playback starts (state=1), set caption track options.
+   */
+  function onMessage(event: MessageEvent) {
+    if (iframeElement && event.source === iframeElement.contentWindow) {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        // ignore non-JSON messages
+        return;
+      }
+      // onReady: subscribe to API change events
+      if (data.event === 'onReady') {
+        const win = iframeElement!.contentWindow!;
+        // Subscribe to API change:
+        win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onApiChange'] }), '*');
+        // Subscribe to state change events:
+        win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
+      }
+      // onApiChange: send caption options
+      if (data.event === 'onApiChange') {
+        const win = iframeElement!.contentWindow!;
+        // set caption track option
+        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+        // set cc track option
+        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+        window.removeEventListener('message', onMessage);
+      }
+      // Fallback: onStateChange PLAYING
+      if (data.event === 'onStateChange' && data.info === 1) {
+        const win = iframeElement!.contentWindow!;
+        // fallback: set caption track
+        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+        // fallback: set cc track
+        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+        window.removeEventListener('message', onMessage);
+      }
+    }
+  }
+
+  /**
+   * Called when iframe loads; start the JS API handshake.
+   */
+  function onIframeLoad() {
+    if (iframeElement?.contentWindow) {
+      const win = iframeElement.contentWindow!;
+      win.postMessage(JSON.stringify({ event: 'listening' }), '*');
+      // subscribe to API change events
+      window.addEventListener('message', onMessage);
+    }
+  }
 </script>
 
 <!-- grid of horizontal cards -->
@@ -256,7 +311,7 @@
   {/each}
 </div>
 
-<!-- Modal overlay for large trailer player -->
+  <!-- Modal overlay for large trailer player -->
 {#if modal}
   <!--
     Bring the trailer modal above every other UI layer. The watch-list
@@ -281,10 +336,12 @@
   >
     <div class="w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video">
       <iframe
+        bind:this={iframeElement}
         class="w-full h-full rounded"
-        src={`https://www.youtube.com/embed/${modal}?autoplay=1&cc_load_policy=1&cc_lang_pref=en&hl=en`}
+        src={`https://www.youtube.com/embed/${modal}?autoplay=1&enablejsapi=1&cc_load_policy=1&cc_lang_pref=en&hl=en`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowfullscreen
+        on:load={onIframeLoad}
         on:click|stopPropagation
       />
     </div>
