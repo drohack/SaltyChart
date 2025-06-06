@@ -21,6 +21,65 @@ import { authToken, userName } from '../stores/auth';
   $: leftovers = prevSeasonAnime.filter(
     (a) => a.format === 'TV' && a.status === 'RELEASING'
   );
+  // Search query for filtering by title variants or user's custom names
+  let searchQuery: string = '';
+
+  $: tvAnimeFiltered = tvAnime.filter((a) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const t = a.title;
+    // Match official titles
+    if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
+      return true;
+    }
+    // Match user's custom name if present in watchList
+    const entry = watchList.find(w => w.mediaId === a.id);
+    return entry?.customName?.toLowerCase().includes(q) ?? false;
+  });
+
+  $: tvShortsFiltered = tvShorts.filter((a) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const t = a.title;
+    if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
+      return true;
+    }
+    const entry = watchList.find(w => w.mediaId === a.id);
+    return entry?.customName?.toLowerCase().includes(q) ?? false;
+  });
+
+  $: leftoversFiltered = leftovers.filter((a) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const t = a.title;
+    if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
+      return true;
+    }
+    const entry = watchList.find(w => w.mediaId === a.id);
+    return entry?.customName?.toLowerCase().includes(q) ?? false;
+  });
+
+  $: ovaOnaSpecialFiltered = ovaOnaSpecial.filter((a) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const t = a.title;
+    if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
+      return true;
+    }
+    const entry = watchList.find(w => w.mediaId === a.id);
+    return entry?.customName?.toLowerCase().includes(q) ?? false;
+  });
+
+  $: moviesFiltered = movies.filter((a) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const t = a.title;
+    if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
+      return true;
+    }
+    const entry = watchList.find(w => w.mediaId === a.id);
+    return entry?.customName?.toLowerCase().includes(q) ?? false;
+  });
 
   let loading = false;
   let hideSequels = false;
@@ -188,35 +247,37 @@ import { authToken, userName } from '../stores/auth';
       bind:hideSequels
       bind:hideInList
       bind:hideAdult
+      bind:searchQuery
+      showSearch={true}
       showAdultToggle={true}
       showListToggle={$authToken != null}
     />
   {#if loading}
     <div class="text-center">Loading…</div>
   {:else}
-    {#if tvAnime.length}
-      <h2 class="text-2xl font-bold mt-20 mb-8">TV</h2>
-      <AnimeGrid anime={tvAnime} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+  {#if tvAnimeFiltered.length}
+      <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
+      <AnimeGrid anime={tvAnimeFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
-    {#if tvShorts.length}
-      <h2 class="text-2xl font-bold mt-20 mb-8">TV Short</h2>
-      <AnimeGrid anime={tvShorts} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+    {#if tvShortsFiltered.length}
+      <h2 class="text-2xl font-bold mt-8 mb-4">TV Short</h2>
+      <AnimeGrid anime={tvShortsFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
-    {#if leftovers.length}
-      <h2 class="text-2xl font-bold mt-20 mb-8">Leftovers</h2>
-      <AnimeGrid anime={leftovers} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+    {#if leftoversFiltered.length}
+      <h2 class="text-2xl font-bold mt-8 mb-4">Leftovers</h2>
+      <AnimeGrid anime={leftoversFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
-    {#if ovaOnaSpecial.length}
-      <h2 class="text-2xl font-bold mt-20 mb-8">OVA / ONA / Special</h2>
-      <AnimeGrid anime={ovaOnaSpecial} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+    {#if ovaOnaSpecialFiltered.length}
+      <h2 class="text-2xl font-bold mt-8 mb-4">OVA / ONA / Special</h2>
+      <AnimeGrid anime={ovaOnaSpecialFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
 
-    {#if movies.length}
-      <h2 class="text-2xl font-bold mt-20 mb-8">Movies</h2>
-      <AnimeGrid anime={movies} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+    {#if moviesFiltered.length}
+      <h2 class="text-2xl font-bold mt-8 mb-4">Movies</h2>
+      <AnimeGrid anime={moviesFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
     {/if}
   {/if}
   </div>

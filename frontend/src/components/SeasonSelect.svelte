@@ -12,6 +12,10 @@
   // Toggle to hide adult (18+) content
   export let hideAdult: boolean = false;
   export let showAdultToggle: boolean = false;
+  // Search query for filtering in parent
+  export let searchQuery: string = '';
+  // Show search box (binds to searchQuery)
+  export let showSearch: boolean = false;
 
   // --- Constants ---
   const SEASONS: Array<{ value: Season; label: string }> = [
@@ -45,7 +49,7 @@
   // No extra toggle functions; bind:checked updates props automatically.
 </script>
 
-<div class="flex flex-wrap items-center mb-6 justify-between w-full gap-y-2 relative z-10">
+  <div class="flex items-center mb-6 w-full gap-x-4 relative z-10">
   <!-- Left controls: season buttons + year dropdown -->
   <div class="flex gap-4 items-center">
     <!-- Season buttons -->
@@ -72,6 +76,18 @@
       {/each}
     </select>
   </div>
+  {#if showSearch}
+    <!-- Centered search box -->
+    <div class="flex-1 flex justify-center items-center">
+      <label for="search" class="font-medium mr-2">Search series:</label>
+      <input
+        id="search"
+        type="text"
+        bind:value={searchQuery}
+        class="input w-auto"
+      />
+    </div>
+  {/if}
 
   <!-- Right-aligned toggles -->
   <div class="flex items-center gap-6 text-sm">

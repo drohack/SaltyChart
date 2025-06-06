@@ -314,7 +314,14 @@
   <!-- Controls ------------------------------------------------------------------>
   <div class="p-4 bg-base-200 rounded shadow flex flex-col items-center gap-4 w-full mx-auto md:grid md:grid-cols-2 md:items-end md:gap-6 md:w-3/4">
     <div class="min-w-0 w-auto">
-      <SeasonSelect class="!w-auto" bind:season bind:year showListToggle={false} showSequelToggle={false} />
+      <SeasonSelect
+        class="!w-auto"
+        bind:season
+        bind:year
+        showListToggle={false}
+        showSequelToggle={false}
+        showSearch={false}
+      />
     </div>
 
     <div class="flex flex-col gap-2 justify-self-center">

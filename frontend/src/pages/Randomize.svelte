@@ -220,6 +220,7 @@
     showSequelToggle={false}
     hideSequels={false}
     hideInList={false}
+    showSearch={false}
   />
 
   <!-- Container: wheel centered in page; watched sidebar positioned absolutely so it doesn't shift wheel -->
