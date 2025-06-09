@@ -67,7 +67,7 @@ $: {
   })();
 </script>
 
-<header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
+  <header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
   <!-- Logo / Home link -->
   <h1 class="text-3xl font-bold">
     <a

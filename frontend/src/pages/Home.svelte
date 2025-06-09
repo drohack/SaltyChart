@@ -237,7 +237,7 @@ import { authToken, userName } from '../stores/auth';
   }
 </script>
 
-<main class="p-4 w-full md:w-3/4 mx-auto flex flex-col gap-4">
+<main class="box-border w-full max-w-[calc(100vw-32rem)] 2cols:max-w-[calc(100vw-40rem)] mx-auto p-4 flex flex-col gap-4">
   <!-- Main content column -->
   <div class="flex-1 flex flex-col min-w-0">
     <!-- Season / Year selector directly under header -->

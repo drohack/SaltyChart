@@ -245,7 +245,15 @@ $: _lang = $options.titleLanguage;
         <!-- Wheel -->
         <div
           class="relative mt-6 mx-auto overflow-visible"
-          style="width:95vmin;height:95vmin;max-width:900px;max-height:900px;"
+          style="
+            /* Wheel size: 95% of smaller viewport dimension, but limited by available height minus controls */
+            /* start shrinking sooner to keep Spin button visible */
+            /* increase reserved space so wheel shrinks sooner */
+            width: min(95vmin, calc(100vh - 21rem));
+            height: min(95vmin, calc(100vh - 21rem));
+            max-width: 900px;
+            max-height: 900px;
+          "
         >
           <!-- Clipped wheel -->
           <div class="overflow-hidden rounded-full w-full h-full">
@@ -301,7 +309,7 @@ $: _lang = $options.titleLanguage;
   </div> <!-- end wheel column -->
 
     <!-- Unwatched list sidebar (absolute so it doesn’t affect wheel centering) -->
-    <aside class="hidden md:block absolute left-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
+    <aside class="hidden md:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 max-h-[80vh] overflow-y-auto">
       {#if unwatchedDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
         <ul class="flex flex-col gap-3">

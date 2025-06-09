@@ -331,7 +331,10 @@ $: {
 
 <aside
   bind:this={sidebarEl}
-  class="fixed right-4 top-24 bottom-4 z-[9999] min-w-[16rem] w-[calc(12.5vw-1rem)] max-w-[24rem] bg-base-200 p-3 rounded shadow-lg overflow-visible flex flex-col"
+  class="fixed right-4 top-24 bottom-4 z-[9999] \
+    min-w-[14.5rem] 2cols:min-w-[17.5rem] \
+    w-[calc(12.5vw-1rem)] max-w-[24rem] \
+    bg-base-200 p-3 rounded shadow-lg overflow-visible flex flex-col"
   on:dragover={(e) => {
     e.preventDefault();
 

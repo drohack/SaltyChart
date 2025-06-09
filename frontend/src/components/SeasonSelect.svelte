@@ -49,7 +49,9 @@
   // No extra toggle functions; bind:checked updates props automatically.
 </script>
 
-  <div class="flex items-center mb-6 w-full gap-x-4 relative z-10">
+  <!-- Responsive layout: 1 col (<1122px), 2 cols (>=1122px), 3 cols (>=1732px) -->
+  <div class="grid w-full mb-6 gap-4 relative z-10 \
+    grid-cols-1 2cols:grid-cols-[auto,1fr] 3cols:grid-cols-[auto,1fr,auto] items-center">
   <!-- Left controls: season buttons + year dropdown -->
   <div class="flex gap-4 items-center">
     <!-- Season buttons -->
@@ -89,8 +91,8 @@
     </div>
   {/if}
 
-  <!-- Right-aligned toggles -->
-  <div class="flex items-center gap-6 text-sm">
+  <!-- Right-aligned toggles; span both columns on 2cols -->
+  <div class="flex items-center gap-6 text-sm 2cols:col-span-2 3cols:col-span-1">
     {#if showAdultToggle}
       <label class="flex items-center gap-2 select-none cursor-pointer">
         <input

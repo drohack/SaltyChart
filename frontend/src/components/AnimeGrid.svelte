@@ -198,7 +198,8 @@ $: _currentLang = $options.titleLanguage;
 </script>
 
 <!-- grid of horizontal cards -->
-<div class="grid gap-6 md:grid-cols-3">
+<!-- Responsive grid: 1 column, 2 columns at ≥1122px, 3 columns at ≥1732px -->
+<div class="grid grid-cols-1 2cols:grid-cols-2 3cols:grid-cols-3 gap-6">
   {#each displayedAnime as show (show.id)}
     {#key show.id}
     <!-- Card -->
