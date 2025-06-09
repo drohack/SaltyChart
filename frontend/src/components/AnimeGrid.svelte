@@ -204,8 +204,7 @@ $: _currentLang = $options.titleLanguage;
     {#key show.id}
     <!-- Card -->
     <div
-      class="flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full"
-      class:opacity-50={inListIds.has(show.id)}
+      class="relative flex flex-col bg-base-100 shadow rounded-lg overflow-hidden h-full"
       class:cursor-grab={!inListIds.has(show.id)}
       draggable={!inListIds.has(show.id)}
       role="listitem"
@@ -215,6 +214,9 @@ $: _currentLang = $options.titleLanguage;
       }}
       on:dragend={() => dragged.set(null)}
     >
+      {#if !inListIds.has(show.id)}
+        <div class="absolute inset-0 bg-accent/10 pointer-events-none"></div>
+      {/if}
       <!-- Title row with copy button -->
       <div class="flex items-center justify-between px-3 py-2 border-b border-base-300">
         {#key $options.titleLanguage + '-' + show.id}
