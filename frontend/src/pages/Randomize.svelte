@@ -225,19 +225,22 @@ $: _lang = $options.titleLanguage;
   }
 </script>
 
-<main class="p-4 w-full md:w-3/4 mx-auto flex flex-col gap-8">
-  <SeasonSelect
-    bind:season
-    bind:year
-    showListToggle={false}
-    showSequelToggle={false}
-    hideSequels={false}
-    hideInList={false}
-    showSearch={false}
-  />
+<main class="p-4 flex flex-col gap-8">
+  <!-- Controls aligned to header -->
+  <div class="w-full md:w-3/4 mx-auto">
+    <SeasonSelect
+      bind:season
+      bind:year
+      showListToggle={false}
+      showSequelToggle={false}
+      hideSequels={false}
+      hideInList={false}
+      showSearch={false}
+    />
+  </div>
 
   <!-- Container: wheel centered in page; watched sidebar positioned absolutely so it doesn't shift wheel -->
-  <div class="relative w-full flex justify-center">
+  <div class="relative w-full flex justify-center lg:pl-[17rem] lg:pr-[21rem]">
     <div class="flex flex-col items-center mx-auto">
       {#if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
@@ -309,7 +312,7 @@ $: _lang = $options.titleLanguage;
   </div> <!-- end wheel column -->
 
     <!-- Unwatched list sidebar (absolute so it doesn’t affect wheel centering) -->
-    <aside class="hidden md:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 max-h-[80vh] overflow-y-auto">
+    <aside class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 max-h-[80vh] overflow-y-auto">
       {#if unwatchedDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
         <ul class="flex flex-col gap-3">
@@ -349,7 +352,7 @@ $: _lang = $options.titleLanguage;
     </aside>
 
     <!-- Watched list sidebar (absolute so it doesn’t affect wheel centering) -->
-    <aside class="hidden md:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
+    <aside class="hidden lg:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
       {#if watchedDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
         <ul class="flex flex-col gap-3">
