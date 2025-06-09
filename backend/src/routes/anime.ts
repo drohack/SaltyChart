@@ -40,6 +40,8 @@ router.get('/', async (req, res) => {
           description(asHtml: false)
           isAdult
           coverImage {
+            # Include highest quality available for cover images
+            extraLarge
             large
             medium
           }

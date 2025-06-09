@@ -219,6 +219,15 @@ $: _lang = $options.titleLanguage;
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
+  /**
+   * Get original title based on preference, ignoring any customName.
+   */
+  function getBaseTitle(item: any): string {
+    const lang = $options.titleLanguage;
+    if (lang === 'ROMAJI') return item.title?.romaji || item.title?.english || item.title?.native || '';
+    if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
+    return item.title?.english || item.title?.romaji || item.title?.native || '';
+  }
   function shortTitle(item: any): string {
     const title = getDisplayTitle(item);
     return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '…' : title;
@@ -399,10 +408,10 @@ $: _lang = $options.titleLanguage;
         {/key}
         {#if selected.customName}
           <p class="mb-4 text-sm text-base-content/70">
-            {getDisplayTitle(selected)}
+            {getBaseTitle(selected)}
           </p>
         {/if}
-        <img src={selected.coverImage?.medium ?? selected.coverImage?.large} alt={selected.title} class="w-56 mx-auto mb-6" />
+        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
         <div class="modal-action justify-center">
           <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
         </div>
