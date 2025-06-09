@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import SeasonSelect, { type Season } from '../components/SeasonSelect.svelte';
   import { authToken, userName } from '../stores/auth';
+import { options } from '../stores/options';
+// Reactive trigger for title-language changes
+$: _lang = $options.titleLanguage;
   // combobox component
   import Select from 'svelte-select';
   import 'svelte-select/tailwind.css';
@@ -44,8 +47,8 @@
     clearTimeout(suggestTimer);
     suggestTimer = setTimeout(fetchSuggestions, 250);
   }
-  // when a user is selected, update lists
-  $: if (selectedOther) fetchLists();
+  // when userA and a user is selected, fetch lists
+  $: if (userA && selectedOther) fetchLists();
 
 
   // Display-friendly other username (handles string or object)
@@ -202,6 +205,17 @@
     customB: string | null;
   }
 
+  /**
+   * Generate display title based on user preference and fallback values.
+   * Safe against missing anime entries.
+   */
+  function getDisplayTitle(anime: any | undefined): string {
+    if (!anime?.title) return '';
+    const lang = $options.titleLanguage;
+    if (lang === 'ROMAJI') return anime.title.romaji || anime.title.english || anime.title.native || '';
+    if (lang === 'NATIVE') return anime.title.native || anime.title.english || anime.title.romaji || '';
+    return anime.title.english || anime.title.romaji || anime.title.native || '';
+  }
   function buildRows(): RankedItem[] {
     if (!listA || !listB) return [];
 
@@ -210,16 +224,19 @@
     function upsertRow(mediaId: number): RankedItem {
       let row = byId.get(mediaId);
       if (!row) {
-        const anime = animeData.find((a) => a.id === mediaId);
+      const animeEntry = animeData.find((a) => a.id === mediaId);
+        // Derive display fields safely
+        const displayTitle = getDisplayTitle(animeEntry) || 'Unknown';
+        const displayCover = (animeEntry?.coverImage?.medium || animeEntry?.coverImage?.large) || '';
         row = {
           id: mediaId,
-          title: anime?.title?.english || anime?.title?.romaji || 'Unknown',
-          cover: anime?.coverImage?.medium || anime?.coverImage?.large || '',
+          title: displayTitle,
+          cover: displayCover,
           rankA: null,
           rankB: null,
-          diff: null
-          ,customA: null
-          ,customB: null
+          diff: null,
+          customA: null,
+          customB: null
         };
         byId.set(mediaId, row);
       }
@@ -266,6 +283,8 @@
   // Reactive block: rebuild rows when lists, animeData, or sortMode change
   // Reactive block: rebuild rows when lists, animeData, or sortMode change
   $: {
+    // Re-run when title language changes as well
+    const lang = $options.titleLanguage;
     listA;
     listB;
     animeData;
@@ -338,7 +357,7 @@
           noOptionsMessage="No users found"
           searchable={true}
           on:search={() => queueSuggest()}
-          on:change={() => selectedOther && fetchLists()}
+        on:change={() => {/* fetch triggered reactively */}}
         />
       </div>
     </div>

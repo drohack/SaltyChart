@@ -1,6 +1,9 @@
 <script lang="ts">
   import SeasonSelect from '../components/SeasonSelect.svelte';
   import { authToken } from '../stores/auth';
+import { options } from '../stores/options';
+// Reactive trigger for title-language changes
+$: _lang = $options.titleLanguage;
 
   export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
 
@@ -206,8 +209,18 @@
     return `M ${cx} ${cy} L ${startPt.x} ${startPt.y} A ${r} ${r} 0 ${large} 1 ${endPt.x} ${endPt.y} Z`;
   }
 
+  /**
+   * Get display title based on preference, truncating for wheel labels.
+   */
+  function getDisplayTitle(item: any): string {
+    if (item.customName) return item.customName;
+    const lang = $options.titleLanguage;
+    if (lang === 'ROMAJI') return item.title?.romaji || item.title?.english || item.title?.native || '';
+    if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
+    return item.title?.english || item.title?.romaji || item.title?.native || '';
+  }
   function shortTitle(item: any): string {
-    const title = item.customName || item.title?.english || item.title?.romaji || '';
+    const title = getDisplayTitle(item);
     return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '…' : title;
   }
 </script>
@@ -257,6 +270,7 @@
 
         <!-- draw labels on top -->
         {#each wheelItems as item, i (item.id)}
+          {#key $options.titleLanguage + '-' + item.id}
           <!-- rotate label to centre of slice.
                Polar helper uses 0° at 12 o’clock, but CSS/SVG rotate() uses 0° at 3 o’clock → offset -90° -->
           <g transform={`rotate(${sliceAngle * i + sliceAngle / 2 - 90})`}>
@@ -270,6 +284,7 @@
               {shortTitle(item)}
             </text>
           </g>
+          {/key}
         {/each}
         </svg>
       </div>
@@ -290,8 +305,8 @@
       {#if unwatchedDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
         <ul class="flex flex-col gap-3">
-          {#each unwatchedDetailed as item (item.id)}
-            <li class="flex items-center gap-3 group">
+    {#each unwatchedDetailed as item (item.id)}
+      <li class="flex items-center gap-3 group">
               <img
                 src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
                 alt=""
@@ -300,12 +315,15 @@
               />
 
               <!-- Display custom or original title -->
-              <span
+        {#key $options.titleLanguage + '-' + item.id}
+        <span
                 class="text-sm flex-1 whitespace-normal break-words force-wrap"
-                title={item.title?.english || item.title?.romaji || item.title?.native || ''}
+                title={getDisplayTitle(item)}
+                data-lang={$options.titleLanguage}
               >
-                {item.customName || item.title?.english || item.title?.romaji}
-              </span>
+                {item.customName || getDisplayTitle(item)}
+        </span>
+        {/key}
 
               <!-- Mark as watched button, appears on hover -->
               <button
@@ -336,12 +354,15 @@
                 loading="lazy"
               />
               <!-- Display custom label; show tooltip with real title on hover -->
+              {#key $options.titleLanguage + '-' + item.id}
               <span
                 class="text-sm flex-1 whitespace-normal break-words force-wrap"
-                title={item.title?.english || item.title?.romaji || item.title?.native || ''}
+                title={getDisplayTitle(item)}
+                data-lang={$options.titleLanguage}
               >
-                {item.customName || item.title?.english || item.title?.romaji}
+                {item.customName || getDisplayTitle(item)}
               </span>
+              {/key}
 
               <!-- Remove (unwatch) button, appears on hover -->
               <button
@@ -360,12 +381,14 @@
     <dialog open class="modal">
       <div class="modal-box w-full max-w-3xl">
         <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" on:click={() => (showModal = false)}>✕</button>
-        <h3 class="font-bold text-lg mb-2">
-          {selected.customName || selected.title?.english || selected.title?.romaji}
+        {#key $options.titleLanguage + '-' + selected.id}
+        <h3 class="font-bold text-lg mb-2" data-lang={$options.titleLanguage}>
+          {selected.customName || getDisplayTitle(selected)}
         </h3>
+        {/key}
         {#if selected.customName}
           <p class="mb-4 text-sm text-base-content/70">
-            {selected.title?.english || selected.title?.romaji}
+            {getDisplayTitle(selected)}
           </p>
         {/if}
         <img src={selected.coverImage?.medium ?? selected.coverImage?.large} alt={selected.title} class="w-56 mx-auto mb-6" />

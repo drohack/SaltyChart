@@ -18,6 +18,8 @@ model User {
   createdAt DateTime @default(now())
 
   lists     WatchList[]
+  /// Optional one-to-one link to user settings
+  settings  Settings?
 }
 
 model WatchList {
@@ -39,4 +41,20 @@ model WatchList {
   watchedAt DateTime?
 
   @@unique([userId, season, year, mediaId])
+}
+
+/// User-specific display & UI preferences
+model Settings {
+  /// FK to User.id, also PK
+  userId          Int     @id
+  /// Theme preference: LIGHT, NIGHT, SYSTEM, HIGH_CONTRAST
+  theme           String  @default("SYSTEM")
+  /// Title language preference: ENGLISH, ROMAJI, NATIVE
+  titleLanguage   String  @default("ENGLISH")
+  /// Whether to autoplay videos
+  videoAutoplay   Boolean @default(true)
+  /// Whether to hide user from compare nav
+  hideFromCompare Boolean @default(false)
+
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

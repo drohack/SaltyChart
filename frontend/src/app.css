@@ -15,3 +15,22 @@
 .svelte-select .item.active {
   @apply bg-blue-600 text-white !important;
 }
+
+/* High contrast mode: custom overrides */
+/* Remove generic filter, use explicit colors */
+html.high-contrast {
+  /* no filter */
+}
+/* Main background forced white */
+html.high-contrast .bg-base-200,
+html.high-contrast body {
+  background-color: #ffffff !important;
+}
+/* Card backgrounds in slight blue */
+html.high-contrast .bg-base-100 {
+  background-color: #e0f4ff !important;
+}
+/* All text in pure black */
+html.high-contrast body * {
+  color: #000000 !important;
+}

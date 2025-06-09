@@ -1,4 +1,7 @@
 <script lang="ts">
+import { options } from '../stores/options';
+// Reactive trigger so title-language changes re-render grid
+$: _currentLang = $options.titleLanguage;
   export let anime: any[] = [];
   export let hideSequels: boolean = false;
   export let hideInList: boolean = false;
@@ -50,6 +53,15 @@
   // Helper to determine if a show has sequel/prequel relation
   function isSequel(show: any): boolean {
     return relationTags(show.relations).length > 0;
+  }
+
+  // Get display title based on user preference
+  function getDisplayTitle(show: any): string {
+    const lang = $options.titleLanguage;
+    if (lang === 'ROMAJI') return show.title.romaji ?? show.title.english ?? show.title.native ?? '';
+    if (lang === 'NATIVE') return show.title.native ?? show.title.english ?? show.title.romaji ?? '';
+    // default English
+    return show.title.english ?? show.title.romaji ?? show.title.native ?? '';
   }
 
   $: displayedAnime = (() => {
@@ -204,17 +216,19 @@
     >
       <!-- Title row with copy button -->
       <div class="flex items-center justify-between px-3 py-2 border-b border-base-300">
-        <h3
-          class="anime-title text-xl md:text-xl leading-snug whitespace-normal"
-          title={show.title.english ?? show.title.romaji}
-        >
-          {show.title.english ?? show.title.romaji}
-        </h3>
+        {#key $options.titleLanguage + '-' + show.id}
+          <h3
+            class="anime-title text-xl md:text-xl leading-snug whitespace-normal"
+            title={getDisplayTitle(show)}
+          >
+            {getDisplayTitle(show)}
+          </h3>
+        {/key}
         <button
           class="btn btn-ghost btn-sm p-1"
           aria-label="Copy title"
           on:click={() => {
-            const text = show.title.english ?? show.title.romaji;
+            const text = getDisplayTitle(show);
             navigator.clipboard.writeText(text);
             showToast(`${text} copied to clipboard`);
           }}
@@ -335,10 +349,10 @@
     }}
   >
     <div class="w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video">
-      <iframe
+        <iframe
         bind:this={iframeElement}
         class="w-full h-full rounded"
-        src={`https://www.youtube.com/embed/${modal}?autoplay=1&enablejsapi=1&cc_load_policy=1&cc_lang_pref=en&hl=en`}
+        src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=1&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowfullscreen
         on:load={onIframeLoad}

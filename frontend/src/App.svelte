@@ -6,6 +6,8 @@
   let Randomize: any;
   let Compare: any;
 import { authToken, userName } from './stores/auth';
+import OptionsModal from './components/OptionsModal.svelte';
+import { options } from './stores/options';
 
   // simple client-side router using location.pathname
   import { onMount } from 'svelte';
@@ -13,6 +15,22 @@ import { authToken, userName } from './stores/auth';
   let route = window.location.pathname;
 
   let Page: any = null;
+  let showOptions = false;
+// Apply theme by setting data-theme or class on document <html>
+$: {
+  const t = $options.theme;
+  if (t === 'SYSTEM') {
+    document.documentElement.removeAttribute('data-theme');
+    document.documentElement.classList.remove('high-contrast');
+  } else if (t === 'HIGH_CONTRAST') {
+    // use light base theme with high-contrast class
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.documentElement.classList.add('high-contrast');
+  } else {
+    document.documentElement.setAttribute('data-theme', t.toLowerCase());
+    document.documentElement.classList.remove('high-contrast');
+  }
+}
 
   onMount(() => {
     window.addEventListener('popstate', () => (route = window.location.pathname));
@@ -70,6 +88,15 @@ import { authToken, userName } from './stores/auth';
   </nav>
 
   <div class="flex items-center gap-4">
+    <!-- Options icon -->
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm p-1"
+      aria-label="Options"
+      on:click={() => (showOptions = true)}
+    >
+      <span class="material-icons text-xl" aria-hidden="true">settings</span>
+    </button>
     {#if $authToken}
       <span>{$userName}</span>
       <button
@@ -104,3 +131,6 @@ import { authToken, userName } from './stores/auth';
 {#if Page}
   <svelte:component this={Page} />
 {/if}
+
+<!-- Options Modal -->
+<OptionsModal bind:open={showOptions} />

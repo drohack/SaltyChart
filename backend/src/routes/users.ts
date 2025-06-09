@@ -14,10 +14,22 @@ router.get('/', async (req, res) => {
   const q = (req.query.q as string | undefined)?.trim() ?? '';
 
   try {
+    // Exclude users who opted to hide from compare (keep defaults if no settings)
+    const baseFilter = {
+      OR: [
+        { settings: { hideFromCompare: false } },
+        { settings: null }
+      ]
+    };
     const users = await prisma.user.findMany({
-      // Filter usernames starting with the query prefix
-      // SQLite's LIKE is case-insensitive by default
-      where: q ? { username: { startsWith: q } } : undefined,
+      where: q
+        ? {
+            AND: [
+              { username: { startsWith: q } },
+              baseFilter
+            ]
+          }
+        : baseFilter,
       select: { username: true },
       take: 20,
       orderBy: { username: 'asc' }

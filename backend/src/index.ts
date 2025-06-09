@@ -13,6 +13,7 @@ import authRouter from './routes/auth';
 import listRouter from './routes/list';
 import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
+import optionsRouter from './routes/options';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -157,6 +158,22 @@ async function ensureDatabaseSchema() {
       console.log('[DB] Adding watchedAt column');
       await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watchedAt" DATETIME`);
     }
+    // -------------------------- Settings table ---------------------------
+    const settingsRows: Array<{ name: string }> =
+      await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='Settings' LIMIT 1;`;
+    if (settingsRows.length === 0) {
+      console.log('[DB] Creating Settings table');
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "Settings" (
+          "userId" INTEGER NOT NULL PRIMARY KEY,
+          "theme" TEXT NOT NULL DEFAULT 'SYSTEM',
+          "titleLanguage" TEXT NOT NULL DEFAULT 'ENGLISH',
+          "videoAutoplay" BOOLEAN NOT NULL DEFAULT 1,
+          "hideFromCompare" BOOLEAN NOT NULL DEFAULT 0,
+          FOREIGN KEY("userId") REFERENCES "User"("id") ON DELETE CASCADE
+        );
+      `);
+    }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
   }
@@ -185,6 +202,8 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/list', listRouter);
   app.use('/api/public-list', publicListRouter);
   app.use('/api/users', usersRouter);
+  // User-specific UI preferences
+  app.use('/api/options', optionsRouter);
 
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);

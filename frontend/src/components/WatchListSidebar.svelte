@@ -1,12 +1,26 @@
 <script lang="ts">
+  import { options } from '../stores/options';
   export let list: any[] = [];
   // Season & year of the current list (e.g. "SPRING", 2025)
   export let season: string;
   export let year: number;
   // Current user's display name (nullable when not logged in)
   export let user: string | null = null;
-  import { dragged } from '../stores/drag';
-  import { authToken } from '../stores/auth';
+import { dragged } from '../stores/drag';
+import { authToken } from '../stores/auth';
+// Reactive trigger for title-language changes
+$: _lang = $options.titleLanguage;
+/**
+ * Get display title based on user's language preference and custom labels.
+ */
+function getItemTitle(item: any): string {
+  const custom = customNames[item.id];
+  if (custom) return custom;
+  const lang = $options.titleLanguage;
+  if (lang === 'ROMAJI') return item.title?.romaji || item.title?.english || item.title?.native || '';
+  if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
+  return item.title?.english || item.title?.romaji || item.title?.native || '';
+}
 
   import { createEventDispatcher } from 'svelte';
 import { beforeUpdate, afterUpdate, tick } from 'svelte';
@@ -480,13 +494,13 @@ $: {
             <path d="M7 4a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0zm-1 7a1 1 0 100-2 1 1 0 000 2zm7-13a1 1 0 110-2 1 1 0 010 2zm0 6a1 1 0 110-2 1 1 0 010 2zm-1 7a1 1 0 100-2 1 1 0 000 2z" />
           </svg>
 
+          {#key $options.titleLanguage + '-' + item.id}
           <button
             type="button"
             class="flex-1 whitespace-normal break-words force-wrap text-left bg-transparent p-0 border-none focus:outline-none"
-            title={item.title?.english ?? item.title?.romaji}
-            on:dblclick={() => {
-              openNameModal(item);
-            }}
+            title={getItemTitle(item)}
+            data-lang={$options.titleLanguage}
+            on:dblclick={() => openNameModal(item)}
             on:keydown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -494,8 +508,9 @@ $: {
               }
             }}
           >
-            {customNames[item.id] || item.title?.english || item.title?.romaji}
+            {getItemTitle(item)}
           </button>
+          {/key}
         </li>
       {/each}
 
