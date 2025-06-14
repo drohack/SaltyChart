@@ -40,6 +40,11 @@ model WatchList {
   /// Timestamp when user marked series as watched (null = not watched yet)
   watchedAt DateTime?
 
+  /// Optional ranking index set when watched=true.  Lower numbers appear at
+  /// the top of the Watched ranking UI.  Null means no manual ranking (falls
+  /// back to watchedAt ordering).
+  watchedRank Int?
+
   @@unique([userId, season, year, mediaId])
 }
 

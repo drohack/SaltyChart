@@ -9,6 +9,11 @@ $: _lang = $options.titleLanguage;
   import Select from 'svelte-select';
   import 'svelte-select/tailwind.css';
 
+const rankOptions = [
+  { value: 'pre', label: 'Pre-watch' },
+  { value: 'post', label: 'Post-watch' }
+] as const;
+
   // ────────────────────────────────────────────────────────────────────────────
   // Local state – season/year/user selection
   // ────────────────────────────────────────────────────────────────────────────
@@ -37,8 +42,7 @@ $: _lang = $options.titleLanguage;
       const resp = await fetch(url);
       if (resp.ok) {
         suggestions = (await resp.json())
-		  .filter((u: string) => u !== userA)
-		  .map((u: string) => ({ value: u, label: u }));
+          .map((u: string) => ({ value: u, label: u }));
       }
     } catch {}
   }
@@ -47,8 +51,16 @@ $: _lang = $options.titleLanguage;
     clearTimeout(suggestTimer);
     suggestTimer = setTimeout(fetchSuggestions, 250);
   }
-  // when userA and a user is selected, fetch lists
-  $: if (userA && selectedOther) fetchLists();
+
+// Reactive: fetch whenever selection or rank types change
+$: if (userA && selectedOther) {
+  // dependencies
+  rankTypeA;
+  rankTypeB;
+  season;
+  year;
+  fetchLists();
+}
 
 
   // Display-friendly other username (handles string or object)
@@ -61,10 +73,15 @@ $: _lang = $options.titleLanguage;
     mediaId: number;
     order: number;
     customName: string | null;
+    watchedRank?: number | null;
   };
 
   let listA: WatchRow[] | null = null;
   let listB: WatchRow[] | null = null;
+
+// Ranking type selection ('pre' vs 'post') for each user
+let rankTypeA: 'pre' | 'post' = 'pre';
+let rankTypeB: 'pre' | 'post' = 'pre';
 
   // Full anime payload for current season (needed for titles & covers)
   let animeData: Array<any> = [];
@@ -88,8 +105,8 @@ $: _lang = $options.titleLanguage;
         ? selectedOther
         : (selectedOther as any).value ?? (selectedOther as any).label ?? '';
       const [aResp, bResp, animeResp] = await Promise.all([
-        fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}`),
-        fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}`),
+        fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`),
+        fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`),
         fetch(`/api/anime?season=${season}&year=${year}`)
       ]);
 
@@ -178,6 +195,23 @@ $: _lang = $options.titleLanguage;
 
   let mounted = false;
   onMount(() => (mounted = true));
+
+  // Auto-set rank types when comparing with self
+  let lastOther: string | null = null;
+  $: {
+    const other = typeof selectedOther === 'string'
+      ? selectedOther
+      : (selectedOther?.value ?? selectedOther?.label ?? null);
+
+    if (other !== lastOther) {
+      lastOther = other;
+
+      if (other && userA && other === userA) {
+        rankTypeA = 'pre';
+        rankTypeB = 'post';
+      }
+    }
+  }
 
   $: if (mounted) {
     const val = typeof selectedOther === 'string'
@@ -343,6 +377,8 @@ $: _lang = $options.titleLanguage;
       />
     </div>
 
+    <!-- (rank type selectors moved to table headers) -->
+
     <div class="flex flex-col gap-2 justify-self-center">
       <label for="otherUser" class="font-semibold">User to compare:</label>
       <div class="w-96">
@@ -393,10 +429,30 @@ $: _lang = $options.titleLanguage;
       </label>
     </header>
     <div class="w-full md:w-3/4 mx-auto grid" style="grid-template-columns: 1fr auto auto 1fr; row-gap:6px;">
-      <div class="font-bold text-center">{$userName}</div>
+      <div class="font-bold text-center flex items-center justify-center gap-2">
+        {$userName}
+        <select
+          bind:value={rankTypeA}
+          class="select select-xs select-bordered px-1 pr-8 py-0 min-w-[6rem]"
+        >
+          {#each rankOptions as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
       <div class="font-bold text-center">Diff</div>
       <div class="font-bold text-center">Cover</div>
-      <div class="font-bold text-center">{displayOther}</div>
+      <div class="font-bold text-center flex items-center justify-center gap-2">
+        {displayOther}
+        <select
+          bind:value={rankTypeB}
+          class="select select-xs select-bordered px-1 pr-8 py-0 min-w-[6rem]"
+        >
+          {#each rankOptions as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
 
       {#each rows as row (row.id)}
         <!-- A column -->

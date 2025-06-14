@@ -158,6 +158,24 @@ async function ensureDatabaseSchema() {
       console.log('[DB] Adding watchedAt column');
       await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watchedAt" DATETIME`);
     }
+
+    const hasWatchedRank = columns.some((c) => c.name === 'watchedRank');
+    if (!hasWatchedRank) {
+      console.log('[DB] Adding watchedRank column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watchedRank" INTEGER`);
+
+      // Seed existing watched rows so oldest watched gets rank 0,1,… per season/year
+      await prisma.$executeRawUnsafe(`
+        WITH ranked AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (PARTITION BY userId, season, year ORDER BY watchedAt) - 1 AS rnk
+          FROM   WatchList
+          WHERE  watched = 1 AND watchedAt IS NOT NULL
+        )
+        UPDATE WatchList SET watchedRank = (SELECT rnk FROM ranked WHERE ranked.id = WatchList.id)
+        WHERE id IN (SELECT id FROM ranked);
+      `);
+    }
     // -------------------------- Settings table ---------------------------
     const settingsRows: Array<{ name: string }> =
       await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='Settings' LIMIT 1;`;

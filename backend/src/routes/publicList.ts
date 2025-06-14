@@ -11,10 +11,11 @@ import prisma from '../db';
 const router = Router();
 
 router.get('/', async (req, res) => {
-  const { username, season, year } = req.query as {
+  const { username, season, year, type } = req.query as {
     username?: string;
     season?: string;
     year?: string;
+    type?: string;
   };
 
   if (!username || !season || !year) {
@@ -25,14 +26,31 @@ router.get('/', async (req, res) => {
     const user = await prisma.user.findUnique({ where: { username } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const list = await prisma.watchList.findMany({
-      where: {
-        userId: user.id,
-        season: season.toUpperCase(),
-        year: Number(year)
-      },
-      orderBy: { order: 'asc' }
-    });
+    const rankType = (type ?? 'pre').toLowerCase();
+
+    const whereBase = {
+      userId: user.id,
+      season: season.toUpperCase(),
+      year: Number(year)
+    } as const;
+
+    let list;
+    if (rankType === 'post') {
+      // Only watched items; order by watchedRank if set else watchedAt
+      list = await prisma.watchList.findMany({
+        where: { ...whereBase, watched: true },
+        orderBy: [
+          { watchedRank: 'asc' },
+          { watchedAt: 'asc' }
+        ]
+      });
+    } else {
+      // Pre-watch list (original order)
+      list = await prisma.watchList.findMany({
+        where: whereBase,
+        orderBy: { order: 'asc' }
+      });
+    }
 
     return res.json(list);
   } catch (err) {

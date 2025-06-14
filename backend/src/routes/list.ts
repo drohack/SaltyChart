@@ -33,7 +33,8 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
       where: { userId: req.userId!, season, year, mediaId },
       data: {
         watched: watched ?? true,
-        watchedAt: watched ? new Date() : null
+        watchedAt: watched ? new Date() : null,
+        watchedRank: watched ? null : undefined // null on unwatch
       }
     });
 
@@ -42,6 +43,30 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to update' });
+  }
+});
+
+// Reorder watched items (separate ranking); body: { season, year, ids: number[] }
+router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
+  const { season, year, ids } = req.body as { season?: string; year?: number; ids?: number[] };
+  if (!season || !year || !Array.isArray(ids)) {
+    return res.status(400).json({ error: 'Bad body' });
+  }
+
+  // Build update promises assigning watchedRank based on position
+  const tx = ids.map((mediaId, idx) =>
+    prisma.watchList.updateMany({
+      where: { userId: req.userId!, season, year, mediaId, watched: true },
+      data: { watchedRank: idx }
+    })
+  );
+
+  try {
+    await prisma.$transaction(tx);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to update rank' });
   }
 });
 

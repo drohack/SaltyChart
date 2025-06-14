@@ -485,16 +485,17 @@ $: {
             dragIdx = -1;
             placeholder = -1;
           }}>
+          <!-- Material ‘grip-vertical’ icon (six dots) to match Copy/Settings icons -->
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 20 20"
+            viewBox="0 0 24 24"
             fill="currentColor"
-            class="w-4 h-4 opacity-60"
+            class="w-5 h-5 opacity-60 shrink-0"
             aria-labelledby="drag-title"
             role="img"
           >
             <title id="drag-title">Drag handle</title>
-            <path d="M7 4a1 1 0 11-2 0 1 1 0 012 0zm0 6a1 1 0 11-2 0 1 1 0 012 0zm-1 7a1 1 0 100-2 1 1 0 000 2zm7-13a1 1 0 110-2 1 1 0 010 2zm0 6a1 1 0 110-2 1 1 0 010 2zm-1 7a1 1 0 100-2 1 1 0 000 2z" />
+            <path d="M10 4a2 2 0 11-4 0 2 2 0 014 0zm0 8a2 2 0 11-4 0 2 2 0 014 0zm-2 8a2 2 0 100-4 2 2 0 000 4zm8-16a2 2 0 114 0 2 2 0 01-4 0zm0 8a2 2 0 114 0 2 2 0 01-4 0zm2 8a2 2 0 100-4 2 2 0 000 4z" />
           </svg>
 
           {#key $options.titleLanguage + '-' + item.id}

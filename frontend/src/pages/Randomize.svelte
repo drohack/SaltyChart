@@ -76,9 +76,13 @@ $: _lang = $options.titleLanguage;
     }
   }
 
-  // Separate entries into watched/unwatched for easier handling
-  $: unwatchedEntries = watchList.filter((w) => !w.watched);
+  // Separate entries into watched/unwatched for easier handling.
+  //  * watchedEntries is needed for the ranking sidebar.
+  //  * We no longer hide watched shows from the left sidebar – that list now
+  //    shows *all* items but greys-out the ones already watched.
+
   $: watchedEntries = watchList.filter((w) => w.watched);
+  $: unwatchedEntries = watchList.filter((w) => !w.watched);
 
   // Build wheel items with full anime data, but only for entries that have
   // NOT been watched yet so we never spin on already-watched shows.
@@ -89,30 +93,68 @@ $: _lang = $options.titleLanguage;
     })
     .filter(Boolean);
 
-  // Build a detailed list for the watched sidebar
-  $: watchedDetailed = watchedEntries
-    .map((w) => {
-      const data = anime.find((a) => a.id === w.mediaId);
-      return data ? { ...data, customName: w.customName ?? null, watchedAt: w.watchedAt } : null;
-    })
-    .filter(Boolean)
-    // Sort so oldest watchedAt at top, newest at bottom
-    .sort((a, b) => {
-      const t1 = a.watchedAt ? new Date(a.watchedAt).getTime() : 0;
-      const t2 = b.watchedAt ? new Date(b.watchedAt).getTime() : 0;
-      return t1 - t2;
-    });
+  // (Watched ranking is handled separately – see watchedRank below)
 
-  // Detailed list of items that remain unwatched, preserving original order
-  $: unwatchedDetailed = unwatchedEntries
+  // Detailed list used for the left sidebar.  It now shows *all* shows in the
+  // watch list (both watched & unwatched) so users can always see the full
+  // season list.
+  $: fullDetailed = watchList
     .map((w) => {
       const data = anime.find((a) => a.id === w.mediaId);
-      return data ? { ...data, customName: w.customName ?? null } : null;
+      return data
+        ? {
+            ...data,
+            customName: w.customName ?? null,
+            watched: w.watched ?? Boolean(w.watchedAt)
+          }
+        : null;
     })
     .filter(Boolean);
 
+  // Client-side ranking list for watched items.  Initially seeded from
+  // watchedDetailed (sorted by watchedAt) and updated whenever the user
+  // drags items in the ranking sidebar.
+  let watchedRank: any[] = [];
+
+  // Seed watchedRank whenever the underlying watched list changes *and* the
+  // rank array does not already include the same set of IDs.  This preserves
+  // the user’s manual ordering across reactive re-computations triggered by
+  // other state (e.g. title-language switch, rename, etc.).
+  $: {
+    const ids = watchedEntries.map((w) => w.mediaId);
+    const rankIds = watchedRank.map((i) => i.id);
+    if (ids.length !== rankIds.length || ids.some((id) => !rankIds.includes(id))) {
+      // Build fresh detailed list in default watchedAt order
+      const detailed = watchedEntries
+        .map((w) => {
+          const data = anime.find((a) => a.id === w.mediaId);
+          return data
+            ? {
+                ...data,
+                customName: w.customName ?? null,
+                watchedAt: w.watchedAt ?? null,
+                watched: true,
+                watchedRank: w.watchedRank ?? null
+              }
+            : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          if (a.watchedRank != null && b.watchedRank != null) return a.watchedRank - b.watchedRank;
+          if (a.watchedRank != null) return -1;
+          if (b.watchedRank != null) return 1;
+          const t1 = a.watchedAt ? new Date(a.watchedAt).getTime() : 0;
+          const t2 = b.watchedAt ? new Date(b.watchedAt).getTime() : 0;
+          return t1 - t2;
+        });
+
+      watchedRank = detailed;
+    }
+  }
+
   // Derived values for wheel rendering
   import SliceWorker from '../workers/slice-worker?worker';
+  import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
   const sliceWorker: Worker = new SliceWorker();
 
   let sliceAngle = 0;
@@ -177,7 +219,14 @@ $: _lang = $options.titleLanguage;
   async function toggleWatched(id: number, watched: boolean) {
     // update local state
     watchList = watchList.map((w) =>
-      w.mediaId === id ? { ...w, watched, watchedAt: watched ? new Date().toISOString() : null } : w
+      w.mediaId === id
+        ? {
+            ...w,
+            watched,
+            watchedAt: watched ? new Date().toISOString() : null,
+            watchedRank: watched ? (watchedRank.length) : null
+          }
+        : w
     );
 
     if ($authToken) {
@@ -320,13 +369,15 @@ $: _lang = $options.titleLanguage;
     
   </div> <!-- end wheel column -->
 
-    <!-- Unwatched list sidebar (absolute so it doesn’t affect wheel centering) -->
+    <!-- List sidebar (shows all items; watched are greyed out) -->
     <aside class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 max-h-[80vh] overflow-y-auto">
-      {#if unwatchedDetailed.length}
+      {#if fullDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
         <ul class="flex flex-col gap-3">
-    {#each unwatchedDetailed as item (item.id)}
-      <li class="flex items-center gap-3 group">
+          {#each fullDetailed as item (item.id)}
+            <li
+              class={`flex items-center gap-3 group transition ${item.watched ? 'opacity-40 pointer-events-none' : ''}`}
+            >
               <img
                 src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
                 alt=""
@@ -334,67 +385,55 @@ $: _lang = $options.titleLanguage;
                 loading="lazy"
               />
 
-              <!-- Display custom or original title -->
-        {#key $options.titleLanguage + '-' + item.id}
-        <span
-                class="text-sm flex-1 whitespace-normal break-words force-wrap"
-                title={getDisplayTitle(item)}
-                data-lang={$options.titleLanguage}
-              >
-                {item.customName || getDisplayTitle(item)}
-        </span>
-        {/key}
-
-              <!-- Mark as watched button, appears on hover -->
-              <button
-                class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
-                on:click={() => {
-                  selected = item;
-                  showModal = true;
-                }}
-                aria-label="Mark as watched"
-              >✓</button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </aside>
-
-    <!-- Watched list sidebar (absolute so it doesn’t affect wheel centering) -->
-    <aside class="hidden lg:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
-      {#if watchedDetailed.length}
-        <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
-        <ul class="flex flex-col gap-3">
-          {#each watchedDetailed as item (item.id)}
-            <li class="flex items-center gap-3 group" >
-              <img
-                src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
-                alt=""
-                class="w-12 h-16 object-cover rounded shrink-0"
-                loading="lazy"
-              />
-              <!-- Display custom label; show tooltip with real title on hover -->
               {#key $options.titleLanguage + '-' + item.id}
-              <span
-                class="text-sm flex-1 whitespace-normal break-words force-wrap"
-                title={getDisplayTitle(item)}
-                data-lang={$options.titleLanguage}
-              >
-                {item.customName || getDisplayTitle(item)}
-              </span>
+                <span
+                  class="text-sm flex-1 whitespace-normal break-words force-wrap"
+                  title={getDisplayTitle(item)}
+                  data-lang={$options.titleLanguage}
+                  >{item.customName || getDisplayTitle(item)}</span
+                >
               {/key}
 
-              <!-- Remove (unwatch) button, appears on hover -->
-              <button
-                class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
-                on:click={() => toggleWatched(item.id, false)}
-                aria-label="Mark as unwatched"
-              >✕</button>
+              {#if !item.watched}
+                <!-- Mark as watched button, appears on hover -->
+                <button
+                  class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
+                  on:click={() => {
+                    selected = item;
+                    showModal = true;
+                  }}
+                  aria-label="Mark as watched"
+                >✓</button>
+              {/if}
             </li>
           {/each}
         </ul>
       {/if}
     </aside>
+
+    <!-- Watched ranking sidebar -->
+    <WatchedRankingSidebar
+      list={watchedRank}
+      on:update={(e) => {
+        // e.detail is an ordered array of anime IDs
+        const idOrder = e.detail;
+        // Reorder watchedRank to reflect emitted order
+        watchedRank = idOrder.map((id) => watchedRank.find((it) => it.id === id)).filter(Boolean);
+
+        // Persist watched ranking via dedicated endpoint
+        if ($authToken) {
+          fetch('/api/list/rank', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${$authToken}`
+            },
+            body: JSON.stringify({ season, year, ids: idOrder })
+          });
+        }
+      }}
+      on:unwatch={(e) => toggleWatched(e.detail, false)}
+    />
   </div> <!-- end flex container -->
 
   {#if showModal && selected}
