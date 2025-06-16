@@ -34,45 +34,108 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
   async function shareMyList() {
     if (!sidebarEl) return;
 
-    // Target the <ul> so we can temporarily expand it
-    const ul = listEl;
-    if (!ul) return;
+    /* ----------------------------------------------------------
+     * Clone sidebar so we never mutate the live layout
+     * --------------------------------------------------------*/
+    const workEl = sidebarEl.cloneNode(true) as HTMLElement;
 
-    // Save original inline styles so we can restore them later
-    const ulOriginal = {
-      maxHeight: ul.style.maxHeight,
-      overflowY: ul.style.overflowY,
-      whiteSpace: ul.style.whiteSpace,
-      width: ul.style.width
-    } as Record<string, string>;
+    /* Wrap clone in a container so we can easily measure exact width/height
+       without interference from Tailwind fixed/top/bottom utilities that
+       exist on the real sidebar. */
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'absolute';
+    wrapper.style.top = '0';
+    wrapper.style.left = '-10000px';
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.margin = '0';
 
-    // Save original inline styles for the sidebar so we can restore them later
-    const sidebarOriginalWidth = sidebarEl.style.width;
-    const sidebarOriginalHeight = sidebarEl.style.height;
-    const sidebarOriginalTop = sidebarEl.style.top;
-    const sidebarOriginalBottom = sidebarEl.style.bottom;
-    const sidebarOriginalMinWidth = sidebarEl.style.minWidth;
-    const sidebarOriginalMaxWidth = sidebarEl.style.maxWidth;
+    // Clean positioning utilities from the clone to prevent full-viewport
+    // height.
+    workEl.classList.forEach((cls) => {
+      if (/^top-/.test(cls) || /^bottom-/.test(cls) || cls === 'h-full' || cls.includes('inset')) {
+        workEl.classList.remove(cls);
+      }
+    });
+
+    workEl.style.top = 'auto';
+    workEl.style.bottom = 'auto';
+    workEl.style.position = 'static';
+
+    wrapper.appendChild(workEl);
+    document.body.appendChild(wrapper);
+
+    // Target the <ul> inside the clone for sizing tweaks
+    const ul = workEl.querySelector('ul');
+    if (!ul) {
+      workEl.remove();
+      return;
+    }
+
+    // Snapshot entire inline-style attribute for later restoration. This way
+    // we can roll back in one shot instead of tracking each property.
+    const ulOriginalStyleAttr = ul.getAttribute('style');
+    const sidebarOriginalStyleAttr = sidebarEl.getAttribute('style');
 
     // Expand to show full list with no scrollbars & keep titles on one line
+    // Remove Tailwind scroll-related classes from the clone to avoid embedded
+    // scrollbars in the captured image.
+    ul.classList.forEach((cls) => {
+      if (/max-h|overflow-y-auto/.test(cls)) ul.classList.remove(cls);
+    });
+
     ul.style.maxHeight = 'none';
+    ul.style.height = 'auto';
     ul.style.overflowY = 'visible';
+    ul.style.overflowX = 'visible';
     ul.style.whiteSpace = 'nowrap';
     ul.style.width = 'max-content';
-    sidebarEl.style.width = 'max-content';
+
+    workEl.style.width = 'max-content';
+
+    // Ensure the heading isn’t clipped vertically in the capture.
+    const heading = workEl.querySelector('h3') as HTMLElement | null;
+    if (heading) {
+      heading.style.lineHeight = '1.45';
+      heading.style.paddingBottom = '8px';
+    }
+    workEl.style.padding = '0';
+
+    // Wait for layout pass so we can compute correct widths and avoid title
+    // wrapping.
+    await tick();
+
+    // Let the entire sidebar dictate width (includes heading + padding) then
+    // add a tiny buffer so longest text never clips.
+    const targetWidth = workEl.scrollWidth + 8;
+    workEl.style.width = `${targetWidth}px`;
     // Allow full-content width by removing class-based min/max constraints
-    sidebarEl.style.minWidth = '0';
-    sidebarEl.style.maxWidth = 'none';
+    workEl.style.minWidth = '0';
+    workEl.style.maxWidth = 'none';
+
+    // (No changes to original sidebar now that we use a clone)
 
     // Hide the share button itself so it doesn't appear in the capture
-    const shareBtn = sidebarEl.querySelector('[data-share-btn]') as HTMLElement | null;
+    const shareBtn = workEl.querySelector('[data-share-btn]') as HTMLElement | null;
     const btnDisplay = shareBtn?.style.display ?? '';
     if (shareBtn) shareBtn.style.display = 'none';
 
-    // Expand aside to fit full content height (override fixed-top/bottom constraints)
-    sidebarEl.style.height = `${sidebarEl.scrollHeight}px`;
-    sidebarEl.style.top = 'auto';
-    sidebarEl.style.bottom = 'auto';
+    // Hide the “Prompt rename” toggle so it doesn’t appear in the exported
+    // image. We locate the label by its text content to stay resilient to
+    // markup tweaks.
+    const renameLabel = Array.from(workEl.querySelectorAll('label')).find((l) =>
+      l.textContent?.trim().startsWith('Prompt rename')
+    ) as HTMLElement | undefined;
+    const renameDisplay = renameLabel?.style.display ?? '';
+    if (renameLabel) renameLabel.style.display = 'none';
+
+    // Eliminate possible scrollbars inside the list.
+    ul.style.overflowY = 'visible';
+    ul.style.overflowX = 'visible';
+    ul.style.maxHeight = 'none';
+    ul.style.height = 'auto';
+
+    // Re-compute height now that width is fixed.
+    workEl.style.height = `${workEl.scrollHeight}px`;
 
     try {
       // Dynamically import only when user clicks Share so html-to-image is
@@ -83,41 +146,69 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
       // container (e.g. node_modules volume wasn’t rebuilt).
       // Lazy-load html-to-image with a literal specifier so Vite can analyse
       // the import and keep quiet.
-      // Import html2canvas from a CDN; it is more tolerant and avoids the
-      // blank-image issue we've observed with html-to-image.
-      const html2canvas = (
-        await import(
-          /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/+esm'
-        )
-      ).default;
+      // Dynamically import the `dom-to-image-more` library only when the user
+      // clicks Share so it doesn’t bloat the initial bundle.
+      const domToImageMod = await import(
+        /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/dom-to-image-more@3.2.0/+esm'
+      );
+      // The library exports its API both as default and as named exports. We
+      // normalise so `toJpeg` is always available regardless of the bundle
+      // format.
+      const toJpeg = (domToImageMod.toJpeg ?? domToImageMod.default?.toJpeg) as (
+        node: HTMLElement,
+        opts: any
+      ) => Promise<string>;
       // Ensure we capture from the very top so the heading is fully visible.
-      sidebarEl.scrollTop = 0;
+      workEl.scrollTop = 0;
 
-      // Work-around for html2canvas occasionally clipping text: force a
-      // slightly larger line-height on the heading during capture.
-      const headingEl = sidebarEl.querySelector('h3');
-      const prevLineHeight = headingEl ? headingEl.style.lineHeight : '';
-      const prevPadding = headingEl ? headingEl.style.paddingBottom : '';
-      if (headingEl) {
-        headingEl.style.lineHeight = '1.4';
-        headingEl.style.paddingBottom = '4px'; // add descent space
-      }
+      // Determine background colour to use for the capture (fallback to first
+      // list item’s background if the sidebar is transparent).
+      const firstItem = workEl.querySelector('li');
+      const bgOverride = firstItem
+        ? getComputedStyle(firstItem).backgroundColor || '#ffffff'
+        : '#ffffff';
+
+      // Measure wrapper to include any box-shadow/padding adjustments
+      await tick();
+      let { width: captureWidth, height: captureHeight } = wrapper.getBoundingClientRect();
+
+      // Add 2-px safety buffer so nothing is clipped on the right.
+      captureWidth += 2;
+      wrapper.style.width = `${captureWidth}px`;
+      wrapper.style.height = `${captureHeight}px`;
+
+      // heading line-height already adjusted earlier on clone; do not touch
+      // original sidebar.
 
       // Temporarily hide poster <img> elements to avoid CORS-tainted canvas
       // (remote images cause the captured canvas to be cleared, resulting in
       // a blank white output). They are restored in the finally block.
       const posters: HTMLImageElement[] = Array.from(
-        sidebarEl.querySelectorAll('img')
+        workEl.querySelectorAll('img')
       );
       const posterDisplay = posters.map((p) => p.style.display);
       posters.forEach((p) => (p.style.display = 'none'));
 
-      const canvas = await html2canvas(sidebarEl, {
-        backgroundColor: '#ffffff',
-        scale: 2,
-        useCORS: true
+      // Add a temporary style element that forces all borders transparent so
+      // dom-to-image doesn’t fall back to white when CSS variables are lost.
+      const borderFix = document.createElement('style');
+      borderFix.textContent = '*{border-color:transparent !important;}';
+      workEl.prepend(borderFix);
+
+      // Remove list-item borders—they render as white lines in the exported
+      // image because CSS variables aren’t resolved in the cloned DOM.
+      const items: HTMLLIElement[] = Array.from(workEl.querySelectorAll('li'));
+      const itemBorders = items.map((it) => it.style.border);
+      items.forEach((it) => (it.style.border = 'none'));
+
+      const dataUrl = await toJpeg(wrapper, {
+        bgcolor: bgOverride,
+        quality: 0.95,
+        cacheBust: true,
+        pixelRatio: 2,
+        width: captureWidth,
+        height: captureHeight
       });
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
 
       const w = window.open();
       if (w) {
@@ -130,23 +221,14 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     } catch (e) {
       console.error('Failed to export list', e);
     } finally {
-      // Restore original styles no matter what
-      Object.assign(ul.style, ulOriginal);
-      // Restore sidebar width and remove overrides
-      sidebarEl.style.width = sidebarOriginalWidth;
-      sidebarEl.style.minWidth = sidebarOriginalMinWidth;
-      sidebarEl.style.maxWidth = sidebarOriginalMaxWidth;
-      // Restore sidebar height and positioning
-      sidebarEl.style.height = sidebarOriginalHeight;
-      sidebarEl.style.top = sidebarOriginalTop;
-      sidebarEl.style.bottom = sidebarOriginalBottom;
-      if (shareBtn) shareBtn.style.display = btnDisplay;
-      // restore heading line-height
-      if (headingEl) {
-        headingEl.style.lineHeight = prevLineHeight;
-        headingEl.style.paddingBottom = prevPadding;
-      }
+      // Nothing to restore on live DOM; we only manipulated the clone.
+      // no need to restore shareBtn visibility on live DOM – only clone was affected
+      if (renameLabel) renameLabel.style.display = renameDisplay;
       posters.forEach((p, idx) => (p.style.display = posterDisplay[idx]));
+      borderFix.remove();
+      // restore list-item borders in clone (redundant but safe)
+      items.forEach((it, idx) => (it.style.border = itemBorders[idx]));
+      wrapper.remove();
     }
   }
 

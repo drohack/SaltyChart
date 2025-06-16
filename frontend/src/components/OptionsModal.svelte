@@ -23,20 +23,41 @@
 </script>
 
  {#if open}
-  <div class="modal modal-open" on:click={close}>
-    <div class="modal-box" on:click|stopPropagation>
+  <!-- Overlay acts as a dismiss button and is keyboard accessible -->
+  <div
+    class="modal modal-open"
+    role="button"
+    aria-label="Close options"
+    tabindex="0"
+    on:click={close}
+    on:keydown={(e) => (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') && close()}
+  >
+    <div
+      class="modal-box"
+      role="dialog"
+      aria-modal="true"
+      on:click|stopPropagation
+    >
       <h3 class="font-bold text-lg mb-4">Options</h3>
       <div class="form-control mb-4">
-        <label class="label"><span class="label-text">Theme</span></label>
-        <select class="select select-bordered" bind:value={$options.theme}>
+        <label class="label" for="themeSelect"><span class="label-text">Theme</span></label>
+        <select
+          id="themeSelect"
+          class="select select-bordered"
+          bind:value={$options.theme}
+        >
           {#each themeOptions as opt}
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
       </div>
       <div class="form-control mb-4">
-        <label class="label"><span class="label-text">Title Language</span></label>
-        <select class="select select-bordered" bind:value={$options.titleLanguage}>
+        <label class="label" for="titleLangSelect"><span class="label-text">Title Language</span></label>
+        <select
+          id="titleLangSelect"
+          class="select select-bordered"
+          bind:value={$options.titleLanguage}
+        >
           {#each titleLangOptions as opt}
             <option value={opt.value}>{opt.label}</option>
           {/each}

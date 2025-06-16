@@ -336,30 +336,27 @@ $: _currentLang = $options.titleLanguage;
   -->
   <div
     class="fixed inset-0 bg-black/80 flex items-center justify-center z-[10000]"
-    role="dialog"
-    aria-modal="true"
-    tabindex="0"
+    role="button"
+    aria-label="Close trailer player"
     on:click|self={closeModal}
     on:keydown={(e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
         closeModal();
       }
     }}
-    on:keyup={(e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        closeModal();
-      }
-    }}
+    tabindex="-1"
   >
-    <div class="w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video">
-        <iframe
+    <div
+      class="w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video"
+    >
+      <iframe
+        title="Trailer video"
         bind:this={iframeElement}
         class="w-full h-full rounded"
         src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=1&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowfullscreen
         on:load={onIframeLoad}
-        on:click|stopPropagation
       />
     </div>
   </div>
