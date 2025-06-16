@@ -155,6 +155,7 @@ $: _lang = $options.titleLanguage;
   // Derived values for wheel rendering
   import SliceWorker from '../workers/slice-worker?worker';
   import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
+  import { onDestroy } from 'svelte';
   const sliceWorker: Worker = new SliceWorker();
 
   let sliceAngle = 0;
@@ -202,6 +203,36 @@ $: _lang = $options.titleLanguage;
 
   let showModal = false;
 
+/**
+ * Handle keydown events inside the modal so that pressing the <Enter> key is
+ * equivalent to clicking the “Mark as watched” button.  We purposefully scope
+ * the listener to the dialog element to avoid catching unrelated key presses
+ * elsewhere in the page.
+ */
+// Global key handler (attached while modal is open) so the Enter key triggers
+// the same action irrespective of which element currently has focus.
+function handleModalKey(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    markWatched();
+  }
+
+}
+
+// Clean-up in case the component is destroyed while the modal is open
+onDestroy(() => {
+  window.removeEventListener('keydown', handleModalKey);
+});
+
+// Dynamically attach / detach the listener whenever modal visibility changes.
+$: {
+  if (showModal) {
+    window.addEventListener('keydown', handleModalKey);
+  } else {
+    window.removeEventListener('keydown', handleModalKey);
+  }
+}
+
   /**
    * Mark the currently selected series as watched.
    *
@@ -211,8 +242,12 @@ $: _lang = $options.titleLanguage;
   async function markWatched() {
     if (!selected) return;
 
-    await toggleWatched(selected.id, true);
+    // Close the modal immediately so the UI feels responsive.
     showModal = false;
+
+    // Update local + remote state without blocking the UI. The helper updates
+    // local lists synchronously, while the fetch runs in the background.
+    toggleWatched(selected.id, true);
   }
 
   /** Toggle watched flag for a given mediaId */
