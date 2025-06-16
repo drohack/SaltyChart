@@ -24,14 +24,15 @@
 
  {#if open}
   <!-- Overlay acts as a dismiss button and is keyboard accessible -->
-  <div
+  <button
+    type="button"
     class="modal modal-open"
-    role="button"
     aria-label="Close options"
-    tabindex="0"
     on:click={close}
     on:keydown={(e) => (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') && close()}
+    style="all:unset;display:block"
   >
+    <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
     <div
       class="modal-box"
       role="dialog"
@@ -79,5 +80,5 @@
         <button class="btn" on:click={close}>Close</button>
       </div>
     </div>
-  </div>
+  </button>
 {/if}

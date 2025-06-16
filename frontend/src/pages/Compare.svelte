@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import SeasonSelect, { type Season } from '../components/SeasonSelect.svelte';
   import { authToken, userName } from '../stores/auth';
 import { options } from '../stores/options';
@@ -88,6 +88,212 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
   let loading = false;
   let error: string | null = null;
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * Share-as-image functionality (clone & export as JPEG)
+   * ───────────────────────────────────────────────────────────────────────*/
+
+  // Wrapper that contains the compare header + table (bound in markup)
+  let captureEl: HTMLElement;
+
+  async function shareCompare() {
+    if (!captureEl) return;
+
+    let clone = captureEl.cloneNode(true) as HTMLElement;
+
+    // Off-screen wrapper to keep the clone invisible
+    const wrapper = document.createElement('div');
+    Object.assign(wrapper.style, {
+      position: 'absolute',
+      top: '0',
+      left: '-10000px',
+      overflow: 'hidden',
+      margin: '0'
+    } as Partial<CSSStyleDeclaration>);
+    wrapper.appendChild(clone);
+    document.body.appendChild(wrapper);
+
+    /* Tighten layout on the clone only */
+    [clone, ...clone.querySelectorAll('*')].forEach((n) => {
+      if (!(n instanceof HTMLElement)) return;
+      n.classList.remove('w-full', 'md:w-3/4', 'mx-auto');
+    });
+
+    // Reduce gaps between cells
+    clone.querySelectorAll('[style*="gap:"]').forEach((el) => {
+      (el as HTMLElement).style.gap = '4px';
+    });
+
+    // Prevent title wrapping for minimal width
+    clone.querySelectorAll('[title]').forEach((el) => {
+      (el as HTMLElement).style.whiteSpace = 'nowrap';
+    });
+
+    // Let content dictate width
+    clone.style.width = 'max-content';
+
+    // Hide share button inside the clone so it doesn’t appear in the output
+    const shareBtn = clone.querySelector('[data-share-btn]') as HTMLElement | null;
+    if (shareBtn) shareBtn.style.display = 'none';
+
+    /* ------------------------------------------------------------------
+     * Capture selected labels BEFORE cloning so we don’t rely on copying
+     * values afterwards (which was still failing due to DaisyUI styling).
+     * We store an array of strings in the same order as the <select>s.
+     * ----------------------------------------------------------------*/
+    const liveSelectEls = Array.from(captureEl.querySelectorAll('select')) as HTMLSelectElement[];
+    const liveLabels = liveSelectEls.map((sel) => sel.selectedOptions[0]?.textContent ?? sel.value);
+
+    // Now clone after we have the labels
+    const freshClone = captureEl.cloneNode(true) as HTMLElement;
+    wrapper.replaceChild(freshClone, clone);
+    clone = freshClone; // update reference for later steps
+
+    // Remove centering / width utility classes from the fresh clone as well
+    [clone, ...clone.querySelectorAll('*')].forEach((n) => {
+      if (!(n instanceof HTMLElement)) return;
+      n.classList.remove('w-full', 'md:w-3/4', 'mx-auto');
+    });
+
+    // Replace selects in the new clone with spans containing remembered labels
+    clone.querySelectorAll('select').forEach((sel, idx) => {
+      const span = document.createElement('span');
+      span.textContent = liveLabels[idx] ?? '';
+      span.style.padding = '2px 6px';
+      span.style.borderRadius = '4px';
+      span.style.background = 'rgba(0,0,0,0.08)';
+      span.style.fontSize = '0.75rem';
+      span.style.fontWeight = '500';
+      span.style.whiteSpace = 'nowrap';
+      (sel as HTMLElement).replaceWith(span);
+    });
+
+    // Ensure all title cells keep on one line (no wrapping)
+    clone.querySelectorAll('div[title]').forEach((el) => {
+      (el as HTMLElement).style.whiteSpace = 'nowrap';
+    });
+
+    /* After major DOM changes (select replacements) recalculate dimensions and
+       hide remote images in the new clone to prevent CORS issues. */
+
+    // Wait a tick for layout changes to settle before measuring size later
+    await tick();
+
+    /* ------------------------------------------------------------------
+     * Hide the Cover column (header & cells) – images are already hidden.
+     * ----------------------------------------------------------------*/
+    // Hide header cell labeled "Cover"
+    clone.querySelectorAll('div,span,header,th').forEach((el) => {
+      if ((el as HTMLElement).textContent?.trim() === 'Cover') {
+        (el as HTMLElement).style.display = 'none';
+      }
+    });
+    // Hide parent cells that contained poster <img>
+    clone.querySelectorAll('img').forEach((img) => {
+      const parent = img.parentElement as HTMLElement | null;
+      if (parent) parent.style.display = 'none';
+    });
+
+    // Reduce grid to 3 columns instead of original 4 when cover column hidden
+    const grid = clone.querySelector('[style*="grid-template-columns"]') as HTMLElement | null;
+    if (grid) {
+      grid.style.gridTemplateColumns = '1fr auto 1fr';
+    }
+
+    // Add explicit right-side padding so the capture has breathing room.
+    clone.style.paddingRight = '12px';
+
+    // Hide remote images to avoid CORS-tainted canvas
+    const posters: HTMLImageElement[] = Array.from(clone.querySelectorAll('img'));
+    const posterDisplay = posters.map((p) => p.style.display);
+    posters.forEach((p) => (p.style.display = 'none'));
+
+    // Global border fix – remove default white borders some components gain
+    // when CSS variables aren’t resolved in the cloned DOM (mirrors My List).
+    const borderFix = document.createElement('style');
+    borderFix.textContent = '*{border-color:transparent !important;}';
+    clone.prepend(borderFix);
+
+    // Remove external stylesheets that cause CORS issues (e.g. Google Fonts)
+    clone.querySelectorAll('link[rel="stylesheet"]').forEach((lnk) => {
+      const href = (lnk as HTMLLinkElement).href;
+      if (href.startsWith('https://fonts.googleapis.com')) lnk.remove();
+    });
+
+    await tick();
+
+    // Dimensions will be recalculated after final tweaks later.
+
+    try {
+      // Lazy-load dom-to-image library
+      const mod = await import(
+        /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/dom-to-image-more@3.2.0/+esm'
+      );
+      const toJpeg = (mod.toJpeg ?? mod.default?.toJpeg) as (
+        node: HTMLElement,
+        opts: any
+      ) => Promise<string>;
+
+      // Temporarily disable cross-origin Google Fonts stylesheets to avoid
+      // SecurityError when dom-to-image enumerates cssRules.
+      const disabledSheets: CSSStyleSheet[] = [];
+      Array.from(document.styleSheets).forEach((ss) => {
+        const href = (ss as CSSStyleSheet).href;
+        if (href && href.startsWith('https://fonts.googleapis.com')) {
+          disabledSheets.push(ss as CSSStyleSheet);
+          (ss as any).disabled = true;
+        }
+      });
+
+      // Determine a reasonable background colour – prefer the first cell’s
+      // background; fallback to the document body.
+      let bgOverride = getComputedStyle(document.body).backgroundColor || '#ffffff';
+      const firstCell = clone.querySelector('div,header') as HTMLElement | null;
+      if (firstCell) {
+        const tmp = getComputedStyle(firstCell).backgroundColor;
+        if (tmp && tmp !== 'rgba(0, 0, 0, 0)' && tmp !== 'transparent') {
+          bgOverride = tmp;
+        }
+      }
+
+      // Measure final dimensions after all tweaks
+      // Re-measure final size and add small buffer so right/bottom aren’t cut
+      let { width: captureWidth, height: captureHeight } = wrapper.getBoundingClientRect();
+      // Add generous right-side buffer so nothing appears flush/cut.
+      captureWidth += 40; // 40-px padding on right
+      captureHeight += 4;
+
+      wrapper.style.width = `${captureWidth}px`;
+      wrapper.style.height = `${captureHeight}px`;
+
+      const dataUrl = await toJpeg(wrapper, {
+        bgcolor: bgOverride,
+        quality: 0.95,
+        cacheBust: true,
+        pixelRatio: 2,
+        width: captureWidth,
+        height: captureHeight
+      });
+
+      // Re-enable previously disabled stylesheets
+      disabledSheets.forEach((ss) => ((ss as any).disabled = false));
+
+      const w = window.open();
+      if (w) {
+        w.document.open();
+        w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" /><title>Compare</title><style>html,body{margin:0;padding:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#fff} img{max-width:100vw;max-height:100vh;width:auto;height:auto}</style></head><body><img src="${dataUrl}" alt="Compare" /></body></html>`);
+        w.document.close();
+      }
+    } catch (e) {
+      console.error('Failed to export compare view', e);
+    } finally {
+      // Ensure sheets re-enabled even on error
+      disabledSheets.forEach((ss) => ((ss as any).disabled = false));
+      posters.forEach((p, i) => (p.style.display = posterDisplay[i]));
+      borderFix.remove();
+      wrapper.remove();
+    }
+  }
 
   // Fetch helper -------------------------------------------------------------
 
@@ -178,6 +384,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       fetchLists();
     }
   });
+
   // preload all users for the dropdown combobox
   queueSuggest();
   
@@ -416,6 +623,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         <div class="flex items-center gap-1"><span class="font-mono">→</span><span>= other ranked higher</span></div>
       </div>
     </div>
+    <!-- Capture wrapper starts -->
+    <div bind:this={captureEl}>
     <header class="w-full md:w-3/4 mx-auto p-2 grid grid-cols-3 items-center">
       <div></div>
       <h2 class="text-xl font-bold text-center">{$userName} vs {displayOther} — {season} {year}</h2>
@@ -426,6 +635,26 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           <option value="rankB">Rank {displayOther}</option>
           <option value="diff">Difference</option>
         </select>
+        <!-- Share button -->
+        <button
+          type="button"
+          class="btn btn-xs btn-ghost ml-2"
+          data-share-btn
+          on:click={shareCompare}
+          title="Share as image"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-5 w-5"
+            fill="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.03-.47-.09-.7l7.02-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7l-7.02 4.11c-.54-.5-1.25-.81-2.04-.81-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.17c-.05.21-.08.43-.08.65 0 1.72 1.39 3.11 3.11 3.11 1.72 0 3.11-1.39 3.11-3.11s-1.39-3.11-3.11-3.11z"
+            />
+          </svg>
+        </button>
       </label>
     </header>
     <div class="w-full md:w-3/4 mx-auto grid" style="grid-template-columns: 1fr auto auto 1fr; row-gap:6px;">
@@ -499,7 +728,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           {/if}
         </div>
       {/each}
-    </div>
+    </div> <!-- grid -->
+    </div> <!-- capture wrapper end -->
   {:else}
     <p class="p-4 w-full md:w-3/4 mx-auto">No titles to compare.</p>
   {/if}
