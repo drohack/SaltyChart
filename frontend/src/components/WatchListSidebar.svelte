@@ -413,7 +413,7 @@ $: {
 
 <aside
   bind:this={sidebarEl}
-  class="fixed right-4 top-24 bottom-4 z-[9999] \
+  class="fixed right-4 top-24 bottom-4 z-40 \
     min-w-[14.5rem] 2cols:min-w-[17.5rem] \
     w-[calc(12.5vw-1rem)] max-w-[24rem] \
     bg-base-200 p-3 rounded shadow-lg overflow-visible flex flex-col"
@@ -487,7 +487,7 @@ $: {
     </button>
 
     <span
-      class="tooltip tooltip-left text-left whitespace-pre-line relative z-[10000]"
+      class="tooltip tooltip-left text-left whitespace-pre-line relative z-45"
       data-tip={`Drag series here from the main grid\nDouble-click an item in My List to change its title`}
     >
       <svg

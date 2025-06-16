@@ -67,7 +67,8 @@ $: {
   })();
 </script>
 
-  <header class="flex justify-between items-center p-4 w-full md:w-3/4 mx-auto">
+  <!-- Header layout: logo left, actions right, primary navigation hard-centered -->
+  <header class="relative flex items-center justify-between p-4 w-full md:w-3/4 mx-auto">
   <!-- Logo / Home link -->
   <h1 class="text-3xl font-bold">
     <a
@@ -79,11 +80,31 @@ $: {
     </a>
   </h1>
 
-  <nav class="flex items-center gap-6 text-lg">
-    <a href="/" class="link" on:click|preventDefault={() => goto('/')}>Anime</a>
+  <!-- Centered primary nav.  Using absolute + translate to stay centred regardless
+       of variable logo / actions widths. -->
+  <nav class="absolute left-1/2 -translate-x-1/2 flex items-center gap-6 text-lg pointer-events-none">
+    <a
+      href="/"
+      class="link pointer-events-auto" class:font-bold={route === '/'} class:text-primary={route === '/'}
+      on:click|preventDefault={() => goto('/')}
+    >
+      Anime
+    </a>
     {#if $authToken}
-      <a href="/random" class="link" on:click|preventDefault={() => goto('/random')}>Randomize</a>
-      <a href="/compare" class="link" on:click|preventDefault={() => goto('/compare')}>Compare</a>
+      <a
+        href="/random"
+        class="link pointer-events-auto" class:font-bold={route === '/random'} class:text-primary={route === '/random'}
+        on:click|preventDefault={() => goto('/random')}
+      >
+        Randomize
+      </a>
+      <a
+        href="/compare"
+        class="link pointer-events-auto" class:font-bold={route === '/compare'} class:text-primary={route === '/compare'}
+        on:click|preventDefault={() => goto('/compare')}
+      >
+        Compare
+      </a>
     {/if}
   </nav>
 

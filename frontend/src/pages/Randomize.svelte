@@ -333,7 +333,11 @@ $: {
   </div>
 
   <!-- Container: wheel centered in page; watched sidebar positioned absolutely so it doesn't shift wheel -->
-  <div class="relative w-full flex justify-center lg:pl-[17rem] lg:pr-[21rem]">
+  <!-- Wheel column is hard-centered in the viewport.  We removed the
+       responsive paddings that previously tried to offset the sidebars so the
+       wheel position is now completely independent of whether the Unwatched
+       or Watched sidebars are rendered. -->
+  <div class="relative w-full flex justify-center">
     <div class="flex flex-col items-center mx-auto">
       {#if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>

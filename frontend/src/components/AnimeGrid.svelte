@@ -332,10 +332,10 @@ $: _currentLang = $options.titleLanguage;
 {#if modal}
   <!--
     Bring the trailer modal above every other UI layer. The watch-list
-    sidebar uses z-[9999], so we give the modal a higher literal value.
+    sidebar uses z-40, so we give the trailer modal a slightly higher z (45).
   -->
   <div
-    class="fixed inset-0 bg-black/80 flex items-center justify-center z-[10000]"
+  class="fixed inset-0 bg-black/80 flex items-center justify-center z-45"
     role="button"
     aria-label="Close trailer player"
     on:click|self={closeModal}
