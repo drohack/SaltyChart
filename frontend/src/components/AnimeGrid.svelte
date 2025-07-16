@@ -335,7 +335,7 @@ $: _currentLang = $options.titleLanguage;
     sidebar uses z-40, so we give the trailer modal a slightly higher z (45).
   -->
   <div
-  class="fixed inset-0 bg-black/80 flex items-center justify-center z-45"
+  class="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]"
     role="button"
     aria-label="Close trailer player"
     on:click|self={closeModal}

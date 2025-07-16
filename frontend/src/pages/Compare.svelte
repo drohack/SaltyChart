@@ -2,6 +2,8 @@
   import { onMount, tick } from 'svelte';
   import SeasonSelect, { type Season } from '../components/SeasonSelect.svelte';
   import { authToken, userName } from '../stores/auth';
+import { seasonYear } from '../stores/season';
+import { get } from 'svelte/store';
 import { options } from '../stores/options';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
@@ -18,8 +20,18 @@ const rankOptions = [
   // Local state – season/year/user selection
   // ────────────────────────────────────────────────────────────────────────────
 
-  let season: Season = 'SPRING';
-  let year: number = new Date().getFullYear();
+  let season: Season = get(seasonYear).season;
+  let year: number = get(seasonYear).year;
+
+  // Propagate local edits to the shared store
+  let _lastKey = `${season}-${year}`;
+  $: {
+    const key = `${season}-${year}`;
+    if (key !== _lastKey) {
+      _lastKey = key;
+      seasonYear.set({ season, year });
+    }
+  }
 
   // User A is always the currently logged-in user
   let userA: string | null = null;

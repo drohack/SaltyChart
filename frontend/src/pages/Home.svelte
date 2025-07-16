@@ -4,11 +4,65 @@ import SeasonSelect from '../components/SeasonSelect.svelte';
 import AnimeGrid from '../components/AnimeGrid.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
 import { authToken, userName } from '../stores/auth';
+import { seasonYear } from '../stores/season';
+import { get } from 'svelte/store';
+import { onMount } from 'svelte';
 
-  type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
+import type { Season } from '../stores/season';
+import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
 
-  let season: Season = 'SPRING';
-  let year: number = new Date().getFullYear();
+
+  // ------------------------------------------------------------------
+  // Shared season/year state
+  // ------------------------------------------------------------------
+
+  let season: Season = get(seasonYear).season;
+  let year: number = get(seasonYear).year;
+
+  // Update global store whenever the local selection changes
+  let _lastKey = `${season}-${year}`;
+  $: {
+    const key = `${season}-${year}`;
+    if (key !== _lastKey) {
+      _lastKey = key;
+      seasonYear.set({ season, year });
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Countdown to next season (AniList authoritative schedule)
+  // ──────────────────────────────────────────────────────────────────
+
+  let daysUntilNext: number | null = null;
+  let nextSeasonLabel: string = '';
+
+  async function updateCountdown() {
+    try {
+      const { season: curSeason, seasonYear: curYear } = await getCurrentSeasonFromAPI();
+      const next = nextSeasonInfo(curSeason, curYear);
+      const now = new Date();
+      const msPerDay = 86_400_000;
+      daysUntilNext = Math.max(0, Math.ceil((next.starts.getTime() - now.getTime()) / msPerDay));
+      nextSeasonLabel = `${next.season} ${next.year}`;
+    } catch (e) {
+      console.error('Countdown fetch failed', e);
+      // Fallback: derive from local date if AniList call fails
+      const fallbackSeason = ((): Season => {
+        const m = new Date().getMonth();
+        if (m <= 1) return 'WINTER';
+        if (m <= 4) return 'SPRING';
+        if (m <= 7) return 'SUMMER';
+        return 'FALL';
+      })();
+      const fallback = nextSeasonInfo(fallbackSeason, new Date().getFullYear());
+      const now = new Date();
+      const msPerDay = 86_400_000;
+      daysUntilNext = Math.max(0, Math.ceil((fallback.starts.getTime() - now.getTime()) / msPerDay));
+      nextSeasonLabel = `${fallback.season} ${fallback.year}`;
+    }
+  }
+
+  onMount(updateCountdown);
 
   let anime: any[] = [];
   let prevSeasonAnime: any[] = [];
@@ -89,8 +143,6 @@ import { authToken, userName } from '../stores/auth';
   let hideAdult = true;
 
   // Persist user preferences in localStorage per user
-  import { onMount } from 'svelte';
-
   function prefsKey(user: string | null): string {
     return user ? `prefs-${user}` : 'prefs-guest';
   }
@@ -240,18 +292,25 @@ import { authToken, userName } from '../stores/auth';
 <main class="box-border w-full max-w-[calc(100vw-32rem)] 2cols:max-w-[calc(100vw-40rem)] mx-auto p-4 flex flex-col gap-4">
   <!-- Main content column -->
   <div class="flex-1 flex flex-col min-w-0">
-    <!-- Season / Year selector directly under header -->
-    <SeasonSelect
-      bind:season
-      bind:year
-      bind:hideSequels
-      bind:hideInList
-      bind:hideAdult
-      bind:searchQuery
-      showSearch={true}
-      showAdultToggle={true}
-      showListToggle={$authToken != null}
-    />
+    <!-- Season / Year selector + countdown -->
+    <div class="flex items-end flex-wrap gap-3 mb-2">
+      <SeasonSelect
+        bind:season
+        bind:year
+        bind:hideSequels
+        bind:hideInList
+        bind:hideAdult
+        bind:searchQuery
+        showSearch={true}
+        showAdultToggle={true}
+        showListToggle={$authToken != null}
+      />
+      {#if daysUntilNext != null}
+        <span class="text-sm opacity-70 whitespace-nowrap">
+          {daysUntilNext} day{daysUntilNext === 1 ? '' : 's'} until {nextSeasonLabel}
+        </span>
+      {/if}
+    </div>
   {#if loading}
     <div class="text-center">Loading…</div>
   {:else}

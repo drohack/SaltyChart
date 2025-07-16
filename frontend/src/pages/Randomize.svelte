@@ -1,14 +1,26 @@
 <script lang="ts">
-  import SeasonSelect from '../components/SeasonSelect.svelte';
-  import { authToken } from '../stores/auth';
+import SeasonSelect from '../components/SeasonSelect.svelte';
+import { authToken } from '../stores/auth';
+import { seasonYear } from '../stores/season';
+import { get } from 'svelte/store';
 import { options } from '../stores/options';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
-  export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
+  import type { Season } from '../stores/season';
 
-  let season: Season = 'SPRING';
-  let year: number = new Date().getFullYear();
+  let season: Season = get(seasonYear).season;
+  let year: number = get(seasonYear).year;
+
+  // Push local changes back to store
+  let _lastKey = `${season}-${year}`;
+  $: {
+    const key = `${season}-${year}`;
+    if (key !== _lastKey) {
+      _lastKey = key;
+      seasonYear.set({ season, year });
+    }
+  }
 
   // User list for current season/year
   let watchList: any[] = [];
