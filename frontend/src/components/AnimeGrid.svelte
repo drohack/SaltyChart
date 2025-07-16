@@ -38,7 +38,8 @@ $: _currentLang = $options.titleLanguage;
     SEQUEL: 'Sequel',
     PREQUEL: 'Prequel',
     SIDE_STORY: 'Side-story',
-    SPINOFF: 'Spin-off'
+    SPINOFF: 'Spin-off',
+    ADULT: '18+'
   };
 
   function relationTags(rel: any): string[] {
@@ -49,6 +50,12 @@ $: _currentLang = $options.titleLanguage;
       if (t && TAG_LABELS[t] && !uniq.includes(t)) uniq.push(t);
     }
     return uniq;
+  }
+
+  function displayTags(show: any): string[] {
+    const tags = relationTags(show.relations);
+    if (show.isAdult) tags.push('ADULT');
+    return tags;
   }
   // Helper to determine if a show has sequel/prequel relation
   function isSequel(show: any): boolean {
@@ -308,10 +315,10 @@ $: _currentLang = $options.titleLanguage;
         </div>
       {/if}
 
-      <!-- Row 2: Relation tags -->
-      {#if relationTags(show.relations).length > 0}
+      <!-- Row 2: Tags (relations, 18+) -->
+      {#if displayTags(show).length > 0}
         <div class="px-3 flex flex-wrap gap-1 pb-2">
-          {#each relationTags(show.relations) as tag}
+          {#each displayTags(show) as tag}
             <span class="badge badge-accent text-xs">{TAG_LABELS[tag]}</span>
           {/each}
         </div>
