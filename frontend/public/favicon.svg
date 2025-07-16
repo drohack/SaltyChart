@@ -1,0 +1,47 @@
+<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <!-- Enlarged Salt Shaker Body -->
+  <path d="M30 20 Q60 5 90 20 L100 95 Q100 110 60 110 Q20 110 20 95 Z" fill="#F2F2F2" stroke="#999" stroke-width="3"/>
+
+  <!-- Cap -->
+  <ellipse cx="60" cy="20" rx="22" ry="7" fill="#B0B0B0"/>
+  <circle cx="54" cy="18" r="2" fill="#555"/>
+  <circle cx="60" cy="18" r="2" fill="#555"/>
+  <circle cx="66" cy="18" r="2" fill="#555"/>
+
+  <!-- Bow (top-right) -->
+  <g transform="translate(82,6) rotate(10)">
+    <circle cx="4" cy="4" r="3" fill="#FF6FB5"/>
+    <path d="M4 4 L0 0 Q-3 4 0 8 L4 4 Z" fill="#FF8ACB"/>
+    <path d="M4 4 L8 0 Q11 4 8 8 L4 4 Z" fill="#FF8ACB"/>
+  </g>
+
+  <!-- Left Anime Eye -->
+  <g transform="translate(45,60)">
+    <ellipse cx="0" cy="0" rx="7" ry="11" fill="#5A69FF" />
+    <ellipse cx="-2" cy="-3.5" rx="1.8" ry="2.5" fill="white" />
+    <ellipse cx="2.5" cy="2.5" rx="1.2" ry="1.6" fill="#FFF" opacity="0.6" />
+    <path d="M-7,-10 Q0,-15 7,-10" stroke="#222" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Right Anime Eye -->
+  <g transform="translate(75,60)">
+    <ellipse cx="0" cy="0" rx="7" ry="11" fill="#5A69FF" />
+    <ellipse cx="-2" cy="-3.5" rx="1.8" ry="2.5" fill="white" />
+    <ellipse cx="2.5" cy="2.5" rx="1.2" ry="1.6" fill="#FFF" opacity="0.6" />
+    <path d="M-7,-10 Q0,-15 7,-10" stroke="#222" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Eyebrows -->
+  <path d="M38 46 Q46 40 54 46" stroke="#333" stroke-width="3" stroke-linecap="round"/>
+  <path d="M66 46 Q74 40 82 46" stroke="#333" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Mouth -->
+  <path d="M52 80 Q60 88 68 80" stroke="#E36" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+
+  <!-- Blush -->
+  <circle cx="36" cy="73" r="4" fill="#FFAFC0" opacity="0.7"/>
+  <circle cx="84" cy="73" r="4" fill="#FFAFC0" opacity="0.7"/>
+
+  <!-- Optional Sparkle -->
+  <path d="M10 15L13 20L18 22L13 24L10 29L7 24L2 22L7 20L10 15Z" fill="#FFD700"/>
+</svg>
