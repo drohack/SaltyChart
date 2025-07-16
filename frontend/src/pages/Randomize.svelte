@@ -4,6 +4,7 @@ import { authToken } from '../stores/auth';
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
+import LoadingSpinner from '../components/LoadingSpinner.svelte';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -33,6 +34,9 @@ $: _lang = $options.titleLanguage;
 
   // Selected item after spin
   let selected: any = null;
+
+  // Loading state while fetching list & anime
+  let loading = false;
 
   // ------------------------------------------------------------------
   // Guard: page only makes sense when the user is logged-in.  When the
@@ -73,7 +77,12 @@ $: _lang = $options.titleLanguage;
 
 
   const fetchBoth = async () => {
-    await Promise.all([fetchList(), fetchAnime()]);
+    loading = true;
+    try {
+      await Promise.all([fetchList(), fetchAnime()]);
+    } finally {
+      loading = false;
+    }
   };
 
   // Track last fetched year/season to avoid duplicate loads.
@@ -504,7 +513,9 @@ $: {
        or Watched sidebars are rendered. -->
   <div class="relative w-full flex justify-center">
     <div class="flex flex-col items-center mx-auto">
-      {#if !wheelItems.length}
+      {#if loading}
+        <LoadingSpinner size="lg" />
+      {:else if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
       {:else}
         <!-- Wheel -->

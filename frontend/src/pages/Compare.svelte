@@ -5,6 +5,7 @@
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
+import LoadingSpinner from '../components/LoadingSpinner.svelte';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
   // combobox component
@@ -64,14 +65,26 @@ const rankOptions = [
     suggestTimer = setTimeout(fetchSuggestions, 250);
   }
 
-// Reactive: fetch whenever selection or rank types change
+// ------------------------------------------------------------------
+// Reactive: fetch lists whenever any of the input parameters change, but
+// avoid redundant duplicate calls that happen during component mount when
+// `bind:value` re-assigns the same default values back to rankTypeA/B.
+// ------------------------------------------------------------------
+
+let lastFetchKey: string | null = null;
+
 $: if (userA && selectedOther) {
-  // dependencies
+  // track dependencies so Svelte re-runs when they change
   rankTypeA;
   rankTypeB;
   season;
   year;
-  fetchLists();
+
+  const key = `${userA}|${typeof selectedOther === 'string' ? selectedOther : selectedOther?.value ?? selectedOther?.label}|${rankTypeA}|${rankTypeB}|${season}|${year}`;
+  if (key !== lastFetchKey) {
+    lastFetchKey = key;
+    fetchLists();
+  }
 }
 
 
@@ -621,7 +634,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   {#if !selectedOther}
     <p class="p-4 w-full md:w-3/4 mx-auto">Enter another user name to compare.</p>
   {:else if loading}
-    <p class="p-4 w-full md:w-3/4 mx-auto">Loading…</p>
+    <div class="w-full md:w-3/4 mx-auto"><LoadingSpinner size="lg" /></div>
   {:else if error}
     <p class="p-4 w-full md:w-3/4 mx-auto text-red-500">{error}</p>
   {:else if rows.length}

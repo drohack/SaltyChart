@@ -3,6 +3,7 @@
 import SeasonSelect from '../components/SeasonSelect.svelte';
 import AnimeGrid from '../components/AnimeGrid.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
+import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { authToken, userName } from '../stores/auth';
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
@@ -312,7 +313,7 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
       {/if}
     </div>
   {#if loading}
-    <div class="text-center">Loading…</div>
+    <LoadingSpinner size="lg" />
   {:else}
   {#if tvAnimeFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
