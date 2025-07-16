@@ -167,8 +167,134 @@ $: _lang = $options.titleLanguage;
   // Derived values for wheel rendering
   import SliceWorker from '../workers/slice-worker?worker';
   import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
-  import { onDestroy } from 'svelte';
-  const sliceWorker: Worker = new SliceWorker();
+import { onDestroy } from 'svelte';
+const sliceWorker: Worker = new SliceWorker();
+
+  // -----------------------------
+  // Audio helpers (ping + tick)
+  // -----------------------------
+
+  const audioCtx: AudioContext | null = typeof window !== 'undefined'
+    ? new (window.AudioContext || (window as any).webkitAudioContext)()
+    : null;
+
+  function playTone(frequency: number, duration = 0.1, type: OscillatorType = 'sine', gainLevel = 0.3) {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(gainLevel, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration + 0.05);
+  }
+
+  function playPing() {
+    playTone(880, 0.25, 'sine', 0.4);
+  }
+
+  function playTick() {
+    // Lower-pitched, short "tock" (~320 Hz) for Price-is-Right feel
+    playTone(320, 0.08, 'square', 0.35);
+  }
+
+  // ------------------------------------------------------------
+  // Celebration helpers (called when wheel stops)
+  // ------------------------------------------------------------
+
+  function celebrate() {
+    playCelebrationTune();
+    launchConfetti();
+  }
+
+  function playCelebrationTune() {
+    if (!audioCtx) return;
+
+    // Two-layer synth for richer, less "midi" feel: base and detuned saw waves
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C major arpeggio
+    notes.forEach((freq, i) => {
+      setTimeout(() => {
+        // base
+        playTone(freq, 0.3, 'sawtooth', 0.25);
+        // detuned layer for chorus effect
+        playTone(freq * 1.01, 0.3, 'sawtooth', 0.15);
+      }, i * 200);
+    });
+  }
+
+  function launchConfetti() {
+    if (typeof window === 'undefined') return;
+
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = '90';
+    document.body.appendChild(canvas);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const confettiCount = 160;
+    const confetti: { x: number; y: number; vx: number; vy: number; size: number; color: string; rot: number; vr: number }[] = [];
+    const colors = ['#f87171', '#fbbf24', '#34d399', '#60a5fa', '#a78bfa', '#f472b6'];
+
+    for (let i = 0; i < confettiCount; i++) {
+      confetti.push({
+        // Start near center bottom half so they burst upward from wheel area
+        x: canvas.width / 2 + (Math.random() - 0.5) * 120,
+        y: canvas.height * 0.6,
+        // radial burst velocity upward
+        vx: (Math.random() - 0.5) * 6,
+        vy: -(Math.random() * 6 + 4),
+        size: Math.random() * 6 + 4,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        rot: Math.random() * 360,
+        vr: (Math.random() - 0.5) * 10
+      });
+    }
+
+    let lastTime = performance.now();
+    function draw(now: number) {
+      const dt = (now - lastTime) / 16.666; // 60fps units
+      lastTime = now;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      confetti.forEach((p) => {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 0.12 * dt; // gravity stronger for longer duration
+        p.rot += p.vr * dt;
+
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate((p.rot * Math.PI) / 180);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        ctx.restore();
+      });
+
+      animationFrame = requestAnimationFrame(draw);
+    }
+
+    let animationFrame = requestAnimationFrame(draw);
+
+    // Clean up after 5 seconds
+    setTimeout(() => {
+      cancelAnimationFrame(animationFrame);
+      canvas.remove();
+    }, 5000);
+  }
 
   let sliceAngle = 0;
   let sliceData: { start: number; end: number; color: string }[] = [];
@@ -186,6 +312,14 @@ $: _lang = $options.titleLanguage;
 
   function spin() {
     if (!wheelItems.length || spinning) return;
+
+    // Play initial ping sound on user interaction (button click).
+    playPing();
+
+    // Ensure AudioContext is resumed (required after user gesture).
+    if (audioCtx?.state === 'suspended') {
+      audioCtx.resume();
+    }
     spinning = true;
 
     const idx = Math.floor(Math.random() * wheelItems.length);
@@ -211,6 +345,25 @@ $: _lang = $options.titleLanguage;
 
     rotation += delta;
     selected = wheelItems[idx];
+
+    // ------------------------------------------------------------------
+    // Schedule tick sounds for every slice the pointer crosses while the
+    // wheel is spinning.  We approximate the timing by distributing the
+    // ticks evenly across the 4 s CSS transition duration.
+    // ------------------------------------------------------------------
+
+    // Number of slice boundaries crossed during rotation
+    const ticks = Math.floor(delta / segAngle);
+    const durationMs = 4000; // CSS transition duration
+
+    // Inverse of ease-out cubic (matches CSS cubic-bezier curve reasonably well)
+    const easeOutCubicInv = (p: number) => 1 - Math.cbrt(1 - p);
+
+    for (let i = 1; i <= ticks; i++) {
+      const angleFrac = i / ticks;
+      const timeFrac = easeOutCubicInv(angleFrac);
+      setTimeout(playTick, timeFrac * durationMs);
+    }
   }
 
   let showModal = false;
@@ -377,7 +530,9 @@ $: {
         on:transitionend={() => {
           if (spinning) {
             spinning = false;
-            showModal = true;
+            celebrate();
+            // Slight delay before showing modal so confetti is visible underneath
+            setTimeout(() => (showModal = true), 50);
           }
         }}
       >
