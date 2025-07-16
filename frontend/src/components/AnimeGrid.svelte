@@ -147,6 +147,33 @@ $: _currentLang = $options.titleLanguage;
   function capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
+
+  // Map AniList MediaSource enum → human readable label
+  const SOURCE_LABELS: Record<string, string> = {
+    ORIGINAL: 'Original Content',
+    MANGA: 'Manga',
+    MANHWA: 'Manhwa',
+    MANHUA: 'Manhua',
+    LIGHT_NOVEL: 'Light Novel',
+    VISUAL_NOVEL: 'Visual Novel',
+    NOVEL: 'Novel',
+    VIDEO_GAME: 'Video Game',
+    MULTIMEDIA_PROJECT: 'Multimedia Project',
+    DOUJINSHI: 'Doujinshi',
+    ANIME: 'Anime',
+    BOOK: 'Book',
+    OTHER: 'Other'
+  };
+
+  function getSourceLabel(src: string | null | undefined): string {
+    if (!src) return '';
+    if (SOURCE_LABELS[src]) return SOURCE_LABELS[src];
+    // Fallback: transform enum-like text to Title Case e.g. "WEB_NOVEL" -> "Web Novel"
+    return src
+      .split('_')
+      .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+      .join(' ');
+  }
   let iframeElement: HTMLIFrameElement | null = null;
 
   /**
@@ -295,22 +322,37 @@ $: _currentLang = $options.titleLanguage;
 
       <!-- Airing information -->
       {#if show.nextAiringEpisode}
-        <div class="px-3 py-1 text-sm text-base-content/70">
-          Next episode {show.nextAiringEpisode.episode} airs {formatUnix(show.nextAiringEpisode.airingAt)}
+        <div class="px-3 py-1 text-sm text-base-content/70 flex justify-between items-center">
+          <span>
+            Next episode {show.nextAiringEpisode.episode} airs {formatUnix(show.nextAiringEpisode.airingAt)}
+          </span>
+          {#if getSourceLabel(show.source)}
+            <span class="ml-4 whitespace-nowrap">Source: {getSourceLabel(show.source)}</span>
+          {/if}
         </div>
       {:else if show.status === 'FINISHED'}
-        <div class="px-3 py-1 text-sm text-base-content/70">
-          {#if show.episodes}
-            {show.episodes} episodes
+        <div class="px-3 py-1 text-sm text-base-content/70 flex justify-between items-center">
+          <span>
+            {#if show.episodes}
+              {show.episodes} episodes
+            {/if}
+            aired on {formatYMD(show.endDate) || formatYMD(show.startDate)}
+          </span>
+          {#if getSourceLabel(show.source)}
+            <span class="ml-4 whitespace-nowrap">Source: {getSourceLabel(show.source)}</span>
           {/if}
-          aired on {formatYMD(show.endDate) || formatYMD(show.startDate)}
         </div>
       {:else if show.status === 'NOT_YET_RELEASED'}
-        <div class="px-3 py-1 text-sm text-base-content/70">
-          {#if show.startDate?.day}
-            Airing on {formatYMD(show.startDate)}
-          {:else}
-            Airing in {approxMonthYear(show.startDate, show.season)}
+        <div class="px-3 py-1 text-sm text-base-content/70 flex justify-between items-center">
+          <span>
+            {#if show.startDate?.day}
+              Airing on {formatYMD(show.startDate)}
+            {:else}
+              Airing in {approxMonthYear(show.startDate, show.season)}
+            {/if}
+          </span>
+          {#if getSourceLabel(show.source)}
+            <span class="ml-4 whitespace-nowrap">Source: {getSourceLabel(show.source)}</span>
           {/if}
         </div>
       {/if}
