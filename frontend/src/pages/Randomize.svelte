@@ -1,10 +1,12 @@
 <script lang="ts">
 import SeasonSelect from '../components/SeasonSelect.svelte';
-import { authToken } from '../stores/auth';
+import { authToken, userName as activeUserName } from '../stores/auth';
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
+import { onMount } from 'svelte';
+import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -34,6 +36,28 @@ $: _lang = $options.titleLanguage;
 
   // Selected item after spin
   let selected: any = null;
+
+  // Derived: current user rank for selected show (1-based).  Null when not
+  // watched or rank not set.
+  $: myRank = selected
+    ? (() => {
+        const idx = watchList.findIndex((w) => w.mediaId === selected.id);
+        return idx === -1 ? null : idx + 1;
+      })()
+    : null;
+  let nicknameList: Array<{ userName: string; nickname: string | null; rank: number | null }> = [];
+
+  // Fetch nickname list whenever modal opens (and selected differs)
+  $: if (showModal && selected) {
+    (async () => {
+      try {
+        const res = await fetch(`/api/list/nicknames?mediaId=${selected.id}`);
+        nicknameList = res.ok ? await res.json() : [];
+      } catch {
+        nicknameList = [];
+      }
+    })();
+  }
 
   // Loading state while fetching list & anime
   let loading = false;
@@ -96,6 +120,49 @@ $: _lang = $options.titleLanguage;
       fetchBoth();
     }
   }
+
+  // ------------------------------------------------------------------
+  // Nickname user list fetch & store sync
+  // ------------------------------------------------------------------
+
+  onMount(async () => {
+    try {
+      const res = await fetch('/api/list/users-with-nicknames');
+      if (res.ok) {
+        let users: string[] = await res.json();
+
+        // Exclude the currently-logged in user from the selectable list so the
+        // panel only shows *other* users.  (The active user will always see
+        // their own custom names regardless of this filter.)
+        const self = get(activeUserName);
+        if (self) users = users.filter((u) => u !== self);
+
+        nicknameAllUsers.set(users);
+
+        // Sync current selection with new user list:
+        nicknameSelected.update((prev) => {
+          // Remove self from previous selection
+          const self = get(activeUserName);
+          const cleaned = new Set<string>([...prev].filter((u) => u !== self));
+
+          // Retain only users still present in latest list
+          const next = new Set<string>();
+          cleaned.forEach((u) => {
+            if (users.includes(u)) next.add(u);
+          });
+
+          // If no persisted selection exists (first visit) default to all
+          if (next.size === 0) {
+            const hadPersisted = typeof localStorage !== 'undefined' && !!localStorage.getItem('nickUserSel');
+            return hadPersisted ? next : new Set(users);
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to fetch nickname user list', err);
+    }
+  });
 
   // Separate entries into watched/unwatched for easier handling.
   //  * watchedEntries is needed for the ranking sidebar.
@@ -651,6 +718,27 @@ $: {
       }}
       on:unwatch={(e) => toggleWatched(e.detail, false)}
     />
+
+    <!-- Nickname user picker panel (aligned with Watched sidebar) -->
+    <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm space-y-1 z-30 hidden lg:block right-[calc(21rem+7px)]">
+      <h3 class="font-semibold mb-2">Nicknames from:</h3>
+
+      {#if $nicknameAllUsers.length}
+        {#each $nicknameAllUsers as user}
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              class="checkbox checkbox-xs"
+              checked={$nicknameSelected.has(user)}
+              on:change={() => toggleNicknameUser(user)}
+            />
+            {user}
+          </label>
+        {/each}
+      {:else}
+        <p class="italic opacity-60">No other users yet</p>
+      {/if}
+    </div>
   </div> <!-- end flex container -->
 
   {#if showModal && selected}
@@ -658,14 +746,39 @@ $: {
       <div class="modal-box w-full max-w-3xl">
         <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" on:click={() => (showModal = false)}>✕</button>
         {#key $options.titleLanguage + '-' + selected.id}
-        <h3 class="font-bold text-lg mb-2" data-lang={$options.titleLanguage}>
+        <h3 class="font-bold text-lg mb-2 flex flex-wrap items-baseline gap-1" data-lang={$options.titleLanguage}>
           {selected.customName || getDisplayTitle(selected)}
+          {#if myRank != null}
+            <span class="text-base font-normal opacity-70">(#{myRank})</span>
+          {/if}
         </h3>
         {/key}
         {#if selected.customName}
           <p class="mb-4 text-sm text-base-content/70">
             {getBaseTitle(selected)}
           </p>
+        {/if}
+
+        {#if nicknameList.length}
+          <div class="mb-6">
+            <h4 class="font-semibold mb-1 text-sm">Other users' nicknames:</h4>
+            <ul class="list-disc list-inside space-y-1 text-sm">
+              {#each nicknameList.filter(n => $nicknameSelected.has(n.userName) && n.userName !== $activeUserName) as n}
+                <li>
+                  <span class="font-medium">{n.userName}</span>:
+                  {#if n.nickname}
+                    {` ${n.nickname}`} {#if n.rank != null}(<span class="opacity-70">#{n.rank}</span>){/if}
+                  {:else}
+                    {#if n.rank != null}
+                      (<span class="opacity-70">#{n.rank}</span>)
+                    {/if}
+                  {/if}
+                </li>
+              {:else}
+                <li class="italic opacity-60">None selected</li>
+              {/each}
+            </ul>
+          </div>
         {/if}
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
         <div class="modal-action justify-center">
@@ -674,6 +787,10 @@ $: {
       </div>
     </dialog>
   {/if}
+
+<!-- Nickname panel moved further down so its absolute positioning lines up
+     with the Watched sidebar (they share the same relative offset based on
+     DOM order). -->
 </main>
 
 <style>

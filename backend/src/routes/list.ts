@@ -115,3 +115,79 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
 });
 
 export default router;
+
+// ---------------------------------------------------------------------------
+// New endpoints for nickname feature
+// ---------------------------------------------------------------------------
+
+// Returns array of user names that have at least one customName in any watch
+// list entry.  Used by Randomize page to populate the "nickname picker" UI.
+router.get('/users-with-nicknames', async (_req, res) => {
+  try {
+    // Query watchList for rows with customName, then collect unique userIds
+    const rows = await prisma.watchList.findMany({
+      where: { customName: { not: null } },
+      select: { userId: true }
+    });
+
+    const userIds = Array.from(new Set(rows.map((r) => r.userId)));
+
+    if (userIds.length === 0) return res.json([]);
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true }
+    });
+
+    const names = users.map((u) => u.username ?? `User-${String(u.id).slice(0, 6)}`).sort();
+
+    return res.json(names);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Returns nickname list for a given mediaId: [{ userName, nickname, rank }]
+router.get('/nicknames', async (req, res) => {
+  const mediaId = Number(req.query.mediaId);
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+
+  try {
+    const rows = await prisma.watchList.findMany({
+      where: { mediaId },
+      select: { customName: true, userId: true, watchedRank: true, order: true }
+    });
+
+    if (rows.length === 0) return res.json([]);
+
+    const userIds = Array.from(new Set(rows.map((r) => r.userId)));
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true }
+    });
+
+    // Map userId → display name for quick lookup
+    const idToName = new Map<number, string>();
+    users.forEach((u) => {
+      const display = u.username ?? `User-${String(u.id).slice(0, 6)}`;
+      idToName.set(u.id, display);
+    });
+
+    const data = rows.map((r) => ({
+      userName: idToName.get(r.userId) ?? 'Unknown',
+      nickname: r.customName,
+      rank:
+        typeof r.watchedRank === 'number'
+          ? r.watchedRank + 1 // watched rank saved 0-based
+          : typeof r.order === 'number'
+          ? r.order + 1 // pre-watch list order (also 0-based)
+          : null
+    }));
+    return res.json(data);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to fetch nicknames' });
+  }
+});

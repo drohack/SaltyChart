@@ -20,6 +20,26 @@ router.post('/signup', async (req, res) => {
   try {
     const hashed = await bcrypt.hash(password, SALT_ROUNDS);
     const user = await prisma.user.create({ data: { username, password: hashed } });
+
+    // Initialize default Settings row for the new user so downstream
+    // requests (e.g. GET /api/options) always have a record to read / update.
+    try {
+      await prisma.settings.create({
+        data: {
+          userId: user.id,
+          theme: 'SYSTEM',
+          titleLanguage: 'ENGLISH',
+          videoAutoplay: true,
+          hideFromCompare: false,
+          nicknameUserSel: '[]'
+        }
+      } as any);
+    } catch (err: any) {
+      // Ignore duplicate row errors in the unlikely event of a race.
+      if (err.code !== 'P2002') {
+        console.warn('[auth] Failed to create default Settings row', err);
+      }
+    }
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, username });
   } catch (e: any) {

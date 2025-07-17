@@ -11,6 +11,7 @@ export interface Options {
   titleLanguage: TitleLanguage;
   videoAutoplay: boolean;
   hideFromCompare: boolean;
+  nicknameUserSel: string[];
 }
 
 // Default values
@@ -19,6 +20,7 @@ const defaultOptions: Options = {
   titleLanguage: 'ENGLISH',
   videoAutoplay: true,
   hideFromCompare: false
+  , nicknameUserSel: []
 };
 
 // Create a writable store for options

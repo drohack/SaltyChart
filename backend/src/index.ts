@@ -188,9 +188,39 @@ async function ensureDatabaseSchema() {
           "titleLanguage" TEXT NOT NULL DEFAULT 'ENGLISH',
           "videoAutoplay" BOOLEAN NOT NULL DEFAULT 1,
           "hideFromCompare" BOOLEAN NOT NULL DEFAULT 0,
+          "nicknameUserSel" TEXT,
           FOREIGN KEY("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
       `);
+    }
+
+    // Column migration for Settings: nicknameUserSel
+    if (settingsRows.length > 0) {
+      const settingCols: Array<{ name: string }> = await prisma.$queryRaw`PRAGMA table_info('Settings');`;
+      const hasNickSel = settingCols.some((c) => c.name === 'nicknameUserSel');
+      if (!hasNickSel) {
+        console.log('[DB] Adding nicknameUserSel column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Settings" ADD COLUMN "nicknameUserSel" TEXT`);
+      }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Seed missing Settings rows for existing users
+    // ────────────────────────────────────────────────────────────────
+    try {
+      const missingUserIds: Array<{ id: number }> = await prisma.$queryRaw`
+        SELECT id FROM "User" WHERE id NOT IN (SELECT userId FROM "Settings");
+      `;
+      if (missingUserIds.length > 0) {
+        console.log(`[DB] Inserting default Settings for ${missingUserIds.length} user(s)`);
+        for (const { id } of missingUserIds) {
+          await prisma.$executeRawUnsafe(
+            `INSERT INTO "Settings" ("userId", "theme", "titleLanguage", "videoAutoplay", "hideFromCompare", "nicknameUserSel") VALUES (${id}, 'SYSTEM', 'ENGLISH', 1, 0, '[]');`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[DB] Failed to seed default Settings rows', err);
     }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
