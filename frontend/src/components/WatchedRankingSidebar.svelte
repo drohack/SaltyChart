@@ -75,7 +75,10 @@
   }
 </script>
 
-<aside class="hidden lg:block absolute right-4 top-0 mt-0 w-80 max-h-[80vh] overflow-y-auto">
+<aside
+  class="hidden lg:block absolute right-4 top-0 mt-0 w-80 overflow-y-auto"
+  style="max-height: calc(100dvh - 195px);"
+>
   {#if list.length}
     <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
     <ul

@@ -662,10 +662,12 @@ $: {
   function shortTitle(item: any): string {
     const title = getDisplayTitle(item);
     return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '…' : title;
-  }
+}
+
+
 </script>
 
-<main class="p-4 flex flex-col gap-8">
+<main class="px-4 pt-4 pb-0 flex flex-col gap-8">
   <!-- Controls aligned to header -->
   <div class="w-full md:w-3/4 mx-auto">
     <SeasonSelect
@@ -679,12 +681,8 @@ $: {
     />
   </div>
 
-  <!-- Container: wheel centered in page; watched sidebar positioned absolutely so it doesn't shift wheel -->
-  <!-- Wheel column is hard-centered in the viewport.  We removed the
-       responsive paddings that previously tried to offset the sidebars so the
-       wheel position is now completely independent of whether the Unwatched
-       or Watched sidebars are rendered. -->
-  <div class="relative w-full flex justify-center">
+  <!-- Container: wheel grows to fill remaining space -->
+  <div class="relative w-full flex justify-center items-center overflow-visible flex-1">
     <div class="flex flex-col items-center mx-auto">
       {#if loading}
         <LoadingSpinner size="lg" />
@@ -693,15 +691,13 @@ $: {
       {:else}
         <!-- Wheel -->
         <div
-          class="relative mt-6 mx-auto overflow-visible"
+          id="wheel-wrapper"
+          class="relative mx-auto overflow-visible"
           style="
-            /* Wheel size: 95% of smaller viewport dimension, but limited by available height minus controls */
-            /* start shrinking sooner to keep Spin button visible */
-            /* increase reserved space so wheel shrinks sooner */
-            width: min(95vmin, calc(100vh - 21rem));
-            height: min(95vmin, calc(100vh - 21rem));
-            max-width: 900px;
-            max-height: 900px;
+            /* 52 header + 72 selector + 52 extra + 19 buffer → 195px total */
+            width: min(95vmin, calc(100dvh - 195px));
+            height: min(95vmin, calc(100dvh - 195px));
+            margin-bottom: 5px; /* keep a sliver of space below wheel */
           "
         >
           <!-- Clipped wheel -->
@@ -748,19 +744,33 @@ $: {
         </svg>
       </div>
 
-      <!-- Pointer -->
-      <div class="absolute left-1/2 -top-10 -translate-x-1/2 rotate-180 pointer-events-none">
-        <svg class="h-8 w-8 fill-primary" viewBox="0 0 24 24"><path d="M12 0l6 12H6z"/></svg>
-      </div>
-    </div>
 
-    <button class="btn btn-primary mt-8" on:click={spin} disabled={spinning}>Spin</button>
+      <!-- Central Spin button -->
+      <button
+        class={`group btn btn-primary btn-circle active:shadow-inner active:scale-95 transition-transform duration-75 absolute inset-0 m-auto w-28 h-28 md:w-36 md:h-36 shadow-lg flex items-center justify-center text-2xl select-none ${spinning ? 'pointer-events-none opacity-75' : ''}`}
+        on:click={spin}
+        style=""
+      >
+        Spin
+
+        <!-- Upward pointer protruding from top half of button -->
+        <svg
+          class={`absolute left-1/2 top-0 -translate-x-1/2 -translate-y-2/3 w-12 h-12 md:w-16 md:h-16 fill-current text-primary pointer-events-none group-hover:text-primary-focus group-active:text-primary-focus ${spinning ? 'opacity-75' : ''}`}
+          viewBox="0 0 24 30"
+        >
+          <path d="M12 0 L22 28 H2 Z" />
+        </svg>
+      </button>
+    </div>
   {/if}
     
   </div> <!-- end wheel column -->
 
     <!-- List sidebar (shows all items; watched are greyed out) -->
-    <aside class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 max-h-[80vh] overflow-y-auto">
+    <aside
+      class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 overflow-y-auto"
+      style="max-height: calc(100dvh - 195px);"
+    >
       {#if fullDetailed.length}
         <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
         <ul class="flex flex-col gap-3">
