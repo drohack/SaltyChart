@@ -8,6 +8,8 @@ $: _currentLang = $options.titleLanguage;
   // Hide adult (18+) content
   export let hideAdult: boolean = false;
   export let inListIds: Set<number> = new Set();
+  export let watchedIds: Set<number> = new Set();
+  export let autoRename: boolean = false;
   // Toast notification state
   let toastVisible: boolean = false;
   let toastMessage: string = '';
@@ -31,6 +33,76 @@ $: _currentLang = $options.titleLanguage;
   function closeModal() {
     modal = null;
     document.body.style.overflow = '';
+  }
+
+  // ------------------------------------------------------------------
+  // Mark-as-watched helper
+  // ------------------------------------------------------------------
+
+  async function markAsWatched(show: any) {
+    if (!$authToken) {
+      showToast('Log in to mark shows');
+      return;
+    }
+
+    const { season, year } = get(seasonYear);
+
+    try {
+      const res = await fetch('/api/list/watched', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${$authToken}`
+        },
+        body: JSON.stringify({ season, year, mediaId: show.id, watched: true })
+      });
+      if (res.ok) {
+        inListIds.add(show.id);
+        showToast('Marked as watched');
+        dispatch('watched', show.id);
+      } else {
+        showToast('Failed to mark watched');
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('Network error');
+    }
+  }
+
+  // Add to list as *unwatched* (pre-watch)
+  async function addToUnwatched(show: any) {
+    if (!$authToken) {
+      showToast('Log in to add');
+      return;
+    }
+
+    if (inListIds.has(show.id)) return;
+
+    const { season, year } = get(seasonYear);
+
+    try {
+      const res = await fetch('/api/list/watched', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${$authToken}`
+        },
+        body: JSON.stringify({ season, year, mediaId: show.id, watched: false })
+      });
+      if (res.ok) {
+        inListIds.add(show.id);
+        showToast('Added to My List');
+        dispatch('watched', show.id);
+        if (autoRename) {
+          dispatch('added', show.id);
+        }
+      } else {
+        showToast('Failed to add');
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('Network error');
+    }
   }
 
   // relation type -> label mapping
@@ -79,36 +151,14 @@ $: _currentLang = $options.titleLanguage;
     return arr;
   })();
 
-  // --- Equalize title heights per grid row ---
-  import { afterUpdate, onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { dragged } from '../stores/drag';
+import { dragged } from '../stores/drag';
+import { authToken } from '../stores/auth';
+import { seasonYear } from '../stores/season';
+import { get } from 'svelte/store';
+import { createEventDispatcher } from 'svelte';
 
-  function equalizeTitles() {
-    const titles: HTMLElement[] = Array.from(document.querySelectorAll('.anime-title'));
-    // Reset heights first
-    titles.forEach((t) => (t.style.height = 'auto'));
-
-    // Group by offsetTop (row)
-    const groups: Record<number, HTMLElement[]> = {};
-    for (const el of titles) {
-      const top = el.offsetTop;
-      (groups[top] ||= []).push(el);
-    }
-    // Set each group's titles to max height
-    Object.values(groups).forEach((list) => {
-      const max = Math.max(...list.map((e) => e.offsetHeight));
-      list.forEach((e) => (e.style.height = max + 'px'));
-    });
-  }
-
-  onMount(() => {
-    equalizeTitles();
-    window.addEventListener('resize', equalizeTitles);
-    return () => window.removeEventListener('resize', equalizeTitles);
-  });
-
-  afterUpdate(equalizeTitles);
+const dispatch = createEventDispatcher();
 
   function formatDate(ts: number): string {
     const date = new Date(ts * 1000);
@@ -255,7 +305,7 @@ $: _currentLang = $options.titleLanguage;
       <div class="flex items-center justify-between px-3 py-2 border-b border-base-300">
         {#key $options.titleLanguage + '-' + show.id}
           <h3
-            class="anime-title text-xl md:text-xl leading-snug whitespace-normal"
+            class="anime-title m-0 text-xl md:text-xl leading-tight whitespace-normal break-words"
             title={getDisplayTitle(show)}
           >
             {getDisplayTitle(show)}
@@ -278,7 +328,7 @@ $: _currentLang = $options.titleLanguage;
       </div>
 
       <!-- Row 1: Cover & YouTube thumbnail (equal width/height) -->
-      <div class="flex gap-3 p-3">
+      <div class="flex gap-3 px-3 py-1">
         <!-- Cover image (maintains full image, matches height of trailer) -->
         <div class="shrink-0 w-32 md:w-40 rounded overflow-hidden flex items-stretch">
           <img
@@ -358,20 +408,47 @@ $: _currentLang = $options.titleLanguage;
       {/if}
 
       <!-- Row 2: Tags (relations, 18+) -->
-      {#if displayTags(show).length > 0}
-        <div class="px-3 flex flex-wrap gap-1 pb-2">
+      {#if displayTags(show).length > 0 || ($authToken && !watchedIds.has(show.id))}
+        <div class="px-3 flex flex-wrap gap-2 items-center pb-0">
           {#each displayTags(show) as tag}
             <span class="badge badge-accent text-xs">{TAG_LABELS[tag]}</span>
           {/each}
+
+          {#if $authToken && (!inListIds.has(show.id) || !watchedIds.has(show.id))}
+            <div class="ml-auto flex gap-2">
+              {#if $authToken && !inListIds.has(show.id)}
+                <button
+                  class="btn btn-neutral btn-xs shadow"
+                  on:click={() => addToUnwatched(show)}
+                >
+                  watched trailer
+                </button>
+              {/if}
+
+              {#if $authToken && !watchedIds.has(show.id)}
+                <button
+                  class="btn btn-neutral btn-xs shadow"
+                  on:click={() => markAsWatched(show)}
+                >
+                  watched 1st ep
+                </button>
+              {/if}
+            </div>
+          {/if}
         </div>
       {/if}
 
       <!-- Row 3: Summary -->
       {#if show.description}
-        <div class="px-3 pb-3 text-sm overflow-y-auto max-h-40 prose prose-sm dark:prose-invert">
+        <div class="px-3 pb-3 text-sm overflow-y-auto max-h-60 flex-1 min-h-0 prose prose-sm dark:prose-invert">
           {@html show.description}
         </div>
       {/if}
+      {#if !show.description}
+        <div class="flex-1" />
+      {/if}
+
+      <!-- Mark-as-watched button moved to tag row above -->
     </div>
     {/key}
   {/each}

@@ -139,7 +139,7 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
   let loading = false;
   let hideSequels = false;
   let hideInList = false;
-  let autoRename = false;
+let autoRename = false;
   // Hide adult (18+) content
   let hideAdult = true;
 
@@ -199,6 +199,9 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
   // watch list state
   let watchList: any[] = [];
 
+  // Reference to sidebar component to call promptRenameFor
+  let sidebarRef: any;
+
   $: sidebarList = watchList
     .map((w) => {
       const a = anime.find((a) => a.id === w.mediaId);
@@ -225,6 +228,7 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
       body: JSON.stringify({ season, year, items: payload })
     });
   }
+
 
   function prevSeasonYear(s: Season, y: number): { season: Season; year: number } {
     const order: Season[] = ['WINTER', 'SPRING', 'SUMMER', 'FALL'];
@@ -256,7 +260,7 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
     }
   }
 
-  async function fetchList() {
+  async function fetchList(): Promise<void> {
     if (!$authToken) return;
     const res = await fetch(`/api/list?season=${season}&year=${year}`, {
       headers: { Authorization: `Bearer ${$authToken}` }
@@ -273,6 +277,11 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
   }
 
   $: inListIds = new Set(watchList.map((w) => w.mediaId));
+
+  // Set of IDs already marked as watched (watched = true or watchedAt not null)
+  $: watchedIds = new Set(
+    watchList.filter((w) => w.watched || w.watchedAt != null).map((w) => w.mediaId)
+  );
 
 
   // Keep track of the last (season,year) combo we fetched so we only hit the
@@ -317,33 +326,87 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
   {:else}
   {#if tvAnimeFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
-      <AnimeGrid anime={tvAnimeFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+      <AnimeGrid
+        anime={tvAnimeFiltered}
+        {hideSequels}
+        {hideInList}
+        {hideAdult}
+        {watchedIds}
+        {inListIds}
+        {autoRename}
+        on:watched={() => fetchList()}
+        on:added={async (e) => {
+          await fetchList();
+          sidebarRef?.promptRenameFor(e.detail);
+        }}
+      />
     {/if}
 
     {#if tvShortsFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">TV Short</h2>
-      <AnimeGrid anime={tvShortsFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+      <AnimeGrid
+        anime={tvShortsFiltered}
+        {hideSequels}
+        {hideInList}
+        {hideAdult}
+        {watchedIds}
+        {inListIds}
+        {autoRename}
+        on:watched={() => fetchList()}
+        on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
+      />
     {/if}
 
     {#if leftoversFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">Leftovers</h2>
-      <AnimeGrid anime={leftoversFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+      <AnimeGrid
+        anime={leftoversFiltered}
+        {hideSequels}
+        {hideInList}
+        {hideAdult}
+        {watchedIds}
+        {inListIds}
+        {autoRename}
+        on:watched={() => fetchList()}
+        on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
+      />
     {/if}
 
     {#if ovaOnaSpecialFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">OVA / ONA / Special</h2>
-      <AnimeGrid anime={ovaOnaSpecialFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+      <AnimeGrid
+        anime={ovaOnaSpecialFiltered}
+        {hideSequels}
+        {hideInList}
+        {hideAdult}
+        {watchedIds}
+        {inListIds}
+        {autoRename}
+        on:watched={() => fetchList()}
+        on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
+      />
     {/if}
 
     {#if moviesFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">Movies</h2>
-      <AnimeGrid anime={moviesFiltered} {hideSequels} {hideInList} {hideAdult} {inListIds} />
+      <AnimeGrid
+        anime={moviesFiltered}
+        {hideSequels}
+        {hideInList}
+        {hideAdult}
+        {watchedIds}
+        {inListIds}
+        {autoRename}
+        on:watched={() => fetchList()}
+        on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
+      />
     {/if}
   {/if}
   </div>
 
   {#if $authToken}
     <WatchListSidebar
+      bind:this={sidebarRef}
       list={sidebarList}
       season={season}
       year={year}

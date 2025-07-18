@@ -327,6 +327,13 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
     closeModal();
   }
 
+  // Expose helper so parent components can trigger the rename modal after
+  // programmatically adding an item (e.g. via “watched trailer” action).
+  export function promptRenameFor(id: number) {
+    const item = list.find((it) => it.id === id);
+    if (item) openNameModal(item);
+  }
+
   function removeEditingItem() {
     if (!editingItem) return;
     list = list.filter((it) => it.id !== editingItem.id);

@@ -65,6 +65,58 @@ docker save -o saltychart_$(date +%Y%m%d).tar \
 
 ---
 
+### Deploying the bundle to Unraid
+
+The resulting **`.tar`** archive contains both the backend and frontend images
+and can be moved to the server completely off-line.  The high-level flow is:
+
+1. Copy the archive to a shared folder on the Unraid box
+2. Load the images into Docker
+3. Point `docker-compose.yml` at the new tags
+4. Bounce the compose stack from the GUI
+
+Detailed walkthrough:
+
+1. **Transfer the file** (from your workstation)
+
+   ```bash
+   scp saltychart_20250718.tar \
+       <user>@<unraid-ip>:/mnt/user/SHARE/user/drohackfiles/
+   ```
+
+2. **Load the images** (inside an SSH session on the server)
+
+   ```bash
+   cd /mnt/user/SHARE/user/drohackfiles
+   docker load -i saltychart_20250718.tar
+   ```
+
+   Docker will spit out something like:
+
+   ```text
+   Loaded image: saltychart-backend:20250718
+   Loaded image: saltychart-frontend:20250718
+   ```
+
+3. **Update Compose to reference today’s tags**
+
+   ```bash
+   vi /mnt/user/appdata/saltychart/docker-compose.yml
+   # change the image lines
+   #   backend:  image: saltychart-backend:20250718
+   #   frontend: image: saltychart-frontend:20250718
+   :wq
+   ```
+
+4. **Redeploy from the Unraid GUI**
+
+   • Navigate to **Docker ➜ Compose** in the Unraid web UI.  
+   • Select the *saltychart* project, click **Compose Down**, wait a moment, then **Compose Up**.
+
+That’s it—the stack will come back online using the freshly imported images.
+
+---
+
 ## House-keeping
 
 Old development artefacts from an **earlier SvelteKit prototype** were removed
