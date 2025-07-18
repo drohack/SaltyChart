@@ -36,6 +36,8 @@ $: _lang = $options.titleLanguage;
 
   // Selected item after spin
   let selected: any = null;
+  // Track last selected wheel item ID to avoid immediate repeats
+  let lastSelectedId: number | null = null;
 
   // Derived: current user rank for selected show (1-based).  Null when not
   // watched or rank not set.
@@ -241,7 +243,9 @@ $: _lang = $options.titleLanguage;
   }
 
   // Derived values for wheel rendering
-  import SliceWorker from '../workers/slice-worker?worker';
+import SliceWorker from '../workers/slice-worker?worker';
+
+
   import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
 import { onDestroy } from 'svelte';
 const sliceWorker: Worker = new SliceWorker();
@@ -277,8 +281,48 @@ const sliceWorker: Worker = new SliceWorker();
   }
 
   function playTick() {
-    // Lower-pitched, short "tock" (~320 Hz) for Price-is-Right feel
-    playTone(320, 0.08, 'square', 0.35);
+    /*
+     * More organic click made from a short burst of white noise passed through
+     * a low-pass filter with exponential volume decay.  This avoids the
+     * robotic “beep” character of pure oscillators while staying file-less.
+     */
+    if (!audioCtx) return;
+
+    const duration = 0.07; // seconds
+
+    // Create noise buffer
+    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * duration, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      // White noise in [-1,1]
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    // Buffer source
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+
+    // Low-pass filter to make it less harsh (cut ~1 kHz)
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1000, audioCtx.currentTime);
+
+    // Gain envelope for quick decay
+    const gain = audioCtx.createGain();
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0.5, now); // initial volume 50 %
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    source.connect(filter).connect(gain).connect(audioCtx.destination);
+    source.start(now);
+    source.stop(now + duration);
+  }
+
+  // Quick, soft click played when the user presses the Spin button.
+  function playStartClick() {
+    if (!audioCtx) return;
+    // Simple triangle blip – clearer than filtered noise; very short.
+    playTone(500, 0.04, 'triangle', 0.22);
   }
 
   // ------------------------------------------------------------
@@ -293,14 +337,40 @@ const sliceWorker: Worker = new SliceWorker();
   function playCelebrationTune() {
     if (!audioCtx) return;
 
-    // Two-layer synth for richer, less "midi" feel: base and detuned saw waves
-    const notes = [523.25, 659.25, 783.99, 1046.5]; // C major arpeggio
+    /*
+     * Softer “trumpet-ish” celebration riff:
+     *   • Triangle waveform for a brassy but less harsh timbre.
+     *   • Gentle low-pass filter sweeps on each note.
+     *   • Reduced gain so it sits underneath the UI sounds.
+     */
+
+    if (!audioCtx) return;
+
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C-major arpeggio
+
     notes.forEach((freq, i) => {
       setTimeout(() => {
-        // base
-        playTone(freq, 0.3, 'sawtooth', 0.25);
-        // detuned layer for chorus effect
-        playTone(freq * 1.01, 0.3, 'sawtooth', 0.15);
+        const now = audioCtx.currentTime;
+
+        // Oscillator
+        const osc = audioCtx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now);
+
+        // Low-pass filter to mellow the tone (trumpet-like)
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(1800, now);
+        filter.frequency.linearRampToValueAtTime(1200, now + 0.3);
+
+        // Gain envelope
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.22, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+
+        osc.connect(filter).connect(gain).connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + 0.45);
       }, i * 200);
     });
   }
@@ -389,16 +459,20 @@ const sliceWorker: Worker = new SliceWorker();
   function spin() {
     if (!wheelItems.length || spinning) return;
 
-    // Play initial ping sound on user interaction (button click).
-    playPing();
-
     // Ensure AudioContext is resumed (required after user gesture).
     if (audioCtx?.state === 'suspended') {
       audioCtx.resume();
     }
+
+    // Soft initial click on user interaction (after context resumed)
+    playStartClick();
     spinning = true;
 
-    const idx = Math.floor(Math.random() * wheelItems.length);
+    let idx = Math.floor(Math.random() * wheelItems.length);
+    if (wheelItems.length > 1 && lastSelectedId !== null && wheelItems[idx].id === lastSelectedId) {
+      // Re-roll once to avoid immediate repeat.  Second random value guarantees change.
+      idx = (idx + 1 + Math.floor(Math.random() * (wheelItems.length - 1))) % wheelItems.length;
+    }
     const segAngle = 360 / wheelItems.length;
 
     const POINTER_OFFSET = 0; // pointer located at 12 o’clock (top-center)
@@ -421,6 +495,7 @@ const sliceWorker: Worker = new SliceWorker();
 
     rotation += delta;
     selected = wheelItems[idx];
+    lastSelectedId = selected.id;
 
     // ------------------------------------------------------------------
     // Schedule tick sounds for every slice the pointer crosses while the
@@ -432,10 +507,16 @@ const sliceWorker: Worker = new SliceWorker();
     const ticks = Math.floor(delta / segAngle);
     const durationMs = 4000; // CSS transition duration
 
+    // Limit audible ticks so they don’t become an overwhelming buzz when many
+    // slices are present.  We cap to ~25 clicks by skipping evenly.
+    const MAX_AUDIBLE_TICKS = 40;
+    const skipFactor = Math.max(1, Math.ceil(ticks / MAX_AUDIBLE_TICKS));
+
     // Inverse of ease-out cubic (matches CSS cubic-bezier curve reasonably well)
     const easeOutCubicInv = (p: number) => 1 - Math.cbrt(1 - p);
 
     for (let i = 1; i <= ticks; i++) {
+      if (i % skipFactor !== 0) continue; // skip excess ticks
       const angleFrac = i / ticks;
       const timeFrac = easeOutCubicInv(angleFrac);
       setTimeout(playTick, timeFrac * durationMs);
@@ -504,6 +585,31 @@ $: {
           }
         : w
     );
+
+    // Keep the watchedRank sidebar in sync immediately so the user sees the
+    // new entry without waiting for the reactive regeneration to kick in.
+    if (watched) {
+      // Avoid duplicates in case the item is already present.
+      if (!watchedRank.some((it) => it.id === id)) {
+        const data = anime.find((a) => a.id === id);
+        const entry = watchList.find((w) => w.mediaId === id);
+        if (data && entry) {
+          watchedRank = [
+            ...watchedRank,
+            {
+              ...data,
+              customName: entry.customName ?? null,
+              watched: true,
+              watchedAt: entry.watchedAt ?? null,
+              watchedRank: watchedRank.length
+            }
+          ];
+        }
+      }
+    } else {
+      // Remove from local ranking list when un-watched
+      watchedRank = watchedRank.filter((it) => it.id !== id);
+    }
 
     if ($authToken) {
       try {
@@ -660,7 +766,17 @@ $: {
         <ul class="flex flex-col gap-3">
           {#each fullDetailed as item (item.id)}
             <li
-              class={`flex items-center gap-3 group transition ${item.watched ? 'opacity-40 pointer-events-none' : ''}`}
+              class={`flex items-center gap-3 group transition rounded p-1 ${
+                item.watched
+                  ? 'opacity-40 pointer-events-none'
+                  : 'cursor-pointer hover:bg-primary/20 hover:shadow-md'
+              }`}
+              on:click={() => {
+                if (!item.watched) {
+                  selected = item;
+                  showModal = true;
+                }
+              }}
             >
               <img
                 src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
@@ -678,17 +794,7 @@ $: {
                 >
               {/key}
 
-              {#if !item.watched}
-                <!-- Mark as watched button, appears on hover -->
-                <button
-                  class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
-                  on:click={() => {
-                    selected = item;
-                    showModal = true;
-                  }}
-                  aria-label="Mark as watched"
-                >✓</button>
-              {/if}
+              <!-- No checkbox/button anymore for unwatched items -->
             </li>
           {/each}
         </ul>
@@ -703,6 +809,19 @@ $: {
         const idOrder = e.detail;
         // Reorder watchedRank to reflect emitted order
         watchedRank = idOrder.map((id) => watchedRank.find((it) => it.id === id)).filter(Boolean);
+
+        // ------------------------------------------------------------------
+        // Keep the primary watchList array in sync with the new ranking so
+        // future reactive computations (e.g. after marking another show as
+        // watched) preserve the user-defined order instead of falling back to
+        // the default list ordering.
+        // ------------------------------------------------------------------
+
+        watchList = watchList.map((entry) => {
+          const idx = idOrder.indexOf(entry.mediaId);
+          // Only update rank for entries that are part of the watched list.
+          return idx !== -1 ? { ...entry, watchedRank: idx } : entry;
+        });
 
         // Persist watched ranking via dedicated endpoint
         if ($authToken) {
