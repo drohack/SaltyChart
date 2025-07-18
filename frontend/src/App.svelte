@@ -20,14 +20,20 @@ import { options } from './stores/options';
 $: {
   const t = $options.theme;
   if (t === 'SYSTEM') {
-    document.documentElement.removeAttribute('data-theme');
+    // Follow OS color scheme via prefers-color-scheme media query
+    const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
     document.documentElement.classList.remove('high-contrast');
   } else if (t === 'HIGH_CONTRAST') {
     // use light base theme with high-contrast class
     document.documentElement.setAttribute('data-theme', 'light');
     document.documentElement.classList.add('high-contrast');
   } else {
-    document.documentElement.setAttribute('data-theme', t.toLowerCase());
+    // Map our custom enum to DaisyUI theme names.  Use "dark" instead of
+    // "night" for broader compatibility as some builds might omit the
+    // extended theme set but always include the core "dark" variant.
+    const themeName = t === 'NIGHT' ? 'dark' : t.toLowerCase();
+    document.documentElement.setAttribute('data-theme', themeName);
     document.documentElement.classList.remove('high-contrast');
   }
 }
