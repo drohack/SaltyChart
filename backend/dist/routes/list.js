@@ -41,6 +41,26 @@ router.patch('/watched', auth_1.requireAuth, async (req, res) => {
         return res.status(500).json({ error: 'Failed to update' });
     }
 });
+// Toggle hidden flag on a list entry (excludes from wheel)
+router.patch('/hidden', auth_1.requireAuth, async (req, res) => {
+    const { season, year, mediaId, hidden } = req.body;
+    if (!season || !year || typeof mediaId !== 'number') {
+        return res.status(400).json({ error: 'Bad body' });
+    }
+    try {
+        const updated = await db_1.default.watchList.updateMany({
+            where: { userId: req.userId, season, year, mediaId },
+            data: {
+                hidden: hidden ?? true
+            }
+        });
+        return res.json({ updated: updated.count });
+    }
+    catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to update hidden status' });
+    }
+});
 // Reorder watched items (separate ranking); body: { season, year, ids: number[] }
 router.patch('/rank', auth_1.requireAuth, async (req, res) => {
     const { season, year, ids } = req.body;
@@ -124,15 +144,15 @@ router.get('/users-with-nicknames', async (_req, res) => {
         return res.status(500).json({ error: 'Failed to fetch users' });
     }
 });
-// Returns nickname list for a given mediaId: [{ userName, nickname }]
+// Returns nickname list for a given mediaId: [{ userName, nickname, rank }]
 router.get('/nicknames', async (req, res) => {
     const mediaId = Number(req.query.mediaId);
     if (!mediaId)
         return res.status(400).json({ error: 'Missing mediaId' });
     try {
         const rows = await db_1.default.watchList.findMany({
-            where: { mediaId, customName: { not: null } },
-            select: { customName: true, userId: true }
+            where: { mediaId },
+            select: { customName: true, userId: true, watchedRank: true, order: true }
         });
         if (rows.length === 0)
             return res.json([]);
@@ -149,7 +169,12 @@ router.get('/nicknames', async (req, res) => {
         });
         const data = rows.map((r) => ({
             userName: idToName.get(r.userId) ?? 'Unknown',
-            nickname: r.customName
+            nickname: r.customName,
+            rank: typeof r.watchedRank === 'number'
+                ? r.watchedRank + 1 // watched rank saved 0-based
+                : typeof r.order === 'number'
+                    ? r.order + 1 // pre-watch list order (also 0-based)
+                    : null
         }));
         return res.json(data);
     }

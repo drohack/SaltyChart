@@ -29,6 +29,9 @@ $: _lang = $options.titleLanguage;
   let watchList: any[] = [];
   let anime: any[] = [];
 
+  // Lists derived later but need initial declaration for TS
+  let unwatchedDetailed: any[] = [];
+
   // Wheel DOM reference & animation state
   let wheelEl: HTMLDivElement;
   let rotation = 0; // degrees
@@ -48,6 +51,69 @@ $: _lang = $options.titleLanguage;
       })()
     : null;
   let nicknameList: Array<{ userName: string; nickname: string | null; rank: number | null }> = [];
+
+  // --------------------------------------------------------------
+  // Hide / Show all helpers for the Unwatched list
+  // --------------------------------------------------------------
+
+  // Derived: whether every unwatched entry is currently hidden.
+  $: allHidden = unwatchedDetailed.length > 0 && unwatchedDetailed.every((it) => it.hidden);
+
+  $: hasHidden = unwatchedDetailed.some((it) => it.hidden);
+  $: hasVisible = unwatchedDetailed.some((it) => !it.hidden);
+
+  // Helper to update hidden flag in bulk
+  async function setHiddenForAll(targetHidden: boolean) {
+    if (!$authToken) return;
+
+    const targets = unwatchedDetailed.filter((it) => it.hidden !== targetHidden);
+
+    watchList = watchList.map((entry) => {
+      const hit = targets.find((t) => t.id === entry.mediaId);
+      return hit ? { ...entry, hidden: targetHidden } : entry;
+    });
+
+    for (const item of targets) {
+      fetch('/api/list/hidden', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${$authToken}`
+        },
+        body: JSON.stringify({ season, year, mediaId: item.id, hidden: targetHidden })
+      }).catch(() => {});
+    }
+  }
+
+  const hideAll = () => setHiddenForAll(true);
+  const showAll = () => setHiddenForAll(false);
+
+  async function toggleHide(item: any) {
+    if (!$authToken) return;
+    try {
+      const res = await fetch('/api/list/hidden', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${$authToken}`
+        },
+        body: JSON.stringify({
+          season,
+          year,
+          mediaId: item.id,
+          hidden: !item.hidden
+        })
+      });
+      if (res.ok) {
+        // Update local state without full refetch for snappy UI
+        watchList = watchList.map((w) =>
+          w.mediaId === item.id ? { ...w, hidden: !item.hidden } : w
+        );
+      }
+    } catch (err) {
+      console.error('Failed to toggle hidden', err);
+    }
+  }
 
   // Fetch nickname list whenever modal opens (and selected differs)
   $: if (showModal && selected) {
@@ -172,7 +238,7 @@ $: _lang = $options.titleLanguage;
   //    shows *all* items but greys-out the ones already watched.
 
   $: watchedEntries = watchList.filter((w) => w.watched);
-  $: unwatchedEntries = watchList.filter((w) => !w.watched);
+$: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
 
   // Build wheel items with full anime data, but only for entries that have
   // NOT been watched yet so we never spin on already-watched shows.
@@ -195,11 +261,15 @@ $: _lang = $options.titleLanguage;
         ? {
             ...data,
             customName: w.customName ?? null,
-            watched: w.watched ?? Boolean(w.watchedAt)
+            watched: w.watched ?? Boolean(w.watchedAt),
+            hidden: Boolean(w.hidden)
           }
         : null;
     })
     .filter(Boolean);
+
+  // Filtered list for the sidebar: only items that are still UNwatched.
+  $: unwatchedDetailed = fullDetailed.filter((i) => !i.watched);
 
   // Client-side ranking list for watched items.  Initially seeded from
   // watchedDetailed (sorted by watchedAt) and updated whenever the user
@@ -771,18 +841,44 @@ $: {
       class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 overflow-y-auto"
       style="max-height: calc(100dvh - 195px);"
     >
-      {#if fullDetailed.length}
-        <h3 class="text-lg font-bold mb-4 text-center md:text-left">Unwatched</h3>
+      {#if unwatchedDetailed.length}
+        <div class="flex items-center justify-between mb-4 pr-2">
+          <h3 class="text-lg font-bold text-center md:text-left">Unwatched</h3>
+
+          <!-- Hide / Show all buttons -->
+          {#if $authToken}
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
+                on:click={hideAll}
+                disabled={!hasVisible}
+              >
+                Hide All
+              </button>
+              <button
+                type="button"
+                class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
+                on:click={showAll}
+                disabled={!hasHidden}
+              >
+                Show All
+              </button>
+            </div>
+          {/if}
+        </div>
         <ul class="flex flex-col gap-3">
-          {#each fullDetailed as item (item.id)}
+          {#each unwatchedDetailed as item (item.id)}
             <li
               class={`flex items-center gap-3 group transition rounded p-1 ${
                 item.watched
                   ? 'opacity-40 pointer-events-none'
+                  : item.hidden
+                  ? 'opacity-40'
                   : 'cursor-pointer hover:bg-primary/20 hover:shadow-md'
               }`}
               on:click={() => {
-                if (!item.watched) {
+                if (!item.watched && !item.hidden) {
                   selected = item;
                   showModal = true;
                 }
@@ -804,7 +900,27 @@ $: {
                 >
               {/key}
 
-              <!-- No checkbox/button anymore for unwatched items -->
+              <!-- Eye toggle -->
+              <button
+                type="button"
+                class={`shrink-0 ml-auto mr-2 relative p-4 -m-3 rounded-full hover:bg-base-300 transition \
+                  ${item.hidden ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                on:click|stopPropagation={() => toggleHide(item)}
+              >
+                {#if item.hidden}
+                  <!-- Closed eye (red) -->
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.418 0-8.19-2.865-9.543-7  .563-1.792 1.597-3.365 2.929-4.582M6.24 6.24c1.843-1.207 4.034-1.957 6.498-1.957 4.418 0 8.19 2.865 9.543 7-.27.859-.607 1.686-1.005 2.472M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18" />
+                  </svg>
+                {:else}
+                  <!-- Open eye -->
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5s8.268 2.943 9.542 7c-1.274 4.057-5.065 7-9.542 7S3.732 16.057 2.458 12z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                {/if}
+              </button>
             </li>
           {/each}
         </ul>

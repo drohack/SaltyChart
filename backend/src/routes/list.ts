@@ -46,6 +46,34 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+// Toggle hidden flag on a list entry (excludes from wheel)
+router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
+  const { season, year, mediaId, hidden } = req.body as {
+    season?: string;
+    year?: number;
+    mediaId?: number;
+    hidden?: boolean;
+  };
+
+  if (!season || !year || typeof mediaId !== 'number') {
+    return res.status(400).json({ error: 'Bad body' });
+  }
+
+  try {
+    const updated = await prisma.watchList.updateMany({
+      where: { userId: req.userId!, season, year, mediaId },
+      data: {
+        hidden: hidden ?? true
+      } as any
+    });
+
+    return res.json({ updated: updated.count });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to update hidden status' });
+  }
+});
+
 // Reorder watched items (separate ranking); body: { season, year, ids: number[] }
 router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, ids } = req.body as { season?: string; year?: number; ids?: number[] };

@@ -82,6 +82,7 @@ async function ensureDatabaseSchema() {
           "order"     INTEGER NOT NULL,
           "customName" TEXT,
           "watched"    BOOLEAN NOT NULL DEFAULT 0,
+          "hidden"     BOOLEAN NOT NULL DEFAULT 0,
           "watchedAt" DATETIME,
           "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
@@ -155,6 +156,11 @@ async function ensureDatabaseSchema() {
         UPDATE WatchList SET watchedRank = (SELECT rnk FROM ranked WHERE ranked.id = WatchList.id)
         WHERE id IN (SELECT id FROM ranked);
       `);
+        }
+        const hasHidden = columns.some((c) => c.name === 'hidden');
+        if (!hasHidden) {
+            console.log('[DB] Adding hidden column');
+            await db_1.default.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "hidden" BOOLEAN NOT NULL DEFAULT 0`);
         }
         // -------------------------- Settings table ---------------------------
         const settingsRows = await db_1.default.$queryRaw `SELECT name FROM sqlite_master WHERE type='table' AND name='Settings' LIMIT 1;`;

@@ -39,6 +39,7 @@ model WatchList {
   watched     Boolean @default(false)
   watchedAt   DateTime?
   watchedRank Int?
+  hidden      Boolean @default(false)
 
   user User @relation(fields: [userId], references: [id])
 }

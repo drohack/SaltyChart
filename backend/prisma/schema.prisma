@@ -44,6 +44,7 @@ model WatchList {
   /// the top of the Watched ranking UI.  Null means no manual ranking (falls
   /// back to watchedAt ordering).
   watchedRank Int?
+  hidden      Boolean @default(false)
 
   @@unique([userId, season, year, mediaId])
 }
