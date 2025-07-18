@@ -21,14 +21,57 @@ function currentSeason(date: Date = new Date()): Season {
 }
 
 const STORAGE_KEY = 'season-year';
+// Persisted value expires after CACHE_TTL_MS to ensure we eventually return
+// to the real “current” season when users revisit after a longer break.
+// Keep this in sync with the backend SeasonCache TTL (1 h) so we fetch fresh
+// data when the cache becomes stale.
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// ---------------------------------------------------------------------------
+// Force-reset helper for hard reload (Ctrl + F5)
+// ---------------------------------------------------------------------------
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e) => {
+    if ((e.key === 'F5' || e.keyCode === 116) && e.ctrlKey) {
+      try {
+        sessionStorage.setItem('forceSeasonReset', '1');
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+}
 
 // Attempt to restore the last selection from localStorage (browser-only).
+interface Persisted {
+  season: Season;
+  year: number;
+  saved: number; // epoch ms
+}
+
 function loadPersisted(): { season: Season; year: number } | null {
   if (typeof localStorage === 'undefined') return null;
+  // If a hard-reload flag was set, clear and skip immediately
+  if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('forceSeasonReset')) {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {/* ignore */}
+    sessionStorage.removeItem('forceSeasonReset');
+    return null;
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const { season, year } = JSON.parse(raw);
+    const { season, year, saved } = JSON.parse(raw) as Partial<Persisted>;
+
+    const now = Date.now();
+    if (typeof saved === 'number' && now - saved > CACHE_TTL_MS) {
+      // Expired – clear so next load uses current season
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+
     if (
       (season === 'WINTER' || season === 'SPRING' || season === 'SUMMER' || season === 'FALL') &&
       typeof year === 'number' &&
@@ -53,7 +96,8 @@ export const seasonYear: Writable<{ season: Season; year: number }> = writable(i
 if (typeof localStorage !== 'undefined') {
   seasonYear.subscribe((val) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(val));
+      const payload: Persisted = { ...val, saved: Date.now() } as Persisted;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       /* quota or other errors – ignore */
     }
@@ -121,4 +165,3 @@ export function nextSeasonInfo(
       return { season: 'WINTER', year: year + 1, starts: new Date(year, 11, 1) }; // 1 Dec
   }
 }
-
