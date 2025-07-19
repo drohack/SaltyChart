@@ -10,7 +10,7 @@ import { get } from 'svelte/store';
 import { onMount } from 'svelte';
 
 import type { Season } from '../stores/season';
-import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
+import { nextSeasonInfo } from '../stores/season';
 
 
   // ------------------------------------------------------------------
@@ -38,30 +38,28 @@ import { getCurrentSeasonFromAPI, nextSeasonInfo } from '../stores/season';
   let nextSeasonLabel: string = '';
 
   async function updateCountdown() {
-    try {
-      const { season: curSeason, seasonYear: curYear } = await getCurrentSeasonFromAPI();
-      const next = nextSeasonInfo(curSeason, curYear);
-      const now = new Date();
-      const msPerDay = 86_400_000;
-      daysUntilNext = Math.max(0, Math.ceil((next.starts.getTime() - now.getTime()) / msPerDay));
-      nextSeasonLabel = `${next.season} ${next.year}`;
-    } catch (e) {
-      console.error('Countdown fetch failed', e);
-      // Fallback: derive from local date if AniList call fails
-      const fallbackSeason = ((): Season => {
-        const m = new Date().getMonth();
-        if (m <= 1) return 'WINTER';
-        if (m <= 4) return 'SPRING';
-        if (m <= 7) return 'SUMMER';
-        return 'FALL';
-      })();
-      const fallback = nextSeasonInfo(fallbackSeason, new Date().getFullYear());
-      const now = new Date();
-      const msPerDay = 86_400_000;
-      daysUntilNext = Math.max(0, Math.ceil((fallback.starts.getTime() - now.getTime()) / msPerDay));
-      nextSeasonLabel = `${fallback.season} ${fallback.year}`;
+    // AniList recently started to enforce stricter CORS checks which breaks
+    // the direct client-side call we used previously.  Instead of attempting
+    // the remote fetch (and spamming the console with 400 errors when it
+    // fails) we now derive the countdown purely from the browser’s local
+    // date.  This is *good enough* for the motivational banner shown on the
+    // home page and avoids an otherwise unnecessary network round-trip.
+
+    const today = new Date();
+    const curSeason = ((): Season => {
+      const m = today.getMonth();
+      if (m <= 1) return 'WINTER';
+      if (m <= 4) return 'SPRING';
+      if (m <= 7) return 'SUMMER';
+      return 'FALL';
+    })();
+
+    const curYear = today.getFullYear();
+    const next = nextSeasonInfo(curSeason, curYear);
+    const msPerDay = 86_400_000;
+    daysUntilNext = Math.max(0, Math.ceil((next.starts.getTime() - today.getTime()) / msPerDay));
+    nextSeasonLabel = `${next.season} ${next.year}`;
     }
-  }
 
   onMount(updateCountdown);
 
