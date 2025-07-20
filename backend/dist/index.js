@@ -6,6 +6,35 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const dotenv_1 = __importDefault(require("dotenv"));
 // Load env variables FIRST so later imports (Prisma client) see final value.
 dotenv_1.default.config();
+// ---------------------------------------------------------------------------
+// Networking tweaks
+// ---------------------------------------------------------------------------
+// In certain production environments (e.g. Docker on hosts with broken or
+// fire-walled IPv6 connectivity) Node may resolve an IPv6 address for a remote
+// service, attempt to connect, then fall back to IPv4 after several seconds.
+// This manifests as a ~6-7 s delay on the first outgoing HTTP request even
+// though the target service (AniList API in our case) is fast and reachable.
+//
+// To avoid the stall we instruct Node’s DNS resolver to prefer IPv4 addresses
+// while still returning IPv6 when no v4 is available.  The same behaviour can
+// be achieved via the environment variable:
+//   NODE_OPTIONS=--dns-result-order=ipv4first
+// Adding it programmatically here keeps the container self-contained and
+// requires no additional deployment changes.
+//
+// Reference: https://nodejs.org/api/dns.html#dnspromisessetdefaultresultorderorder
+const node_dns_1 = __importDefault(require("node:dns"));
+try {
+    // Supported since Node 18.  Guarded so local older runtimes don’t crash.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore – `setDefaultResultOrder` is available at runtime.
+    if (typeof node_dns_1.default.setDefaultResultOrder === 'function') {
+        node_dns_1.default.setDefaultResultOrder('ipv4first');
+    }
+}
+catch {
+    /* noop */
+}
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const compression_1 = __importDefault(require("compression"));

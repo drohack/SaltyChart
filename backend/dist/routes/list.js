@@ -29,10 +29,49 @@ router.patch('/watched', auth_1.requireAuth, async (req, res) => {
             where: { userId: req.userId, season, year, mediaId },
             data: {
                 watched: watched ?? true,
-                watchedAt: watched ? new Date() : null,
-                watchedRank: watched ? null : undefined // null on unwatch
+                watchedAt: watched ? new Date() : null
             }
         });
+        // If existing row was updated to watched=true we must assign a watchedRank
+        if (updated.count > 0 && watched) {
+            // Fetch current count of watched items *after* the flag flip so the new
+            // item is included in the tally.
+            const watchedCount = await db_1.default.watchList.count({
+                where: { userId: req.userId, season, year, watched: true }
+            });
+            // Only update rank if it is currently null/undefined – keeps manual
+            // re-ordering intact when the user toggles back and forth.
+            await db_1.default.watchList.updateMany({
+                where: { userId: req.userId, season, year, mediaId, watchedRank: null },
+                data: { watchedRank: watchedCount - 1 }
+            });
+        }
+        // If no existing row was updated we interpret the request as "add a new
+        // entry that is already watched" so users can mark shows directly from
+        // the main grid without first adding them to their unwatched list.
+        if (updated.count === 0 && (watched === true || watched === false)) {
+            // Determine next order & watchedRank positions so the new entry lands
+            // at the bottom of the respective lists.
+            const [orderCount, watchedCount] = await Promise.all([
+                db_1.default.watchList.count({ where: { userId: req.userId, season, year } }),
+                db_1.default.watchList.count({
+                    where: { userId: req.userId, season, year, watched: true }
+                })
+            ]);
+            await db_1.default.watchList.create({
+                data: {
+                    userId: req.userId,
+                    season,
+                    year,
+                    mediaId,
+                    order: orderCount, // append to unwatched list (not relevant once watched)
+                    watched: watched,
+                    watchedAt: watched ? new Date() : null,
+                    watchedRank: watched ? watchedCount : null
+                }
+            });
+            return res.json({ created: true });
+        }
         // updated.count indicates how many rows modified
         return res.json({ updated: updated.count });
     }
