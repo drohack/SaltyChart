@@ -88,31 +88,41 @@ $: _lang = $options.titleLanguage;
   const hideAll = () => setHiddenForAll(true);
   const showAll = () => setHiddenForAll(false);
 
-  async function toggleHide(item: any) {
+  /**
+   * Toggle the `hidden` flag for a single item.
+   *
+   * We update the local `watchList` optimistically so the UI responds
+   * instantly, then fire-and-forget the PATCH request.  Any failure will be
+   * logged to the console and the list will be refreshed on the next full
+   * fetch, keeping the code simple while delivering snappy UX.
+   */
+  function toggleHide(item: any) {
     if (!$authToken) return;
-    try {
-      const res = await fetch('/api/list/hidden', {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${$authToken}`
-        },
-        body: JSON.stringify({
-          season,
-          year,
-          mediaId: item.id,
-          hidden: !item.hidden
-        })
-      });
-      if (res.ok) {
-        // Update local state without full refetch for snappy UI
-        watchList = watchList.map((w) =>
-          w.mediaId === item.id ? { ...w, hidden: !item.hidden } : w
-        );
-      }
-    } catch (err) {
+
+    // --- Optimistic local update (no awaiting network) -------------------
+    watchList = watchList.map((w) =>
+      w.mediaId === item.id ? { ...w, hidden: !item.hidden } : w
+    );
+
+    // Background persistence – we don't await the result to keep the UI fast
+    fetch('/api/list/hidden', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${$authToken}`
+      },
+      body: JSON.stringify({
+        season,
+        year,
+        mediaId: item.id,
+        hidden: !item.hidden
+      })
+    }).catch((err) => {
+      // Note: If the request fails the UI might become out-of-sync until the
+      // next list refresh, which is acceptable and still better than blocking
+      // every click for 2 seconds in production.
       console.error('Failed to toggle hidden', err);
-    }
+    });
   }
 
   // Fetch nickname list whenever modal opens (and selected differs)

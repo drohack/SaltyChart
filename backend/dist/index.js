@@ -78,10 +78,25 @@ async function ensureDatabaseSchema() {
         // Increase SQLite in-memory page cache (~8 MB) to reduce disk I/O on slow
         // volumes.  Negative value expresses size in kibibytes.
         try {
-            await db_1.default.$executeRawUnsafe('PRAGMA cache_size = -8000;'); // 8 MiB
+            await db_1.default.$queryRawUnsafe('PRAGMA cache_size = -8000;'); // 8 MiB (returns new size)
         }
         catch (e) {
             console.warn('[DB] Failed to set PRAGMA cache_size', e);
+        }
+        // Switch to WAL journal for concurrent reads while a write is in progress
+        // and relax fsync guarantees from FULL (default) to NORMAL.  On typical
+        // home-server HDDs this cuts small write transactions from >3 s down to
+        // a few milliseconds without risking corruption in practice.
+        try {
+            // Some PRAGMA statements (e.g., journal_mode) *return* the resulting mode
+            // which makes Prisma complain when called via `$executeRaw*`.  We switch
+            // to `$queryRawUnsafe` and simply ignore the returned rows so the call
+            // works both locally and in production.
+            await db_1.default.$queryRawUnsafe("PRAGMA journal_mode = WAL;");
+            await db_1.default.$queryRawUnsafe("PRAGMA synchronous = NORMAL;");
+        }
+        catch (e) {
+            console.warn('[DB] Failed to tune SQLite performance', e);
         }
         // -------------------------- User table ---------------------------
         const userRows = await db_1.default.$queryRaw `SELECT name FROM sqlite_master WHERE type='table' AND name='User' LIMIT 1;`;

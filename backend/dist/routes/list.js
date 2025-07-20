@@ -21,12 +21,12 @@ router.get('/', auth_1.requireAuth, async (req, res) => {
 // Mark a list entry as watched/unwatched
 router.patch('/watched', auth_1.requireAuth, async (req, res) => {
     const { season, year, mediaId, watched } = req.body;
-    if (!season || !year || typeof mediaId !== 'number') {
+    if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
         return res.status(400).json({ error: 'Bad body' });
     }
     try {
         const updated = await db_1.default.watchList.updateMany({
-            where: { userId: req.userId, season, year, mediaId },
+            where: { userId: req.userId, season, year: Number(year), mediaId },
             data: {
                 watched: watched ?? true,
                 watchedAt: watched ? new Date() : null
@@ -37,12 +37,12 @@ router.patch('/watched', auth_1.requireAuth, async (req, res) => {
             // Fetch current count of watched items *after* the flag flip so the new
             // item is included in the tally.
             const watchedCount = await db_1.default.watchList.count({
-                where: { userId: req.userId, season, year, watched: true }
+                where: { userId: req.userId, season, year: Number(year), watched: true }
             });
             // Only update rank if it is currently null/undefined – keeps manual
             // re-ordering intact when the user toggles back and forth.
             await db_1.default.watchList.updateMany({
-                where: { userId: req.userId, season, year, mediaId, watchedRank: null },
+                where: { userId: req.userId, season, year: Number(year), mediaId, watchedRank: null },
                 data: { watchedRank: watchedCount - 1 }
             });
         }
@@ -53,16 +53,16 @@ router.patch('/watched', auth_1.requireAuth, async (req, res) => {
             // Determine next order & watchedRank positions so the new entry lands
             // at the bottom of the respective lists.
             const [orderCount, watchedCount] = await Promise.all([
-                db_1.default.watchList.count({ where: { userId: req.userId, season, year } }),
+                db_1.default.watchList.count({ where: { userId: req.userId, season, year: Number(year) } }),
                 db_1.default.watchList.count({
-                    where: { userId: req.userId, season, year, watched: true }
+                    where: { userId: req.userId, season, year: Number(year), watched: true }
                 })
             ]);
             await db_1.default.watchList.create({
                 data: {
                     userId: req.userId,
                     season,
-                    year,
+                    year: Number(year),
                     mediaId,
                     order: orderCount, // append to unwatched list (not relevant once watched)
                     watched: watched,
@@ -83,12 +83,12 @@ router.patch('/watched', auth_1.requireAuth, async (req, res) => {
 // Toggle hidden flag on a list entry (excludes from wheel)
 router.patch('/hidden', auth_1.requireAuth, async (req, res) => {
     const { season, year, mediaId, hidden } = req.body;
-    if (!season || !year || typeof mediaId !== 'number') {
+    if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
         return res.status(400).json({ error: 'Bad body' });
     }
     try {
         const updated = await db_1.default.watchList.updateMany({
-            where: { userId: req.userId, season, year, mediaId },
+            where: { userId: req.userId, season, year: Number(year), mediaId },
             data: {
                 hidden: hidden ?? true
             }
@@ -103,12 +103,13 @@ router.patch('/hidden', auth_1.requireAuth, async (req, res) => {
 // Reorder watched items (separate ranking); body: { season, year, ids: number[] }
 router.patch('/rank', auth_1.requireAuth, async (req, res) => {
     const { season, year, ids } = req.body;
-    if (!season || !year || !Array.isArray(ids)) {
+    if (!season || year === undefined || year === null || !Array.isArray(ids)) {
         return res.status(400).json({ error: 'Bad body' });
     }
     // Build update promises assigning watchedRank based on position
+    const numericYear = Number(year);
     const tx = ids.map((mediaId, idx) => db_1.default.watchList.updateMany({
-        where: { userId: req.userId, season, year, mediaId, watched: true },
+        where: { userId: req.userId, season, year: numericYear, mediaId, watched: true },
         data: { watchedRank: idx }
     }));
     try {
@@ -123,7 +124,7 @@ router.patch('/rank', auth_1.requireAuth, async (req, res) => {
 // Replace list (send array of mediaIds in desired order)
 router.put('/', auth_1.requireAuth, async (req, res) => {
     const { season, year, items } = req.body;
-    if (!season || !year || !Array.isArray(items)) {
+    if (!season || year === undefined || year === null || !Array.isArray(items)) {
         return res.status(400).json({ error: 'Bad body' });
     }
     // delete existing then recreate
@@ -139,12 +140,12 @@ router.put('/', auth_1.requireAuth, async (req, res) => {
         };
     });
     await db_1.default.$transaction([
-        db_1.default.watchList.deleteMany({ where: { userId: req.userId, season, year } }),
+        db_1.default.watchList.deleteMany({ where: { userId: req.userId, season, year: Number(year) } }),
         ...normalized.map((entry, idx) => db_1.default.watchList.create({
             data: {
                 userId: req.userId,
                 season,
-                year,
+                year: Number(year),
                 mediaId: entry.mediaId,
                 customName: entry.customName ?? null,
                 watched: entry.watched ?? false,

@@ -19,18 +19,18 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, mediaId, watched } = req.body as {
     season?: string;
-    year?: number;
+    year?: number | string;
     mediaId?: number;
     watched?: boolean;
   };
 
-  if (!season || !year || typeof mediaId !== 'number') {
+  if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
     return res.status(400).json({ error: 'Bad body' });
   }
 
   try {
     const updated = await prisma.watchList.updateMany({
-      where: { userId: req.userId!, season, year, mediaId },
+      where: { userId: req.userId!, season, year: Number(year), mediaId },
       data: {
         watched: watched ?? true,
         watchedAt: watched ? new Date() : null
@@ -42,13 +42,13 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
       // Fetch current count of watched items *after* the flag flip so the new
       // item is included in the tally.
       const watchedCount = await prisma.watchList.count({
-        where: { userId: req.userId!, season, year, watched: true }
+        where: { userId: req.userId!, season, year: Number(year), watched: true }
       });
 
       // Only update rank if it is currently null/undefined – keeps manual
       // re-ordering intact when the user toggles back and forth.
       await prisma.watchList.updateMany({
-        where: { userId: req.userId!, season, year, mediaId, watchedRank: null },
+        where: { userId: req.userId!, season, year: Number(year), mediaId, watchedRank: null },
         data: { watchedRank: watchedCount - 1 }
       });
     }
@@ -62,9 +62,9 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
       // at the bottom of the respective lists.
 
       const [orderCount, watchedCount] = await Promise.all([
-        prisma.watchList.count({ where: { userId: req.userId!, season, year } }),
+        prisma.watchList.count({ where: { userId: req.userId!, season, year: Number(year) } }),
         prisma.watchList.count({
-          where: { userId: req.userId!, season, year, watched: true }
+          where: { userId: req.userId!, season, year: Number(year), watched: true }
         })
       ]);
 
@@ -72,7 +72,7 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
         data: {
           userId: req.userId!,
           season,
-          year,
+          year: Number(year),
           mediaId,
           order: orderCount, // append to unwatched list (not relevant once watched)
           watched: watched,
@@ -95,18 +95,18 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
 router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, mediaId, hidden } = req.body as {
     season?: string;
-    year?: number;
+    year?: number | string;
     mediaId?: number;
     hidden?: boolean;
   };
 
-  if (!season || !year || typeof mediaId !== 'number') {
+  if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
     return res.status(400).json({ error: 'Bad body' });
   }
 
   try {
     const updated = await prisma.watchList.updateMany({
-      where: { userId: req.userId!, season, year, mediaId },
+      where: { userId: req.userId!, season, year: Number(year), mediaId },
       data: {
         hidden: hidden ?? true
       } as any
@@ -121,15 +121,17 @@ router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
 
 // Reorder watched items (separate ranking); body: { season, year, ids: number[] }
 router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
-  const { season, year, ids } = req.body as { season?: string; year?: number; ids?: number[] };
-  if (!season || !year || !Array.isArray(ids)) {
+  const { season, year, ids } = req.body as { season?: string; year?: number | string; ids?: number[] };
+  if (!season || year === undefined || year === null || !Array.isArray(ids)) {
     return res.status(400).json({ error: 'Bad body' });
   }
 
   // Build update promises assigning watchedRank based on position
+  const numericYear = Number(year);
+
   const tx = ids.map((mediaId, idx) =>
     prisma.watchList.updateMany({
-      where: { userId: req.userId!, season, year, mediaId, watched: true },
+      where: { userId: req.userId!, season, year: numericYear, mediaId, watched: true },
       data: { watchedRank: idx }
     })
   );
@@ -147,10 +149,10 @@ router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
 router.put('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, items } = req.body as {
     season?: string;
-    year?: number;
+    year?: number | string;
     items?: Array<{ mediaId: number; customName?: string; watched?: boolean; watchedAt?: string | Date | null } | number>;
   };
-  if (!season || !year || !Array.isArray(items)) {
+  if (!season || year === undefined || year === null || !Array.isArray(items)) {
     return res.status(400).json({ error: 'Bad body' });
   }
 
@@ -167,13 +169,13 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
   });
 
   await prisma.$transaction([
-    prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year } }),
+    prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year: Number(year) } }),
     ...normalized.map((entry, idx) =>
       prisma.watchList.create({
         data: {
           userId: req.userId!,
           season,
-          year,
+          year: Number(year),
           mediaId: entry.mediaId,
           customName: entry.customName ?? null,
           watched: entry.watched ?? false,
