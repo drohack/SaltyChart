@@ -22,8 +22,27 @@ function getItemTitle(item: any): string {
   return item.title?.english || item.title?.romaji || item.title?.native || '';
 }
 
-  import { createEventDispatcher } from 'svelte';
+import { createEventDispatcher } from 'svelte';
 import { beforeUpdate, afterUpdate, tick } from 'svelte';
+
+// ---------------------------------------------------------------------------
+// Mobile-friendly behaviour
+// ---------------------------------------------------------------------------
+// `collapsed` indicates whether the sidebar is currently hidden (slid outside
+// of the viewport).  We expose a local toggle button on small screens to let
+// the user minimise / restore the list so the Anime grid becomes visible on a
+// phone.
+let collapsed = false;
+
+function hideSidebar() {
+  collapsed = true;
+}
+
+function showSidebar() {
+  collapsed = false;
+}
+
+$: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
   const dispatch = createEventDispatcher();
 
   /* --------------------------------------------------------------
@@ -420,10 +439,15 @@ $: {
 
 <aside
   bind:this={sidebarEl}
-  class="fixed right-4 top-24 bottom-4 z-40 \
-    min-w-[14.5rem] 2cols:min-w-[17.5rem] \
-    w-[calc(12.5vw-1rem)] max-w-[24rem] \
-    bg-base-200 p-3 rounded shadow-lg overflow-visible flex flex-col"
+  class="fixed z-40 \
+    right-0 sm:right-4 \
+    top-0 sm:top-24 \
+    bottom-0 sm:bottom-4 \
+    bg-base-200 p-3 rounded sm:rounded shadow-lg overflow-visible flex flex-col \
+    w-full sm:w-[calc(12.5vw-1rem)] max-w-none sm:max-w-[24rem] \
+    min-w-0 sm:min-w-[14.5rem] 2cols:sm:min-w-[17.5rem] \
+    pl-4 sm:pl-0 \
+    transition-transform duration-300 transform {collapsedClass}"
   on:dragover={(e) => {
     e.preventDefault();
 
@@ -475,6 +499,18 @@ $: {
     stopAutoScroll();
   }}
 >
+  <!-- Slide/hide handle shown on mobile. Appears as a small tab anchored to the
+       left edge of the sidebar. -->
+  <button
+    class="sm:hidden absolute left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center"
+    title="Hide My List"
+    on:click={hideSidebar}
+    aria-label="Hide My List"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+    </svg>
+  </button>
   <div class="flex items-start justify-between gap-2 mb-2">
     <div class="flex-1 min-w-0">
       <h3 class="text-lg font-bold leading-tight truncate">
@@ -492,6 +528,8 @@ $: {
         <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.03-.47-.09-.7l7.02-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7l-7.02 4.11c-.54-.5-1.25-.81-2.04-.81-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.17c-.05.21-.08.43-.08.65 0 1.72 1.39 3.11 3.11 3.11 1.72 0 3.11-1.39 3.11-3.11s-1.39-3.11-3.11-3.11z"/>
       </svg>
     </button>
+
+    <!-- (button removed: new slide tab added below) -->
 
     <span
       class="tooltip tooltip-left text-left whitespace-pre-line relative z-45"
@@ -614,6 +652,21 @@ $: {
     </ul>
   {/if}
 </aside>
+
+<!-- Slide-in tab to restore the sidebar when collapsed (mobile only) -->
+{#if collapsed}
+  <button
+    class="sm:hidden fixed z-30 right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center"
+    style="width: 1.25rem;"
+    on:click={showSidebar}
+    title="Show My List"
+    aria-label="Show My List"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+    </svg>
+  </button>
+{/if}
 
 
 

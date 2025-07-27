@@ -74,21 +74,66 @@ $: {
 </script>
 
   <!-- Header layout: logo left, actions right, primary navigation hard-centered -->
-  <header class="relative flex items-center justify-between p-4 w-full md:w-3/4 mx-auto">
-  <!-- Logo / Home link -->
-  <h1 class="text-3xl font-bold">
-    <a
-      href="/"
-      class="cursor-pointer"
-      on:click|preventDefault={() => goto('/')}
-    >
-      SaltyChart
-    </a>
-  </h1>
+  <header class="flex flex-col sm:flex-row px-2 sm:px-4 py-2 sm:py-4 w-full sm:w-3/4 mx-0 sm:mx-auto relative">
 
-  <!-- Centered primary nav.  Using absolute + translate to stay centred regardless
-       of variable logo / actions widths. -->
-  <nav class="absolute left-1/2 -translate-x-1/2 flex items-center gap-6 text-lg pointer-events-none">
+  <!-- ── Row 1: logo left, actions right ─────────────────────────────── -->
+  <div class="w-full flex items-center justify-between">
+    <!-- Logo / Home link -->
+    <h1 class="text-3xl font-bold">
+      <a
+        href="/"
+        class="cursor-pointer"
+        on:click|preventDefault={() => goto('/')}
+      >
+        SaltyChart
+      </a>
+    </h1>
+
+    <!-- Actions (options, login/logout) -->
+    <div class="flex items-center gap-4">
+      <!-- Options icon -->
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm p-1"
+        aria-label="Options"
+        on:click={() => (showOptions = true)}
+      >
+        <span class="material-icons text-xl" aria-hidden="true">settings</span>
+      </button>
+      {#if $authToken}
+        <span class="truncate max-w-[6rem] text-right">{$userName}</span>
+        <button
+          type="button"
+          class="link"
+          on:click={() => {
+            authToken.set(null);
+            userName.set(null);
+          }}
+        >
+          Logout
+        </button>
+      {:else}
+        <a
+          href="/login"
+          class="link"
+          on:click|preventDefault={() => goto('/login')}
+        >
+          Login
+        </a>
+        <a
+          href="/signup"
+          class="link"
+          on:click|preventDefault={() => goto('/signup')}
+        >
+          Sign Up
+        </a>
+      {/if}
+    </div>
+  </div>
+
+  <!-- ── Row 2: primary navigation ──────────────────────────────────── -->
+  <nav class="mt-2 sm:mt-0 flex items-center gap-4 text-lg \
+      sm:absolute sm:left-1/2 sm:-translate-x-1/2 sm:pointer-events-none">
     <a
       href="/"
       class="link pointer-events-auto" class:font-bold={route === '/'} class:text-primary={route === '/'}
@@ -112,47 +157,7 @@ $: {
         Compare
       </a>
     {/if}
-  </nav>
-
-  <div class="flex items-center gap-4">
-    <!-- Options icon -->
-    <button
-      type="button"
-      class="btn btn-ghost btn-sm p-1"
-      aria-label="Options"
-      on:click={() => (showOptions = true)}
-    >
-      <span class="material-icons text-xl" aria-hidden="true">settings</span>
-    </button>
-    {#if $authToken}
-      <span>{$userName}</span>
-      <button
-        type="button"
-        class="link"
-        on:click={() => {
-          authToken.set(null);
-          userName.set(null);
-        }}
-      >
-        Logout
-      </button>
-    {:else}
-      <a
-        href="/login"
-        class="link"
-        on:click|preventDefault={() => goto('/login')}
-      >
-        Login
-      </a>
-      <a
-        href="/signup"
-        class="link"
-        on:click|preventDefault={() => goto('/signup')}
-      >
-        Sign Up
-      </a>
-    {/if}
-  </div>
+</nav>
 </header>
 
 {#if Page}

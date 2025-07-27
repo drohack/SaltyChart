@@ -297,7 +297,7 @@ let autoRename = false;
   }
 </script>
 
-<main class="box-border w-full max-w-[calc(100vw-32rem)] 2cols:max-w-[calc(100vw-40rem)] mx-auto p-4 flex flex-col gap-4">
+<main class="box-border w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] mx-0 sm:mx-auto px-0 sm:px-4 flex flex-col gap-4">
   <!-- Main content column -->
   <div class="flex-1 flex flex-col min-w-0">
     <!-- Season / Year selector + countdown -->

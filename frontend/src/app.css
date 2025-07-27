@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent accidental horizontal scroll on mobile caused by off-screen transforms */
+html, body {
+  overflow-x: hidden;
+}
+
 /* Combobox tweaks for Compare page */
 .svelte-select {
   @apply input w-full bg-base-200 text-gray-700;

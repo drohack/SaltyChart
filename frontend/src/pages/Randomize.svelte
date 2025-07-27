@@ -141,6 +141,30 @@ $: _lang = $options.titleLanguage;
   let loading = false;
 
   // ------------------------------------------------------------------
+  // Mobile sidebar collapse state (unwatched & watched lists)
+  // ------------------------------------------------------------------
+
+  let unwatchedCollapsed = true;
+  let watchedCollapsed = true;
+
+  onMount(() => {
+    if (window.matchMedia('(min-width: 1024px)').matches) {
+      unwatchedCollapsed = false;
+      watchedCollapsed = false;
+    }
+  });
+
+  function showUnwatched() {
+    unwatchedCollapsed = false;
+    watchedCollapsed = true;
+  }
+
+  function showWatched() {
+    watchedCollapsed = false;
+    unwatchedCollapsed = true;
+  }
+
+  // ------------------------------------------------------------------
   // Guard: page only makes sense when the user is logged-in.  When the
   // token disappears (logout) we reset state *and* navigate away to the
   // home page so users don’t interact with a stale wheel.
@@ -846,14 +870,28 @@ $: {
     
   </div> <!-- end wheel column -->
 
-    <!-- List sidebar (shows all items; watched are greyed out) -->
+    <!-- Unwatched list sidebar -->
     <aside
-      class="hidden lg:block absolute left-4 top-0 mt-0 w-64 3cols:w-80 overflow-y-auto"
-      style="max-height: calc(100dvh - 195px);"
+      class="fixed z-40 top-0 bottom-0 left-0 bg-base-200 pr-4 pl-4 py-3 shadow-lg flex flex-col w-full max-w-[20rem] lg:absolute lg:mt-0 lg:w-64 3cols:lg:w-80 transform transition-transform duration-300 overflow-hidden lg:translate-x-0"
+      class:-translate-x-full={unwatchedCollapsed}
+      style="max-height: calc(100dvh - 0px);"
     >
       {#if unwatchedDetailed.length}
         <div class="flex items-center justify-between mb-4 pr-2">
           <h3 class="text-lg font-bold text-center md:text-left">Unwatched</h3>
+
+          <!-- Hide tab (mobile only) -->
+          <button
+        class="lg:hidden absolute right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center z-50"
+            style="width: 1.25rem;"
+            aria-label="Hide Unwatched list"
+            on:click={() => (unwatchedCollapsed = true)}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <!-- Chevron pointing left (<) -->
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
 
           <!-- Hide / Show all buttons -->
           {#if $authToken}
@@ -877,7 +915,7 @@ $: {
             </div>
           {/if}
         </div>
-        <ul class="flex flex-col gap-3">
+        <ul class="flex-1 overflow-y-auto flex flex-col gap-3 pr-1">
           {#each unwatchedDetailed as item (item.id)}
             <li
               class={`flex items-center gap-3 group transition rounded p-1 ${
@@ -937,9 +975,43 @@ $: {
       {/if}
     </aside>
 
-    <!-- Watched ranking sidebar -->
-    <WatchedRankingSidebar
-      list={watchedRank}
+    {#if unwatchedCollapsed}
+      <!-- Restore tab for Unwatched list (mobile only) -->
+      <button
+        class="lg:hidden fixed z-50 left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center"
+        style="width: 1.25rem;"
+        aria-label="Show Unwatched list"
+        on:click={showUnwatched}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <!-- Chevron pointing left (<) -->
+          <!-- Chevron pointing right (>) -->
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+    {/if}
+
+    <!-- Watched ranking sidebar container -->
+    <div
+      class="fixed z-40 top-0 bottom-0 right-0 bg-base-200 pl-4 pr-3 py-3 shadow-lg flex flex-col w-full max-w-[20rem] lg:absolute lg:top-0 lg:bottom-0 lg:mt-0 lg:right-4 lg:w-80 transform transition-transform duration-300 overflow-hidden lg:translate-x-0"
+      class:translate-x-full={watchedCollapsed}
+    >
+      <!-- Hide tab (mobile only) -->
+      <button
+        class="lg:hidden absolute left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center z-50"
+        style="width: 1.25rem;"
+        aria-label="Hide Watched list"
+        on:click={() => (watchedCollapsed = true)}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <!-- Chevron pointing right (>) -->
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      <div class="flex-1 min-h-0 overflow-hidden pr-1">
+        <WatchedRankingSidebar
+          list={watchedRank}
       on:update={(e) => {
         // e.detail is an ordered array of anime IDs
         const idOrder = e.detail;
@@ -971,8 +1043,25 @@ $: {
           });
         }
       }}
-      on:unwatch={(e) => toggleWatched(e.detail, false)}
-    />
+          on:unwatch={(e) => toggleWatched(e.detail, false)}
+        />
+      </div>
+    </div>
+
+    {#if watchedCollapsed}
+      <!-- Restore tab for Watched list -->
+      <button
+        class="lg:hidden fixed z-50 right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center"
+        style="width: 1.25rem;"
+        aria-label="Show Watched list"
+        on:click={showWatched}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <!-- Chevron pointing left (<) -->
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+    {/if}
 
     <!-- Nickname user picker panel (aligned with Watched sidebar) -->
     <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm space-y-1 z-30 hidden lg:block right-[calc(21rem+7px)]">

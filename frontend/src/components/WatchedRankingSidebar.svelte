@@ -76,13 +76,12 @@
 </script>
 
 <aside
-  class="hidden lg:block absolute right-4 top-0 mt-0 w-80 overflow-y-auto"
-  style="max-height: calc(100dvh - 195px);"
+  class="flex flex-col h-full w-full lg:max-h-[calc(100dvh-195px)]"
 >
   {#if list.length}
     <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
     <ul
-      class="flex flex-col gap-2 overflow-y-auto pb-8"
+      class="flex-1 flex flex-col gap-2 overflow-y-auto pb-8 pr-1"
       bind:this={listEl}
       on:dragover={(e) => {
         e.preventDefault();
@@ -103,7 +102,7 @@
         {/if}
 
         <li
-          class={`group p-1 rounded text-sm shadow flex items-center gap-2 cursor-grab bg-base-100 ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
+          class={`group p-1 rounded text-sm shadow flex items-center gap-2 cursor-grab bg-base-100 w-full ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
           draggable="true"
           on:dragstart={() => (dragIdx = i)}
           on:dragend={() => {

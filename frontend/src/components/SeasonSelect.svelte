@@ -69,7 +69,7 @@
 
     <!-- Year dropdown -->
     <select
-      class="select select-bordered w-28"
+      class="select select-bordered w-20 sm:w-28 px-0 sm:px-4"
       bind:value={year}
       on:change={updateYear}
     >
@@ -80,13 +80,13 @@
   </div>
   {#if showSearch}
     <!-- Centered search box -->
-    <div class="flex-1 flex justify-center items-center">
+    <div class="flex-1 flex items-center gap-2">
       <label for="search" class="font-medium mr-2">Search series:</label>
       <input
         id="search"
         type="text"
         bind:value={searchQuery}
-        class="input w-auto"
+        class="input flex-1"
       />
     </div>
   {/if}
