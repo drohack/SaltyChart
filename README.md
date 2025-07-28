@@ -125,3 +125,16 @@ functionality lives exclusively in the two folders listed above which should
 make day-to-day navigation and onboarding much simpler.
 
 Happy charting 🚀
+
+
+## Backup and Restore database
+
+On the Unraid server there's some user scripts to backup the database.
+
+Backup - every month, save 3:
+   In the Unraid WebUI go to Settings -> User Scripts
+   "backup_saltychart_db" script runs monthly to backup the database to /mnt/user/backup/
+
+Restore - run when needed:
+   "restore_saltychart_db" When ran restores the most recent backup
+   Can be run manually for a specific backup: `./restore_saltychart_db/script saltychart_db_2025-07-28_02-00-00.tar.gz`
