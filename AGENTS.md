@@ -40,12 +40,15 @@
   Recent additions inside existing routers:
   - `PATCH /api/list/watched`   (toggle watched / unwatched and record timestamp)
   - `PATCH /api/list/rank`      (update per-season *watchedRank* ordering)
+  - `PATCH /api/list/hidden`    (toggle *hidden* flag – excludes an entry from the Randomize wheel)
   - `GET   /api/list/users-with-nicknames` (list users that have at least one custom nickname)
   - `GET   /api/list/nicknames?mediaId=`   (nicknames & ranks for a given series)
+  - `PUT   /api/list`           (replace entire list for a season/year in one shot)
 - Database schema is auto-created/updated at startup via raw SQL in `ensureDatabaseSchema()`.
   • New tables/columns since last revision
     - `Settings` (per-user record storing theme, title language, autoplay, hide-from-compare and JSON column `nicknameUserSel`).
     - `WatchList.watchedRank` (integer; 0-based rank assigned after a show is watched and ranked in the Randomize page).
+    - `WatchList.hidden` (boolean; when true the show is skipped by the Randomize wheel).
 
   The bootstrap logic will automatically create the `Settings` table, add the
   `nicknameUserSel` column if missing, and back-fill default rows for existing
@@ -70,6 +73,7 @@
    ‑ Title language: English / Romaji / Native
    ‑ Video autoplay toggle
    ‑ Hide-from-Compare toggle (excludes a user’s list from public comparisons)
+   ‑ Nickname user picker (choose which users’ custom nicknames show up in pop-ups)
 
  • Season toolbar (`SeasonSelect.svelte`)
    ‑ Search box (client-side fuzzy filter)
@@ -88,6 +92,8 @@
      in `WatchList.watchedRank` and exposed in compare/randomize pop-ups.
    ‑ Pop-up now shows other users’ nickname + rank for the selected show
      (queried via the new nickname endpoints) as well as your own.
+   ‑ Individual shows can be *hidden* from the wheel via a context-menu (uses the
+     new `/api/list/hidden` endpoint and `WatchList.hidden` DB column).
 
  • Compare page
    ‑ “Share” button copies a deep-link that pre-loads the selected users & season.

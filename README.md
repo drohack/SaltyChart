@@ -38,6 +38,32 @@ docker compose up --build
 open http://localhost:5173
 ```
 
+---
+
+## Recent Feature Highlights (July 2025)
+
+SaltyChart is under active development.  The list below summarises key
+additions made after the first publication of this document so new
+contributors are not caught off-guard:
+
+• **Hide from Wheel** – right-click a show in *My List* ➜ **Hide from Randomize**.
+  Persists the new `WatchList.hidden` boolean and is toggled via
+  `PATCH /api/list/hidden`.
+
+• **Bulk list replace** – `PUT /api/list` can now replace an entire season’s
+  list in one request.  This powers the upcoming CSV importer and also allows
+  third-party integrations.
+
+• **Nickname sharing** – pop-ups on Randomize/Compare now show friends’ custom
+  nicknames + ranks.  New helper endpoints:
+  `GET /api/list/users-with-nicknames` and `GET /api/list/nicknames?mediaId=`.
+
+• **Nickname user filter** – the global *Options* modal gained a **Nickname
+  User Picker** so you decide whose nicknames are displayed.
+
+These features are fully documented in `AGENTS.md`; remember to update that
+guide when expanding the API or database schema.
+
 The **frontend** Vite dev-server proxies all `/api/*` requests to the **backend**
 container, so no additional environment configuration is required.
 
