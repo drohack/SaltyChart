@@ -73,6 +73,72 @@
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
+
+  // Touch event handling for mobile drag-and-drop
+  let touchStartY = 0;
+  let touchStartIdx = -1;
+  let isTouchDragging = false;
+
+  function handleTouchStart(e: TouchEvent, idx: number) {
+    const touch = e.touches[0];
+    touchStartY = touch.clientY;
+    touchStartIdx = idx;
+    isTouchDragging = true;
+    dragIdx = idx;
+  }
+
+  function handleTouchMove(e: TouchEvent, idx: number) {
+    if (!isTouchDragging) return;
+
+    // Prevent default to stop scrolling while dragging
+    e.preventDefault();
+
+    const touch = e.touches[0];
+
+    // Find which element the touch is currently over
+    const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
+
+    if (elementUnderTouch) {
+      // Find the closest list item (li) element
+      const targetLi = elementUnderTouch.closest('li[draggable="true"]');
+
+      if (targetLi && listEl) {
+        // Find the index of this list item
+        const listItems = Array.from(listEl.querySelectorAll('li[draggable="true"]'));
+        const targetIdx = listItems.indexOf(targetLi as HTMLLIElement);
+
+        if (targetIdx !== -1) {
+          // Calculate placeholder relative to the item being dragged over
+          placeholder = calcPlaceholder(targetLi as HTMLElement, touch.clientY, targetIdx);
+        }
+      }
+    }
+
+    // Handle auto-scroll on touch
+    if (listEl) {
+      const rect = listEl.getBoundingClientRect();
+      const y = touch.clientY;
+      let dir = 0;
+      if (y < rect.top + EDGE_PX) dir = -1;
+      else if (y > rect.bottom - EDGE_PX) dir = 1;
+      startAutoScroll(dir);
+    }
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    if (!isTouchDragging) return;
+
+    e.preventDefault();
+
+    if (placeholder !== -1) {
+      move(touchStartIdx, placeholder);
+    }
+
+    isTouchDragging = false;
+    dragIdx = -1;
+    placeholder = -1;
+    stopAutoScroll();
+  }
 </script>
 
 <aside
@@ -103,6 +169,8 @@
 
         <li
           class={`group p-1 rounded text-sm shadow flex items-center gap-2 cursor-grab bg-base-100 w-full ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
+          class:opacity-50={dragIdx === i}
+          class:scale-105={isTouchDragging && dragIdx === i}
           draggable="true"
           on:dragstart={() => (dragIdx = i)}
           on:dragend={() => {
@@ -132,13 +200,16 @@
             dragIdx = -1;
             placeholder = -1;
           }}
+          on:touchstart={(e) => handleTouchStart(e, i)}
+          on:touchmove={(e) => handleTouchMove(e, i)}
+          on:touchend={handleTouchEnd}
         >
           <!-- Drag handle icon -->
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 24 24"
             fill="currentColor"
-            class="w-5 h-5 opacity-60 shrink-0"
+            class="w-5 h-5 opacity-60 shrink-0 md:p-0 p-2 -m-2"
             aria-labelledby="drag-title"
             role="img"
           >
@@ -150,7 +221,7 @@
           <img
             src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
             alt=""
-            class="w-12 h-16 object-cover rounded shrink-0"
+            class="w-12 h-16 object-cover rounded shrink-0 md:pointer-events-auto pointer-events-none"
             loading="lazy"
           />
 

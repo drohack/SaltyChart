@@ -32,6 +32,9 @@ $: _lang = $options.titleLanguage;
   // Lists derived later but need initial declaration for TS
   let unwatchedDetailed: any[] = [];
 
+  // Sort mode for unwatched list: 'rank' (default) or 'alphabetical'
+  let unwatchedSortMode: 'rank' | 'alphabetical' = 'rank';
+
   // Wheel DOM reference & animation state
   let wheelEl: HTMLDivElement;
   let rotation = 0; // degrees
@@ -304,6 +307,22 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
 
   // Filtered list for the sidebar: only items that are still UNwatched.
   $: unwatchedDetailed = fullDetailed.filter((i) => !i.watched);
+
+  // Apply sorting based on user selection
+  $: unwatchedSorted = (() => {
+    const list = [...unwatchedDetailed]; // Create a copy to avoid mutating original
+
+    if (unwatchedSortMode === 'alphabetical') {
+      list.sort((a, b) => {
+        const titleA = getDisplayTitle(a).toLowerCase();
+        const titleB = getDisplayTitle(b).toLowerCase();
+        return titleA.localeCompare(titleB);
+      });
+    }
+    // For 'rank' mode, keep the original order (no sorting needed)
+
+    return list;
+  })();
 
   // Client-side ranking list for watched items.  Initially seeded from
   // watchedDetailed (sorted by watchedAt) and updated whenever the user
@@ -676,6 +695,27 @@ $: {
     toggleWatched(selected.id, true);
   }
 
+  /**
+   * Hide the currently selected series from the wheel. This is called from the
+   * modal and provides an alternative to marking the series as watched when the
+   * user decides they don't want to see it in the randomizer.
+   */
+  async function hideSelectedSeries() {
+    if (!selected) return;
+
+    // Find the corresponding entry in unwatchedDetailed that has the full structure
+    // including the hidden property that toggleHide expects
+    const entry = unwatchedDetailed.find((item) => item.id === selected.id);
+
+    if (entry) {
+      // Close modal immediately for responsive UI
+      showModal = false;
+
+      // Call existing toggleHide which handles optimistic update + API call
+      toggleHide(entry);
+    }
+  }
+
   /** Toggle watched flag for a given mediaId */
   async function toggleWatched(id: number, watched: boolean) {
     // update local state
@@ -786,7 +826,7 @@ $: {
   </div>
 
   <!-- Container: wheel grows to fill remaining space -->
-  <div class="relative w-full flex justify-center items-center overflow-visible flex-1">
+  <div class="relative w-full flex justify-center items-center overflow-visible flex-1" style="min-height: min(95vmin, calc(100dvh - 195px));">
     <div class="flex flex-col items-center mx-auto">
       {#if loading}
         <LoadingSpinner size="lg" />
@@ -877,23 +917,34 @@ $: {
       style="max-height: calc(100dvh - 0px);"
     >
       {#if unwatchedDetailed.length}
-        <div class="flex items-center justify-between mb-4 pr-2">
-          <h3 class="text-lg font-bold text-center md:text-left">Unwatched</h3>
+        <div class="mb-4 pr-2">
+          <!-- Row 1: Title and Sort -->
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-lg font-bold text-center md:text-left">Unwatched</h3>
 
-          <!-- Hide tab (mobile only) -->
-          <button
-        class="lg:hidden absolute right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center z-50"
-            style="width: 1.25rem;"
-            aria-label="Hide Unwatched list"
-            on:click={() => (unwatchedCollapsed = true)}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <!-- Chevron pointing left (<) -->
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
+            <!-- Hide tab (mobile only) -->
+            <button
+              class="lg:hidden absolute right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center z-50"
+              style="width: 1.25rem;"
+              aria-label="Hide Unwatched list"
+              on:click={() => (unwatchedCollapsed = true)}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <!-- Chevron pointing left (<) -->
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
 
-          <!-- Hide / Show all buttons -->
+            <!-- Sort dropdown -->
+            {#if $authToken}
+              <select bind:value={unwatchedSortMode} class="select select-xs">
+                <option value="rank">Rank</option>
+                <option value="alphabetical">A-Z</option>
+              </select>
+            {/if}
+          </div>
+
+          <!-- Row 2: Hide/Show All buttons -->
           {#if $authToken}
             <div class="flex items-center gap-2">
               <button
@@ -916,7 +967,7 @@ $: {
           {/if}
         </div>
         <ul class="flex-1 overflow-y-auto flex flex-col gap-3 pr-1">
-          {#each unwatchedDetailed as item (item.id)}
+          {#each unwatchedSorted as item (item.id)}
             <li
               class={`flex items-center gap-3 group transition rounded p-1 ${
                 item.watched
@@ -1125,7 +1176,13 @@ $: {
           </div>
         {/if}
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
-        <div class="modal-action justify-center">
+        <div class="modal-action relative flex justify-center">
+          <button class="btn btn-secondary absolute left-0" on:click={hideSelectedSeries}>
+            <span class="flex flex-col items-center leading-tight">
+              <span>Hide Series</span>
+              <span class="text-xs opacity-70">(Unwatched)</span>
+            </span>
+          </button>
           <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
         </div>
       </div>
