@@ -58,6 +58,10 @@ $: _lang = $options.titleLanguage;
   // Upload images modal state
   let showImageUploadModal = false;
 
+  // Custom uploaded images (session-only)
+  let spinButtonImage: string | null = null;
+  let backgroundImage: string | null = null;
+
   // --------------------------------------------------------------
   // Hide / Show all helpers for the Unwatched list
   // --------------------------------------------------------------
@@ -271,6 +275,25 @@ $: _lang = $options.titleLanguage;
       console.error('Failed to fetch nickname user list', err);
     }
   });
+
+  // Load custom images from sessionStorage
+  onMount(() => {
+    if (typeof sessionStorage !== 'undefined') {
+      const savedSpinImage = sessionStorage.getItem('wheelSpinButtonImage');
+      const savedBgImage = sessionStorage.getItem('wheelBackgroundImage');
+      if (savedSpinImage) spinButtonImage = savedSpinImage;
+      if (savedBgImage) backgroundImage = savedBgImage;
+    }
+  });
+
+  // Persist custom images to sessionStorage when they change
+  $: if (typeof sessionStorage !== 'undefined') {
+    if (spinButtonImage) sessionStorage.setItem('wheelSpinButtonImage', spinButtonImage);
+    else sessionStorage.removeItem('wheelSpinButtonImage');
+
+    if (backgroundImage) sessionStorage.setItem('wheelBackgroundImage', backgroundImage);
+    else sessionStorage.removeItem('wheelBackgroundImage');
+  }
 
   // Separate entries into watched/unwatched for easier handling.
   //  * watchedEntries is needed for the ranking sidebar.
@@ -719,6 +742,72 @@ $: {
     }
   }
 
+  /**
+   * Handle file upload for spin button image
+   */
+  function handleSpinImageFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      spinButtonImage = evt.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Handle file upload for background image
+   */
+  function handleBackgroundImageFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      backgroundImage = evt.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Handle drag-and-drop for spin button image
+   */
+  function handleSpinImageDrop(e: DragEvent) {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('border-primary');
+
+    const file = e.dataTransfer?.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      spinButtonImage = evt.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Handle drag-and-drop for background image
+   */
+  function handleBackgroundImageDrop(e: DragEvent) {
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.classList.remove('border-primary');
+
+    const file = e.dataTransfer?.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      backgroundImage = evt.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }
+
   /** Toggle watched flag for a given mediaId */
   async function toggleWatched(id: number, watched: boolean) {
     // update local state
@@ -836,6 +925,20 @@ $: {
       {:else if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
       {:else}
+        <!-- Background image (spans from unwatched list to nicknames panel) -->
+        {#if backgroundImage}
+          <div
+            class="absolute lg:left-[calc(16rem+7px)] 3cols:lg:left-[calc(20rem+7px)] lg:right-[calc(21rem+7px)]"
+            style="
+              height: min(95vmin, calc(100dvh - 195px));
+              background-image: url({backgroundImage});
+              background-size: cover;
+              background-position: center;
+              z-index: 0;
+            "
+          ></div>
+        {/if}
+
         <!-- Wheel -->
         <div
           id="wheel-wrapper"
@@ -895,19 +998,28 @@ $: {
 
       <!-- Central Spin button -->
       <button
-        class={`group btn btn-primary btn-circle active:shadow-inner active:scale-95 transition-transform duration-75 absolute inset-0 m-auto w-28 h-28 md:w-36 md:h-36 shadow-lg flex items-center justify-center text-2xl select-none ${spinning ? 'pointer-events-none opacity-75' : ''}`}
+        class={`spin-button group btn btn-primary btn-circle active:shadow-inner active:scale-95 transition-transform duration-75 absolute inset-0 m-auto w-28 h-28 md:w-36 md:h-36 shadow-lg flex items-center justify-center text-2xl select-none ${spinning ? 'pointer-events-none opacity-75' : ''} ${spinButtonImage ? 'has-image' : ''}`}
         on:click={spin}
-        style="z-index: 10;"
+        style="z-index: 10; {spinButtonImage ? `--button-bg-image: url(${spinButtonImage});` : ''}"
       >
-        Spin
+        {#if !spinButtonImage}Spin{/if}
 
         <!-- Upward pointer protruding from top half of button -->
         <svg
-          class={`absolute left-1/2 top-0 -translate-x-1/2 -translate-y-2/3 w-12 h-12 md:w-16 md:h-16 fill-current text-primary pointer-events-none ${spinning ? 'opacity-75' : ''}`}
+          class={`absolute left-1/2 top-0 -translate-x-1/2 -translate-y-2/3 w-12 h-12 md:w-16 md:h-16 pointer-events-none ${spinning ? 'opacity-75' : ''}`}
           style="z-index: -1;"
           viewBox="0 0 24 30"
         >
-          <path d="M12 0 L22 28 H2 Z" />
+          {#if spinButtonImage}
+            <defs>
+              <pattern id="triangleImagePattern" x="0" y="0" width="100%" height="100%" patternUnits="userSpaceOnUse">
+                <image href={spinButtonImage} x="0" y="0" width="24" height="30" preserveAspectRatio="xMidYMid slice" />
+              </pattern>
+            </defs>
+            <path d="M12 0 L22 28 H2 Z" fill="url(#triangleImagePattern)" />
+          {:else}
+            <path d="M12 0 L22 28 H2 Z" fill="currentColor" class="text-primary" />
+          {/if}
         </svg>
       </button>
     </div>
@@ -1194,9 +1306,75 @@ $: {
     </dialog>
   {/if}
 
-  <!-- Upload Images Button (positioned to right of unwatched list, desktop only) -->
+  <!-- Image Upload Modal -->
+  {#if showImageUploadModal}
+    <dialog open class="modal">
+      <div class="modal-box w-full max-w-2xl">
+        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2"
+                on:click={() => showImageUploadModal = false}>✕</button>
+
+        <h3 class="font-bold text-lg mb-4">Upload Custom Images</h3>
+
+        <!-- Spin Button Image Section -->
+        <div class="mb-6">
+          <h4 class="font-semibold mb-2">Spin Button Image</h4>
+          <div class="flex flex-col gap-2">
+            {#if spinButtonImage}
+              <div class="relative w-32 h-32 mx-auto">
+                <img src={spinButtonImage} alt="Spin button preview" class="w-full h-full object-cover rounded-full" />
+                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2"
+                        on:click={() => spinButtonImage = null}>✕</button>
+              </div>
+            {:else}
+              <div
+                class="border-2 border-dashed border-base-300 rounded p-4 text-center transition"
+                on:dragover={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
+                on:dragleave={(e) => { e.currentTarget.classList.remove('border-primary'); }}
+                on:drop={handleSpinImageDrop}
+              >
+                <p class="text-sm mb-2">Drop image here or upload</p>
+                <input type="file" accept="image/*" on:change={handleSpinImageFile}
+                       class="file-input file-input-sm w-full" />
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Background Image Section -->
+        <div class="mb-6">
+          <h4 class="font-semibold mb-2">Background Image</h4>
+          <div class="flex flex-col gap-2">
+            {#if backgroundImage}
+              <div class="relative w-48 h-48 mx-auto">
+                <img src={backgroundImage} alt="Background preview" class="w-full h-full object-cover rounded" />
+                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2"
+                        on:click={() => backgroundImage = null}>✕</button>
+              </div>
+            {:else}
+              <div
+                class="border-2 border-dashed border-base-300 rounded p-4 text-center transition"
+                on:dragover={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
+                on:dragleave={(e) => { e.currentTarget.classList.remove('border-primary'); }}
+                on:drop={handleBackgroundImageDrop}
+              >
+                <p class="text-sm mb-2">Drop image here or upload</p>
+                <input type="file" accept="image/*" on:change={handleBackgroundImageFile}
+                       class="file-input file-input-sm w-full" />
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        <div class="modal-action justify-center">
+          <button class="btn btn-primary" on:click={() => showImageUploadModal = false}>Done</button>
+        </div>
+      </div>
+    </dialog>
+  {/if}
+
+  <!-- Upload Images Button (aligned with background image left edge, desktop only) -->
   <button
-    class="btn btn-sm btn-outline absolute bottom-4 z-20 normal-case hidden lg:block lg:left-[18rem] 3cols:lg:left-[22rem]"
+    class="btn btn-sm btn-outline absolute bottom-4 z-20 normal-case hidden lg:block lg:left-[calc(16rem+7px+1rem)] 3cols:lg:left-[calc(20rem+7px+1rem)]"
     on:click={() => showImageUploadModal = true}
     type="button"
   >
@@ -1212,5 +1390,21 @@ $: {
   /* Ensure extremely long words wrap while still preferring spaces */
   .force-wrap {
     overflow-wrap: anywhere; /* allows break inside long words only if needed */
+  }
+
+  /* Button background image via pseudo-element to layer above triangle */
+  .spin-button.has-image::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px; /* fully rounded like btn-circle */
+    background-image: var(--button-bg-image);
+    background-size: cover;
+    background-position: center;
+    z-index: 0;
+  }
+
+  .spin-button.has-image {
+    color: transparent;
   }
 </style>
