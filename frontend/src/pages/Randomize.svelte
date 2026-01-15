@@ -842,6 +842,7 @@ $: {
             width: min(95vmin, calc(100dvh - 195px));
             height: min(95vmin, calc(100dvh - 195px));
             margin-bottom: 5px; /* keep a sliver of space below wheel */
+            z-index: 1;
           "
         >
           <!-- Clipped wheel -->
@@ -893,13 +894,14 @@ $: {
       <button
         class={`group btn btn-primary btn-circle active:shadow-inner active:scale-95 transition-transform duration-75 absolute inset-0 m-auto w-28 h-28 md:w-36 md:h-36 shadow-lg flex items-center justify-center text-2xl select-none ${spinning ? 'pointer-events-none opacity-75' : ''}`}
         on:click={spin}
-        style=""
+        style="z-index: 10;"
       >
         Spin
 
         <!-- Upward pointer protruding from top half of button -->
         <svg
-          class={`absolute left-1/2 top-0 -translate-x-1/2 -translate-y-2/3 w-12 h-12 md:w-16 md:h-16 fill-current text-primary pointer-events-none group-hover:text-primary-focus group-active:text-primary-focus ${spinning ? 'opacity-75' : ''}`}
+          class={`absolute left-1/2 top-0 -translate-x-1/2 -translate-y-2/3 w-12 h-12 md:w-16 md:h-16 fill-current text-primary pointer-events-none ${spinning ? 'opacity-75' : ''}`}
+          style="z-index: -1;"
           viewBox="0 0 24 30"
         >
           <path d="M12 0 L22 28 H2 Z" />
