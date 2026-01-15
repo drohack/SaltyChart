@@ -61,6 +61,7 @@ $: _lang = $options.titleLanguage;
   // Custom uploaded images (session-only)
   let spinButtonImage: string | null = null;
   let backgroundImage: string | null = null;
+  let imagesLoaded = false; // Flag to prevent reactive statement from clearing before load
 
   // --------------------------------------------------------------
   // Hide / Show all helpers for the Unwatched list
@@ -281,13 +282,16 @@ $: _lang = $options.titleLanguage;
     if (typeof sessionStorage !== 'undefined') {
       const savedSpinImage = sessionStorage.getItem('wheelSpinButtonImage');
       const savedBgImage = sessionStorage.getItem('wheelBackgroundImage');
+      console.log('Loading images from sessionStorage:', { savedSpinImage: !!savedSpinImage, savedBgImage: !!savedBgImage });
       if (savedSpinImage) spinButtonImage = savedSpinImage;
       if (savedBgImage) backgroundImage = savedBgImage;
     }
+    imagesLoaded = true; // Mark as loaded so reactive statement can now save changes
   });
 
-  // Persist custom images to sessionStorage when they change
-  $: if (typeof sessionStorage !== 'undefined') {
+  // Persist custom images to sessionStorage when they change (only after initial load)
+  $: if (imagesLoaded && typeof sessionStorage !== 'undefined') {
+    console.log('Saving images to sessionStorage:', { spinButtonImage: !!spinButtonImage, backgroundImage: !!backgroundImage });
     if (spinButtonImage) sessionStorage.setItem('wheelSpinButtonImage', spinButtonImage);
     else sessionStorage.removeItem('wheelSpinButtonImage');
 
