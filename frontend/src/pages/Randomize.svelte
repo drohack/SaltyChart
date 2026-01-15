@@ -55,6 +55,9 @@ $: _lang = $options.titleLanguage;
     : null;
   let nicknameList: Array<{ userName: string; nickname: string | null; rank: number | null }> = [];
 
+  // Upload images modal state
+  let showImageUploadModal = false;
+
   // --------------------------------------------------------------
   // Hide / Show all helpers for the Unwatched list
   // --------------------------------------------------------------
@@ -1190,6 +1193,15 @@ $: {
       </div>
     </dialog>
   {/if}
+
+  <!-- Upload Images Button (positioned to right of unwatched list, desktop only) -->
+  <button
+    class="btn btn-sm btn-outline absolute bottom-4 z-20 normal-case hidden lg:block lg:left-[18rem] 3cols:lg:left-[22rem]"
+    on:click={() => showImageUploadModal = true}
+    type="button"
+  >
+    Upload Images
+  </button>
 
 <!-- Nickname panel moved further down so its absolute positioning lines up
      with the Watched sidebar (they share the same relative offset based on
