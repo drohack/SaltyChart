@@ -53,3 +53,9 @@ docker-compose.override.yml
 
 # Build archives
 *.tar
+
+# Claude Code internal directory
+.claude/
+
+# Frontend build output
+frontend/dist/

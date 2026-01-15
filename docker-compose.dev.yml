@@ -1,0 +1,47 @@
+# Development Docker Compose configuration
+# This builds from source instead of using pre-built images
+# Run with: docker compose -f docker-compose.dev.yml up --build
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: saltychart-backend
+    volumes:
+      - saltychart_db_dev:/app/prisma
+    expose:
+      - "3000"
+    environment:
+      JWT_SECRET: ba2d63b9ffd3fb8f9149456935bf6e70ebac1cb453bef06e8ed5a9b317f410bd
+      DATABASE_URL: file:./prisma/data.db
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - salty-net-dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: saltychart-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - salty-net-dev
+
+volumes:
+  saltychart_db_dev:
+
+networks:
+  salty-net-dev:
+    driver: bridge
