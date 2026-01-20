@@ -76,24 +76,68 @@
 
   // Touch event handling for mobile drag-and-drop
   let touchStartY = 0;
+  let touchStartX = 0;  // Track X coordinate for movement threshold
   let touchStartIdx = -1;
   let isTouchDragging = false;
+  let longPressTimer: number | null = null;  // Timer for long-press detection
+  const LONG_PRESS_DELAY = 500;  // 500ms to trigger drag
+  const MOVEMENT_THRESHOLD = 10;  // 10px movement cancels drag intent
 
   function handleTouchStart(e: TouchEvent, idx: number) {
+    // Clear any existing timer first (safety measure)
+    if (longPressTimer !== null) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+
+    // Reset drag state (safety measure in case previous touch didn't clean up properly)
+    isTouchDragging = false;
+    dragIdx = -1;
+    placeholder = -1;
+
     const touch = e.touches[0];
     touchStartY = touch.clientY;
+    touchStartX = touch.clientX;
     touchStartIdx = idx;
-    isTouchDragging = true;
-    dragIdx = idx;
+
+    // Start long-press timer
+    longPressTimer = window.setTimeout(() => {
+      // After delay, activate drag mode
+      isTouchDragging = true;
+      dragIdx = idx;
+      longPressTimer = null;
+
+      // Optional: Haptic feedback (if supported)
+      if (navigator.vibrate) {
+        navigator.vibrate(50);  // 50ms vibration
+      }
+    }, LONG_PRESS_DELAY);
   }
 
   function handleTouchMove(e: TouchEvent, idx: number) {
+    const touch = e.touches[0];
+
+    // If drag hasn't started yet, check if we should cancel or continue waiting
+    if (!isTouchDragging && longPressTimer !== null) {
+      const deltaX = Math.abs(touch.clientX - touchStartX);
+      const deltaY = Math.abs(touch.clientY - touchStartY);
+
+      // If user moves more than threshold, they're trying to scroll - cancel drag timer
+      if (deltaX > MOVEMENT_THRESHOLD || deltaY > MOVEMENT_THRESHOLD) {
+        window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+        return;  // Allow normal scrolling
+      }
+
+      // Still within threshold, waiting for long-press timer
+      return;
+    }
+
+    // Drag mode is active - proceed with drag logic
     if (!isTouchDragging) return;
 
     // Prevent default to stop scrolling while dragging
     e.preventDefault();
-
-    const touch = e.touches[0];
 
     // Find which element the touch is currently over
     const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
@@ -126,6 +170,13 @@
   }
 
   function handleTouchEnd(e: TouchEvent) {
+    // Cancel long-press timer if still pending
+    if (longPressTimer !== null) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+
+    // If drag wasn't active, this was just a tap/scroll - do nothing
     if (!isTouchDragging) return;
 
     e.preventDefault();
