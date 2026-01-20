@@ -18,7 +18,7 @@
 
 services:
   backend:
-    image: saltychart-backend:2025-07-27
+    image: saltychart-backend:2026-01-20
     container_name: saltychart-backend
     volumes:
       - saltychart_db:/app/prisma
@@ -37,7 +37,7 @@ services:
       - salty-net
 
   frontend:
-    image: saltychart-frontend:2025-07-27
+    image: saltychart-frontend:2026-01-20
     container_name: saltychart-frontend
     volumes:
       - ./frontend:/app:ro     # Optional, can remove if not using for dev
