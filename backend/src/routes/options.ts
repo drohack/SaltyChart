@@ -10,7 +10,8 @@ const DEFAULT_OPTIONS = {
   titleLanguage: 'ENGLISH',
   videoAutoplay: true,
   hideFromCompare: false,
-  nicknameUserSel: []
+  nicknameUserSel: [],
+  addWatchedTo: 'BOTTOM'
 }; 
 
 /**
@@ -27,13 +28,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
   `;
   if (!rows || rows.length === 0) {
     // Return defaults if no record exists
+    console.log('[OPTIONS] GET no settings found, returning defaults');
     return res.json({ userId, ...DEFAULT_OPTIONS });
   }
   const s = rows[0];
+  console.log('[OPTIONS] GET raw from DB:', s);
   const opts = {
     ...s,
     nicknameUserSel: s.nicknameUserSel ? JSON.parse(s.nicknameUserSel) : []
   };
+  console.log('[OPTIONS] GET returning:', opts);
   return res.json(opts);
 });
 
@@ -43,22 +47,27 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
  */
 router.put('/', requireAuth, async (req: AuthRequest, res) => {
   const userId = req.userId!;
-  let { theme, titleLanguage, videoAutoplay, hideFromCompare, nicknameUserSel } = req.body as {
+  let { theme, titleLanguage, videoAutoplay, hideFromCompare, nicknameUserSel, addWatchedTo } = req.body as {
     theme?: string;
     titleLanguage?: string;
     videoAutoplay?: boolean;
     hideFromCompare?: boolean;
     nicknameUserSel?: string[];
+    addWatchedTo?: string;
   };
 
   if (!Array.isArray(nicknameUserSel)) nicknameUserSel = [];
+  if (!addWatchedTo) addWatchedTo = 'BOTTOM';
+
+  console.log('[OPTIONS] PUT received:', { theme, titleLanguage, videoAutoplay, hideFromCompare, addWatchedTo });
+
   // Basic validation
   if (!theme || !titleLanguage || typeof videoAutoplay !== 'boolean' || typeof hideFromCompare !== 'boolean') {
     return res.status(400).json({ error: 'Invalid options payload' });
   }
   try {
     // Upsert *known* columns using Prisma, then update the nickname JSON
-    // separately via raw SQL to avoid client validation mismatches.
+    // and addWatchedTo separately via raw SQL to avoid client validation mismatches.
     const createData: any = { userId, theme, titleLanguage, videoAutoplay, hideFromCompare };
     const updateData: any = { theme, titleLanguage, videoAutoplay, hideFromCompare };
 
@@ -68,18 +77,22 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
       update: updateData
     } as any);
 
-    // Persist nicknameUserSel via raw UPDATE (stringified JSON)
+    // Persist nicknameUserSel and addWatchedTo via raw UPDATE
     await prisma.$executeRawUnsafe(
-      `UPDATE "Settings" SET "nicknameUserSel" = ? WHERE "userId" = ?`,
+      `UPDATE "Settings" SET "nicknameUserSel" = ?, "addWatchedTo" = ? WHERE "userId" = ?`,
       JSON.stringify(nicknameUserSel),
+      addWatchedTo,
       userId
     );
+
+    console.log('[OPTIONS] Saved addWatchedTo:', addWatchedTo);
 
     // Fetch fresh row to return
     const rows: any[] = await prisma.$queryRaw`
       SELECT * FROM "Settings" WHERE userId = ${userId} LIMIT 1;
     `;
     const s = rows[0];
+    console.log('[OPTIONS] Returning:', { ...s, nicknameUserSel });
     return res.json({ ...s, nicknameUserSel });
   } catch (err) {
     console.error('[options] failed to upsert settings', err);

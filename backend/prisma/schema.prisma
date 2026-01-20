@@ -61,6 +61,8 @@ model Settings {
   videoAutoplay   Boolean @default(true)
   /// Whether to hide user from compare nav
   hideFromCompare Boolean @default(false)
+  /// Where to add newly watched items: TOP or BOTTOM
+  addWatchedTo    String  @default("BOTTOM")
 
   user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

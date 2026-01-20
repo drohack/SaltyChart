@@ -241,6 +241,7 @@ async function ensureDatabaseSchema() {
           "videoAutoplay" BOOLEAN NOT NULL DEFAULT 1,
           "hideFromCompare" BOOLEAN NOT NULL DEFAULT 0,
           "nicknameUserSel" TEXT,
+          "addWatchedTo" TEXT NOT NULL DEFAULT 'BOTTOM',
           FOREIGN KEY("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
       `);
@@ -253,6 +254,13 @@ async function ensureDatabaseSchema() {
       if (!hasNickSel) {
         console.log('[DB] Adding nicknameUserSel column');
       await prisma.$executeRawUnsafe(`ALTER TABLE "Settings" ADD COLUMN "nicknameUserSel" TEXT`);
+      }
+
+      // Column migration for Settings: addWatchedTo
+      const hasAddWatchedTo = settingCols.some((c) => c.name === 'addWatchedTo');
+      if (!hasAddWatchedTo) {
+        console.log('[DB] Adding addWatchedTo column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "Settings" ADD COLUMN "addWatchedTo" TEXT NOT NULL DEFAULT 'BOTTOM'`);
       }
     }
 

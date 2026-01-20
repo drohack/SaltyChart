@@ -814,17 +814,56 @@ $: {
 
   /** Toggle watched flag for a given mediaId */
   async function toggleWatched(id: number, watched: boolean) {
-    // update local state
-    watchList = watchList.map((w) =>
-      w.mediaId === id
-        ? {
-            ...w,
-            watched,
-            watchedAt: watched ? new Date().toISOString() : null,
-            watchedRank: watched ? (watchedRank.length) : null
-          }
-        : w
-    );
+    if (watched) {
+      const addToTop = $options.addWatchedTo === 'TOP';
+
+      if (addToTop) {
+        // Mark as watched: set new item to rank 0, increment all others
+        watchList = watchList.map((w) =>
+          w.mediaId === id
+            ? {
+                ...w,
+                watched,
+                watchedAt: new Date().toISOString(),
+                watchedRank: 0  // New items go to top (rank 0)
+              }
+            : w.watched
+            ? { ...w, watchedRank: w.watchedRank != null ? w.watchedRank + 1 : null }  // Increment existing ranks
+            : w
+        );
+      } else {
+        // Mark as watched: add to bottom with highest rank
+        const maxRank = Math.max(-1, ...watchList.filter(w => w.watched).map(w => w.watchedRank ?? -1));
+        watchList = watchList.map((w) =>
+          w.mediaId === id
+            ? {
+                ...w,
+                watched,
+                watchedAt: new Date().toISOString(),
+                watchedRank: maxRank + 1  // New items go to bottom
+              }
+            : w
+        );
+      }
+    } else {
+      // Mark as unwatched: remove from watched and renormalize all ranks
+      watchList = watchList.map((w) =>
+        w.mediaId === id
+          ? { ...w, watched: false, watchedAt: null, watchedRank: null }
+          : w
+      );
+
+      // Renormalize ranks after removal
+      const remainingWatched = watchList
+        .filter((w) => w.watched)
+        .sort((a, b) => (a.watchedRank ?? 0) - (b.watchedRank ?? 0));
+
+      watchList = watchList.map((w) => {
+        if (!w.watched) return w;
+        const newRank = remainingWatched.findIndex((rw) => rw.mediaId === w.mediaId);
+        return { ...w, watchedRank: newRank };
+      });
+    }
 
     // Keep the watchedRank sidebar in sync immediately so the user sees the
     // new entry without waiting for the reactive regeneration to kick in.
@@ -834,21 +873,46 @@ $: {
         const data = anime.find((a) => a.id === id);
         const entry = watchList.find((w) => w.mediaId === id);
         if (data && entry) {
-          watchedRank = [
-            ...watchedRank,
-            {
-              ...data,
-              customName: entry.customName ?? null,
-              watched: true,
-              watchedAt: entry.watchedAt ?? null,
-              watchedRank: watchedRank.length
-            }
-          ];
+          const addToTop = $options.addWatchedTo === 'TOP';
+
+          if (addToTop) {
+            // Add new item at the beginning and update all ranks
+            watchedRank = [
+              {
+                ...data,
+                customName: entry.customName ?? null,
+                watched: true,
+                watchedAt: entry.watchedAt ?? null,
+                watchedRank: 0
+              },
+              ...watchedRank.map((item) => ({
+                ...item,
+                watchedRank: (item.watchedRank ?? 0) + 1
+              }))
+            ];
+          } else {
+            // Add new item at the end
+            watchedRank = [
+              ...watchedRank,
+              {
+                ...data,
+                customName: entry.customName ?? null,
+                watched: true,
+                watchedAt: entry.watchedAt ?? null,
+                watchedRank: watchedRank.length
+              }
+            ];
+          }
         }
       }
     } else {
-      // Remove from local ranking list when un-watched
-      watchedRank = watchedRank.filter((it) => it.id !== id);
+      // Remove from local ranking list when un-watched and renormalize ranks
+      watchedRank = watchedRank
+        .filter((it) => it.id !== id)
+        .map((item, index) => ({
+          ...item,
+          watchedRank: index
+        }));
     }
 
     if ($authToken) {
@@ -1268,6 +1332,33 @@ $: {
 
     <!-- Nickname user picker panel (aligned with Watched sidebar) -->
     <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm space-y-1 z-30 hidden lg:block right-[calc(21rem+7px)]">
+      <!-- Add watched position preference -->
+      <div class="mb-4 pb-3 border-b border-base-300">
+        <h3 class="font-semibold mb-2">Add Watched to:</h3>
+        <div class="flex flex-row gap-3">
+          <label class="flex items-center gap-1 cursor-pointer">
+            <input
+              type="radio"
+              class="radio radio-xs"
+              name="addWatchedPosition"
+              value="TOP"
+              bind:group={$options.addWatchedTo}
+            />
+            Top
+          </label>
+          <label class="flex items-center gap-1 cursor-pointer">
+            <input
+              type="radio"
+              class="radio radio-xs"
+              name="addWatchedPosition"
+              value="BOTTOM"
+              bind:group={$options.addWatchedTo}
+            />
+            Bottom
+          </label>
+        </div>
+      </div>
+
       <h3 class="font-semibold mb-2">Nicknames from:</h3>
 
       {#if $nicknameAllUsers.length}
