@@ -254,6 +254,7 @@
           on:touchstart={(e) => handleTouchStart(e, i)}
           on:touchmove={(e) => handleTouchMove(e, i)}
           on:touchend={handleTouchEnd}
+          on:dblclick={() => dispatch('view', item)}
         >
           <!-- Drag handle icon -->
           <svg

@@ -899,6 +899,32 @@ $: {
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
+  /**
+   * Get English title specifically (for modal display, ignoring user preference).
+   */
+  function getEnglishTitle(item: any): string {
+    return item.title?.english || item.title?.romaji || item.title?.native || '';
+  }
+  /**
+   * Get Romaji title specifically (for modal display, ignoring user preference).
+   */
+  function getRomajiTitle(item: any): string {
+    return item.title?.romaji || item.title?.english || item.title?.native || '';
+  }
+  /**
+   * Normalize string for comparison (lowercase, remove spaces and special characters).
+   */
+  function normalizeTitle(title: string): string {
+    return title.toLowerCase().replace(/[\s\W_]+/g, '');
+  }
+  /**
+   * Check if Romaji and English titles are essentially the same.
+   */
+  function titlesAreSame(item: any): boolean {
+    const english = normalizeTitle(getEnglishTitle(item));
+    const romaji = normalizeTitle(getRomajiTitle(item));
+    return english === romaji;
+  }
   function shortTitle(item: any): string {
     const title = getDisplayTitle(item);
     return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '…' : title;
@@ -1216,6 +1242,11 @@ $: {
         }
       }}
           on:unwatch={(e) => toggleWatched(e.detail, false)}
+          on:view={(e) => {
+            // Double-click on watched item opens modal
+            selected = e.detail;
+            showModal = true;
+          }}
         />
       </div>
     </div>
@@ -1261,18 +1292,27 @@ $: {
     <dialog open class="modal">
       <div class="modal-box w-full max-w-3xl">
         <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" on:click={() => (showModal = false)}>✕</button>
-        {#key $options.titleLanguage + '-' + selected.id}
-        <h3 class="font-bold text-lg mb-2 flex flex-wrap items-baseline gap-1" data-lang={$options.titleLanguage}>
-          {selected.customName || getDisplayTitle(selected)}
+
+        <!-- Main title: custom name if exists, otherwise English title -->
+        <h3 class="font-bold text-lg mb-1">
+          {selected.customName || getEnglishTitle(selected)}
           {#if myRank != null}
             <span class="text-base font-normal opacity-70">(#{myRank})</span>
           {/if}
         </h3>
-        {/key}
-        {#if selected.customName}
-          <p class="mb-4 text-sm text-base-content/70">
-            {getBaseTitle(selected)}
+
+        <!-- Always show English title below (non-bold) -->
+        <p class="mb-1 text-base text-base-content/70">
+          {getEnglishTitle(selected)}
+        </p>
+
+        <!-- Only show Romaji title if different from English (non-bold) -->
+        {#if !titlesAreSame(selected)}
+          <p class="mb-4 text-base text-base-content/70">
+            {getRomajiTitle(selected)}
           </p>
+        {:else}
+          <div class="mb-4"></div>
         {/if}
 
         {#if nicknameList.length}
@@ -1298,13 +1338,21 @@ $: {
         {/if}
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
         <div class="modal-action relative flex justify-center">
-          <button class="btn btn-secondary absolute left-0" on:click={hideSelectedSeries}>
-            <span class="flex flex-col items-center leading-tight">
-              <span>Hide Series</span>
-              <span class="text-xs opacity-70">(Unwatched)</span>
-            </span>
-          </button>
-          <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
+          {#if selected.watched || watchList.find(w => w.mediaId === selected.id)?.watched}
+            <!-- Watched series: only show unwatch button (same pink color as Hide Series) -->
+            <button class="btn btn-secondary" on:click={() => { showModal = false; toggleWatched(selected.id, false); }}>
+              Mark as Unwatched
+            </button>
+          {:else}
+            <!-- Unwatched series: show hide and watch buttons -->
+            <button class="btn btn-secondary absolute left-0" on:click={hideSelectedSeries}>
+              <span class="flex flex-col items-center leading-tight">
+                <span>Hide Series</span>
+                <span class="text-xs opacity-70">(Unwatched)</span>
+              </span>
+            </button>
+            <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
+          {/if}
         </div>
       </div>
     </dialog>
