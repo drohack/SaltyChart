@@ -37,8 +37,10 @@ RUN apt-get update \
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     faster-whisper yt-dlp youtube-transcript-api
 
-# Pre-download the Whisper tiny model so first translation is fast
-RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
+# Pre-download Whisper models so first use doesn't wait for a download.
+# small: used by the on-demand daemon for live translation (~500MB)
+# medium: used by batch pre-translation for higher quality (~1.5GB)
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8'); WhisperModel('medium', device='cpu', compute_type='int8')"
 
 # Always provide DATABASE_URL so Prisma connects even when not passed via
 # docker run or compose.

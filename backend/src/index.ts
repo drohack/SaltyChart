@@ -294,6 +294,7 @@ async function ensureDatabaseSchema() {
     // - hasEnglishSubs: cached result of /check (null = not checked)
     // - segments: JSON array of {start, end, text} objects (null = not translated)
     // - modelName: Whisper model used, for cache invalidation if model changes
+    // - subtitlesDisabled: true if a user dismissed our subtitles (e.g. burned-in subs)
     const subtitleCacheRows: Array<{ name: string }> = await prisma.$queryRaw`
       SELECT name FROM sqlite_master WHERE type='table' AND name='SubtitleCache' LIMIT 1;
     `;
@@ -314,6 +315,21 @@ async function ensureDatabaseSchema() {
         CREATE UNIQUE INDEX IF NOT EXISTS "idx_subtitlecache_videoid"
         ON "SubtitleCache" ("videoId");
       `);
+    }
+
+    // Add subtitlesDisabled column if missing (non-destructive migration)
+    try {
+      const scCols: Array<{ name: string }> = await prisma.$queryRaw`
+        PRAGMA table_info('SubtitleCache');
+      `;
+      if (!scCols.some((c) => c.name === 'subtitlesDisabled')) {
+        console.log('[DB] Adding subtitlesDisabled column to SubtitleCache');
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "SubtitleCache" ADD COLUMN "subtitlesDisabled" BOOLEAN DEFAULT 0`
+        );
+      }
+    } catch (err) {
+      console.warn('[DB] Failed to add subtitlesDisabled column', err);
     }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);

@@ -63,11 +63,12 @@ contributors are not caught off-guard:
 
 • **Real-time subtitle translation** – click a Japanese trailer and get live
   English subtitles streamed via SSE.  Translations are cached in the database
-  so repeat plays are instant (~50ms).  A persistent Python daemon keeps the
-  Whisper model in RAM, and concurrent requests for the same video are
-  deduplicated.  Subtitles sync to YouTube's playback position, supporting
-  pause and scrub.  (`/api/translate/stream`, powered by `faster-whisper` +
-  `yt-dlp`).
+  so repeat plays are instant (~50ms).  A persistent Python daemon (`small`
+  model) handles on-demand requests; a batch script (`medium` model) can
+  pre-translate an entire season's trailers overnight for higher quality.
+  Concurrent requests are deduplicated.  Subtitles sync to YouTube's playback
+  position (pause, scrub).  Users can dismiss subtitles via the CC toggle and
+  the preference persists for all users.
 
 These features are fully documented in `AGENTS.md`; remember to update that
 guide when expanding the API or database schema.

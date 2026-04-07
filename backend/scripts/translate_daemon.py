@@ -1,5 +1,9 @@
 """
-Persistent Whisper daemon — keeps the model in RAM across translation requests.
+Persistent Whisper daemon — keeps the `small` model (int8) in RAM for fast
+on-demand translation.  Used by the /api/translate/stream SSE endpoint.
+
+For higher-quality batch pre-translation, see batch_translate.py which uses
+the `medium` model instead.
 
 Protocol (stdin JSON lines → stdout JSON lines):
   Input:  {"cmd": "translate", "rid": "abc123", "videoId": "9OWMV9XrZ8k"}

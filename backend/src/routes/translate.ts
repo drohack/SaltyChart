@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
+import express from 'express';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import crypto from 'crypto';
 import prisma from '../db';
+import { requireAuth, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -254,11 +256,14 @@ router.get('/check', async (req: Request, res: Response) => {
   // Check cache first
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
-      `SELECT "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      `SELECT "hasEnglishSubs", "subtitlesDisabled" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
       videoId
     );
     if (cached.length > 0 && cached[0].hasEnglishSubs !== null) {
-      return res.json({ hasEnglish: Boolean(cached[0].hasEnglishSubs) });
+      return res.json({
+        hasEnglish: Boolean(cached[0].hasEnglishSubs),
+        subtitlesDisabled: Boolean(cached[0].subtitlesDisabled),
+      });
     }
   } catch (err) {
     console.error('[translate/cache] Check lookup failed:', err);
@@ -447,6 +452,117 @@ router.get('/stream', async (req: Request, res: Response) => {
       }
     }
   });
+});
+
+/**
+ * PATCH /dismiss?videoId=xxx
+ * Mark a video's subtitles as dismissed (e.g. burned-in subs make ours redundant).
+ * Persists for all users — if anyone dismisses, future opens default to off.
+ */
+router.patch('/dismiss', express.json(), async (req: Request, res: Response) => {
+  const videoId = req.query.videoId as string;
+  if (!videoId || !VIDEO_ID_RE.test(videoId)) {
+    return res.status(400).json({ error: 'Invalid videoId' });
+  }
+  const disabled = req.body?.disabled !== false; // default true
+
+  try {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "SubtitleCache" ("videoId", "subtitlesDisabled")
+       VALUES (?, ?)
+       ON CONFLICT("videoId") DO UPDATE SET "subtitlesDisabled" = excluded."subtitlesDisabled"`,
+      videoId,
+      disabled ? 1 : 0
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[translate/dismiss]', err);
+    return res.status(500).json({ error: 'Failed to save preference' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Batch pre-translation (admin only)
+// ---------------------------------------------------------------------------
+
+const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);
+let batchProcess: ChildProcess | null = null;
+let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[] } = {
+  running: false,
+  log: [],
+};
+
+function getBatchScriptPath(): string {
+  return path.resolve(__dirname, '../../scripts/batch_translate.py');
+}
+
+/**
+ * POST /batch
+ * Trigger batch pre-translation for a season. Admin only (user ID 1 by default).
+ * Body: { season?: string, year?: number, dryRun?: boolean }
+ */
+router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res: Response) => {
+  if (req.userId !== ADMIN_USER_ID) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+
+  if (batchProcess && batchStatus.running) {
+    return res.status(409).json({ error: 'Batch already running', status: batchStatus });
+  }
+
+  const { season, year, dryRun } = req.body || {};
+  const args = ['-u', getBatchScriptPath()]; // -u = unbuffered stdout
+  if (season) args.push('--season', String(season).toUpperCase());
+  if (year) args.push('--year', String(year));
+  if (dryRun) args.push('--dry-run');
+  args.push('--cutoff', '23'); // no cutoff when triggered manually (effectively)
+
+  batchStatus = {
+    running: true,
+    season: season || 'auto',
+    year: year || 0,
+    startedAt: new Date().toISOString(),
+    log: [],
+  };
+
+  console.log(`[translate/batch] Starting batch: ${args.join(' ')}`);
+
+  batchProcess = spawn(PYTHON, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  batchProcess.stdout!.on('data', (chunk: Buffer) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    for (const line of lines) {
+      batchStatus.log.push(line);
+      // Keep only last 200 log lines
+      if (batchStatus.log.length > 200) batchStatus.log.shift();
+    }
+  });
+
+  batchProcess.stderr!.on('data', (chunk: Buffer) => {
+    console.error('[translate/batch]', chunk.toString());
+  });
+
+  batchProcess.on('close', (code) => {
+    console.log(`[translate/batch] Batch exited with code ${code}`);
+    batchStatus.running = false;
+    batchProcess = null;
+  });
+
+  return res.json({ ok: true, message: 'Batch started', status: batchStatus });
+});
+
+/**
+ * GET /batch/status
+ * Check the status of the current/last batch run. Admin only.
+ */
+router.get('/batch/status', requireAuth, async (req: AuthRequest, res: Response) => {
+  if (req.userId !== ADMIN_USER_ID) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+
+  return res.json(batchStatus);
 });
 
 export default router;

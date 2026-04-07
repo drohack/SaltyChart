@@ -70,10 +70,12 @@ $: _currentLang = $options.titleLanguage;
     // checkResolved gates the spinner so it doesn't flash then disappear
     // on videos that have English subs (where subtitlesVisible gets set to false).
     checkResolved = false;
+    // /check returns {hasEnglish, subtitlesDisabled} — hide our subtitles if
+    // the video has English subs or a previous user dismissed them via CC toggle.
     fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
       .then(res => res.json())
       .then(data => {
-        if (modal === id && data.hasEnglish) {
+        if (modal === id && (data.hasEnglish || data.subtitlesDisabled)) {
           subtitlesVisible = false;
         }
         checkResolved = true;
@@ -685,7 +687,17 @@ const dispatch = createEventDispatcher();
           {/if}
           <button
             class="flex items-center gap-1 bg-black/60 text-white text-sm px-2 py-1.5 rounded hover:bg-black/80 transition-colors relative"
-            on:click|stopPropagation={() => { subtitlesVisible = !subtitlesVisible; }}
+            on:click|stopPropagation={() => {
+              subtitlesVisible = !subtitlesVisible;
+              // Persist dismiss state for all future users (no auth required)
+              if (modal) {
+                fetch(`/api/translate/dismiss?videoId=${modal}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ disabled: !subtitlesVisible }),
+                }).catch(() => {});
+              }
+            }}
             title={subtitlesVisible ? 'Hide subtitles' : 'Show subtitles'}
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">

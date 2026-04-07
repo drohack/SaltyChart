@@ -46,32 +46,41 @@
   - `PUT   /api/list`           (replace entire list for a season/year in one shot)
 
   Translation routes (`/api/translate`):
-  - `GET /api/translate/check?videoId=&mediaId=`  (checks if English subtitles exist; cached in `SubtitleCache`)
+  - `GET /api/translate/check?videoId=&mediaId=`  (checks English subs + subtitle dismiss state; cached)
   - `GET /api/translate/stream?videoId=&mediaId=` (SSE subtitle stream; serves from cache on repeat plays)
+  - `PATCH /api/translate/dismiss?videoId=`        (persist subtitle on/off preference; no auth, all users)
+  - `POST /api/translate/batch`                    (trigger batch pre-translation; admin only, JWT required)
+  - `GET /api/translate/batch/status`              (batch job progress/logs; admin only)
 
-  Both endpoints check the `SubtitleCache` table first. On a cache hit, `/stream` sends a
-  `{cached: true}` SSE event followed by all segments instantly (~50ms). On a miss, the
-  daemon translates the video and the result is saved to cache on completion.  Concurrent
-  requests for the same uncached video are deduplicated — the second request waits for
-  the first to finish, then serves from cache.
+  Both check and stream endpoints query `SubtitleCache` first.  On a cache hit, `/stream`
+  sends a `{cached: true}` SSE event followed by all segments instantly (~50ms).  On a miss,
+  the daemon translates and saves to cache on completion.  Concurrent requests for the same
+  uncached video are deduplicated — the second waits for the first to finish.
 
-  The translate endpoints use a persistent Python daemon (`backend/scripts/translate_daemon.py`)
-  that keeps the Whisper model loaded in RAM across requests (auto-exits after 2 hours idle).
-  The daemon is spawned lazily on first request; the `/check` endpoint falls back to a
-  standalone spawn (`backend/scripts/translate_stream.py`) if the daemon isn't ready yet.
+  The `/check` endpoint returns `{hasEnglish, subtitlesDisabled}`.  If either is true the
+  frontend hides translated subtitles by default.  The dismiss state is set via the CC
+  toggle button (calls `PATCH /dismiss`) and persists for all users.
+
+  On-demand translation uses a persistent Python daemon (`backend/scripts/translate_daemon.py`)
+  with the `small` Whisper model (int8) for fast live results.  Batch pre-translation
+  (`backend/scripts/batch_translate.py`) uses the `medium` model (int8) for higher quality
+  and automatically upgrades videos previously translated with `small`.
 
   Audio is chunked with a ramp-up strategy (5s, 5s, 10s, 10s, then 20s) starting from
-  second 0, transcribed with `beam_size=1` and `condition_on_previous_text=False` for speed.
+  second 0.  On-demand uses `beam_size=1` + `condition_on_previous_text=False` for speed;
+  batch uses `beam_size=5` + `condition_on_previous_text=True` for quality.
   Subtitle timing syncs to YouTube's iframe API `currentTime` and respects play/pause state.
 
   Python dependencies: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`, and system-level `ffmpeg`.
+  Both `small` and `medium` models are pre-downloaded in the Docker image.
 - Database schema is auto-created/updated at startup via raw SQL in `ensureDatabaseSchema()`.
   • New tables/columns since last revision
     - `Settings` (per-user record storing theme, title language, autoplay, hide-from-compare and JSON column `nicknameUserSel`).
     - `WatchList.watchedRank` (integer; 0-based rank assigned after a show is watched and ranked in the Randomize page).
     - `WatchList.hidden` (boolean; when true the show is skipped by the Randomize wheel).
-    - `SubtitleCache` (videoId unique, mediaId, modelName, hasEnglishSubs, segments JSON, createdAt).
-      Caches both English-subtitle check results and translated subtitle segments per YouTube video.
+    - `SubtitleCache` (videoId unique, mediaId, modelName, hasEnglishSubs, subtitlesDisabled,
+      segments JSON, createdAt).  Caches check results, translated segments, and user subtitle
+      preferences per YouTube video.
 
   The bootstrap logic will automatically create the `Settings` table, add the
   `nicknameUserSel` column if missing, and back-fill default rows for existing

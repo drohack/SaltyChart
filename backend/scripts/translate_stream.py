@@ -1,11 +1,13 @@
 """
 Real-time Japanese-to-English subtitle translation for YouTube trailers.
 
+Provides shared helper functions used by both:
+  - translate_daemon.py (on-demand, `small` model, beam_size=1)
+  - batch_translate.py  (batch pre-translation, `medium` model, beam_size=5)
+
 Usage (standalone):
   python translate_stream.py check <videoId>      # Check if English subs exist
-  python translate_stream.py translate <videoId>   # Transcribe+translate audio via Whisper
-
-The core functions are also imported by translate_daemon.py for persistent mode.
+  python translate_stream.py translate <videoId>   # Transcribe+translate via Whisper (small model)
 """
 
 import sys
