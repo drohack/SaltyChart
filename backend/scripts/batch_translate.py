@@ -192,7 +192,10 @@ def next_season_info() -> tuple:
 # ---------------------------------------------------------------------------
 
 def translate_video(model, video_id: str, media_id: int, db_path: str):
-    """Translate a single video and save to SubtitleCache."""
+    """Translate a single video and save to SubtitleCache (including English sub check)."""
+    # Check for English subs first (saves a Python spawn when user opens the trailer)
+    has_english = check_subtitles(video_id).get("hasEnglish", False)
+
     tmpdir = tempfile.mkdtemp()
     try:
         # Download audio
@@ -243,15 +246,20 @@ def translate_video(model, video_id: str, media_id: int, db_path: str):
         seg_json = json.dumps(segments)
         conn = sqlite3.connect(db_path)
         try:
+            # Only overwrite if existing model is lower rank than medium.
+            # This prevents downgrading a large-v3 translation from local GPU.
             conn.execute(
-                """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "segments")
-                   VALUES (?, ?, 'medium', ?)
+                """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments")
+                   VALUES (?, ?, 'medium', ?, ?)
                    ON CONFLICT("videoId") DO UPDATE SET
                      "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
                      "modelName" = excluded."modelName",
+                     "hasEnglishSubs" = excluded."hasEnglishSubs",
                      "segments" = excluded."segments"
+                   WHERE "SubtitleCache"."modelName" IS NULL
+                      OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
                 """,
-                (video_id, media_id, seg_json),
+                (video_id, media_id, 1 if has_english else 0, seg_json),
             )
             conn.commit()
         finally:

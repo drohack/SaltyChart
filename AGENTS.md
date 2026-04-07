@@ -50,6 +50,7 @@
   - `GET /api/translate/stream?videoId=&mediaId=` (SSE subtitle stream; serves from cache on repeat plays)
   - `PATCH /api/translate/dismiss?videoId=`        (persist subtitle on/off preference; no auth, all users)
   - `POST /api/translate/upload`                    (upload pre-translated subtitles; admin only, respects model rank)
+  - `DELETE /api/translate/cache?videoId=`          (delete a cached translation; admin only)
   - `POST /api/translate/batch`                    (trigger batch pre-translation; admin only, JWT required)
   - `GET /api/translate/batch/status`              (batch job progress/logs; admin only)
 
@@ -67,7 +68,13 @@
   On-demand translation uses a persistent Python daemon (`backend/scripts/translate_daemon.py`)
   with the `small` Whisper model (int8) for fast live results.  Batch pre-translation
   (`backend/scripts/batch_translate.py`) uses the `medium` model (int8) for higher quality
-  and automatically upgrades videos previously translated with `small`.
+  and automatically upgrades videos previously translated with `small`.  The batch also
+  pre-checks English subtitles and caches `hasEnglishSubs` to avoid a Python spawn on
+  first play.
+
+  The backend includes an auto-scheduler (in `index.ts`) that runs the batch script
+  automatically between 2-4am when the next anime season is within 30 days.  Runs once
+  per day max, with a `--cutoff 10` to stop by 10am.  No external cron setup needed.
 
   Audio is chunked with a ramp-up strategy (5s, 5s, 10s, 10s, then 20s) starting from
   second 0.  On-demand uses `beam_size=1` + `condition_on_previous_text=False` for speed;

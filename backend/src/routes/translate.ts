@@ -457,6 +457,31 @@ router.get('/stream', async (req: Request, res: Response) => {
 });
 
 /**
+ * DELETE /cache?videoId=xxx
+ * Remove a cached translation (e.g. if it's wrong or corrupt). Admin only.
+ * The next play will re-translate on demand.
+ */
+router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => {
+  if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  const videoId = req.query.videoId as string;
+  if (!videoId || !VIDEO_ID_RE.test(videoId)) {
+    return res.status(400).json({ error: 'Invalid videoId' });
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "SubtitleCache" WHERE "videoId" = ?`,
+      videoId
+    );
+    return res.json({ ok: true, deleted: videoId });
+  } catch (err) {
+    console.error('[translate/cache]', err);
+    return res.status(500).json({ error: 'Failed to delete cache entry' });
+  }
+});
+
+/**
  * PATCH /dismiss?videoId=xxx
  * Mark a video's subtitles as dismissed (e.g. burned-in subs make ours redundant).
  * Persists for all users — if anyone dismisses, future opens default to off.
@@ -548,8 +573,9 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
 // ---------------------------------------------------------------------------
 
 const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);
-let batchProcess: ChildProcess | null = null;
-let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[] } = {
+// Exported so the scheduler in index.ts can check if a batch is already running
+export let batchProcess: ChildProcess | null = null;
+export let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[] } = {
   running: false,
   log: [],
 };

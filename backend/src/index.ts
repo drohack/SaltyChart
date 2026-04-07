@@ -367,6 +367,96 @@ ensureDatabaseSchema().then(() => {
     console.log(`Backend listening on http://localhost:${PORT}`);
   });
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Batch translation scheduler
+  // Automatically spawns batch_translate.py during off-hours (2am-4am) when
+  // the next anime season is within 30 days.  Runs once per day max.
+  // The batch script handles everything else: skip cached, model rank guard,
+  // time cutoff at 10am, resumable across multiple days.
+  // ────────────────────────────────────────────────────────────────────────────
+  const BATCH_SCHEDULER_HOUR_START = 2;  // Start window (2am)
+  const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) — only starts new batches in this range
+  const BATCH_DAYS_BEFORE_SEASON = 30;   // How many days before season start to begin batching
+
+  const SEASON_STARTS: Array<{ season: string; month: number; day: number }> = [
+    { season: 'WINTER', month: 0, day: 1 },   // Jan 1
+    { season: 'SPRING', month: 3, day: 1 },   // Apr 1
+    { season: 'SUMMER', month: 6, day: 1 },   // Jul 1
+    { season: 'FALL',   month: 9, day: 1 },   // Oct 1
+  ];
+
+  function getNextSeasonInfo(): { season: string; year: number; daysUntil: number } | null {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    for (let yearOffset = 0; yearOffset <= 1; yearOffset++) {
+      for (const { season, month, day } of SEASON_STARTS) {
+        const start = new Date(now.getFullYear() + yearOffset, month, day);
+        const daysUntil = Math.ceil((start.getTime() - today.getTime()) / 86_400_000);
+        if (daysUntil > 0 && daysUntil <= BATCH_DAYS_BEFORE_SEASON) {
+          return { season, year: start.getFullYear(), daysUntil };
+        }
+      }
+    }
+    return null;
+  }
+
+  let lastBatchDate = '';
+
+  function checkBatchSchedule() {
+    const now = new Date();
+    const hour = now.getHours();
+
+    // Only start new batches between 2am-4am
+    if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
+
+    // Already ran today?
+    const todayStr = now.toISOString().slice(0, 10);
+    if (lastBatchDate === todayStr) return;
+
+    // Batch already running (from Options modal or previous scheduler spawn)?
+    const { batchStatus: bs } = require('./routes/translate');
+    if (bs.running) {
+      console.log('[batch-scheduler] Batch already running, skipping');
+      return;
+    }
+
+    // Is the next season within range?
+    const next = getNextSeasonInfo();
+    if (!next) return;
+
+    // Spawn the batch
+    console.log(`[batch-scheduler] Starting batch for ${next.season} ${next.year} (${next.daysUntil} days until season)`);
+    lastBatchDate = todayStr;
+
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const scriptPath = require('path').resolve(__dirname, '../scripts/batch_translate.py');
+    const child = require('child_process').spawn(pythonCmd, ['-u', scriptPath, '--cutoff', '10'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      const lines = chunk.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        console.log(`[batch-scheduler] ${line}`);
+      }
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      console.error('[batch-scheduler]', chunk.toString());
+    });
+
+    child.on('close', (code: number) => {
+      console.log(`[batch-scheduler] Batch exited with code ${code}`);
+    });
+  }
+
+  // Run the check immediately on startup (in case server starts during batch window)
+  // then hourly after that.
+  setTimeout(checkBatchSchedule, 10_000); // 10s after startup
+  setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
+  console.log('[batch-scheduler] Scheduled hourly check (2am-4am, 30 days before season)');
+
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
   signals.forEach((sig) =>
