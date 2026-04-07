@@ -46,8 +46,14 @@
   - `PUT   /api/list`           (replace entire list for a season/year in one shot)
 
   Translation routes (`/api/translate`):
-  - `GET /api/translate/check?videoId=`  (checks if a YouTube video has English subtitles available)
-  - `GET /api/translate/stream?videoId=` (SSE endpoint that streams translated subtitle segments in real-time)
+  - `GET /api/translate/check?videoId=&mediaId=`  (checks if English subtitles exist; cached in `SubtitleCache`)
+  - `GET /api/translate/stream?videoId=&mediaId=` (SSE subtitle stream; serves from cache on repeat plays)
+
+  Both endpoints check the `SubtitleCache` table first. On a cache hit, `/stream` sends a
+  `{cached: true}` SSE event followed by all segments instantly (~50ms). On a miss, the
+  daemon translates the video and the result is saved to cache on completion.  Concurrent
+  requests for the same uncached video are deduplicated — the second request waits for
+  the first to finish, then serves from cache.
 
   The translate endpoints use a persistent Python daemon (`backend/scripts/translate_daemon.py`)
   that keeps the Whisper model loaded in RAM across requests (auto-exits after 2 hours idle).
@@ -64,6 +70,8 @@
     - `Settings` (per-user record storing theme, title language, autoplay, hide-from-compare and JSON column `nicknameUserSel`).
     - `WatchList.watchedRank` (integer; 0-based rank assigned after a show is watched and ranked in the Randomize page).
     - `WatchList.hidden` (boolean; when true the show is skipped by the Randomize wheel).
+    - `SubtitleCache` (videoId unique, mediaId, modelName, hasEnglishSubs, segments JSON, createdAt).
+      Caches both English-subtitle check results and translated subtitle segments per YouTube video.
 
   The bootstrap logic will automatically create the `Settings` table, add the
   `nicknameUserSel` column if missing, and back-fill default rows for existing

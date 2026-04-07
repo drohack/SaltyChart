@@ -289,6 +289,32 @@ async function ensureDatabaseSchema() {
     } catch (err) {
       console.warn('[DB] Failed to seed default Settings rows', err);
     }
+    // ----------------------- SubtitleCache table -------------------------
+    // Caches translated subtitles and English-subtitle check results per YouTube video.
+    // - hasEnglishSubs: cached result of /check (null = not checked)
+    // - segments: JSON array of {start, end, text} objects (null = not translated)
+    // - modelName: Whisper model used, for cache invalidation if model changes
+    const subtitleCacheRows: Array<{ name: string }> = await prisma.$queryRaw`
+      SELECT name FROM sqlite_master WHERE type='table' AND name='SubtitleCache' LIMIT 1;
+    `;
+    if (subtitleCacheRows.length === 0) {
+      console.log('[DB] Creating SubtitleCache table');
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SubtitleCache" (
+          "id"              INTEGER PRIMARY KEY AUTOINCREMENT,
+          "videoId"         TEXT NOT NULL,
+          "mediaId"         INTEGER,
+          "modelName"       TEXT NOT NULL DEFAULT 'small',
+          "hasEnglishSubs"  BOOLEAN,
+          "segments"        TEXT,
+          "createdAt"       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS "idx_subtitlecache_videoid"
+        ON "SubtitleCache" ("videoId");
+      `);
+    }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
   }

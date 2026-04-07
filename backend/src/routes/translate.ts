@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import crypto from 'crypto';
+import prisma from '../db';
 
 const router = Router();
 
@@ -25,6 +26,10 @@ let daemonBuffer = '';
 const pendingStreams = new Map<string, Response>();
 // Map of request ID → { resolve } (for check requests)
 const pendingChecks = new Map<string, { resolve: (data: any) => void }>();
+// Map of request ID → collected segments (for caching after translation completes)
+const pendingSegments = new Map<string, { videoId: string; mediaId: number | null; segments: any[] }>();
+// Track in-flight translations by videoId to deduplicate concurrent requests
+const inFlightTranslations = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 
 function getDaemonScriptPath(): string {
   return path.resolve(__dirname, '../../scripts/translate_daemon.py');
@@ -76,14 +81,69 @@ function handleDaemonLine(line: string): void {
   // Strip rid before forwarding to client
   const { rid: _rid, ...payload } = data;
 
-  if (payload.done || payload.error) {
+  if (payload.done) {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    if (payload.done) {
-      pendingStreams.delete(rid);
-      activeTranslations = Math.max(0, activeTranslations - 1);
-      res.end();
+    pendingStreams.delete(rid);
+    activeTranslations = Math.max(0, activeTranslations - 1);
+    res.end();
+
+    // Save collected segments to cache and resolve in-flight waiters
+    const pending = pendingSegments.get(rid);
+    if (pending && pending.segments.length > 0) {
+      pendingSegments.delete(rid);
+      const segJson = JSON.stringify(pending.segments);
+      prisma.$executeRawUnsafe(
+        `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "segments")
+         VALUES (?, ?, 'small', ?)
+         ON CONFLICT("videoId") DO UPDATE SET
+           "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
+           "segments" = excluded."segments"`,
+        pending.videoId,
+        pending.mediaId,
+        segJson
+      ).then(() => {
+        // Resolve any waiters after cache is written
+        const inFlight = inFlightTranslations.get(pending.videoId);
+        if (inFlight) {
+          inFlightTranslations.delete(pending.videoId);
+          inFlight.resolve();
+        }
+      }).catch((err: any) => {
+        console.error('[translate/cache] Failed to save segments:', err);
+        // Still resolve waiters even on cache write failure
+        if (pending) {
+          const inFlight = inFlightTranslations.get(pending.videoId);
+          if (inFlight) {
+            inFlightTranslations.delete(pending.videoId);
+            inFlight.resolve();
+          }
+        }
+      });
+    } else {
+      pendingSegments.delete(rid);
+      // Resolve in-flight waiters even if no segments (e.g. silent video)
+      if (pending) {
+        const inFlight = inFlightTranslations.get(pending.videoId);
+        if (inFlight) {
+          inFlightTranslations.delete(pending.videoId);
+          inFlight.resolve();
+        }
+      }
     }
     return;
+  }
+
+  if (payload.error) {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    return;
+  }
+
+  // Collect segment for caching (only actual subtitle segments with start/end/text)
+  if (payload.start !== undefined && payload.text) {
+    const pending = pendingSegments.get(rid);
+    if (pending) {
+      pending.segments.push({ start: payload.start, end: payload.end, text: payload.text });
+    }
   }
 
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -109,6 +169,7 @@ function cleanupDaemon(): void {
     } catch {}
   }
   pendingStreams.clear();
+  pendingSegments.clear();
   activeTranslations = 0;
 }
 
@@ -179,21 +240,36 @@ process.on('SIGINT', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * GET /check?videoId=xxx
+ * GET /check?videoId=xxx&mediaId=yyy
  * Quick check whether a YouTube video has English subtitles.
- * Uses the daemon if already running; otherwise spawns a standalone check
- * and warms up the daemon in the background for the next request.
+ * Returns cached result if available; otherwise checks and caches the result.
  */
 router.get('/check', async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId' });
   }
+  const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
-  // If daemon is running, use it
+  // Check cache first
+  try {
+    const cached: any[] = await prisma.$queryRawUnsafe(
+      `SELECT "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      videoId
+    );
+    if (cached.length > 0 && cached[0].hasEnglishSubs !== null) {
+      return res.json({ hasEnglish: Boolean(cached[0].hasEnglishSubs) });
+    }
+  } catch (err) {
+    console.error('[translate/cache] Check lookup failed:', err);
+  }
+
+  // Cache miss — perform the check
+  let result: any;
+
   if (daemon && daemonReady) {
     const rid = crypto.randomUUID();
-    const result = await new Promise<any>((resolve) => {
+    result = await new Promise<any>((resolve) => {
       pendingChecks.set(rid, { resolve });
       sendCommand({ cmd: 'check', rid, videoId });
 
@@ -205,49 +281,68 @@ router.get('/check', async (req: Request, res: Response) => {
         }
       }, 15000);
     });
-    return res.json(result);
+  } else {
+    // Fallback: standalone spawn (also warms up daemon for next request)
+    ensureDaemon().catch(() => {});
+
+    result = await new Promise<any>((resolve) => {
+      const py = spawn(PYTHON, [getStreamScriptPath(), 'check', videoId], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      let output = '';
+      py.stdout!.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+      py.stderr!.on('data', (chunk: Buffer) => {
+        console.error('[translate/check]', chunk.toString());
+      });
+
+      py.on('close', () => {
+        try {
+          resolve(JSON.parse(output.trim()));
+        } catch {
+          resolve({ error: 'Failed to check subtitles' });
+        }
+      });
+
+      py.on('error', (err) => {
+        console.error('[translate/check] spawn error:', err.message);
+        resolve({ error: 'Python is not available' });
+      });
+    });
   }
 
-  // Fallback: standalone spawn (also warms up daemon for next request)
-  ensureDaemon().catch(() => {}); // fire and forget
+  // Cache the result (non-blocking)
+  if (result && result.hasEnglish !== undefined) {
+    prisma.$executeRawUnsafe(
+      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "hasEnglishSubs")
+       VALUES (?, ?, ?)
+       ON CONFLICT("videoId") DO UPDATE SET
+         "hasEnglishSubs" = excluded."hasEnglishSubs",
+         "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId")`,
+      videoId,
+      mediaId,
+      result.hasEnglish ? 1 : 0
+    ).catch((err: any) => console.error('[translate/cache] Failed to cache check result:', err));
+  }
 
-  const py = spawn(PYTHON, [getStreamScriptPath(), 'check', videoId], {
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  let output = '';
-  py.stdout!.on('data', (chunk: Buffer) => {
-    output += chunk.toString();
-  });
-
-  py.stderr!.on('data', (chunk: Buffer) => {
-    console.error('[translate/check]', chunk.toString());
-  });
-
-  py.on('close', () => {
-    try {
-      const data = JSON.parse(output.trim());
-      res.json(data);
-    } catch {
-      res.status(500).json({ error: 'Failed to check subtitles' });
-    }
-  });
-
-  py.on('error', (err) => {
-    console.error('[translate/check] spawn error:', err.message);
-    res.status(500).json({ error: 'Python is not available' });
-  });
+  return res.json(result);
 });
 
 /**
- * GET /stream?videoId=xxx
- * SSE endpoint that streams translated subtitle segments via persistent daemon.
+ * GET /stream?videoId=xxx&mediaId=yyy
+ * SSE endpoint that streams translated subtitle segments.
+ * - Cache hit: sends {cached: true} then all segments instantly from DB
+ * - In-flight dedup: if another request is translating the same video, waits
+ *   for it to finish then serves from cache
+ * - Cache miss: translates via daemon, streams segments to client in real-time,
+ *   collects them in pendingSegments, and saves to SubtitleCache on completion
  */
 router.get('/stream', async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId' });
   }
+  const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -257,7 +352,52 @@ router.get('/stream', async (req: Request, res: Response) => {
   res.flushHeaders();
   res.write(':ok\n\n');
 
-  // Concurrency limit
+  // Check cache first
+  try {
+    const cached: any[] = await prisma.$queryRawUnsafe(
+      `SELECT "segments" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      videoId
+    );
+    if (cached.length > 0 && cached[0].segments) {
+      const segments = JSON.parse(cached[0].segments);
+      // Stream cached segments immediately — no daemon needed
+      res.write(`data: ${JSON.stringify({ cached: true })}\n\n`);
+      for (const seg of segments) {
+        res.write(`data: ${JSON.stringify(seg)}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
+      return;
+    }
+  } catch (err) {
+    console.error('[translate/cache] Stream lookup failed:', err);
+  }
+
+  // If another request is already translating this video, wait for it then serve from cache
+  const inFlight = inFlightTranslations.get(videoId);
+  if (inFlight) {
+    try {
+      await inFlight.promise;
+      // Translation finished — serve from cache
+      const cached: any[] = await prisma.$queryRawUnsafe(
+        `SELECT "segments" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+        videoId
+      );
+      if (cached.length > 0 && cached[0].segments) {
+        const segments = JSON.parse(cached[0].segments);
+        res.write(`data: ${JSON.stringify({ cached: true })}\n\n`);
+        for (const seg of segments) {
+          res.write(`data: ${JSON.stringify(seg)}\n\n`);
+        }
+        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        res.end();
+        return;
+      }
+    } catch {}
+    // If cache still empty after waiting, fall through to translate
+  }
+
+  // Cache miss — translate via daemon
   if (activeTranslations >= MAX_CONCURRENT) {
     res.write(`data: ${JSON.stringify({ error: 'Server busy, try again shortly' })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
@@ -268,18 +408,26 @@ router.get('/stream', async (req: Request, res: Response) => {
 
   const rid = crypto.randomUUID();
 
+  // Register in-flight BEFORE awaiting daemon so concurrent requests can find it
+  let inFlightResolve: () => void;
+  const inFlightPromise = new Promise<void>((resolve) => { inFlightResolve = resolve; });
+  inFlightTranslations.set(videoId, { promise: inFlightPromise, resolve: inFlightResolve! });
+
   try {
     await ensureDaemon();
   } catch (err) {
     activeTranslations = Math.max(0, activeTranslations - 1);
+    inFlightTranslations.delete(videoId);
+    inFlightResolve!();
     res.write(`data: ${JSON.stringify({ error: 'Failed to start translation daemon' })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     res.end();
     return;
   }
 
-  // Register this SSE response
+  // Register this SSE response and start collecting segments for caching
   pendingStreams.set(rid, res);
+  pendingSegments.set(rid, { videoId, mediaId, segments: [] });
 
   // Send translate command to daemon
   sendCommand({ cmd: 'translate', rid, videoId });
@@ -288,8 +436,15 @@ router.get('/stream', async (req: Request, res: Response) => {
   req.on('close', () => {
     if (pendingStreams.has(rid)) {
       pendingStreams.delete(rid);
+      pendingSegments.delete(rid);
       activeTranslations = Math.max(0, activeTranslations - 1);
       sendCommand({ cmd: 'cancel', rid });
+      // Resolve in-flight waiters (they'll find no cache and fall through)
+      const flight = inFlightTranslations.get(videoId);
+      if (flight) {
+        inFlightTranslations.delete(videoId);
+        flight.resolve();
+      }
     }
   });
 });

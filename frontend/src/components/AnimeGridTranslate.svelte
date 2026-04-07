@@ -56,19 +56,21 @@ $: _currentLang = $options.titleLanguage;
     controlsVisible = false;
   }
 
-  function openModal(id: string) {
+  function openModal(id: string, mediaId?: number) {
     modal = id;
     document.body.style.overflow = 'hidden';
 
+    const mediaParam = mediaId ? `&mediaId=${mediaId}` : '';
+
     // Start translation immediately — don't wait for check
     translationLoading = true;
-    startTranslation(id);
+    startTranslation(id, mediaParam);
 
     // Check runs in background — only affects default subtitle visibility.
     // checkResolved gates the spinner so it doesn't flash then disappear
     // on videos that have English subs (where subtitlesVisible gets set to false).
     checkResolved = false;
-    fetch(`/api/translate/check?videoId=${id}`)
+    fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
       .then(res => res.json())
       .then(data => {
         if (modal === id && data.hasEnglish) {
@@ -79,14 +81,14 @@ $: _currentLang = $options.titleLanguage;
       .catch(() => { checkResolved = true; });
   }
 
-  function startTranslation(videoId: string) {
+  function startTranslation(videoId: string, mediaParam: string = '') {
     subtitleSegments = [];
     currentSubtitle = '';
     translationStatus = 'Downloading audio...';
     const sseStartTime = Date.now();
 
     console.log('[translate] Opening SSE connection for', videoId);
-    eventSource = new EventSource(`/api/translate/stream?videoId=${videoId}`);
+    eventSource = new EventSource(`/api/translate/stream?videoId=${videoId}${mediaParam}`);
 
     eventSource.onopen = () => {
       const elapsed = ((Date.now() - sseStartTime) / 1000).toFixed(1);
@@ -97,6 +99,15 @@ $: _currentLang = $options.titleLanguage;
       const elapsed = ((Date.now() - sseStartTime) / 1000).toFixed(1);
       try {
         const data = JSON.parse(event.data);
+        if (data.cached) {
+          // Cached response — skip spinner, go straight to translating mode
+          console.log(`[translate] [${elapsed}s] Serving from cache`);
+          translationLoading = false;
+          translating = true;
+          checkResolved = true;
+          startSubtitleTick();
+          return;
+        }
         if (data.progress) {
           translationStatus = data.progress === 'transcribing' ? 'Transcribing...' : data.progress;
           return;
@@ -518,7 +529,7 @@ const dispatch = createEventDispatcher();
         {#if show.trailer?.site === 'youtube'}
           <button
             class="relative flex-1 aspect-video rounded overflow-hidden cursor-pointer"
-            on:click={() => openModal(show.trailer.id)}
+            on:click={() => openModal(show.trailer.id, show.id)}
           >
             <img
               src={`https://i.ytimg.com/vi/${show.trailer.id}/hqdefault.jpg`}
