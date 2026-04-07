@@ -61,6 +61,12 @@ contributors are not caught off-guard:
 • **Nickname user filter** – the global *Options* modal gained a **Nickname
   User Picker** so you decide whose nicknames are displayed.
 
+• **Real-time subtitle translation** – click a Japanese trailer and get live
+  English subtitles streamed via SSE.  A persistent Python daemon keeps the
+  Whisper model in RAM for fast repeat translations.  Subtitles sync to
+  YouTube's playback position, supporting pause and scrub.
+  (`/api/translate/stream`, powered by `faster-whisper` + `yt-dlp`).
+
 These features are fully documented in `AGENTS.md`; remember to update that
 guide when expanding the API or database schema.
 

@@ -29,7 +29,16 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      curl openssl libssl-dev \
+     python3 python3-pip python3-venv \
+     ffmpeg \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies for real-time subtitle translation
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    faster-whisper yt-dlp youtube-transcript-api
+
+# Pre-download the Whisper tiny model so first translation is fast
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
 
 # Always provide DATABASE_URL so Prisma connects even when not passed via
 # docker run or compose.
@@ -46,6 +55,7 @@ ENV NODE_ENV=production \
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/scripts ./scripts
 
 EXPOSE 3000
 

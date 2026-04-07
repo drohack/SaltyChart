@@ -44,6 +44,7 @@ import listRouter from './routes/list';
 import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
+import translateRouter from './routes/translate';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -57,6 +58,12 @@ app.set('trust proxy', 'loopback');
 
 app.use(cors());
 app.use(helmet());
+
+// Register SSE translate route BEFORE compression middleware.
+// compression() wraps response streams and buffers them internally,
+// which prevents SSE from streaming in real-time to the browser.
+app.use('/api/translate', translateRouter);
+
 app.use(compression());
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -312,6 +319,7 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/users', usersRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
+  // Note: /api/translate is registered before compression() middleware (see above)
 
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);

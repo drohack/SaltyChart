@@ -1,7 +1,7 @@
 <script lang="ts">
   // Extracted original App.svelte content
 import SeasonSelect from '../components/SeasonSelect.svelte';
-import AnimeGrid from '../components/AnimeGrid.svelte';
+import AnimeGrid from '../components/AnimeGridTranslate.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { authToken, userName } from '../stores/auth';

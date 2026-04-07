@@ -5,6 +5,7 @@
   let SignUp: any;
   let Randomize: any;
   let Compare: any;
+
 import { authToken, userName } from './stores/auth';
 import OptionsModal from './components/OptionsModal.svelte';
 import { options } from './stores/options';

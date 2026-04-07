@@ -44,6 +44,21 @@
   - `GET   /api/list/users-with-nicknames` (list users that have at least one custom nickname)
   - `GET   /api/list/nicknames?mediaId=`   (nicknames & ranks for a given series)
   - `PUT   /api/list`           (replace entire list for a season/year in one shot)
+
+  Translation routes (`/api/translate`):
+  - `GET /api/translate/check?videoId=`  (checks if a YouTube video has English subtitles available)
+  - `GET /api/translate/stream?videoId=` (SSE endpoint that streams translated subtitle segments in real-time)
+
+  The translate endpoints use a persistent Python daemon (`backend/scripts/translate_daemon.py`)
+  that keeps the Whisper model loaded in RAM across requests (auto-exits after 2 hours idle).
+  The daemon is spawned lazily on first request; the `/check` endpoint falls back to a
+  standalone spawn (`backend/scripts/translate_stream.py`) if the daemon isn't ready yet.
+
+  Audio is chunked with a ramp-up strategy (5s, 5s, 10s, 10s, then 20s) starting from
+  second 0, transcribed with `beam_size=1` and `condition_on_previous_text=False` for speed.
+  Subtitle timing syncs to YouTube's iframe API `currentTime` and respects play/pause state.
+
+  Python dependencies: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`, and system-level `ffmpeg`.
 - Database schema is auto-created/updated at startup via raw SQL in `ensureDatabaseSchema()`.
   • New tables/columns since last revision
     - `Settings` (per-user record storing theme, title language, autoplay, hide-from-compare and JSON column `nicknameUserSel`).
@@ -63,6 +78,10 @@
  - Build: `npm run build` (produces static assets)
  - Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, Randomize, Compare
+- The main anime grid (`AnimeGridTranslate.svelte`) includes real-time Japanese subtitle
+  translation for trailers via the `/api/translate` endpoints.  Subtitles sync to the
+  YouTube iframe API's `currentTime`, support play/pause/scrub, and the spinner is
+  deferred until the English-subtitle check completes to avoid UI flash.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
  Additional UI features added after 2025-06-04:
