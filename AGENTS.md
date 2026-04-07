@@ -49,6 +49,7 @@
   - `GET /api/translate/check?videoId=&mediaId=`  (checks English subs + subtitle dismiss state; cached)
   - `GET /api/translate/stream?videoId=&mediaId=` (SSE subtitle stream; serves from cache on repeat plays)
   - `PATCH /api/translate/dismiss?videoId=`        (persist subtitle on/off preference; no auth, all users)
+  - `POST /api/translate/upload`                    (upload pre-translated subtitles; admin only, respects model rank)
   - `POST /api/translate/batch`                    (trigger batch pre-translation; admin only, JWT required)
   - `GET /api/translate/batch/status`              (batch job progress/logs; admin only)
 
@@ -57,9 +58,11 @@
   the daemon translates and saves to cache on completion.  Concurrent requests for the same
   uncached video are deduplicated — the second waits for the first to finish.
 
-  The `/check` endpoint returns `{hasEnglish, subtitlesDisabled}`.  If either is true the
-  frontend hides translated subtitles by default.  The dismiss state is set via the CC
-  toggle button (calls `PATCH /dismiss`) and persists for all users.
+  The `/check` endpoint returns `{hasEnglish, subtitlesDisabled, hasCachedSegments, modelName}`.
+  If `hasEnglish` or `subtitlesDisabled` is true the frontend hides translated subtitles by
+  default.  The dismiss state is set via the CC toggle button (calls `PATCH /dismiss`) and
+  persists for all users.  `hasCachedSegments` and `modelName` are used by the local
+  translation script to decide whether to re-translate.
 
   On-demand translation uses a persistent Python daemon (`backend/scripts/translate_daemon.py`)
   with the `small` Whisper model (int8) for fast live results.  Batch pre-translation
@@ -73,6 +76,11 @@
 
   Python dependencies: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`, and system-level `ffmpeg`.
   Both `small` and `medium` models are pre-downloaded in the Docker image.
+
+  Local GPU translation: `tools/local_translate.py` runs on your PC with GPU support
+  (`large-v3` + `float16` on CUDA) and uploads results via `POST /api/translate/upload`.
+  Supports `--video` for single videos, `--no-upload` for local-only testing, `--dry-run`,
+  `--season`/`--year`, and `-u`/`-p` for login.  `tools/translate.bat` is a Windows wrapper.
 - Database schema is auto-created/updated at startup via raw SQL in `ensureDatabaseSchema()`.
   • New tables/columns since last revision
     - `Settings` (per-user record storing theme, title language, autoplay, hide-from-compare and JSON column `nicknameUserSel`).

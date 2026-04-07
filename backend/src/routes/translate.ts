@@ -256,13 +256,15 @@ router.get('/check', async (req: Request, res: Response) => {
   // Check cache first
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
-      `SELECT "hasEnglishSubs", "subtitlesDisabled" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      `SELECT "hasEnglishSubs", "subtitlesDisabled", "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
       videoId
     );
     if (cached.length > 0 && cached[0].hasEnglishSubs !== null) {
       return res.json({
         hasEnglish: Boolean(cached[0].hasEnglishSubs),
         subtitlesDisabled: Boolean(cached[0].subtitlesDisabled),
+        hasCachedSegments: cached[0].segments != null,
+        modelName: cached[0].modelName || null,
       });
     }
   } catch (err) {
@@ -478,6 +480,66 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
   } catch (err) {
     console.error('[translate/dismiss]', err);
     return res.status(500).json({ error: 'Failed to save preference' });
+  }
+});
+
+/**
+ * POST /upload
+ * Upload pre-translated subtitles from a local machine (e.g. GPU translation).
+ * Admin only. Upserts into SubtitleCache — upgrades if new model is higher rank.
+ * Body: { videoId, mediaId?, modelName, segments: [{start, end, text}, ...] }
+ */
+const MODEL_RANK: Record<string, number> = { tiny: 0, base: 1, small: 2, medium: 3, 'large-v2': 4, 'large-v3': 5 };
+
+router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: AuthRequest, res: Response) => {
+  if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+
+  const { videoId, mediaId, modelName, segments } = req.body || {};
+  if (!videoId || !VIDEO_ID_RE.test(videoId)) {
+    return res.status(400).json({ error: 'Invalid videoId' });
+  }
+  if (!modelName || !segments || !Array.isArray(segments)) {
+    return res.status(400).json({ error: 'Missing modelName or segments' });
+  }
+
+  const newRank = MODEL_RANK[modelName] ?? 0;
+
+  try {
+    // Check existing cache entry
+    const existing: any[] = await prisma.$queryRawUnsafe(
+      `SELECT "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      videoId
+    );
+
+    if (existing.length > 0) {
+      const existingRank = MODEL_RANK[existing[0].modelName] ?? 0;
+      if (newRank <= existingRank) {
+        return res.json({ ok: true, action: 'skipped', reason: `existing ${existing[0].modelName} >= ${modelName}` });
+      }
+    }
+
+    const segJson = JSON.stringify(segments);
+    const action = existing.length > 0 ? 'upgraded' : 'inserted';
+
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "segments")
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT("videoId") DO UPDATE SET
+         "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
+         "modelName" = excluded."modelName",
+         "segments" = excluded."segments"`,
+      videoId,
+      mediaId ?? null,
+      modelName,
+      segJson
+    );
+
+    return res.json({ ok: true, action });
+  } catch (err) {
+    console.error('[translate/upload]', err);
+    return res.status(500).json({ error: 'Failed to save subtitles' });
   }
 });
 
