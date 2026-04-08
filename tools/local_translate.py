@@ -43,6 +43,8 @@ Flags:
   --video            Translate a single YouTube video ID (skips AniList)
   --no-upload        Translate locally without uploading to server
   --dry-run          List eligible trailers without translating
+  --log [PATH]       Log output to file (default: tools/logs/translate.log)
+  --within-days N    Exit if next season is more than N days away
 
 Windows wrapper: tools/translate.bat (uses py -3.13)
 """
@@ -170,6 +172,17 @@ def next_season_info() -> tuple:
     idx = SEASONS.index(current)
     next_idx = (idx + 1) % 4
     return SEASONS[next_idx], now.year + (1 if next_idx == 0 else 0)
+
+
+# Approximate first day of each season
+SEASON_START_MONTH = {"WINTER": 1, "SPRING": 4, "SUMMER": 7, "FALL": 10}
+
+
+def days_until_next_season() -> int:
+    """Return approximate days until the next anime season starts."""
+    season, year = next_season_info()
+    start = datetime(year, SEASON_START_MONTH[season], 1)
+    return (start - datetime.now()).days
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +359,41 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="List trailers without translating")
     parser.add_argument("--video", type=str, help="Translate a single YouTube video ID (skip AniList fetch)")
     parser.add_argument("--no-upload", action="store_true", help="Translate but don't upload to server")
+    parser.add_argument("--log", type=str, nargs="?", const=os.path.join(os.path.dirname(__file__), "logs", "translate.log"),
+                        help="Log output to file (default: tools/logs/translate.log)")
+    parser.add_argument("--within-days", type=int, default=None, metavar="N",
+                        help="Exit if next season is more than N days away")
     args = parser.parse_args()
+
+    # --- File logging ---
+    log_file = None
+    if args.log:
+        log_path = args.log
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        log_file = open(log_path, "a", encoding="utf-8")
+        log_file.write(f"\n{'='*60}\n")
+        log_file.write(f"Run started: {datetime.now().isoformat()}\n")
+        log_file.write(f"{'='*60}\n")
+
+        import builtins
+        _original_print = builtins.print
+        def tee_print(*args, **kwargs):
+            _original_print(*args, **kwargs)
+            _original_print(*args, **{**kwargs, "file": log_file, "flush": True})
+        builtins.print = tee_print
+
+    # --- Within-days gate ---
+    if args.within_days is not None:
+        days = days_until_next_season()
+        if days > args.within_days:
+            season, year = next_season_info()
+            print(f"[local] Next season ({season} {year}) is {days} days away (threshold: {args.within_days}). Exiting.")
+            if log_file:
+                log_file.close()
+            return
+        else:
+            season, year = next_season_info()
+            print(f"[local] Next season ({season} {year}) is {days} days away — within {args.within_days}-day window, proceeding.")
 
     server = args.server.rstrip("/")
 
@@ -499,6 +546,9 @@ def main():
     print()
     print(f"[local] Complete: {translated} translated, {errors} errors"
           + (f", {len(uncached) - translated - errors} remaining" if len(uncached) - translated - errors > 0 else ""))
+
+    if log_file:
+        log_file.close()
 
 
 if __name__ == "__main__":

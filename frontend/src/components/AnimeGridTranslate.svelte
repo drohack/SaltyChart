@@ -715,8 +715,8 @@ const dispatch = createEventDispatcher();
       <!-- Subtitle overlay -->
       {#if translating && subtitlesVisible && currentSubtitle}
         <div
-          class="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[80%]
-                 bg-black/75 text-white text-lg px-4 py-2 rounded
+          class="absolute bottom-[30px] left-1/2 -translate-x-1/2 max-w-[80%]
+                 bg-black/75 text-white text-xl px-3 py-1 rounded
                  pointer-events-none text-center z-10"
           transition:fade={{ duration: 150 }}
         >

@@ -368,15 +368,15 @@ ensureDatabaseSchema().then(() => {
   });
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Batch translation scheduler
-  // Automatically spawns batch_translate.py during off-hours (2am-4am) when
-  // the next anime season is within 30 days.  Runs once per day max.
-  // The batch script handles everything else: skip cached, model rank guard,
-  // time cutoff at 10am, resumable across multiple days.
+  // Batch translation scheduler (medium model, server-side fallback)
+  // Only runs on Wednesdays 2am-4am, within 21 days of next season.
+  // The local GPU script (large-v3, --within-days 35) should beat this most
+  // of the time — this is a safety net so trailers still get *some* subs.
   // ────────────────────────────────────────────────────────────────────────────
   const BATCH_SCHEDULER_HOUR_START = 2;  // Start window (2am)
   const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) — only starts new batches in this range
-  const BATCH_DAYS_BEFORE_SEASON = 30;   // How many days before season start to begin batching
+  const BATCH_DAYS_BEFORE_SEASON = 21;   // How many days before season start to begin batching
+  const BATCH_DAY_OF_WEEK = 3;           // Wednesday (0=Sun, 3=Wed)
 
   const SEASON_STARTS: Array<{ season: string; month: number; day: number }> = [
     { season: 'WINTER', month: 0, day: 1 },   // Jan 1
@@ -407,7 +407,8 @@ ensureDatabaseSchema().then(() => {
     const now = new Date();
     const hour = now.getHours();
 
-    // Only start new batches between 2am-4am
+    // Only start new batches on the right day of week, between 2am-4am
+    if (now.getDay() !== BATCH_DAY_OF_WEEK) return;
     if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
 
     // Already ran today?
@@ -455,7 +456,7 @@ ensureDatabaseSchema().then(() => {
   // then hourly after that.
   setTimeout(checkBatchSchedule, 10_000); // 10s after startup
   setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
-  console.log('[batch-scheduler] Scheduled hourly check (2am-4am, 30 days before season)');
+  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 21 days before season)');
 
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
