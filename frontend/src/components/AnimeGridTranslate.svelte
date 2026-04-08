@@ -1,7 +1,24 @@
 <script lang="ts">
 import { options } from '../stores/options';
+import SubtitleSettings from './SubtitleSettings.svelte';
 // Reactive trigger so title-language changes re-render grid
 $: _currentLang = $options.titleLanguage;
+
+  function hexToRgb(hex: string): string {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `${r}, ${g}, ${b}`;
+  }
+
+  function textBorderStyle(border: string): string {
+    if (border === 'light') return 'text-shadow: 1px 1px 1px rgba(0,0,0,0.5), -1px -1px 1px rgba(0,0,0,0.5);';
+    if (border === 'medium') return 'text-shadow: 1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8), 0 0 4px rgba(0,0,0,0.5);';
+    if (border === 'heavy') return 'text-shadow: 2px 2px 4px #000, -2px -2px 4px #000, 0 0 6px rgba(0,0,0,0.9);';
+    if (border === 'drop-shadow') return 'text-shadow: 3px 3px 4px rgba(0,0,0,0.9);';
+    if (border === 'glow') return 'text-shadow: 0 0 6px rgba(255,255,255,0.8), 0 0 12px rgba(255,255,255,0.4);';
+    return '';
+  }
   export let anime: any[] = [];
   export let hideSequels: boolean = false;
   export let hideInList: boolean = false;
@@ -37,6 +54,7 @@ $: _currentLang = $options.titleLanguage;
   let modalOpenedAt: number | null = null;
   // UI controls
   let subtitlesVisible = true;
+  let subtitleSettingsOpen = false;
   let lastYouTubeTimeUpdate = 0;
   let videoPlaying = false;
   let checkResolved = false;
@@ -46,14 +64,11 @@ $: _currentLang = $options.titleLanguage;
   function showControls() {
     controlsVisible = true;
     if (controlsFadeTimer) clearTimeout(controlsFadeTimer);
-    controlsFadeTimer = window.setTimeout(() => {
-      controlsVisible = false;
-    }, 3000);
-  }
-
-  function hideControls() {
-    if (controlsFadeTimer) clearTimeout(controlsFadeTimer);
-    controlsVisible = false;
+    if (videoPlaying) {
+      controlsFadeTimer = window.setTimeout(() => {
+        controlsVisible = false;
+      }, 2000);
+    }
   }
 
   function openModal(id: string, mediaId?: number) {
@@ -429,8 +444,8 @@ const dispatch = createEventDispatcher();
       }
       // Track play/pause state
       if (data.event === 'onStateChange') {
-        if (data.info === 1) videoPlaying = true;   // PLAYING
-        if (data.info === 2) videoPlaying = false;   // PAUSED
+        if (data.info === 1) { videoPlaying = true; showControls(); }    // PLAYING
+        if (data.info === 2) { videoPlaying = false; showControls(); } // PAUSED
         // Set captions when not translating
         if (data.info === 1 && !translating && !translationLoading) {
           const win = iframeElement!.contentWindow!;
@@ -656,10 +671,10 @@ const dispatch = createEventDispatcher();
     }}
     tabindex="-1"
   >
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
       class="relative w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video"
-      on:mousemove={showControls}
-      on:mouseleave={hideControls}
+      on:mouseenter={showControls}
     >
       <iframe
         title="Trailer video"
@@ -673,11 +688,15 @@ const dispatch = createEventDispatcher();
 
       <!-- Translation controls — spinner + CC toggle side by side -->
       {#if translationLoading || translating}
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           class="absolute top-12 right-2 flex items-center gap-2 z-10"
+          on:mouseenter={showControls}
+          on:mousemove={showControls}
+          on:mouseleave={() => { if (videoPlaying) showControls(); }}
           class:opacity-0={!controlsVisible && !(translationLoading && subtitlesVisible && checkResolved)}
           class:opacity-100={controlsVisible || (translationLoading && subtitlesVisible && checkResolved)}
-          style="transition: opacity 0.2s"
+          style="transition: opacity 0.75s ease-out; {controlsVisible ? 'transition-duration: 0s;' : ''}"
         >
           {#if translationLoading && subtitlesVisible && checkResolved}
             <div class="flex items-center gap-2 bg-black/60 text-white text-sm px-3 py-1.5 rounded">
@@ -709,15 +728,41 @@ const dispatch = createEventDispatcher();
               </svg>
             {/if}
           </button>
+          <!-- Subtitle settings gear -->
+          <button
+            class="flex items-center gap-1 bg-black/60 text-white text-sm px-2 py-1.5 rounded hover:bg-black/80 transition-colors"
+            on:click|stopPropagation={() => { subtitleSettingsOpen = !subtitleSettingsOpen; }}
+            title="Subtitle settings"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+              <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/>
+            </svg>
+          </button>
         </div>
       {/if}
 
+      <!-- Subtitle settings panel -->
+      {#if subtitleSettingsOpen}
+        <SubtitleSettings
+          videoId={modal}
+          {subtitlesVisible}
+          on:close={() => { subtitleSettingsOpen = false; }}
+          on:toggleVideo={(e) => { subtitlesVisible = e.detail.visible; }}
+        />
+      {/if}
+
       <!-- Subtitle overlay -->
-      {#if translating && subtitlesVisible && currentSubtitle}
+      {#if translating && $options.subtitlePrefs.enabled && subtitlesVisible && currentSubtitle}
         <div
-          class="absolute bottom-[30px] left-1/2 -translate-x-1/2 max-w-[80%]
-                 bg-black/75 text-white text-xl px-3 py-1 rounded
-                 pointer-events-none text-center z-10"
+          class="absolute left-1/2 -translate-x-1/2 max-w-[80%] px-1.5 py-0.5 rounded pointer-events-none text-center z-10"
+          style="
+            bottom: {$options.subtitlePrefs.position}px;
+            font-size: {$options.subtitlePrefs.fontSize}px;
+            font-family: '{$options.subtitlePrefs.fontFamily}', sans-serif;
+            color: {$options.subtitlePrefs.textColor};
+            background: rgba({hexToRgb($options.subtitlePrefs.bgColor)}, {$options.subtitlePrefs.bgOpacity / 100});
+            {textBorderStyle($options.subtitlePrefs.textBorder)}
+          "
           transition:fade={{ duration: 150 }}
         >
           {currentSubtitle}

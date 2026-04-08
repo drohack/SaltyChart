@@ -249,6 +249,7 @@ async function ensureDatabaseSchema() {
           "hideFromCompare" BOOLEAN NOT NULL DEFAULT 0,
           "nicknameUserSel" TEXT,
           "addWatchedTo" TEXT NOT NULL DEFAULT 'BOTTOM',
+          "subtitlePrefs" TEXT,
           FOREIGN KEY("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
       `);
@@ -268,6 +269,13 @@ async function ensureDatabaseSchema() {
       if (!hasAddWatchedTo) {
         console.log('[DB] Adding addWatchedTo column');
         await prisma.$executeRawUnsafe(`ALTER TABLE "Settings" ADD COLUMN "addWatchedTo" TEXT NOT NULL DEFAULT 'BOTTOM'`);
+      }
+
+      // Column migration for Settings: subtitlePrefs
+      const hasSubtitlePrefs = settingCols.some((c) => c.name === 'subtitlePrefs');
+      if (!hasSubtitlePrefs) {
+        console.log('[DB] Adding subtitlePrefs column');
+        await prisma.$executeRawUnsafe(`ALTER TABLE "Settings" ADD COLUMN "subtitlePrefs" TEXT`);
       }
     }
 

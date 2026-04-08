@@ -30,13 +30,31 @@ Git repository.
 
 ## Quick start (developer machine)
 
-```bash
-# 1  Build & start both services (hot-reload enabled)
-docker compose up --build
+### Docker (production-like)
 
-# 2  Browse the app
+```bash
+docker compose up --build
 open http://localhost:5173
 ```
+
+### Local dev (no Docker, Windows)
+
+```bash
+# Terminal 1 — backend (port 3000)
+cd backend
+export DATABASE_URL="file:C:/Users/droha/Workspace/SaltyChart/backend/prisma/prisma/data.db"
+npx ts-node-dev --respawn --transpile-only src/index.ts
+
+# Terminal 2 — frontend (port 5173)
+cd frontend
+npm run dev
+```
+
+The `DATABASE_URL` is required — without it Prisma defaults to `/app/prisma/data.db`
+(Docker path) which doesn't exist locally. The SQLite DB lives at
+`backend/prisma/prisma/data.db`.
+
+If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PID <pid> /F`.
 
 ---
 

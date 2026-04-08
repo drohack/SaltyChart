@@ -44,13 +44,17 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
         "-ac", "1", "-ar", "16000",
         "-f", "wav", chunk_path,
     ]
-    subprocess.run(
-        cmd,
+    kwargs = dict(
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=True,
-        timeout=30,
+        timeout=60,
     )
+    # On Windows, prevent ffmpeg from inheriting the daemon's console/pipes
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.run(cmd, **kwargs)
     return chunk_path
 
 

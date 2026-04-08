@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { options, Theme, TitleLanguage } from '../stores/options';
+  import { options } from '../stores/options';
+  import type { Theme, TitleLanguage } from '../stores/options';
   import { authToken } from '../stores/auth';
   import { seasonYear, type Season } from '../stores/season';
   import { createEventDispatcher, onDestroy } from 'svelte';

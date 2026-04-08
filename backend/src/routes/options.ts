@@ -35,7 +35,8 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
   console.log('[OPTIONS] GET raw from DB:', s);
   const opts = {
     ...s,
-    nicknameUserSel: s.nicknameUserSel ? JSON.parse(s.nicknameUserSel) : []
+    nicknameUserSel: s.nicknameUserSel ? JSON.parse(s.nicknameUserSel) : [],
+    subtitlePrefs: s.subtitlePrefs ? JSON.parse(s.subtitlePrefs) : undefined,
   };
   console.log('[OPTIONS] GET returning:', opts);
   return res.json(opts);
@@ -47,13 +48,14 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
  */
 router.put('/', requireAuth, async (req: AuthRequest, res) => {
   const userId = req.userId!;
-  let { theme, titleLanguage, videoAutoplay, hideFromCompare, nicknameUserSel, addWatchedTo } = req.body as {
+  let { theme, titleLanguage, videoAutoplay, hideFromCompare, nicknameUserSel, addWatchedTo, subtitlePrefs } = req.body as {
     theme?: string;
     titleLanguage?: string;
     videoAutoplay?: boolean;
     hideFromCompare?: boolean;
     nicknameUserSel?: string[];
     addWatchedTo?: string;
+    subtitlePrefs?: object;
   };
 
   if (!Array.isArray(nicknameUserSel)) nicknameUserSel = [];
@@ -77,11 +79,12 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
       update: updateData
     } as any);
 
-    // Persist nicknameUserSel and addWatchedTo via raw UPDATE
+    // Persist nicknameUserSel, addWatchedTo, subtitlePrefs via raw UPDATE
     await prisma.$executeRawUnsafe(
-      `UPDATE "Settings" SET "nicknameUserSel" = ?, "addWatchedTo" = ? WHERE "userId" = ?`,
+      `UPDATE "Settings" SET "nicknameUserSel" = ?, "addWatchedTo" = ?, "subtitlePrefs" = ? WHERE "userId" = ?`,
       JSON.stringify(nicknameUserSel),
       addWatchedTo,
+      subtitlePrefs ? JSON.stringify(subtitlePrefs) : null,
       userId
     );
 
@@ -92,8 +95,13 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
       SELECT * FROM "Settings" WHERE userId = ${userId} LIMIT 1;
     `;
     const s = rows[0];
-    console.log('[OPTIONS] Returning:', { ...s, nicknameUserSel });
-    return res.json({ ...s, nicknameUserSel });
+    const result = {
+      ...s,
+      nicknameUserSel,
+      subtitlePrefs: s.subtitlePrefs ? JSON.parse(s.subtitlePrefs) : undefined,
+    };
+    console.log('[OPTIONS] Returning:', result);
+    return res.json(result);
   } catch (err) {
     console.error('[options] failed to upsert settings', err);
     return res.status(500).json({ error: 'Failed to save options' });
