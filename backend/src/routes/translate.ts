@@ -256,13 +256,14 @@ router.get('/check', async (req: Request, res: Response) => {
   // Check cache first
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
-      `SELECT "hasEnglishSubs", "subtitlesDisabled", "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      `SELECT "hasEnglishSubs", "subtitlesDisabled", "hasBurnedInSubs", "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
       videoId
     );
     if (cached.length > 0 && cached[0].hasEnglishSubs !== null) {
       return res.json({
         hasEnglish: Boolean(cached[0].hasEnglishSubs),
         subtitlesDisabled: Boolean(cached[0].subtitlesDisabled),
+        hasBurnedInSubs: Boolean(cached[0].hasBurnedInSubs),
         hasCachedSegments: cached[0].segments != null,
         modelName: cached[0].modelName || null,
       });
@@ -521,7 +522,7 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
     return res.status(403).json({ error: 'Admin access required' });
   }
 
-  const { videoId, mediaId, modelName, segments } = req.body || {};
+  const { videoId, mediaId, modelName, segments, hasBurnedInSubs } = req.body || {};
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId' });
   }
@@ -549,16 +550,18 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
     const action = existing.length > 0 ? 'upgraded' : 'inserted';
 
     await prisma.$executeRawUnsafe(
-      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "segments")
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "segments", "hasBurnedInSubs")
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT("videoId") DO UPDATE SET
          "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
          "modelName" = excluded."modelName",
-         "segments" = excluded."segments"`,
+         "segments" = excluded."segments",
+         "hasBurnedInSubs" = excluded."hasBurnedInSubs"`,
       videoId,
       mediaId ?? null,
       modelName,
-      segJson
+      segJson,
+      hasBurnedInSubs ? 1 : 0
     );
 
     return res.json({ ok: true, action });

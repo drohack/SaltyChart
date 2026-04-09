@@ -43,6 +43,7 @@ Flags:
   --video            Translate a single YouTube video ID (skips AniList)
   --no-upload        Translate locally without uploading to server
   --dry-run          List eligible trailers without translating
+  --force            Force re-translation even if cached
   --log [PATH]       Log output to file (default: tools/logs/translate.log)
   --within-days N    Exit if next season is more than N days away
 
@@ -280,6 +281,120 @@ def translate_video(model, video_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Burned-in subtitle detection
+# ---------------------------------------------------------------------------
+
+_ocr_reader = None
+
+def _get_ocr_reader():
+    """Lazy-init singleton easyocr Reader (avoids reloading model per video)."""
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+        _ocr_reader = easyocr.Reader(["en"], gpu=True, verbose=False)
+    return _ocr_reader
+
+
+def detect_burned_in_subs(video_id: str, segments: list) -> bool:
+    """Check if a video has burned-in English subtitles by OCR-ing the bottom
+    25% of 3 frames taken during speech segments.  Returns True if 2+ frames
+    contain English text."""
+    import yt_dlp
+    from PIL import Image
+
+    if not segments:
+        return False
+
+    # Pick the 3 longest speech segments — longer speech is more likely to have
+    # visible burned-in subtitles on screen. Use the midpoint of each.
+    by_duration = sorted(segments, key=lambda s: s["end"] - s["start"], reverse=True)
+    # Take up to 3, but spread them out (skip segments that overlap or are too close)
+    chosen = []
+    for seg in by_duration:
+        mid = (seg["start"] + seg["end"]) / 2
+        if all(abs(mid - t) > 3 for t in chosen):  # at least 3s apart
+            chosen.append(mid)
+        if len(chosen) >= 3:
+            break
+    timestamps = chosen if chosen else [(segments[0]["start"] + segments[0]["end"]) / 2]
+
+    print(f"[local] Checking for burned-in subs at {[f'{t:.1f}s' for t in timestamps]}...")
+
+    # Get direct video URL via yt-dlp (720p or lower)
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}", download=False
+            )
+            formats = [
+                f for f in info["formats"]
+                if f.get("vcodec", "none") != "none" and f.get("height", 0) <= 720
+            ]
+            formats.sort(key=lambda f: f.get("height", 0))
+            if not formats:
+                print("[local] No suitable video format for burned-in check")
+                return False
+            video_url = formats[-1]["url"]
+    except Exception as e:
+        print(f"[local] Could not get video URL for burned-in check: {e}")
+        return False
+
+    # Extract frames
+    tmpdir = tempfile.mkdtemp()
+    try:
+        frame_paths = []
+        for i, ts in enumerate(timestamps):
+            out = os.path.join(tmpdir, f"frame_{i}.jpg")
+            kwargs = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=30,
+            )
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_url,
+                 "-frames:v", "1", "-q:v", "2", out],
+                **kwargs,
+            )
+            frame_paths.append(out)
+
+        reader = _get_ocr_reader()
+
+        detections = 0
+        for i, path in enumerate(frame_paths):
+            img = Image.open(path)
+            w, h = img.size
+            cropped = img.crop((0, int(h * 0.75), w, h))
+            cropped_path = os.path.join(tmpdir, f"crop_{i}.jpg")
+            cropped.save(cropped_path)
+
+            results = reader.readtext(cropped_path)
+            # Filter: confidence > 0.4, has Latin chars, and looks like a
+            # subtitle (at least 2 words — filters out single-word watermarks/credits)
+            english_texts = [
+                text for (_, text, conf) in results
+                if conf > 0.4 and len(text.split()) >= 2 and any(c.isalpha() for c in text)
+            ]
+            if english_texts:
+                detections += 1
+                print(f"  Frame {i} ({timestamps[i]:.1f}s): found text: {english_texts}")
+                if detections >= 2:
+                    print(f"[local] Burned-in subs: yes ({detections}/{len(timestamps)} frames, early exit)")
+                    return True
+            else:
+                print(f"  Frame {i} ({timestamps[i]:.1f}s): no English text")
+
+        result = detections >= 2
+        print(f"[local] Burned-in subs: {'yes' if result else 'no'} ({detections}/3 frames)")
+        return result
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Server communication
 # ---------------------------------------------------------------------------
 
@@ -321,13 +436,14 @@ def login(server: str, username: str, password: str) -> str:
     return data["token"]
 
 
-def upload_segments(server: str, token: str, video_id: str, media_id: int, model_name: str, segments: list) -> dict:
+def upload_segments(server: str, token: str, video_id: str, media_id: int, model_name: str, segments: list, has_burned_in: bool = False) -> dict:
     """Upload translated segments to the server."""
     body = json.dumps({
         "videoId": video_id,
         "mediaId": media_id,
         "modelName": model_name,
         "segments": segments,
+        "hasBurnedInSubs": has_burned_in,
     }).encode()
     req = urllib.request.Request(
         f"{server}/api/translate/upload",
@@ -359,6 +475,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="List trailers without translating")
     parser.add_argument("--video", type=str, help="Translate a single YouTube video ID (skip AniList fetch)")
     parser.add_argument("--no-upload", action="store_true", help="Translate but don't upload to server")
+    parser.add_argument("--force", action="store_true", help="Force re-translation even if cached")
     parser.add_argument("--log", type=str, nargs="?", const=os.path.join(os.path.dirname(__file__), "logs", "translate.log"),
                         help="Log output to file (default: tools/logs/translate.log)")
     parser.add_argument("--within-days", type=int, default=None, metavar="N",
@@ -467,9 +584,17 @@ def main():
         for seg in segments:
             print(f"  [{seg['start']:6.1f}s - {seg['end']:6.1f}s] {seg['text']}")
 
+        # Check for burned-in subtitles
+        has_burned_in = False
+        if segments:
+            try:
+                has_burned_in = detect_burned_in_subs(args.video, segments)
+            except Exception as e:
+                print(f"[local] Burned-in detection failed: {e}")
+
         if not args.no_upload and token:
             print()
-            result = upload_segments(server, token, args.video, 0, args.model, segments)
+            result = upload_segments(server, token, args.video, 0, args.model, segments, has_burned_in)
             print(f"[local] Uploaded: {result.get('action', 'ok')}")
         elif args.no_upload:
             print()
@@ -491,12 +616,15 @@ def main():
     uncached = []
     for show in eligible:
         vid = show["trailer"]["id"]
-        is_cached, cached_model = check_server_cache(server, vid, args.model)
-        if is_cached:
-            print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
+        if args.force:
+            uncached.append((show, "forced"))
         else:
-            reason = f"upgrade from {cached_model}" if cached_model else "not cached"
-            uncached.append((show, reason))
+            is_cached, cached_model = check_server_cache(server, vid, args.model)
+            if is_cached:
+                print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
+            else:
+                reason = f"upgrade from {cached_model}" if cached_model else "not cached"
+                uncached.append((show, reason))
 
     print()
     print(f"[local] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} cached)")
@@ -534,8 +662,16 @@ def main():
             elapsed = time.time() - start_time
             print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
 
+            # Check for burned-in subtitles
+            has_burned_in = False
+            if segments:
+                try:
+                    has_burned_in = detect_burned_in_subs(vid, segments)
+                except Exception as e:
+                    print(f"  Burned-in detection failed: {e}")
+
             # Upload to server
-            result = upload_segments(server, token, vid, show["id"], args.model, segments)
+            result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in)
             print(f"  Uploaded: {result.get('action', 'ok')}")
             translated += 1
 

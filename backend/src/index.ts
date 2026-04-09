@@ -315,6 +315,7 @@ async function ensureDatabaseSchema() {
           "mediaId"         INTEGER,
           "modelName"       TEXT NOT NULL DEFAULT 'small',
           "hasEnglishSubs"  BOOLEAN,
+          "hasBurnedInSubs" BOOLEAN,
           "segments"        TEXT,
           "createdAt"       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -334,6 +335,12 @@ async function ensureDatabaseSchema() {
         console.log('[DB] Adding subtitlesDisabled column to SubtitleCache');
         await prisma.$executeRawUnsafe(
           `ALTER TABLE "SubtitleCache" ADD COLUMN "subtitlesDisabled" BOOLEAN DEFAULT 0`
+        );
+      }
+      if (!scCols.some((c) => c.name === 'hasBurnedInSubs')) {
+        console.log('[DB] Adding hasBurnedInSubs column to SubtitleCache');
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "SubtitleCache" ADD COLUMN "hasBurnedInSubs" BOOLEAN`
         );
       }
     } catch (err) {

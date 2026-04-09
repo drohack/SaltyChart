@@ -85,12 +85,12 @@ $: _currentLang = $options.titleLanguage;
     // checkResolved gates the spinner so it doesn't flash then disappear
     // on videos that have English subs (where subtitlesVisible gets set to false).
     checkResolved = false;
-    // /check returns {hasEnglish, subtitlesDisabled} — hide our subtitles if
-    // the video has English subs or a previous user dismissed them via CC toggle.
+    // /check returns {hasEnglish, subtitlesDisabled, hasBurnedInSubs} — hide our
+    // subtitles if the video has English subs, burned-in subs, or was dismissed.
     fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
       .then(res => res.json())
       .then(data => {
-        if (modal === id && (data.hasEnglish || data.subtitlesDisabled)) {
+        if (modal === id && (data.hasEnglish || data.subtitlesDisabled || data.hasBurnedInSubs)) {
           subtitlesVisible = false;
         }
         checkResolved = true;
