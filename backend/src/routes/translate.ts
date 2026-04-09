@@ -522,7 +522,7 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
     return res.status(403).json({ error: 'Admin access required' });
   }
 
-  const { videoId, mediaId, modelName, segments, hasBurnedInSubs } = req.body || {};
+  const { videoId, mediaId, modelName, segments, hasBurnedInSubs, force } = req.body || {};
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId' });
   }
@@ -539,7 +539,7 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
       videoId
     );
 
-    if (existing.length > 0) {
+    if (existing.length > 0 && !force) {
       const existingRank = MODEL_RANK[existing[0].modelName] ?? 0;
       if (newRank <= existingRank) {
         return res.json({ ok: true, action: 'skipped', reason: `existing ${existing[0].modelName} >= ${modelName}` });

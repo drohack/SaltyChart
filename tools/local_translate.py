@@ -436,7 +436,7 @@ def login(server: str, username: str, password: str) -> str:
     return data["token"]
 
 
-def upload_segments(server: str, token: str, video_id: str, media_id: int, model_name: str, segments: list, has_burned_in: bool = False) -> dict:
+def upload_segments(server: str, token: str, video_id: str, media_id: int, model_name: str, segments: list, has_burned_in: bool = False, force: bool = False) -> dict:
     """Upload translated segments to the server."""
     body = json.dumps({
         "videoId": video_id,
@@ -444,6 +444,7 @@ def upload_segments(server: str, token: str, video_id: str, media_id: int, model
         "modelName": model_name,
         "segments": segments,
         "hasBurnedInSubs": has_burned_in,
+        "force": force,
     }).encode()
     req = urllib.request.Request(
         f"{server}/api/translate/upload",
@@ -594,7 +595,7 @@ def main():
 
         if not args.no_upload and token:
             print()
-            result = upload_segments(server, token, args.video, 0, args.model, segments, has_burned_in)
+            result = upload_segments(server, token, args.video, 0, args.model, segments, has_burned_in, args.force)
             print(f"[local] Uploaded: {result.get('action', 'ok')}")
         elif args.no_upload:
             print()
@@ -671,7 +672,7 @@ def main():
                     print(f"  Burned-in detection failed: {e}")
 
             # Upload to server
-            result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in)
+            result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in, args.force)
             print(f"  Uploaded: {result.get('action', 'ok')}")
             translated += 1
 
