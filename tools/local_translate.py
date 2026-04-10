@@ -198,7 +198,10 @@ def days_until_next_season() -> int:
 # ---------------------------------------------------------------------------
 
 def download_audio(video_id: str, tmpdir: str):
-    """Download full audio as WAV. Returns (path, duration)."""
+    """Download audio as WAV and extract video stream URL for frame grabs.
+    Returns (audio_path, duration, video_url).  video_url is the direct URL
+    to the highest-quality <=720p video stream (used by burned-in detection
+    to avoid a redundant yt-dlp call)."""
     import yt_dlp
 
     full_audio = os.path.join(tmpdir, "full.wav")
@@ -215,11 +218,23 @@ def download_audio(video_id: str, tmpdir: str):
             f"https://www.youtube.com/watch?v={video_id}", download=True
         )
         duration = info.get("duration", 120)
-    return full_audio, duration
+
+    # Extract direct video URL for frame extraction (avoids second yt-dlp call)
+    video_url = None
+    formats = [
+        f for f in info.get("formats", [])
+        if f.get("vcodec", "none") != "none" and f.get("height", 0) <= 720
+    ]
+    if formats:
+        formats.sort(key=lambda f: f.get("height", 0))
+        video_url = formats[-1]["url"]
+
+    return full_audio, duration, video_url
 
 
 def generate_chunks(duration: float):
-    """Generate chunk boundaries with ramp-up strategy."""
+    """Generate chunk boundaries with ramp-up strategy.
+    Only used for the small model (use_chunking=True). Medium/large skip chunking."""
     RAMP = [5, 5, 10, 10]
     CHUNK_SIZE = 20
     chunks, start, i = [], 0, 0
@@ -233,7 +248,7 @@ def generate_chunks(duration: float):
 
 
 def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
-    """Extract a single audio chunk via ffmpeg."""
+    """Extract a single audio chunk via ffmpeg. Only used for small model chunking."""
     chunk_path = os.path.join(tmpdir, f"chunk_{chunk_start}.wav")
     cmd = ["ffmpeg", "-y", "-ss", str(chunk_start)]
     if chunk_end is not None:
@@ -248,7 +263,10 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
 # ---------------------------------------------------------------------------
 
 def translate_video(model, video_id: str, use_chunking: bool = True):
-    """Translate a video, return list of segment dicts.
+    """Translate a video, return (segments, video_url).
+
+    segments: list of {start, end, text} dicts.
+    video_url: direct URL to <=720p video stream (for burned-in detection).
 
     use_chunking=False transcribes the full audio in one pass — better quality
     (Whisper has full context) but requires more memory. Recommended for medium
@@ -256,7 +274,7 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
     """
     tmpdir = tempfile.mkdtemp()
     try:
-        full_audio, duration = download_audio(video_id, tmpdir)
+        full_audio, duration, video_url = download_audio(video_id, tmpdir)
 
         if not use_chunking:
             # Full-audio pass — better translations due to full context
@@ -274,7 +292,7 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
                         "end": round(seg.end, 2),
                         "text": text,
                     })
-            return segments
+            return segments, video_url
 
         # Chunked pass — for small model / CPU / low memory
         from concurrent.futures import ThreadPoolExecutor, Future
@@ -306,7 +324,7 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
                     if os.path.exists(chunk_path):
                         os.unlink(chunk_path)
 
-        return segments
+        return segments, video_url
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -374,13 +392,15 @@ def _semantic_match(ocr_text: str, whisper_text: str) -> float:
     return max(0.0, float(stu.cos_sim(emb[0], emb[1])))
 
 
-def detect_burned_in_subs(video_id: str, segments: list) -> bool:
+def detect_burned_in_subs(video_id: str, segments: list, video_url: str = None) -> bool:
     """Detect burned-in English subtitles by comparing OCR text (easyocr) from
     video frames to Whisper's translations using hybrid fuzzy string + semantic
     similarity matching.  Samples up to 7 frames at speech timestamps, crops
     the bottom 25%, and flags the video if 2+ distinct subtitle lines match.
+
+    video_url: direct URL to <=720p video stream (from download_audio).
+               If not provided, fetches it via yt-dlp (slower).
     """
-    import yt_dlp
     from PIL import Image
 
     if not segments:
@@ -415,46 +435,48 @@ def detect_burned_in_subs(video_id: str, segments: list) -> bool:
 
     print(f"[local] Checking for burned-in subs at {[f'{c['mid']:.1f}s' for c in chosen]}...")
 
-    # Get direct video URL via yt-dlp (720p or lower)
-    try:
-        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
-            info = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={video_id}", download=False
-            )
-            formats = [
-                f for f in info["formats"]
-                if f.get("vcodec", "none") != "none" and f.get("height", 0) <= 720
-            ]
-            formats.sort(key=lambda f: f.get("height", 0))
-            if not formats:
-                print("[local] No suitable video format for burned-in check")
-                return False
-            video_url = formats[-1]["url"]
-    except Exception as e:
-        print(f"[local] Could not get video URL for burned-in check: {e}")
-        return False
+    # Get direct video URL if not already provided (avoids redundant yt-dlp call)
+    if not video_url:
+        try:
+            import yt_dlp
+            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}", download=False
+                )
+                formats = [
+                    f for f in info["formats"]
+                    if f.get("vcodec", "none") != "none" and f.get("height", 0) <= 720
+                ]
+                formats.sort(key=lambda f: f.get("height", 0))
+                if not formats:
+                    print("[local] No suitable video format for burned-in check")
+                    return False
+                video_url = formats[-1]["url"]
+        except Exception as e:
+            print(f"[local] Could not get video URL for burned-in check: {e}")
+            return False
 
-    # Extract frames
+    # Extract frames in parallel (ffmpeg is I/O bound, threading works well)
     tmpdir = tempfile.mkdtemp()
     try:
-        frame_paths = []
-        for i, c in enumerate(chosen):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _grab_frame(i, ts):
             out = os.path.join(tmpdir, f"frame_{i}.jpg")
             kwargs = dict(
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-                timeout=30,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, check=True, timeout=30,
             )
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(c["mid"]), "-i", video_url,
-                 "-frames:v", "1", "-q:v", "2", out],
-                **kwargs,
-            )
-            frame_paths.append(out)
+                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_url,
+                 "-frames:v", "1", "-q:v", "2", out], **kwargs)
+            return out
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_grab_frame, i, c["mid"]) for i, c in enumerate(chosen)]
+            frame_paths = [f.result() for f in futures]
 
         reader = _get_ocr_reader()
 
@@ -657,7 +679,7 @@ def main():
             import subprocess as _sp
             _sp.check_call([
                 sys.executable, "-m", "pip", "install", "-q",
-                "torch", "--index-url", "https://download.pytorch.org/whl/cu121",
+                "torch", "--index-url", "https://download.pytorch.org/whl/cu126",
             ])
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -687,7 +709,7 @@ def main():
 
         start_time = time.time()
         use_chunking = args.model == "small"
-        segments = translate_video(model, args.video, use_chunking=use_chunking)
+        segments, video_url = translate_video(model, args.video, use_chunking=use_chunking)
         elapsed = time.time() - start_time
         print(f"[local] Translated: {len(segments)} segments in {elapsed:.1f}s")
         print()
@@ -698,7 +720,7 @@ def main():
         has_burned_in = False
         if segments:
             try:
-                has_burned_in = detect_burned_in_subs(args.video, segments)
+                has_burned_in = detect_burned_in_subs(args.video, segments, video_url=video_url)
             except Exception as e:
                 print(f"[local] Burned-in detection failed: {e}")
 
@@ -761,6 +783,7 @@ def main():
     # Translate and upload
     translated = 0
     errors = 0
+    use_chunking = args.model == "small"
     for i, (show, reason) in enumerate(uncached):
         vid = show["trailer"]["id"]
         title = get_title(show)
@@ -768,7 +791,7 @@ def main():
 
         try:
             start_time = time.time()
-            segments = translate_video(model, vid, use_chunking=(args.model == "small"))
+            segments, video_url = translate_video(model, vid, use_chunking=use_chunking)
             elapsed = time.time() - start_time
             print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
 
@@ -776,7 +799,7 @@ def main():
             has_burned_in = False
             if segments:
                 try:
-                    has_burned_in = detect_burned_in_subs(vid, segments)
+                    has_burned_in = detect_burned_in_subs(vid, segments, video_url=video_url)
                 except Exception as e:
                     print(f"  Burned-in detection failed: {e}")
 
