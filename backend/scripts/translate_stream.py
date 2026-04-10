@@ -1,9 +1,14 @@
 """
 Real-time Japanese-to-English subtitle translation for YouTube trailers.
 
-Provides shared helper functions used by both:
-  - translate_daemon.py (on-demand, `small` model, beam_size=1)
-  - batch_translate.py  (batch pre-translation, `medium` model, beam_size=5)
+Provides shared helper functions used by:
+  - translate_daemon.py (on-demand, `small` model, beam_size=1, chunked)
+  - batch_translate.py  (batch, `medium` model, beam_size=5, full-audio)
+
+Chunking is only used by the small model for real-time streaming (fast
+time-to-first-segment). Short videos (<=4 chunks / ~30s) skip chunking
+even for the small model. The medium and large-v3 models always use
+full-audio transcription for better quality.
 
 Usage (standalone):
   python translate_stream.py check <videoId>      # Check if English subs exist
@@ -18,20 +23,31 @@ import subprocess
 import tempfile
 
 
-def check_subtitles(video_id: str) -> dict:
-    """Check if the video has English subtitles. Returns dict with hasEnglish key."""
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+def check_subtitles(video_id: str, timeout: int = 10) -> dict:
+    """Check if the video has English subtitles. Returns dict with hasEnglish key.
+    Times out after `timeout` seconds to avoid hanging on network issues."""
+    import threading
 
-        ytt = YouTubeTranscriptApi()
-        ytt.fetch(video_id, languages=["en"])
-        return {"hasEnglish": True}
-    except Exception:
-        return {"hasEnglish": False}
+    result = {"hasEnglish": False}
+
+    def _check():
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            ytt = YouTubeTranscriptApi()
+            ytt.fetch(video_id, languages=["en"])
+            result["hasEnglish"] = True
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    return result
 
 
 def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
-    """Extract a single audio chunk via ffmpeg. Returns the chunk path."""
+    """Extract a single audio chunk via ffmpeg. Returns the chunk path.
+    Only used by the small model for chunked streaming. Medium/large use full-audio."""
     chunk_path = os.path.join(tmpdir, f"chunk_{chunk_start}.wav")
     cmd = [
         "ffmpeg", "-y",
@@ -55,6 +71,9 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     subprocess.run(cmd, **kwargs)
+    # Validate extraction succeeded
+    if not os.path.exists(chunk_path) or os.path.getsize(chunk_path) == 0:
+        raise RuntimeError(f"ffmpeg chunk extraction failed: {chunk_path}")
     return chunk_path
 
 
@@ -102,6 +121,11 @@ def generate_chunks(duration: float):
 def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
     """Transcribe audio chunks with pipelined extraction.
 
+    For short videos (<=30s / 4 or fewer chunks), skips chunking and transcribes
+    the full audio in one pass — faster and better quality since Whisper has full
+    context. For longer videos, uses the ramp-up chunking strategy for fast
+    time-to-first-segment.
+
     Args:
         model: WhisperModel instance
         chunks: list of (start, end) tuples
@@ -110,6 +134,27 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
         emit: callable(dict) to output each segment/progress
         cancelled: optional threading.Event, checked between chunks
     """
+    # Short videos: full-audio is faster than chunking overhead
+    if len(chunks) <= 4:
+        segments, _ = model.transcribe(
+            full_audio, language="ja", task="translate",
+            vad_filter=True, beam_size=1,
+            condition_on_previous_text=False
+        )
+        for seg in segments:
+            if cancelled and cancelled.is_set():
+                return
+            text = seg.text.strip()
+            if not text:
+                continue
+            emit({
+                "start": round(seg.start, 2),
+                "end": round(seg.end, 2),
+                "text": text,
+            })
+        return
+
+    # Longer videos: chunk for fast time-to-first-segment
     from concurrent.futures import ThreadPoolExecutor, Future
 
     with ThreadPoolExecutor(max_workers=1) as extract_pool:

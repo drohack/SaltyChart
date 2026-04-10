@@ -82,11 +82,12 @@ contributors are not caught off-guard:
 • **Real-time subtitle translation** – click a Japanese trailer and get live
   English subtitles streamed via SSE.  Translations are cached in the database
   so repeat plays are instant (~50ms).  A persistent Python daemon (`small`
-  model) handles on-demand requests; a batch script (`medium` model) can
-  pre-translate an entire season's trailers overnight for higher quality.
-  Concurrent requests are deduplicated.  Subtitles sync to YouTube's playback
-  position (pause, scrub).  Users can dismiss subtitles via the CC toggle and
-  the preference persists for all users.
+  model, chunked) handles on-demand requests; a batch script (`medium` model,
+  full-audio) pre-translates an entire season's trailers overnight as a safety
+  net. Short videos (<=30s) skip chunking for the small model too.
+  Concurrent requests are deduplicated and limited to 2. Subtitles sync to
+  YouTube's playback position (pause, scrub). Users can dismiss subtitles
+  via the CC toggle and the preference persists for all users.
 
 - **Local GPU translation** (`tools/local_translate.py`) — translates trailers
   using Whisper large-v3 on your GPU for the highest quality. Medium and large

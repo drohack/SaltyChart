@@ -254,7 +254,15 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
     if chunk_end is not None:
         cmd += ["-t", str(chunk_end - chunk_start)]
     cmd += ["-i", full_audio, "-ac", "1", "-ar", "16000", "-f", "wav", chunk_path]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
+    kwargs = dict(
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=True, timeout=30,
+    )
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.run(cmd, **kwargs)
+    if not os.path.exists(chunk_path) or os.path.getsize(chunk_path) == 0:
+        raise RuntimeError(f"ffmpeg chunk extraction failed: {chunk_path}")
     return chunk_path
 
 

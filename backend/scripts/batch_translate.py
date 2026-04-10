@@ -1,17 +1,23 @@
 """
 Batch pre-translation of anime trailers for upcoming seasons.
 
-Uses the Whisper `medium` model (int8 quantized, ~1.5GB RAM) for higher quality
-than the on-demand `small` model.  Videos previously translated with `small` are
-automatically upgraded to `medium`.
+Safety net behind the local GPU script (tools/local_translate.py) which runs
+large-v3 weekly starting 35 days before the season. This batch runs on
+Wednesdays within 21 days, catching any trailers the local run missed.
+
+Uses the Whisper `medium` model (int8 quantized, ~1.5GB RAM) with full-audio
+transcription (no chunking) for better quality than the on-demand `small` model.
+Videos previously translated with `small` are automatically upgraded to `medium`.
+Will NOT downgrade a `large-v3` translation from the local GPU script.
 
 Fetches the anime list for a given season from AniList, filters to eligible
-shows (TV, TV_SHORT, OVA, ONA, SPECIAL — skipping 18+, sequels, no-trailer),
-and translates each trailer.  Results are saved to SubtitleCache in SQLite.
+shows (TV, TV_SHORT, OVA, ONA, SPECIAL -- skipping 18+, sequels, no-trailer),
+and translates each trailer. Results are saved to SubtitleCache in SQLite
+using a single persistent connection for the entire batch run.
 
 The script is resumable: checks SubtitleCache before each video and skips
-already-translated ones (at medium quality or better).  Respects a time cutoff
-(default 10am) for safe overnight scheduling.
+already-translated ones (at medium quality or better). Respects a time cutoff
+(default 10am) for safe overnight scheduling. Logs ETA based on rolling average.
 
 Usage:
   python3 -u batch_translate.py                          # auto-detect next season
@@ -21,9 +27,8 @@ Usage:
 
 Note: use -u flag for unbuffered stdout when spawned as a child process.
 
-Scheduling (Unraid User Scripts):
-  Cron: 0 2 1-31 3,6,9,12 1-5
-  Command: docker exec saltychart-backend python3 -u /app/scripts/batch_translate.py --cutoff 10
+Scheduling: auto-scheduled by the backend (index.ts) on Wednesdays 2-4am,
+21 days before season start.
 
 Can also be triggered from the Options modal (admin only) via POST /api/translate/batch.
 """
@@ -40,7 +45,10 @@ from datetime import datetime
 
 # Import shared helpers from translate_stream (same directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from translate_stream import download_audio
+from translate_stream import download_audio, check_subtitles
+
+# Model quality ranking — used for cache comparison
+MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5}
 
 # ---------------------------------------------------------------------------
 # AniList GraphQL
@@ -191,19 +199,24 @@ def next_season_info() -> tuple:
 # Translation
 # ---------------------------------------------------------------------------
 
-def translate_video(model, video_id: str, media_id: int, db_path: str):
-    """Translate a single video and save to SubtitleCache (including English sub check)."""
-    # Check for English subs first (saves a Python spawn when user opens the trailer)
-    has_english = check_subtitles(video_id).get("hasEnglish", False)
+def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connection,
+                     has_english: bool = None):
+    """Translate a single video and save to SubtitleCache.
+
+    Args:
+        conn: persistent SQLite connection (reused across batch)
+        has_english: if already known from cache, skip the YouTube API check
+    """
+    # Check for English subs if not already known from cache
+    if has_english is None:
+        has_english = check_subtitles(video_id).get("hasEnglish", False)
 
     tmpdir = tempfile.mkdtemp()
     try:
-        # Download audio
         full_audio, duration = download_audio(video_id, tmpdir)
 
         # Full-audio transcription — better quality than chunking because
-        # Whisper has full conversation context (e.g. translates greetings
-        # correctly instead of keeping Japanese). Fine for batch since it
+        # Whisper has full conversation context. Fine for batch since it
         # runs off-hours and quality matters more than speed.
         segments = []
         segs, _ = model.transcribe(
@@ -221,28 +234,22 @@ def translate_video(model, video_id: str, media_id: int, db_path: str):
                 "text": text,
             })
 
-        # Save to database
+        # Save to database (using persistent connection)
         seg_json = json.dumps(segments)
-        conn = sqlite3.connect(db_path)
-        try:
-            # Only overwrite if existing model is lower rank than medium.
-            # This prevents downgrading a large-v3 translation from local GPU.
-            conn.execute(
-                """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments")
-                   VALUES (?, ?, 'medium', ?, ?)
-                   ON CONFLICT("videoId") DO UPDATE SET
-                     "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
-                     "modelName" = excluded."modelName",
-                     "hasEnglishSubs" = excluded."hasEnglishSubs",
-                     "segments" = excluded."segments"
-                   WHERE "SubtitleCache"."modelName" IS NULL
-                      OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
-                """,
-                (video_id, media_id, 1 if has_english else 0, seg_json),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(
+            """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments")
+               VALUES (?, ?, 'medium', ?, ?)
+               ON CONFLICT("videoId") DO UPDATE SET
+                 "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
+                 "modelName" = excluded."modelName",
+                 "hasEnglishSubs" = excluded."hasEnglishSubs",
+                 "segments" = excluded."segments"
+               WHERE "SubtitleCache"."modelName" IS NULL
+                  OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
+            """,
+            (video_id, media_id, 1 if has_english else 0, seg_json),
+        )
+        conn.commit()
 
         return len(segments)
 
@@ -250,27 +257,22 @@ def translate_video(model, video_id: str, media_id: int, db_path: str):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def is_cached(video_id: str, db_path: str, min_model: str = "medium") -> bool:
+def is_cached(video_id: str, conn: sqlite3.Connection, min_model: str = "medium") -> bool:
     """Check if a video already has cached segments from a sufficient model.
 
     Returns False if the video was only translated with a lower-quality model
     (e.g. 'small' on-demand) so the batch can upgrade it to 'medium'.
+    Uses the persistent connection passed in (no per-call open/close).
     """
-    MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5}
     min_rank = MODEL_RANK.get(min_model, 3)
-
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            'SELECT "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
-            (video_id,),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return False
-        cached_rank = MODEL_RANK.get(row[1] or "small", 0)
-        return cached_rank >= min_rank
-    finally:
-        conn.close()
+    row = conn.execute(
+        'SELECT "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
+        (video_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return False
+    cached_rank = MODEL_RANK.get(row[1] or "small", 0)
+    return cached_rank >= min_rank
 
 
 # ---------------------------------------------------------------------------
@@ -324,75 +326,89 @@ def main():
         print("[batch] Nothing to translate.")
         return
 
-    # Check which are already cached (single DB connection for all checks)
-    uncached = []
+    # Single persistent DB connection for entire batch run
     conn = sqlite3.connect(db_path)
     try:
+        # Batch cache check — one query per video but reusing connection
+        uncached = []
+        cache_info = {}  # vid → (has_english,) for videos already in cache
         for show in eligible:
             vid = show["trailer"]["id"]
             row = conn.execute(
-                'SELECT "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
+                'SELECT "segments", "modelName", "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
                 (vid,),
             ).fetchone()
-            MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5}
             if row and row[0] is not None and MODEL_RANK.get(row[1] or "small", 0) >= MODEL_RANK.get("medium", 3):
-                print(f"  [SKIP] {get_display_title(show)} ({vid}) — already cached ({row[1]})")
+                print(f"  [SKIP] {get_display_title(show)} ({vid}) -- already cached ({row[1]})")
             else:
                 reason = f"upgrade from {row[1]}" if row and row[0] else "not cached"
-                uncached.append((show, reason))
+                # Carry forward hasEnglishSubs if already checked (skip YouTube API call)
+                has_english = bool(row[2]) if row and row[2] is not None else None
+                uncached.append((show, reason, has_english))
+
+        print()
+        print(f"[batch] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} already cached)")
+        print()
+
+        if args.dry_run:
+            print("[batch] DRY RUN -- trailers that would be translated:")
+            for show, reason, _ in uncached:
+                vid = show["trailer"]["id"]
+                print(f"  {show['format']:10s} {get_display_title(show)} ({vid}) [{reason}]")
+            return
+
+        if not uncached:
+            print("[batch] All trailers already cached. Done!")
+            return
+
+        # Load model
+        print(f"[batch] Loading Whisper medium model (int8)... this may take a while on first run")
+        from faster_whisper import WhisperModel
+        model = WhisperModel("medium", device="cpu", compute_type="int8")
+        print(f"[batch] Model loaded.")
+        print()
+
+        # Translate with ETA tracking
+        translated = 0
+        errors = 0
+        elapsed_sum = 0.0
+        for i, (show, reason, has_english) in enumerate(uncached):
+            # Time cutoff check
+            now = datetime.now()
+            if now.hour >= args.cutoff:
+                print(f"\n[batch] Cutoff reached ({now.strftime('%H:%M')} >= {args.cutoff}:00). Stopping.")
+                break
+
+            vid = show["trailer"]["id"]
+            title = get_display_title(show)
+
+            # ETA based on rolling average
+            eta_str = ""
+            if translated > 0:
+                avg = elapsed_sum / translated
+                remaining_count = len(uncached) - i
+                eta_min = (avg * remaining_count) / 60
+                eta_str = f" [ETA: {eta_min:.0f}m]"
+
+            print(f"[{i+1}/{len(uncached)}] {title} ({vid}) [{reason}]{eta_str}...")
+
+            try:
+                start_time = time.time()
+                num_segments = translate_video(model, vid, show["id"], conn, has_english=has_english)
+                elapsed = time.time() - start_time
+                elapsed_sum += elapsed
+                print(f"  Done -- {num_segments} segments in {elapsed:.1f}s")
+                translated += 1
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                errors += 1
+
+        print()
+        remaining = len(uncached) - translated - errors
+        print(f"[batch] Complete: {translated} translated, {errors} errors"
+              + (f", {remaining} remaining" if remaining > 0 else ""))
     finally:
         conn.close()
-
-    print()
-    print(f"[batch] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} already cached)")
-    print()
-
-    if args.dry_run:
-        print("[batch] DRY RUN — trailers that would be translated:")
-        for show, reason in uncached:
-            vid = show["trailer"]["id"]
-            print(f"  {show['format']:10s} {get_display_title(show)} ({vid}) [{reason}]")
-        return
-
-    if not uncached:
-        print("[batch] All trailers already cached. Done!")
-        return
-
-    # Load model
-    print(f"[batch] Loading Whisper medium model (int8)... this may take a while on first run")
-    from faster_whisper import WhisperModel
-    model = WhisperModel("medium", device="cpu", compute_type="int8")
-    print(f"[batch] Model loaded.")
-    print()
-
-    # Translate
-    translated = 0
-    errors = 0
-    for i, (show, reason) in enumerate(uncached):
-        # Time cutoff check
-        now = datetime.now()
-        if now.hour >= args.cutoff:
-            print(f"\n[batch] Cutoff reached ({now.strftime('%H:%M')} >= {args.cutoff}:00). Stopping.")
-            break
-
-        vid = show["trailer"]["id"]
-        title = get_display_title(show)
-        print(f"[{i+1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
-
-        try:
-            start_time = time.time()
-            num_segments = translate_video(model, vid, show["id"], db_path)
-            elapsed = time.time() - start_time
-            print(f"  Done — {num_segments} segments in {elapsed:.1f}s")
-            translated += 1
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            errors += 1
-
-    print()
-    remaining = len(uncached) - translated - errors
-    print(f"[batch] Complete: {translated} translated, {errors} errors"
-          + (f", {remaining} remaining" if remaining > 0 else ""))
 
 
 if __name__ == "__main__":

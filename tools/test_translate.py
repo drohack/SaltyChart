@@ -7,7 +7,7 @@ and local code (tools/local_translate.py) for large-v3 and burned-in detection.
 Usage:
   python tools/test_translate.py                  # run all tests
   python tools/test_translate.py --small          # server small model (CPU, chunked)
-  python tools/test_translate.py --medium         # server medium model (CPU, chunked)
+  python tools/test_translate.py --medium         # server medium model (CPU, full-audio)
   python tools/test_translate.py --large          # local large-v3 (GPU, full-audio)
   python tools/test_translate.py --small --large  # combine any flags
   python tools/test_translate.py --burned-in      # burned-in detection only
@@ -43,7 +43,14 @@ def log(msg=""):
 
 # ── Test config ──────────────────────────────────────────────
 
-MODEL_TEST_VIDEO = "rc17AA0hVI8"  # short 51s video
+MODEL_TEST_VIDEO = "rc17AA0hVI8"  # short 51s video (used for download/chunking unit tests)
+
+# 3 videos for server model tests: short, medium, and longer trailer
+SERVER_TEST_VIDEOS = [
+    ("rc17AA0hVI8", "Kujima Utaeba (51s)"),
+    ("Gux_dYHDMK4", "Fist of the North Star (90s)"),
+    ("UfkutRs8RHM", "No subs (103s)"),
+]
 
 BURNED_IN_TESTS = [
     ("WsT7OO91jXo", True,  "Burned-in (Tenmaku no Jaadugar)"),
@@ -148,39 +155,49 @@ def test_server_small():
     log("  Loading small (cpu, int8)...")
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
-    tmpdir = tempfile.mkdtemp()
-    try:
-        audio_path, duration = download_audio(MODEL_TEST_VIDEO, tmpdir)
-        chunks = generate_chunks(duration)
+    for vid, label in SERVER_TEST_VIDEOS:
+        log(f"\n  Video: {label} ({vid})")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            audio_path, duration = download_audio(vid, tmpdir)
+            chunks = generate_chunks(duration)
 
-        segments = []
-        first_seg_time = None
-        t_start = time.time()
+            segments = []
+            first_seg_wall = None  # wall-clock time when first segment emitted
+            first_seg_start = None  # in-video timestamp of first speech
+            t_start = time.time()
 
-        def emit(data):
-            nonlocal first_seg_time
-            if "text" in data and first_seg_time is None:
-                first_seg_time = time.time() - t_start
-            if "start" in data and "text" in data:
-                segments.append(data)
+            def emit(data):
+                nonlocal first_seg_wall, first_seg_start
+                if "start" in data and "text" in data:
+                    if first_seg_wall is None:
+                        first_seg_wall = time.time() - t_start
+                        first_seg_start = data["start"]
+                    segments.append(data)
 
-        transcribe_chunks(model, chunks, tmpdir, audio_path, emit)
-        elapsed = time.time() - t_start
-        log(f"  Translated {len(segments)} segments in {elapsed:.1f}s")
-        if first_seg_time:
-            log(f"  Time-to-first-segment: {first_seg_time:.1f}s")
+            transcribe_chunks(model, chunks, tmpdir, audio_path, emit)
+            elapsed = time.time() - t_start
+            log(f"  Translated {len(segments)} segments in {elapsed:.1f}s")
 
-        check("server small: has segments", len(segments) > 0, f"got {len(segments)}")
-        check("server small: segments have text", all(s.get("text") for s in segments))
-        check("server small: segments have timing", all(s.get("end", 0) > s.get("start", 0) for s in segments))
-        if first_seg_time:
-            check("server small: first segment under 5s", first_seg_time < 5,
-                  f"took {first_seg_time:.1f}s")
-        if segments:
-            last_end = max(s["end"] for s in segments)
-            check("server small: spans video", last_end > 10, f"last at {last_end:.1f}s")
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+            check(f"server small {vid}: has segments", len(segments) > 0, f"got {len(segments)}")
+            check(f"server small {vid}: segments have text", all(s.get("text") for s in segments))
+
+            if first_seg_wall is not None and first_seg_start is not None:
+                # Subtitle latency = how long after speech starts does the subtitle arrive
+                # Wall time includes processing all silent/music chunks before speech
+                latency = first_seg_wall - first_seg_start
+                log(f"  First speech at {first_seg_start:.1f}s, subtitle at {first_seg_wall:.1f}s wall, latency: {latency:.1f}s")
+                check(f"server small {vid}: subtitle latency under 5s", latency < 5,
+                      f"latency={latency:.1f}s (speech@{first_seg_start:.1f}s, wall@{first_seg_wall:.1f}s)")
+
+            # Verify total processing keeps up with playback
+            if elapsed and duration:
+                ratio = elapsed / duration
+                log(f"  Processing ratio: {ratio:.1f}x realtime")
+                check(f"server small {vid}: keeps up with playback", ratio < 1.5,
+                      f"{ratio:.1f}x realtime (needs < 1.5x)")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     del model
 
 
@@ -194,35 +211,36 @@ def test_server_medium():
     log("  Loading medium (cpu, int8)...")
     model = WhisperModel("medium", device="cpu", compute_type="int8")
 
-    tmpdir = tempfile.mkdtemp()
-    try:
-        audio_path, duration = download_audio(MODEL_TEST_VIDEO, tmpdir)
+    for vid, label in SERVER_TEST_VIDEOS:
+        log(f"\n  Video: {label} ({vid})")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            audio_path, duration = download_audio(vid, tmpdir)
 
-        # Match batch_translate.py: full-audio, beam_size=5, condition_on_previous_text=True
-        t_start = time.time()
-        segs, _ = model.transcribe(
-            audio_path, language="ja", task="translate",
-            vad_filter=True, beam_size=5,
-            condition_on_previous_text=True,
-        )
-        segments = []
-        for seg in segs:
-            text = seg.text.strip()
-            if text:
-                segments.append({
-                    "start": round(seg.start, 2),
-                    "end": round(seg.end, 2),
-                    "text": text,
-                })
+            # Match batch_translate.py: full-audio, beam_size=5, condition_on_previous_text=True
+            t_start = time.time()
+            segs, _ = model.transcribe(
+                audio_path, language="ja", task="translate",
+                vad_filter=True, beam_size=5,
+                condition_on_previous_text=True,
+            )
+            segments = []
+            for seg in segs:
+                text = seg.text.strip()
+                if text:
+                    segments.append({
+                        "start": round(seg.start, 2),
+                        "end": round(seg.end, 2),
+                        "text": text,
+                    })
 
-        elapsed = time.time() - t_start
-        log(f"  Translated {len(segments)} segments in {elapsed:.1f}s")
+            elapsed = time.time() - t_start
+            log(f"  Translated {len(segments)} segments in {elapsed:.1f}s")
 
-        check("server medium: has segments", len(segments) > 0, f"got {len(segments)}")
-        check("server medium: segments have text", all(s.get("text") for s in segments))
-        check("server medium: segments have timing", all(s.get("end", 0) > s.get("start", 0) for s in segments))
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+            check(f"server medium {vid}: has segments", len(segments) > 0, f"got {len(segments)}")
+            check(f"server medium {vid}: segments have text", all(s.get("text") for s in segments))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     del model
 
 

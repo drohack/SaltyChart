@@ -15,7 +15,9 @@ Protocol (stdin JSON lines → stdout JSON lines):
   Output: {"rid": "abc123", "done": true}
   Output: {"rid": "def456", "hasEnglish": false}
 
-Auto-exits after IDLE_TIMEOUT seconds of inactivity.
+Concurrency limited to MAX_WORKERS (2) via semaphore. Auto-exits
+gracefully after IDLE_TIMEOUT seconds of inactivity, waiting for
+in-flight requests to finish.
 """
 
 import sys
@@ -36,10 +38,11 @@ from translate_stream import (
 )
 
 IDLE_TIMEOUT = 2 * 60 * 60  # 2 hours
-MAX_WORKERS = 2
+MAX_WORKERS = 2  # Max concurrent translate requests (safety net; Node also limits)
 
 # Thread-safe stdout writing
 _stdout_lock = threading.Lock()
+_worker_semaphore = threading.Semaphore(MAX_WORKERS)
 
 
 def emit(rid: str, data: dict):
@@ -99,16 +102,29 @@ def main():
 
     last_activity = time.time()
     active_requests: dict[str, threading.Event] = {}  # rid → cancelled event
+    active_threads: dict[str, threading.Thread] = {}   # rid → thread (for cleanup)
+    shutdown_flag = threading.Event()
 
-    # Idle timeout watcher
+    # Idle timeout watcher + stale request pruning
     def idle_watcher():
-        while True:
+        while not shutdown_flag.is_set():
             time.sleep(60)
+            # Prune stale active_requests whose threads have died
+            for rid in list(active_threads):
+                t = active_threads.get(rid)
+                if t and not t.is_alive():
+                    active_requests.pop(rid, None)
+                    active_threads.pop(rid, None)
+            # Idle shutdown
             if time.time() - last_activity > IDLE_TIMEOUT:
                 with _stdout_lock:
                     sys.stdout.write(json.dumps({"shutdown": "idle_timeout"}) + "\n")
                     sys.stdout.flush()
-                os._exit(0)
+                shutdown_flag.set()
+                # Wait briefly for in-flight requests to finish
+                for t in active_threads.values():
+                    t.join(timeout=5)
+                sys.exit(0)
 
     watcher = threading.Thread(target=idle_watcher, daemon=True)
     watcher.start()
@@ -151,12 +167,19 @@ def main():
             active_requests[rid] = cancelled
 
             def _worker(rid=rid, video_id=video_id, cancelled=cancelled):
+                # Limit concurrent translations via semaphore
+                if not _worker_semaphore.acquire(timeout=30):
+                    emit(rid, {"error": "Server busy, try again shortly"})
+                    return
                 try:
                     handle_translate(model, rid, video_id, cancelled)
                 finally:
+                    _worker_semaphore.release()
                     active_requests.pop(rid, None)
+                    active_threads.pop(rid, None)
 
             t = threading.Thread(target=_worker, daemon=True)
+            active_threads[rid] = t
             t.start()
             continue
 
