@@ -6,11 +6,18 @@ then uploads results to your SaltyChart server.  Much faster and higher
 quality than the server-side CPU translation.
 
 Requirements:
-  pip install faster-whisper yt-dlp
+  pip install faster-whisper yt-dlp easyocr sentence-transformers Pillow
 
   For GPU (recommended):
-    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
-    (or install CUDA toolkit separately)
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+Notes:
+  - Medium and large models use full-audio transcription (no chunking) for
+    better translation quality. Only the small model uses chunking.
+  - Burned-in subtitle detection runs automatically after each translation.
+    Compares OCR text from video frames to Whisper translations using hybrid
+    fuzzy + semantic matching. Videos with burned-in subs are flagged so the
+    frontend defaults subtitles to off.
 
 Usage:
   # Translate all eligible trailers for the upcoming season
@@ -240,13 +247,37 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
 # Translation
 # ---------------------------------------------------------------------------
 
-def translate_video(model, video_id: str):
-    """Translate a video, return list of segment dicts."""
-    from concurrent.futures import ThreadPoolExecutor, Future
+def translate_video(model, video_id: str, use_chunking: bool = True):
+    """Translate a video, return list of segment dicts.
 
+    use_chunking=False transcribes the full audio in one pass — better quality
+    (Whisper has full context) but requires more memory. Recommended for medium
+    and large models on GPU. The small model on the server should use chunking.
+    """
     tmpdir = tempfile.mkdtemp()
     try:
         full_audio, duration = download_audio(video_id, tmpdir)
+
+        if not use_chunking:
+            # Full-audio pass — better translations due to full context
+            segs, _ = model.transcribe(
+                full_audio, language="ja", task="translate",
+                vad_filter=True, beam_size=5,
+                condition_on_previous_text=True,
+            )
+            segments = []
+            for seg in segs:
+                text = seg.text.strip()
+                if text:
+                    segments.append({
+                        "start": round(seg.start, 2),
+                        "end": round(seg.end, 2),
+                        "text": text,
+                    })
+            return segments
+
+        # Chunked pass — for small model / CPU / low memory
+        from concurrent.futures import ThreadPoolExecutor, Future
         chunks = generate_chunks(duration)
         segments = []
 
@@ -285,6 +316,7 @@ def translate_video(model, video_id: str):
 # ---------------------------------------------------------------------------
 
 _ocr_reader = None
+_sem_model = None
 
 def _get_ocr_reader():
     """Lazy-init singleton easyocr Reader (avoids reloading model per video)."""
@@ -295,30 +327,93 @@ def _get_ocr_reader():
     return _ocr_reader
 
 
+def _get_sem_model():
+    """Lazy-init singleton sentence-transformers model for semantic matching."""
+    global _sem_model
+    if _sem_model is None:
+        from sentence_transformers import SentenceTransformer
+        _sem_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _sem_model
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace for fuzzy comparison."""
+    import re
+    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+
+
+def _clean_ocr(text: str) -> str:
+    """Fix common OCR misreads and remove garbage fragments."""
+    # Common character substitutions
+    text = text.replace("0", "o").replace("1l", "ll").replace(" l ", " I ")
+    # Remove short garbage tokens (1-2 chars that aren't real English words)
+    real_short = {"i", "a", "to", "is", "it", "in", "on", "no", "do", "my", "me",
+                  "we", "he", "so", "or", "an", "at", "if", "up", "am", "be", "go"}
+    words = text.split()
+    cleaned = [w for w in words if len(w) > 2 or w.lower() in real_short]
+    return " ".join(cleaned)
+
+
+def _fuzzy_match(ocr_text: str, whisper_text: str) -> float:
+    """Return similarity ratio (0-1) between OCR and Whisper text."""
+    from difflib import SequenceMatcher
+    a = _normalize(ocr_text)
+    b = _normalize(whisper_text)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _semantic_match(ocr_text: str, whisper_text: str) -> float:
+    """Return cosine similarity (0-1) of sentence embeddings."""
+    from sentence_transformers import util as stu
+    if not ocr_text or not whisper_text:
+        return 0.0
+    model = _get_sem_model()
+    emb = model.encode([ocr_text, whisper_text])
+    return max(0.0, float(stu.cos_sim(emb[0], emb[1])))
+
+
 def detect_burned_in_subs(video_id: str, segments: list) -> bool:
-    """Check if a video has burned-in English subtitles by OCR-ing the bottom
-    25% of 3 frames taken during speech segments.  Returns True if 2+ frames
-    contain English text."""
+    """Detect burned-in English subtitles by comparing OCR text (easyocr) from
+    video frames to Whisper's translations using hybrid fuzzy string + semantic
+    similarity matching.  Samples up to 7 frames at speech timestamps, crops
+    the bottom 25%, and flags the video if 2+ distinct subtitle lines match.
+    """
     import yt_dlp
     from PIL import Image
 
     if not segments:
         return False
 
-    # Pick the 3 longest speech segments — longer speech is more likely to have
-    # visible burned-in subtitles on screen. Use the midpoint of each.
-    by_duration = sorted(segments, key=lambda s: s["end"] - s["start"], reverse=True)
-    # Take up to 3, but spread them out (skip segments that overlap or are too close)
-    chosen = []
-    for seg in by_duration:
-        mid = (seg["start"] + seg["end"]) / 2
-        if all(abs(mid - t) > 3 for t in chosen):  # at least 3s apart
-            chosen.append(mid)
-        if len(chosen) >= 3:
-            break
-    timestamps = chosen if chosen else [(segments[0]["start"] + segments[0]["end"]) / 2]
+    # Generate candidate timestamps: midpoint of short segments, and evenly
+    # spaced points through long ones. Also sample near segment boundaries
+    # where subtitle text is most likely visible.
+    candidates = set()
+    for seg in segments:
+        dur = seg["end"] - seg["start"]
+        if dur > 10:
+            # Sample every ~4s through long segments
+            steps = max(3, int(dur / 4))
+            for i in range(1, steps):
+                candidates.add(round(seg["start"] + dur * i / steps, 1))
+        else:
+            candidates.add(round((seg["start"] + seg["end"]) / 2, 1))
+        # Also sample 1s before the end (subs often linger at segment end)
+        if dur > 3:
+            candidates.add(round(seg["end"] - 1, 1))
 
-    print(f"[local] Checking for burned-in subs at {[f'{t:.1f}s' for t in timestamps]}...")
+    # Pick up to 7 timestamps, at least 2s apart.
+    chosen = []
+    for t in sorted(candidates):
+        if all(abs(t - c["mid"]) > 2 for c in chosen):
+            chosen.append({"mid": t})
+        if len(chosen) >= 7:
+            break
+    if not chosen:
+        chosen = [{"mid": (segments[0]["start"] + segments[0]["end"]) / 2}]
+
+    print(f"[local] Checking for burned-in subs at {[f'{c['mid']:.1f}s' for c in chosen]}...")
 
     # Get direct video URL via yt-dlp (720p or lower)
     try:
@@ -343,7 +438,7 @@ def detect_burned_in_subs(video_id: str, segments: list) -> bool:
     tmpdir = tempfile.mkdtemp()
     try:
         frame_paths = []
-        for i, ts in enumerate(timestamps):
+        for i, c in enumerate(chosen):
             out = os.path.join(tmpdir, f"frame_{i}.jpg")
             kwargs = dict(
                 stdin=subprocess.DEVNULL,
@@ -355,7 +450,7 @@ def detect_burned_in_subs(video_id: str, segments: list) -> bool:
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_url,
+                ["ffmpeg", "-y", "-ss", str(c["mid"]), "-i", video_url,
                  "-frames:v", "1", "-q:v", "2", out],
                 **kwargs,
             )
@@ -363,7 +458,8 @@ def detect_burned_in_subs(video_id: str, segments: list) -> bool:
 
         reader = _get_ocr_reader()
 
-        detections = 0
+        matches = 0
+        matched_texts = []  # track matched OCR text to avoid counting the same line twice
         for i, path in enumerate(frame_paths):
             img = Image.open(path)
             w, h = img.size
@@ -372,23 +468,35 @@ def detect_burned_in_subs(video_id: str, segments: list) -> bool:
             cropped.save(cropped_path)
 
             results = reader.readtext(cropped_path)
-            # Filter: confidence > 0.4, has Latin chars, and looks like a
-            # subtitle (at least 2 words — filters out single-word watermarks/credits)
-            english_texts = [
-                text for (_, text, conf) in results
-                if conf > 0.4 and len(text.split()) >= 2 and any(c.isalpha() for c in text)
-            ]
-            if english_texts:
-                detections += 1
-                print(f"  Frame {i} ({timestamps[i]:.1f}s): found text: {english_texts}")
-                if detections >= 2:
-                    print(f"[local] Burned-in subs: yes ({detections}/{len(timestamps)} frames, early exit)")
+            ocr_raw = " ".join(text for (_, text, conf) in results if conf > 0.3)
+            ocr_text = _clean_ocr(ocr_raw)
+
+            # Compare OCR text against ALL full-audio whisper segments
+            best_fz, best_sem = 0.0, 0.0
+            for seg in segments:
+                fz = _fuzzy_match(ocr_text, seg["text"])
+                sem = _semantic_match(ocr_text, seg["text"])
+                if max(fz, sem) > max(best_fz, best_sem):
+                    best_fz, best_sem = fz, sem
+            score = max(best_fz, best_sem)
+
+            if score >= 0.40:
+                # Skip if this OCR text is too similar to an already-matched line
+                is_duplicate = any(_fuzzy_match(ocr_text, prev) > 0.6 for prev in matched_texts)
+                if is_duplicate:
+                    print(f"  Frame {i} ({chosen[i]['mid']:.1f}s): DUPE  (fz={best_fz:.0%} sem={best_sem:.0%}) ocr=\"{ocr_text}\"")
+                    continue
+                matches += 1
+                matched_texts.append(ocr_text)
+                print(f"  Frame {i} ({chosen[i]['mid']:.1f}s): MATCH (fz={best_fz:.0%} sem={best_sem:.0%}) ocr=\"{ocr_text}\"")
+                if matches >= 2:
+                    print(f"[local] Burned-in subs: yes ({matches}/{len(chosen)} frames, early exit)")
                     return True
             else:
-                print(f"  Frame {i} ({timestamps[i]:.1f}s): no English text")
+                print(f"  Frame {i} ({chosen[i]['mid']:.1f}s): no match (fz={best_fz:.0%} sem={best_sem:.0%})")
 
-        result = detections >= 2
-        print(f"[local] Burned-in subs: {'yes' if result else 'no'} ({detections}/3 frames)")
+        result = matches >= 2
+        print(f"[local] Burned-in subs: {'yes' if result else 'no'} ({matches}/{len(chosen)} frames)")
         return result
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -578,7 +686,8 @@ def main():
         print()
 
         start_time = time.time()
-        segments = translate_video(model, args.video)
+        use_chunking = args.model == "small"
+        segments = translate_video(model, args.video, use_chunking=use_chunking)
         elapsed = time.time() - start_time
         print(f"[local] Translated: {len(segments)} segments in {elapsed:.1f}s")
         print()
@@ -659,7 +768,7 @@ def main():
 
         try:
             start_time = time.time()
-            segments = translate_video(model, vid)
+            segments = translate_video(model, vid, use_chunking=(args.model == "small"))
             elapsed = time.time() - start_time
             print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
 
@@ -685,6 +794,7 @@ def main():
           + (f", {len(uncached) - translated - errors} remaining" if len(uncached) - translated - errors > 0 else ""))
 
     if log_file:
+        log_file.write(f"\nRun ended: {datetime.now().isoformat()}\n")
         log_file.close()
 
 

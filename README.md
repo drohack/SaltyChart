@@ -88,6 +88,17 @@ contributors are not caught off-guard:
   position (pause, scrub).  Users can dismiss subtitles via the CC toggle and
   the preference persists for all users.
 
+- **Local GPU translation** (`tools/local_translate.py`) — translates trailers
+  using Whisper large-v3 on your GPU for the highest quality. Medium and large
+  models use full-audio transcription (no chunking) for better context.
+  Includes automatic burned-in subtitle detection: OCR frames are compared to
+  Whisper translations using hybrid fuzzy + semantic matching (sentence-transformers).
+  Videos with burned-in subs are flagged so the frontend defaults subtitles off.
+
+- **Per-user subtitle settings** — font size, font family, position, text/bg
+  color, opacity, text outline. Settings popup accessible via gear icon next to
+  the CC button. Stored per-user in the Settings table.
+
 These features are fully documented in `AGENTS.md`; remember to update that
 guide when expanding the API or database schema.
 
