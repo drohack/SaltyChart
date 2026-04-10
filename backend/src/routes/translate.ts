@@ -99,7 +99,13 @@ function handleDaemonLine(line: string): void {
          VALUES (?, ?, 'small', ?)
          ON CONFLICT("videoId") DO UPDATE SET
            "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
-           "segments" = excluded."segments"`,
+           "modelName" = CASE WHEN "SubtitleCache"."modelName" IS NULL
+                              OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
+                         THEN excluded."modelName" ELSE "SubtitleCache"."modelName" END,
+           "segments" = CASE WHEN "SubtitleCache"."segments" IS NULL
+                              OR "SubtitleCache"."modelName" IS NULL
+                              OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
+                         THEN excluded."segments" ELSE "SubtitleCache"."segments" END`,
         pending.videoId,
         pending.mediaId,
         segJson
