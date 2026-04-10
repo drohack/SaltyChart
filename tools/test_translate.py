@@ -185,12 +185,11 @@ def test_server_small():
 
 
 def test_server_medium():
-    """Test server medium model (CPU, int8, chunked, beam_size=5) — matches batch."""
-    log("\n--- Test: server medium (cpu, chunked, beam=5) ---")
+    """Test server medium model (CPU, int8, full-audio, beam_size=5) — matches batch."""
+    log("\n--- Test: server medium (cpu, full-audio, beam=5) ---")
     import tempfile, shutil
-    from translate_stream import download_audio, generate_chunks, extract_chunk
+    from translate_stream import download_audio
     from faster_whisper import WhisperModel
-    from concurrent.futures import ThreadPoolExecutor, Future
 
     log("  Loading medium (cpu, int8)...")
     model = WhisperModel("medium", device="cpu", compute_type="int8")
@@ -198,34 +197,23 @@ def test_server_medium():
     tmpdir = tempfile.mkdtemp()
     try:
         audio_path, duration = download_audio(MODEL_TEST_VIDEO, tmpdir)
-        chunks = generate_chunks(duration)
-        segments = []
 
-        # Match batch_translate.py: beam_size=5, condition_on_previous_text=True
+        # Match batch_translate.py: full-audio, beam_size=5, condition_on_previous_text=True
         t_start = time.time()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            next_future = pool.submit(extract_chunk, chunks[0][0], chunks[0][1], tmpdir, audio_path)
-            for i, (chunk_start, chunk_end) in enumerate(chunks):
-                chunk_path = next_future.result()
-                if i + 1 < len(chunks):
-                    next_future = pool.submit(extract_chunk, chunks[i+1][0], chunks[i+1][1], tmpdir, audio_path)
-                try:
-                    segs, _ = model.transcribe(
-                        chunk_path, language="ja", task="translate",
-                        vad_filter=True, beam_size=5,
-                        condition_on_previous_text=True,
-                    )
-                    for seg in segs:
-                        text = seg.text.strip()
-                        if text:
-                            segments.append({
-                                "start": round(seg.start + chunk_start, 2),
-                                "end": round(seg.end + chunk_start, 2),
-                                "text": text,
-                            })
-                finally:
-                    if os.path.exists(chunk_path):
-                        os.unlink(chunk_path)
+        segs, _ = model.transcribe(
+            audio_path, language="ja", task="translate",
+            vad_filter=True, beam_size=5,
+            condition_on_previous_text=True,
+        )
+        segments = []
+        for seg in segs:
+            text = seg.text.strip()
+            if text:
+                segments.append({
+                    "start": round(seg.start, 2),
+                    "end": round(seg.end, 2),
+                    "text": text,
+                })
 
         elapsed = time.time() - t_start
         log(f"  Translated {len(segments)} segments in {elapsed:.1f}s")

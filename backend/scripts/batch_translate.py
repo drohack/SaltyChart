@@ -40,7 +40,7 @@ from datetime import datetime
 
 # Import shared helpers from translate_stream (same directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from translate_stream import download_audio, generate_chunks, extract_chunk
+from translate_stream import download_audio
 
 # ---------------------------------------------------------------------------
 # AniList GraphQL
@@ -201,46 +201,25 @@ def translate_video(model, video_id: str, media_id: int, db_path: str):
         # Download audio
         full_audio, duration = download_audio(video_id, tmpdir)
 
-        # Generate chunks (same ramp strategy as on-demand)
-        chunks = generate_chunks(duration)
-
-        # Transcribe with higher quality settings
+        # Full-audio transcription — better quality than chunking because
+        # Whisper has full conversation context (e.g. translates greetings
+        # correctly instead of keeping Japanese). Fine for batch since it
+        # runs off-hours and quality matters more than speed.
         segments = []
-        from concurrent.futures import ThreadPoolExecutor, Future
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            next_future: Future = pool.submit(
-                extract_chunk, chunks[0][0], chunks[0][1], tmpdir, full_audio
-            )
-
-            for i, (chunk_start, chunk_end) in enumerate(chunks):
-                chunk_path = next_future.result()
-
-                if i + 1 < len(chunks):
-                    next_future = pool.submit(
-                        extract_chunk, chunks[i + 1][0], chunks[i + 1][1],
-                        tmpdir, full_audio
-                    )
-
-                try:
-                    segs, _ = model.transcribe(
-                        chunk_path, language="ja", task="translate",
-                        vad_filter=True, beam_size=5,
-                        condition_on_previous_text=True
-                    )
-
-                    for seg in segs:
-                        text = seg.text.strip()
-                        if not text:
-                            continue
-                        segments.append({
-                            "start": round(seg.start + chunk_start, 2),
-                            "end": round(seg.end + chunk_start, 2),
-                            "text": text,
-                        })
-                finally:
-                    if os.path.exists(chunk_path):
-                        os.unlink(chunk_path)
+        segs, _ = model.transcribe(
+            full_audio, language="ja", task="translate",
+            vad_filter=True, beam_size=5,
+            condition_on_previous_text=True
+        )
+        for seg in segs:
+            text = seg.text.strip()
+            if not text:
+                continue
+            segments.append({
+                "start": round(seg.start, 2),
+                "end": round(seg.end, 2),
+                "text": text,
+            })
 
         # Save to database
         seg_json = json.dumps(segments)
