@@ -144,14 +144,11 @@ def get_title(show: dict) -> str:
 
 
 def filter_eligible(anime_list: list) -> list:
+    """Local translate runs on the user's stronger PC, so we translate ALL
+    anime with YouTube trailers — including movies, sequels, TV_SHORT, and 18+.
+    The server's batch script still filters to the narrower set."""
     eligible = []
     for show in anime_list:
-        if show.get("format") not in ELIGIBLE_FORMATS:
-            continue
-        if show.get("isAdult"):
-            continue
-        if is_sequel(show):
-            continue
         trailer = show.get("trailer")
         if not trailer or trailer.get("site") != "youtube" or not trailer.get("id"):
             continue
