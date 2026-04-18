@@ -223,6 +223,56 @@ router.get('/users-with-nicknames', async (_req, res) => {
   }
 });
 
+// Returns array of usernames that have at least one watched=true entry for
+// the given season/year. Used by the "catch up on user's ratings" filter.
+router.get('/users-with-ratings', async (req, res) => {
+  const { season, year } = req.query as { season?: string; year?: string };
+  if (!season || !year) return res.status(400).json({ error: 'Missing season/year' });
+  try {
+    const rows = await prisma.watchList.findMany({
+      where: { season, year: Number(year), watched: true },
+      select: { userId: true },
+    });
+    const userIds = Array.from(new Set(rows.map((r) => r.userId)));
+    if (userIds.length === 0) return res.json([]);
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true },
+    });
+    const names = users.map((u) => u.username ?? `User-${String(u.id).slice(0, 6)}`).sort();
+    return res.json(names);
+  } catch (err) {
+    console.error('[list] users-with-ratings failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch users with ratings' });
+  }
+});
+
+// Returns array of mediaIds that the given user has watched=true for
+// the given season/year.
+router.get('/user-ratings', async (req, res) => {
+  const { username, season, year } = req.query as { username?: string; season?: string; year?: string };
+  if (!username || !season || !year) {
+    return res.status(400).json({ error: 'Missing username/season/year' });
+  }
+  try {
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { id: true },
+    });
+    if (!user) return res.json([]);
+
+    const rows = await prisma.watchList.findMany({
+      where: { userId: user.id, season, year: Number(year), watched: true },
+      select: { mediaId: true },
+    });
+    return res.json(rows.map((r) => r.mediaId));
+  } catch (err) {
+    console.error('[list] user-ratings failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch user ratings' });
+  }
+});
+
 // Returns nickname list for a given mediaId: [{ userName, nickname, rank }]
 router.get('/nicknames', async (req, res) => {
   const mediaId = Number(req.query.mediaId);

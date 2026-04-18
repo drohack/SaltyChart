@@ -27,6 +27,9 @@ $: _currentLang = $options.titleLanguage;
   export let inListIds: Set<number> = new Set();
   export let watchedIds: Set<number> = new Set();
   export let autoRename: boolean = false;
+  // "Catch up" filter: show only items in otherUserRatedIds that aren't in watchedIds
+  export let catchUpMode: boolean = false;
+  export let otherUserRatedIds: Set<number> = new Set();
   // Toast notification state
   let toastVisible: boolean = false;
   let toastMessage: string = '';
@@ -337,6 +340,10 @@ $: _currentLang = $options.titleLanguage;
 
   $: displayedAnime = (() => {
     let arr = anime;
+    if (catchUpMode) {
+      // Show only items the other user has rated that I haven't watched
+      return arr.filter((a) => otherUserRatedIds.has(a.id) && !watchedIds.has(a.id));
+    }
     if (hideAdult) arr = arr.filter((a) => !a.isAdult);
     if (hideSequels) arr = arr.filter((s) => !isSequel(s));
     if (hideInList) arr = arr.filter((a) => !inListIds.has(a.id));

@@ -16,6 +16,11 @@
   export let searchQuery: string = '';
   // Show search box (binds to searchQuery)
   export let showSearch: boolean = false;
+  // "Catch up on another user's ratings" filter
+  export let showCatchUpToggle: boolean = false;
+  export let catchUpMode: boolean = false;
+  export let catchUpUser: string | null = null;
+  export let availableCatchUpUsers: string[] = [];
 
   // --- Constants ---
   const SEASONS: Array<{ value: Season; label: string }> = [
@@ -126,6 +131,32 @@
         />
         Hide in My List
       </label>
+    {/if}
+
+    {#if showCatchUpToggle}
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-2 select-none cursor-pointer" title={availableCatchUpUsers.length === 0 ? 'No other users have rated trailers this season' : ''}>
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={catchUpMode}
+            disabled={availableCatchUpUsers.length === 0 || !catchUpUser}
+            on:change={() => dispatch('change')}
+          />
+          Catch up on
+        </label>
+        <select
+          class="select select-bordered select-sm"
+          bind:value={catchUpUser}
+          disabled={availableCatchUpUsers.length === 0}
+          on:change={() => dispatch('change')}
+        >
+          <option value={null}>— user —</option>
+          {#each availableCatchUpUsers as u}
+            <option value={u}>{u}</option>
+          {/each}
+        </select>
+      </div>
     {/if}
   </div>
 </div>

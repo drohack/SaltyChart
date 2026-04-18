@@ -141,6 +141,15 @@ let autoRename = false;
   // Hide adult (18+) content
   let hideAdult = true;
 
+  // "Catch up on another user's ratings" filter — shows only trailers the
+  // selected user has watched that the current user hasn't. Auto-disables
+  // the three hide filters while active and restores them when deactivated.
+  let catchUpMode = false;
+  let catchUpUser: string | null = null;
+  let availableCatchUpUsers: string[] = [];
+  let otherUserRatedIds: Set<number> = new Set();
+  let savedFilters: { hideSequels: boolean; hideInList: boolean; hideAdult: boolean } | null = null;
+
   // Persist user preferences in localStorage per user
   function prefsKey(user: string | null): string {
     return user ? `prefs-${user}` : 'prefs-guest';
@@ -155,13 +164,16 @@ let autoRename = false;
         hideInList = obj.hideInList ?? hideInList;
         autoRename = obj.autoRename ?? autoRename;
         hideAdult = obj.hideAdult ?? hideAdult;
+        catchUpMode = obj.catchUpMode ?? false;
+        catchUpUser = obj.catchUpUser ?? null;
+        savedFilters = obj.savedFilters ?? null;
       }
     } catch {}
   }
 
   function savePrefs(user: string | null) {
     try {
-      const obj = { hideSequels, hideInList, autoRename, hideAdult };
+      const obj = { hideSequels, hideInList, autoRename, hideAdult, catchUpMode, catchUpUser, savedFilters };
       localStorage.setItem(prefsKey(user), JSON.stringify(obj));
     } catch {}
   }
@@ -191,7 +203,82 @@ let autoRename = false;
     hideInList;
     autoRename;
     hideAdult;
+    catchUpMode;
+    catchUpUser;
+    savedFilters;
     savePrefs($userName);
+  }
+
+  // Toggle catch-up mode: when turning ON, save current filters and disable them.
+  // When turning OFF, restore them.
+  let _lastCatchUp = false;
+  $: {
+    if (catchUpMode !== _lastCatchUp) {
+      if (catchUpMode) {
+        savedFilters = { hideSequels, hideInList, hideAdult };
+        hideSequels = false;
+        hideInList = false;
+        hideAdult = false;
+      } else if (savedFilters) {
+        hideSequels = savedFilters.hideSequels;
+        hideInList = savedFilters.hideInList;
+        hideAdult = savedFilters.hideAdult;
+        savedFilters = null;
+      }
+      _lastCatchUp = catchUpMode;
+    }
+  }
+
+  // Force catch-up off when not logged in (can't compare against anything)
+  $: if (!$userName && catchUpMode) {
+    catchUpMode = false;
+    catchUpUser = null;
+  }
+
+  // Fetch users who have rated trailers in current season/year
+  async function fetchCatchUpUsers(): Promise<void> {
+    try {
+      const res = await fetch(`/api/list/users-with-ratings?season=${season}&year=${year}`);
+      if (res.ok) {
+        let users: string[] = await res.json();
+        if ($userName) users = users.filter((u) => u !== $userName);
+        availableCatchUpUsers = users;
+        // Clear selection if the previously-selected user isn't in this season
+        if (catchUpUser && !users.includes(catchUpUser)) {
+          catchUpUser = null;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch catch-up users:', err);
+      availableCatchUpUsers = [];
+    }
+  }
+
+  // Fetch the selected user's rated mediaIds for current season/year
+  async function fetchOtherUserRatings(): Promise<void> {
+    if (!catchUpUser) {
+      otherUserRatedIds = new Set();
+      return;
+    }
+    try {
+      const url = `/api/list/user-ratings?username=${encodeURIComponent(catchUpUser)}&season=${season}&year=${year}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const ids: number[] = await res.json();
+        otherUserRatedIds = new Set(ids);
+      }
+    } catch (err) {
+      console.error('Failed to fetch other user ratings:', err);
+      otherUserRatedIds = new Set();
+    }
+  }
+
+  // Re-fetch when selection changes
+  $: {
+    catchUpUser;
+    season;
+    year;
+    fetchOtherUserRatings();
   }
 
   // watch list state
@@ -293,6 +380,7 @@ let autoRename = false;
     if (key !== lastSeasonYearKey) {
       lastSeasonYearKey = key;
       fetchAnime(); // no debounce needed – user interaction is limited
+      fetchCatchUpUsers();
     }
   }
 </script>
@@ -309,9 +397,13 @@ let autoRename = false;
         bind:hideInList
         bind:hideAdult
         bind:searchQuery
+        bind:catchUpMode
+        bind:catchUpUser
+        {availableCatchUpUsers}
         showSearch={true}
         showAdultToggle={true}
         showListToggle={$authToken != null}
+        showCatchUpToggle={$authToken != null}
       />
       {#if daysUntilNext != null}
         <span class="text-sm opacity-70 whitespace-nowrap">
@@ -332,6 +424,8 @@ let autoRename = false;
         {watchedIds}
         {inListIds}
         {autoRename}
+        catchUpMode={catchUpMode && catchUpUser != null}
+        {otherUserRatedIds}
         on:watched={() => fetchList()}
         on:added={async (e) => {
           await fetchList();
@@ -350,6 +444,8 @@ let autoRename = false;
         {watchedIds}
         {inListIds}
         {autoRename}
+        catchUpMode={catchUpMode && catchUpUser != null}
+        {otherUserRatedIds}
         on:watched={() => fetchList()}
         on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
       />
@@ -365,6 +461,8 @@ let autoRename = false;
         {watchedIds}
         {inListIds}
         {autoRename}
+        catchUpMode={catchUpMode && catchUpUser != null}
+        {otherUserRatedIds}
         on:watched={() => fetchList()}
         on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
       />
@@ -380,6 +478,8 @@ let autoRename = false;
         {watchedIds}
         {inListIds}
         {autoRename}
+        catchUpMode={catchUpMode && catchUpUser != null}
+        {otherUserRatedIds}
         on:watched={() => fetchList()}
         on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
       />
@@ -395,6 +495,8 @@ let autoRename = false;
         {watchedIds}
         {inListIds}
         {autoRename}
+        catchUpMode={catchUpMode && catchUpUser != null}
+        {otherUserRatedIds}
         on:watched={() => fetchList()}
         on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
       />
