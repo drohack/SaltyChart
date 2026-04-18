@@ -149,7 +149,7 @@ $: _currentLang = $options.titleLanguage;
   $: displayedAnime = (() => {
     let arr = anime;
     if (catchUpMode) {
-      return arr.filter((a) => otherUserRatedIds.has(a.id) && !watchedIds.has(a.id));
+      return arr.filter((a) => otherUserRatedIds.has(a.id) && !inListIds.has(a.id));
     }
     if (hideAdult) arr = arr.filter((a) => !a.isAdult);
     if (hideSequels) arr = arr.filter((s) => !isSequel(s));

@@ -52,6 +52,24 @@
   }
 
   // No extra toggle functions; bind:checked updates props automatically.
+
+  // Catch-up dropdown state
+  $: catchUpSelectValue = catchUpMode && catchUpUser ? catchUpUser : '';
+  $: catchUpTooltip = availableCatchUpUsers.length === 0
+    ? 'No other users have rated trailers this season'
+    : "Show only trailers the selected user has in their list that you don't";
+
+  function onCatchUpChange(e: Event) {
+    const target = e.currentTarget as HTMLSelectElement;
+    const v = target.value;
+    if (v) {
+      catchUpUser = v;
+      catchUpMode = true;
+    } else {
+      catchUpMode = false;
+    }
+    dispatch('change');
+  }
 </script>
 
   <!-- Responsive layout: 1 col (<1122px), 2 cols (>=1122px), 3 cols (>=1732px) -->
@@ -99,22 +117,24 @@
   <!-- Right-aligned toggles; span both columns on 2cols -->
   <div class="flex items-center gap-6 text-sm 2cols:col-span-2 3cols:col-span-1">
     {#if showAdultToggle}
-      <label class="flex items-center gap-2 select-none cursor-pointer">
+      <label class="flex items-center gap-2 select-none cursor-pointer" class:opacity-50={catchUpMode}>
         <input
           type="checkbox"
           class="checkbox checkbox-sm"
           bind:checked={hideAdult}
+          disabled={catchUpMode}
           on:change={() => dispatch('change')}
         />
         Hide 18+
       </label>
     {/if}
     {#if showSequelToggle}
-      <label class="flex items-center gap-2 select-none cursor-pointer">
+      <label class="flex items-center gap-2 select-none cursor-pointer" class:opacity-50={catchUpMode}>
         <input
           type="checkbox"
           class="checkbox checkbox-sm"
           bind:checked={hideSequels}
+          disabled={catchUpMode}
           on:change={() => dispatch('change')}
         />
         Hide sequels
@@ -122,11 +142,12 @@
     {/if}
 
     {#if showListToggle}
-      <label class="flex items-center gap-2 select-none cursor-pointer">
+      <label class="flex items-center gap-2 select-none cursor-pointer" class:opacity-50={catchUpMode}>
         <input
           type="checkbox"
           class="checkbox checkbox-sm"
           bind:checked={hideInList}
+          disabled={catchUpMode}
           on:change={() => dispatch('change')}
         />
         Hide in My List
@@ -134,29 +155,24 @@
     {/if}
 
     {#if showCatchUpToggle}
-      <div class="flex items-center gap-2">
-        <label class="flex items-center gap-2 select-none cursor-pointer" title={availableCatchUpUsers.length === 0 ? 'No other users have rated trailers this season' : ''}>
-          <input
-            type="checkbox"
-            class="checkbox checkbox-sm"
-            bind:checked={catchUpMode}
-            disabled={availableCatchUpUsers.length === 0 || !catchUpUser}
-            on:change={() => dispatch('change')}
-          />
-          Catch up on
-        </label>
+      <label class="flex items-center gap-2" title={catchUpTooltip}>
+        <span class="select-none">Catch up on:</span>
         <select
           class="select select-bordered select-sm"
-          bind:value={catchUpUser}
+          value={catchUpSelectValue}
           disabled={availableCatchUpUsers.length === 0}
-          on:change={() => dispatch('change')}
+          on:change={onCatchUpChange}
         >
-          <option value={null}>— user —</option>
-          {#each availableCatchUpUsers as u}
-            <option value={u}>{u}</option>
-          {/each}
+          {#if availableCatchUpUsers.length === 0}
+            <option value="">No users to catch up on</option>
+          {:else}
+            <option value="">Off</option>
+            {#each availableCatchUpUsers as u}
+              <option value={u}>{u}</option>
+            {/each}
+          {/if}
         </select>
-      </div>
+      </label>
     {/if}
   </div>
 </div>

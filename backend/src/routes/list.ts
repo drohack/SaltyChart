@@ -229,8 +229,9 @@ router.get('/users-with-ratings', async (req, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
   if (!season || !year) return res.status(400).json({ error: 'Missing season/year' });
   try {
+    // Any entry in "My List" for this season counts (regardless of watched flag)
     const rows = await prisma.watchList.findMany({
-      where: { season, year: Number(year), watched: true },
+      where: { season, year: Number(year) },
       select: { userId: true },
     });
     const userIds = Array.from(new Set(rows.map((r) => r.userId)));
@@ -263,7 +264,7 @@ router.get('/user-ratings', async (req, res) => {
     if (!user) return res.json([]);
 
     const rows = await prisma.watchList.findMany({
-      where: { userId: user.id, season, year: Number(year), watched: true },
+      where: { userId: user.id, season, year: Number(year) },
       select: { mediaId: true },
     });
     return res.json(rows.map((r) => r.mediaId));

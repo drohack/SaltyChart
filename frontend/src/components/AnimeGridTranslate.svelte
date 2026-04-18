@@ -341,8 +341,8 @@ $: _currentLang = $options.titleLanguage;
   $: displayedAnime = (() => {
     let arr = anime;
     if (catchUpMode) {
-      // Show only items the other user has rated that I haven't watched
-      return arr.filter((a) => otherUserRatedIds.has(a.id) && !watchedIds.has(a.id));
+      // Show only items the other user has in their list that I don't have in mine
+      return arr.filter((a) => otherUserRatedIds.has(a.id) && !inListIds.has(a.id));
     }
     if (hideAdult) arr = arr.filter((a) => !a.isAdult);
     if (hideSequels) arr = arr.filter((s) => !isSequel(s));
