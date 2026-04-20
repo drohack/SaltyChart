@@ -581,7 +581,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
        Row 1:  (empty)             | "2nd user:" label
        Row 2:  "{$userName}:" label | 2nd-user combobox
        Row 3:  pre/post for $userName | pre/post for 2nd user (shown once selected) -->
-  <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">
+  <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto">
     <div class="w-full max-w-sm md:max-w-md mx-auto grid grid-cols-2 gap-x-3 gap-y-1 text-sm items-center">
       <!-- Row 1 -->
       <div></div>
@@ -625,14 +625,14 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   </div>
 
   {#if loading}
-    <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto"><LoadingSpinner size="lg" /></div>
+    <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto"><LoadingSpinner size="lg" /></div>
   {:else if error}
-    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto text-red-500">{error}</p>
+    <p class="p-4 w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto text-red-500">{error}</p>
   {:else if rows.length}
     <!-- Legend: gradient and direction arrows (desktop only).
          Kept visible in solo mode too so switching between solo and compare
          doesn't reflow the page vertically. -->
-    <div class="hidden md:block w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 text-sm space-y-2">
+    <div class="hidden md:block w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto p-2 text-sm space-y-2">
       <div class="font-semibold">Rank difference gradient:</div>
       <div class="h-2 w-full rounded" style="background: linear-gradient(to right, hsl(145 70% 45%), hsl(0 70% 45%));"></div>
       <div class="flex items-center gap-6">
@@ -643,7 +643,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     </div>
     <!-- Capture wrapper starts -->
     <div bind:this={captureEl}>
-    <header class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 grid grid-cols-[1fr_auto] items-center gap-2">
+    <header class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto p-2 grid grid-cols-[1fr_auto] items-center gap-2">
       <h2 class="text-xl font-bold text-left leading-tight">
         {#if selectedOther}
           {$userName} vs {displayOther} — {season} {year}
@@ -684,7 +684,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     </header>
     <!-- Sticky name bar — pins to viewport top while cards scroll (shared by mobile and desktop) -->
     <div class="sticky top-0 z-20 bg-base-200 shadow-md">
-      <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto px-2 py-2 flex gap-3 items-center">
+      <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto px-2 py-2 flex gap-3 items-center">
         <div class="w-12 flex-shrink-0"></div>
         <div class="flex-1 min-w-0 grid grid-cols-[1fr_auto_1fr] gap-2 items-center text-sm font-semibold">
           <div class="text-center truncate" title={$userName ?? ''}>{$userName}</div>
@@ -698,7 +698,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     </div>
 
     <!-- Card layout (shared by mobile and desktop; width matches Home's anime grid) -->
-    <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto flex flex-col gap-2 px-2">
+    <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto flex flex-col gap-2 px-2">
       {#each rows as row (row.id)}
         <div class="bg-base-200 rounded p-3 flex gap-3">
           {#if row.cover}
@@ -756,7 +756,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
     </div> <!-- capture wrapper end -->
   {:else}
-    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">
+    <p class="p-4 w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto">
       {#if selectedOther}
         No titles to compare.
       {:else}
