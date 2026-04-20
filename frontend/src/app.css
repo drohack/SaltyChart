@@ -13,6 +13,8 @@ html, body {
 /* Combobox tweaks for Compare page */
 .svelte-select {
   @apply input w-full bg-base-200 text-gray-700;
+  /* Float the dropdown list above the sticky username bar (z-20) on Compare. */
+  --list-z-index: 30;
 }
 .svelte-select .list {
   @apply w-full bg-base-200;

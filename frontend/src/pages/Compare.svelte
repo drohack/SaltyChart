@@ -73,13 +73,15 @@ const rankOptions = [
 
 let lastFetchKey: string | null = null;
 
-$: if (userA && selectedOther) {
+$: if (userA) {
   // track dependencies so Svelte re-runs when they change
   rankTypeA;
   rankTypeB;
   season;
   year;
 
+  // getSelectedUsername() returns '' for null/unset, so the cache key
+  // stays unique across the "solo" and "compare" states.
   const key = `${userA}|${getSelectedUsername(selectedOther)}|${rankTypeA}|${rankTypeB}|${season}|${year}`;
   if (key !== lastFetchKey) {
     lastFetchKey = key;
@@ -292,25 +294,29 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   // Fetch helper -------------------------------------------------------------
 
   async function fetchLists() {
-    if (!userA || !selectedOther) return;
+    if (!userA) return;
 
     loading = true;
     error = null;
     try {
-      // extract actual usernames for API calls
       const usernameA = getSelectedUsername(userA);
-      const usernameB = getSelectedUsername(selectedOther);
-      const [aResp, bResp, animeResp] = await Promise.all([
-        fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`),
-        fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`),
-        fetch(`/api/anime?season=${season}&year=${year}`)
-      ]);
+      const usernameB = selectedOther ? getSelectedUsername(selectedOther) : null;
+
+      // Fetch user A + anime metadata unconditionally; user B only when a
+      // 2nd user is selected. Keeps the solo view working with no comparison.
+      const aPromise = fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`);
+      const animePromise = fetch(`/api/anime?season=${season}&year=${year}`);
+      const bPromise = usernameB
+        ? fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`)
+        : Promise.resolve(null);
+
+      const [aResp, bResp, animeResp] = await Promise.all([aPromise, bPromise, animePromise]);
 
       if (!aResp.ok) throw new Error(`Failed to fetch your list (${aResp.status})`);
-      if (!bResp.ok) throw new Error(`Failed to fetch other list (${bResp.status})`);
+      if (bResp && !bResp.ok) throw new Error(`Failed to fetch other list (${bResp.status})`);
 
       listA = (await aResp.json()) ?? [];
-      listB = (await bResp.json()) ?? [];
+      listB = bResp ? ((await bResp.json()) ?? []) : [];
       animeData = (await animeResp.json()) ?? [];
     } catch (e: any) {
       console.error(e);
@@ -444,7 +450,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     return anime.title.english || anime.title.romaji || anime.title.native || '';
   }
   function buildRows(): RankedItem[] {
-    if (!listA || !listB) return [];
+    // Only user A is required; listB may be null/empty when no 2nd user is
+    // selected, in which case rankB stays null and diff stays null.
+    if (!listA) return [];
 
     const byId = new Map<number, RankedItem>();
 
@@ -477,7 +485,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       item.customA = row.customName;
     });
 
-    listB.forEach((row, idx) => {
+    (listB ?? []).forEach((row, idx) => {
       const item = upsertRow(row.mediaId);
       item.rankB = idx + 1;
       // preserve custom name if set by user B
@@ -616,14 +624,14 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     </div>
   </div>
 
-  {#if !selectedOther}
-    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">Enter another user name to compare.</p>
-  {:else if loading}
+  {#if loading}
     <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto"><LoadingSpinner size="lg" /></div>
   {:else if error}
     <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto text-red-500">{error}</p>
   {:else if rows.length}
-    <!-- Legend: gradient and direction arrows (desktop only) -->
+    <!-- Legend: gradient and direction arrows (desktop only).
+         Kept visible in solo mode too so switching between solo and compare
+         doesn't reflow the page vertically. -->
     <div class="hidden md:block w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 text-sm space-y-2">
       <div class="font-semibold">Rank difference gradient:</div>
       <div class="h-2 w-full rounded" style="background: linear-gradient(to right, hsl(145 70% 45%), hsl(0 70% 45%));"></div>
@@ -636,13 +644,21 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     <!-- Capture wrapper starts -->
     <div bind:this={captureEl}>
     <header class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 grid grid-cols-[1fr_auto] items-center gap-2">
-      <h2 class="text-xl font-bold text-left leading-tight">{$userName} vs {displayOther} — {season} {year}</h2>
+      <h2 class="text-xl font-bold text-left leading-tight">
+        {#if selectedOther}
+          {$userName} vs {displayOther} — {season} {year}
+        {:else}
+          {$userName} — {season} {year}
+        {/if}
+      </h2>
       <label class="text-sm justify-self-end flex items-center gap-1 whitespace-nowrap">Sort:
         <select bind:value={sortMode} class="select md:select-sm ml-1">
           <option value="title">Title</option>
           <option value="rankA">Rank {$userName}</option>
-          <option value="rankB">Rank {displayOther}</option>
-          <option value="diff">Difference</option>
+          {#if selectedOther}
+            <option value="rankB">Rank {displayOther}</option>
+            <option value="diff">Difference</option>
+          {/if}
         </select>
         <!-- Share button (desktop only) -->
         <button
@@ -672,6 +688,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         <div class="w-12 flex-shrink-0"></div>
         <div class="flex-1 min-w-0 grid grid-cols-[1fr_auto_1fr] gap-2 items-center text-sm font-semibold">
           <div class="text-center truncate" title={$userName ?? ''}>{$userName}</div>
+          <!-- Middle spacer matches the diff-badge width in compare mode; stays
+               empty in solo mode so the user-A column occupies the same 1fr
+               slot regardless of 2nd-user selection. -->
           <span class="px-2 invisible" aria-hidden="true">0</span>
           <div class="text-center truncate" title={displayOther}>{displayOther}</div>
         </div>
@@ -691,6 +710,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
             <div class="italic opacity-70 text-xs leading-tight mb-2 break-words" title={row.title}>
               {row.title}
             </div>
+            <!-- Always 3-col so solo mode preserves the same spatial layout
+                 as compare. Middle + right cells are empty in solo mode. -->
             <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
               <div class="text-center min-w-0">
                 <div class="font-semibold text-base">
@@ -701,26 +722,30 @@ let rankTypeB: 'pre' | 'post' = 'pre';
                 {/if}
               </div>
               <div class="flex justify-center">
-                {#if row.diff != null}
-                  <span class="px-2 py-1 rounded-full text-sm font-semibold whitespace-nowrap" style="background:{heat(row.diff)};color:{textColor(row.diff)};">
-                    {#if row.rankA < row.rankB}
-                      ←{row.diff}
-                    {:else if row.rankA > row.rankB}
-                      {row.diff}→
-                    {:else}
-                      {row.diff}
-                    {/if}
-                  </span>
-                {:else}
-                  <span class="text-gray-400">—</span>
+                {#if selectedOther}
+                  {#if row.diff != null}
+                    <span class="px-2 py-1 rounded-full text-sm font-semibold whitespace-nowrap" style="background:{heat(row.diff)};color:{textColor(row.diff)};">
+                      {#if row.rankA < row.rankB}
+                        ←{row.diff}
+                      {:else if row.rankA > row.rankB}
+                        {row.diff}→
+                      {:else}
+                        {row.diff}
+                      {/if}
+                    </span>
+                  {:else}
+                    <span class="text-gray-400">—</span>
+                  {/if}
                 {/if}
               </div>
               <div class="text-center min-w-0">
-                <div class="font-semibold text-base">
-                  {#if row.rankB != null}#{row.rankB}{:else}—{/if}
-                </div>
-                {#if row.customB}
-                  <div class="font-medium text-sm line-clamp-2" title={row.customB}>{row.customB}</div>
+                {#if selectedOther}
+                  <div class="font-semibold text-base">
+                    {#if row.rankB != null}#{row.rankB}{:else}—{/if}
+                  </div>
+                  {#if row.customB}
+                    <div class="font-medium text-sm line-clamp-2" title={row.customB}>{row.customB}</div>
+                  {/if}
                 {/if}
               </div>
             </div>
@@ -731,6 +756,12 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
     </div> <!-- capture wrapper end -->
   {:else}
-    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">No titles to compare.</p>
+    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">
+      {#if selectedOther}
+        No titles to compare.
+      {:else}
+        Nothing in your list for this season.
+      {/if}
+    </p>
   {/if}
 {/if}

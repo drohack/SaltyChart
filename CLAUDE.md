@@ -65,6 +65,15 @@ When your diff touches any of these, update the listed locations too:
    in `WatchListSidebar.svelte`, manually verify the share button still
    exports a reasonable image — both functions are DOM-clone-heavy and
    brittle to layout changes.
+5. **Clean up Playwright test artefacts.** If you used
+   `browser_take_screenshot` during verification, delete the resulting
+   PNG files at the repo root before finishing the task. They land there
+   because the MCP tool accepts relative filenames and resolves them
+   against the CWD. The `.gitignore` already covers `compare-*.png`,
+   `randomize-*.png`, and `home-*.png`, but leaving them bloats the
+   working tree — `rm compare-*.png randomize-*.png home-*.png
+   home-desktop-after-gap-fix.png 2>/dev/null` is the full-coverage
+   sweep. Also works for any other page-prefixed screenshot you named.
 
 ---
 
