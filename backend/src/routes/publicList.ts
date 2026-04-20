@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import prisma from '../db';
+import { isValidSeason, isValidYear } from '../lib/validateSeason';
 
 /**
  * Public endpoint used by the Compare page to fetch _any_ user's ranked list
@@ -21,6 +22,9 @@ router.get('/', async (req, res) => {
   if (!username || !season || !year) {
     return res.status(400).json({ error: 'Missing query params', code: 'BAD_REQUEST' });
   }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
 
   try {
     const user = await prisma.user.findUnique({ where: { username } });
@@ -34,6 +38,17 @@ router.get('/', async (req, res) => {
       year: Number(year)
     } as const;
 
+    // Only project fields the Compare page actually reads. Avoids leaking
+    // internal columns (userId, createdAt, etc.) to unauthenticated callers
+    // and shrinks the payload.
+    const select = {
+      mediaId: true,
+      order: true,
+      customName: true,
+      watchedRank: true,
+      watched: true
+    } as const;
+
     let list;
     if (rankType === 'post') {
       // Only watched items; order by watchedRank if set else watchedAt
@@ -42,13 +57,15 @@ router.get('/', async (req, res) => {
         orderBy: [
           { watchedRank: 'asc' },
           { watchedAt: 'asc' }
-        ]
+        ],
+        select
       });
     } else {
       // Pre-watch list (original order)
       list = await prisma.watchList.findMany({
         where: whereBase,
-        orderBy: { order: 'asc' }
+        orderBy: { order: 'asc' },
+        select
       });
     }
 

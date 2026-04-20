@@ -3,6 +3,7 @@ import axios from 'axios';
 import { setTimeout as delay } from 'timers/promises';
 import prisma from '../db';
 import { LRUCache } from 'lru-cache';
+import { isValidSeason, isValidYear } from '../lib/validateSeason';
 
 const router = Router();
 // In-memory cache to avoid hitting SQLite (and AniList) for hot requests.
@@ -21,6 +22,9 @@ router.get('/', async (req, res) => {
 
   if (!season || !year) {
     return res.status(400).json({ error: 'Missing "season" or "year" query param', code: 'BAD_REQUEST' });
+  }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
   const formatArg = format ? ', format: $format' : '';

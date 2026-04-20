@@ -34,7 +34,7 @@ Git repository.
 
 ```bash
 docker compose up --build
-open http://localhost:5173
+open http://localhost:8085
 ```
 
 ### Local dev (no Docker, Windows)

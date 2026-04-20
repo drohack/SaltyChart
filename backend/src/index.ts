@@ -159,21 +159,10 @@ async function ensureDatabaseSchema() {
         ON "WatchList" ("userId", "season", "year", "mediaId");
       `);
 
-      // Cache table for AniList responses (season-level)
-      await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "SeasonCache" (
-          "season"  TEXT NOT NULL,
-          "year"    INTEGER NOT NULL,
-          "format"  TEXT,
-          "data"    TEXT NOT NULL,
-          "updatedAt" DATETIME NOT NULL,
-          PRIMARY KEY ("season", "year", "format")
-        );
-      `);
-
-
       console.log('[DB] WatchList table created ✅');
     }
+    // SeasonCache is created in its own standalone block below so fresh
+    // and existing DBs take the same path.
 
     // ----------------------- SeasonCache table -----------------------
     const cacheRows: Array<{ name: string }> =

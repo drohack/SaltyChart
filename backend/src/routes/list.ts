@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import prisma from '../db';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { isValidSeason, isValidYear } from '../lib/validateSeason';
 const router = Router();
 
 // Rate-limit the handful of unauthenticated endpoints below (e.g. /nicknames,
@@ -19,6 +20,9 @@ const publicListLimiter = rateLimit({
 router.get('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
   if (!season || !year) return res.status(400).json({ error: 'Missing params', code: 'BAD_REQUEST' });
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
 
   const list = await prisma.watchList.findMany({
     where: { userId: req.userId!, season, year: Number(year) },
@@ -38,6 +42,9 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
 
   if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
     return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
+  }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
   try {
@@ -115,6 +122,9 @@ router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
   if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
     return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
   }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
 
   try {
     const updated = await prisma.watchList.updateMany({
@@ -134,6 +144,9 @@ router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, ids } = req.body as { season?: string; year?: number | string; ids?: number[] };
   if (!season || year === undefined || year === null || !Array.isArray(ids)) {
     return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
+  }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
   // Build update promises assigning watchedRank based on position
@@ -164,6 +177,9 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
   };
   if (!season || year === undefined || year === null || !Array.isArray(items)) {
     return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
+  }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
   // delete existing then recreate
@@ -239,6 +255,9 @@ router.get('/users-with-nicknames', publicListLimiter, async (_req, res) => {
 router.get('/users-with-ratings', publicListLimiter, async (req, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
   if (!season || !year) return res.status(400).json({ error: 'Missing season/year', code: 'BAD_REQUEST' });
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
   try {
     // Any entry in "My List" for this season counts (regardless of watched flag)
     const rows = await prisma.watchList.findMany({
@@ -267,6 +286,9 @@ router.get('/user-ratings', publicListLimiter, async (req, res) => {
   if (!username || !season || !year) {
     return res.status(400).json({ error: 'Missing username/season/year', code: 'BAD_REQUEST' });
   }
+  if (!isValidSeason(season) || !isValidYear(year)) {
+    return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
   try {
     const user = await prisma.user.findUnique({
       where: { username },
@@ -288,7 +310,9 @@ router.get('/user-ratings', publicListLimiter, async (req, res) => {
 // Returns nickname list for a given mediaId: [{ userName, nickname, rank }]
 router.get('/nicknames', publicListLimiter, async (req, res) => {
   const mediaId = Number(req.query.mediaId);
-  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId', code: 'BAD_REQUEST' });
+  if (!Number.isInteger(mediaId) || mediaId <= 0) {
+    return res.status(400).json({ error: 'Invalid mediaId', code: 'BAD_REQUEST' });
+  }
 
   try {
     const rows = await prisma.watchList.findMany({

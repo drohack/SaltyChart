@@ -289,7 +289,6 @@ $: _lang = $options.titleLanguage;
     if (typeof sessionStorage !== 'undefined') {
       const savedSpinImage = sessionStorage.getItem('wheelSpinButtonImage');
       const savedBgImage = sessionStorage.getItem('wheelBackgroundImage');
-      console.log('Loading images from sessionStorage:', { savedSpinImage: !!savedSpinImage, savedBgImage: !!savedBgImage });
       if (savedSpinImage) spinButtonImage = savedSpinImage;
       if (savedBgImage) backgroundImage = savedBgImage;
     }
@@ -298,7 +297,6 @@ $: _lang = $options.titleLanguage;
 
   // Persist custom images to sessionStorage when they change (only after initial load)
   $: if (imagesLoaded && typeof sessionStorage !== 'undefined') {
-    console.log('Saving images to sessionStorage:', { spinButtonImage: !!spinButtonImage, backgroundImage: !!backgroundImage });
     if (spinButtonImage) sessionStorage.setItem('wheelSpinButtonImage', spinButtonImage);
     else sessionStorage.removeItem('wheelSpinButtonImage');
 

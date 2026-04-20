@@ -174,7 +174,9 @@ function cleanupDaemon(): void {
       res.write(`data: ${JSON.stringify({ error: 'Translation daemon exited' })}\n\n`);
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
-    } catch {}
+    } catch (err) {
+      console.error('[translate] Failed to flush pending stream on daemon exit:', err);
+    }
   }
   pendingStreams.clear();
   pendingSegments.clear();
@@ -297,7 +299,7 @@ router.get('/check', async (req: Request, res: Response) => {
     });
   } else {
     // Fallback: standalone spawn (also warms up daemon for next request)
-    ensureDaemon().catch(() => {});
+    ensureDaemon().catch((err) => console.error('[translate] daemon warm-up failed:', err));
 
     result = await new Promise<any>((resolve) => {
       const py = spawn(PYTHON, [getStreamScriptPath(), 'check', videoId], {
@@ -407,7 +409,9 @@ router.get('/stream', async (req: Request, res: Response) => {
         res.end();
         return;
       }
-    } catch {}
+    } catch (err) {
+      console.error('[translate] in-flight wait failed; falling through to re-translate:', err);
+    }
     // If cache still empty after waiting, fall through to translate
   }
 
