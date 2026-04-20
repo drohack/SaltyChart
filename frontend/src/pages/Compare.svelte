@@ -592,6 +592,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           placeholder="username"
           noOptionsMessage="No users found"
           searchable={true}
+          inputAttributes={{ 'data-bwignore': true }}
           on:search={() => queueSuggest()}
           on:change={() => {/* fetch triggered reactively */}}
         />

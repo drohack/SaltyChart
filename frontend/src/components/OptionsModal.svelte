@@ -238,6 +238,7 @@
               disabled={batchRunning}
               min={2020}
               max={2030}
+              data-bwignore
             />
           </div>
           <div class="flex gap-2">

@@ -110,6 +110,7 @@
         type="text"
         bind:value={searchQuery}
         class="input flex-1"
+        data-bwignore
       />
     </div>
   {/if}

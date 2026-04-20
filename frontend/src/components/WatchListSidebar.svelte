@@ -313,8 +313,10 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
   }
 
   function closeModal() {
+    // editingItem cleanup runs in the dialog's on:close handler so all
+    // close paths (Cancel, Escape, backdrop click, Save) share one source
+    // of truth.
     modal?.close();
-    editingItem = null;
   }
 
   function saveName() {
@@ -661,15 +663,20 @@ $: {
 
 
 <!-- Custom name modal (uses native <dialog>) -->
-<dialog class="modal" bind:this={modal} on:cancel={closeModal}>
+<dialog
+  class="modal"
+  bind:this={modal}
+  on:cancel={closeModal}
+  on:close={() => (editingItem = null)}
+>
   {#if editingItem}
     <div class="modal-box w-11/12 max-w-2xl">
       <h3 class="font-bold text-lg mb-4">Set Custom Name</h3>
 
       <div class="flex flex-col sm:flex-row gap-4">
-        {#if editingItem.coverImage?.medium || editingItem.coverImage?.large}
+        {#if editingItem.coverImage?.extraLarge || editingItem.coverImage?.large || editingItem.coverImage?.medium}
           <img
-            src={editingItem.coverImage?.medium ?? editingItem.coverImage?.large}
+            src={editingItem.coverImage?.extraLarge ?? editingItem.coverImage?.large ?? editingItem.coverImage?.medium}
             alt={editingItem.title?.english ?? editingItem.title?.romaji}
             class="w-40 h-auto rounded shadow hidden sm:block"
           />
@@ -697,6 +704,7 @@ $: {
               bind:value={modalName}
               class="input input-bordered w-full"
               bind:this={nameInput}
+              data-bwignore
               on:keydown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -722,5 +730,12 @@ $: {
         </div>
       </div>
     </div>
+    <!-- Click-outside-to-close: native <form method="dialog"> fills the
+         viewport area outside the modal-box; clicking it submits-as-dialog
+         which closes the <dialog> natively. State cleanup runs via the
+         on:close handler above. -->
+    <form method="dialog" class="modal-backdrop">
+      <button>close</button>
+    </form>
   {/if}
 </dialog>
