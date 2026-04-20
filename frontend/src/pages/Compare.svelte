@@ -542,7 +542,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     return arr;
   }
 
-  let sortMode: 'title' | 'rankA' | 'rankB' | 'diff' = 'diff';
+  let sortMode: 'title' | 'rankA' | 'rankB' | 'diff' = 'rankA';
   // Rows to render, rebuilt reactively when lists or sort mode change
   let rows: RankedItem[] = [];
 
@@ -596,24 +596,31 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 {#if !$authToken}
   <p class="p-6 text-red-500">You must be logged-in to compare lists.</p>
 {:else}
-  <!-- Controls ------------------------------------------------------------------>
-  <div class="p-4 bg-base-200 rounded shadow flex flex-col items-center gap-4 w-full mx-auto md:grid md:grid-cols-2 md:items-end md:gap-6 md:w-3/4">
-    <div class="min-w-0 w-auto">
-      <SeasonSelect
-        class="!w-auto"
-        bind:season
-        bind:year
-        showListToggle={false}
-        showSequelToggle={false}
-        showSearch={false}
-      />
-    </div>
+  <!-- Season/year header (plain wrapper, left-aligned — matches the pattern on Home and Randomize).
+       Kill SeasonSelect's internal mb-6 on mobile only (desktop keeps the 24px gap to the user controls). -->
+  <div class="w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] sm:mx-auto [&>div]:!mb-0 md:[&>div]:!mb-6">
+    <SeasonSelect
+      bind:season
+      bind:year
+      showListToggle={false}
+      showSequelToggle={false}
+      showSearch={false}
+    />
+  </div>
 
-    <!-- (rank type selectors moved to table headers) -->
+  <!-- User comparison controls: 2-col 3-row grid (plain, left-aligned like the season row)
+       Row 1:  (empty)             | "2nd user:" label
+       Row 2:  "{$userName}:" label | 2nd-user combobox
+       Row 3:  pre/post for $userName | pre/post for 2nd user (shown once selected) -->
+  <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">
+    <div class="w-full max-w-sm md:max-w-md mx-auto grid grid-cols-2 gap-x-3 gap-y-1 text-sm items-center">
+      <!-- Row 1 -->
+      <div></div>
+      <label for="otherUser" class="font-semibold">2nd user:</label>
 
-    <div class="flex flex-col gap-2 justify-self-center">
-      <label for="otherUser" class="font-semibold">User to compare:</label>
-      <div class="w-96">
+      <!-- Row 2 -->
+      <div class="font-semibold truncate" title={$userName ?? ''}>{$userName}:</div>
+      <div class="min-w-0">
         <Select
           id="otherUser"
           class="w-full input input-bordered text-gray-700"
@@ -625,21 +632,37 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           noOptionsMessage="No users found"
           searchable={true}
           on:search={() => queueSuggest()}
-        on:change={() => {/* fetch triggered reactively */}}
+          on:change={() => {/* fetch triggered reactively */}}
         />
+      </div>
+
+      <!-- Row 3 -->
+      <select bind:value={rankTypeA} class="select select-sm select-bordered w-full">
+        {#each rankOptions as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+      <div class="min-w-0">
+        {#if selectedOther}
+          <select bind:value={rankTypeB} class="select select-sm select-bordered w-full">
+            {#each rankOptions as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        {/if}
       </div>
     </div>
   </div>
 
   {#if !selectedOther}
-    <p class="p-4 w-full md:w-3/4 mx-auto">Enter another user name to compare.</p>
+    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">Enter another user name to compare.</p>
   {:else if loading}
-    <div class="w-full md:w-3/4 mx-auto"><LoadingSpinner size="lg" /></div>
+    <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto"><LoadingSpinner size="lg" /></div>
   {:else if error}
-    <p class="p-4 w-full md:w-3/4 mx-auto text-red-500">{error}</p>
+    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto text-red-500">{error}</p>
   {:else if rows.length}
-    <!-- Legend: gradient and direction arrows -->
-    <div class="w-full md:w-3/4 mx-auto p-2 text-sm space-y-2">
+    <!-- Legend: gradient and direction arrows (desktop only) -->
+    <div class="hidden md:block w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 text-sm space-y-2">
       <div class="font-semibold">Rank difference gradient:</div>
       <div class="h-2 w-full rounded" style="background: linear-gradient(to right, hsl(145 70% 45%), hsl(0 70% 45%));"></div>
       <div class="flex items-center gap-6">
@@ -650,20 +673,19 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     </div>
     <!-- Capture wrapper starts -->
     <div bind:this={captureEl}>
-    <header class="w-full md:w-3/4 mx-auto p-2 grid grid-cols-3 items-center">
-      <div></div>
-      <h2 class="text-xl font-bold text-center">{$userName} vs {displayOther} — {season} {year}</h2>
-      <label class="text-sm justify-self-end">Sort:
-        <select bind:value={sortMode} class="select select-sm ml-1">
+    <header class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto p-2 grid grid-cols-[1fr_auto] items-center gap-2">
+      <h2 class="text-xl font-bold text-left leading-tight">{$userName} vs {displayOther} — {season} {year}</h2>
+      <label class="text-sm justify-self-end flex items-center gap-1 whitespace-nowrap">Sort:
+        <select bind:value={sortMode} class="select md:select-sm ml-1">
           <option value="title">Title</option>
           <option value="rankA">Rank {$userName}</option>
           <option value="rankB">Rank {displayOther}</option>
           <option value="diff">Difference</option>
         </select>
-        <!-- Share button -->
+        <!-- Share button (desktop only) -->
         <button
           type="button"
-          class="btn btn-xs btn-ghost ml-2"
+          class="btn btn-xs btn-ghost ml-2 hidden md:inline-flex"
           data-share-btn
           on:click={shareCompare}
           title="Share as image"
@@ -682,80 +704,71 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         </button>
       </label>
     </header>
-    <div class="w-full md:w-3/4 mx-auto grid" style="grid-template-columns: 1fr auto auto 1fr; row-gap:6px;">
-      <div class="font-bold text-center flex items-center justify-center gap-2">
-        {$userName}
-        <select
-          bind:value={rankTypeA}
-          class="select select-xs select-bordered px-1 pr-8 py-0 min-w-[6rem]"
-        >
-          {#each rankOptions as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
+    <!-- Sticky name bar — pins to viewport top while cards scroll (shared by mobile and desktop) -->
+    <div class="sticky top-0 z-20 bg-base-200 shadow-md">
+      <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto px-2 py-2 flex gap-3 items-center">
+        <div class="w-12 flex-shrink-0"></div>
+        <div class="flex-1 min-w-0 grid grid-cols-[1fr_auto_1fr] gap-2 items-center text-sm font-semibold">
+          <div class="text-center truncate" title={$userName ?? ''}>{$userName}</div>
+          <span class="px-2 invisible" aria-hidden="true">0</span>
+          <div class="text-center truncate" title={displayOther}>{displayOther}</div>
+        </div>
       </div>
-      <div class="font-bold text-center">Diff</div>
-      <div class="font-bold text-center">Cover</div>
-      <div class="font-bold text-center flex items-center justify-center gap-2">
-        {displayOther}
-        <select
-          bind:value={rankTypeB}
-          class="select select-xs select-bordered px-1 pr-8 py-0 min-w-[6rem]"
-        >
-          {#each rankOptions as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      </div>
+    </div>
 
+    <!-- Card layout (shared by mobile and desktop; width matches Home's anime grid) -->
+    <div class="w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto flex flex-col gap-2 px-2">
       {#each rows as row (row.id)}
-        <!-- A column -->
-        <div style="display:flex;align-items:center;gap:8px;min-height:72px;padding:4px;" title={row.title}>
-          {#if row.rankA != null}
-            <span style="width:24px;text-align:center;opacity:0.6;">{row.rankA}</span>
-            <span title={row.title}>{row.customA || row.title}</span>
-          {:else}
-            <span style="opacity:0.4;">—</span>
-{/if}
-        </div>
-
-        <!-- Diff column -->
-        <div class="flex items-center justify-center">
-          {#if row.diff != null}
-            <span class="px-3 py-2 rounded-full text-lg font-semibold" style="background:{heat(row.diff)};color:{textColor(row.diff)};">
-              {#if row.rankA < row.rankB}
-                ←{row.diff}
-              {:else if row.rankA > row.rankB}
-                {row.diff}→
-              {:else}
-                {row.diff}
-              {/if}
-            </span>
-          {:else}
-            <span class="text-gray-400">—</span>
-          {/if}
-        </div>
-        <!-- Cover column -->
-        <div class="flex items-center justify-center">
+        <div class="bg-base-200 rounded p-3 flex gap-3">
           {#if row.cover}
-            <img src={row.cover} alt={row.title} style="width:48px;height:66px;object-fit:cover;border-radius:3px;" />
+            <img src={row.cover} alt={row.title} class="flex-shrink-0 rounded object-cover" style="width:48px;height:66px;" />
           {:else}
-            <span style="opacity:0.4;">—</span>
+            <div class="flex-shrink-0 rounded bg-base-300 flex items-center justify-center opacity-40" style="width:48px;height:66px;">—</div>
           {/if}
-        </div>
-        <!-- B column -->
-        <div style="display:flex;align-items:center;gap:8px;min-height:72px;padding:4px;" title={row.title}>
-          {#if row.rankB != null}
-            <span class="flex-1 text-right" title={row.title}>{row.customB || row.title}</span>
-            <span style="width:24px;text-align:center;opacity:0.6;">{row.rankB}</span>
-          {:else}
-            <span style="opacity:0.4;">—</span>
-          {/if}
+          <div class="flex-1 min-w-0">
+            <div class="italic opacity-70 text-xs leading-tight mb-2 break-words" title={row.title}>
+              {row.title}
+            </div>
+            <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
+              <div class="text-center min-w-0">
+                <div class="font-semibold text-base">
+                  {#if row.rankA != null}#{row.rankA}{:else}—{/if}
+                </div>
+                {#if row.customA}
+                  <div class="font-medium text-sm line-clamp-2" title={row.customA}>{row.customA}</div>
+                {/if}
+              </div>
+              <div class="flex justify-center">
+                {#if row.diff != null}
+                  <span class="px-2 py-1 rounded-full text-sm font-semibold whitespace-nowrap" style="background:{heat(row.diff)};color:{textColor(row.diff)};">
+                    {#if row.rankA < row.rankB}
+                      ←{row.diff}
+                    {:else if row.rankA > row.rankB}
+                      {row.diff}→
+                    {:else}
+                      {row.diff}
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="text-gray-400">—</span>
+                {/if}
+              </div>
+              <div class="text-center min-w-0">
+                <div class="font-semibold text-base">
+                  {#if row.rankB != null}#{row.rankB}{:else}—{/if}
+                </div>
+                {#if row.customB}
+                  <div class="font-medium text-sm line-clamp-2" title={row.customB}>{row.customB}</div>
+                {/if}
+              </div>
+            </div>
+          </div>
         </div>
       {/each}
-    </div> <!-- grid -->
+    </div>
+
     </div> <!-- capture wrapper end -->
   {:else}
-    <p class="p-4 w-full md:w-3/4 mx-auto">No titles to compare.</p>
+    <p class="p-4 w-full sm:max-w-[calc(100vw-42rem)] 2cols:sm:max-w-[calc(100vw-50rem)] sm:mx-auto">No titles to compare.</p>
   {/if}
 {/if}

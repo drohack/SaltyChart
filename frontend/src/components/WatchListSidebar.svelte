@@ -440,9 +440,9 @@ $: {
 <aside
   bind:this={sidebarEl}
   class="fixed z-40 \
-    right-0 sm:right-4 \
+    right-0 \
     top-0 sm:top-24 \
-    bottom-0 sm:bottom-4 \
+    bottom-0 \
     bg-base-200 p-3 rounded sm:rounded shadow-lg overflow-visible flex flex-col \
     w-full sm:w-[calc(12.5vw-1rem)] max-w-none sm:max-w-[24rem] \
     min-w-0 sm:min-w-[14.5rem] 2cols:sm:min-w-[17.5rem] \

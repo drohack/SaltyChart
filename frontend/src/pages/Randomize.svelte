@@ -251,31 +251,38 @@ $: _lang = $options.titleLanguage;
         if (self) users = users.filter((u) => u !== self);
 
         nicknameAllUsers.set(users);
-
-        // Sync current selection with new user list:
-        nicknameSelected.update((prev) => {
-          // Remove self from previous selection
-          const self = get(activeUserName);
-          const cleaned = new Set<string>([...prev].filter((u) => u !== self));
-
-          // Retain only users still present in latest list
-          const next = new Set<string>();
-          cleaned.forEach((u) => {
-            if (users.includes(u)) next.add(u);
-          });
-
-          // If no persisted selection exists (first visit) default to all
-          if (next.size === 0) {
-            const hadPersisted = typeof localStorage !== 'undefined' && !!localStorage.getItem('nickUserSel');
-            return hadPersisted ? next : new Set(users);
-          }
-          return next;
-        });
       }
     } catch (err) {
       console.error('Failed to fetch nickname user list', err);
     }
   });
+
+  // Auto-select nickname users who have rankings (any list entry) for the current
+  // season/year. Fires on initial mount once the nickname-user list is loaded and
+  // again whenever season or year changes. Manual toggles persist only until the
+  // next season/year change.
+  async function autoSelectByRatings(s: Season, y: number) {
+    const nickUsers = get(nicknameAllUsers);
+    if (nickUsers.length === 0) return;
+    try {
+      const res = await fetch(`/api/list/users-with-ratings?season=${s}&year=${y}`);
+      if (!res.ok) return;
+      const ratedUsers: string[] = await res.json();
+      const self = get(activeUserName);
+      const toSelect = ratedUsers.filter((u) => u !== self && nickUsers.includes(u));
+      nicknameSelected.set(new Set(toSelect));
+    } catch (err) {
+      console.error('Failed to auto-select nickname users by ratings', err);
+    }
+  }
+
+  $: {
+    // Reactive: re-run on season/year change and once nicknameAllUsers populates.
+    season;
+    year;
+    $nicknameAllUsers;
+    autoSelectByRatings(season, year);
+  }
 
   // Load custom images from sessionStorage
   onMount(() => {
@@ -997,9 +1004,9 @@ $: {
 
 </script>
 
-<main class="px-4 pt-4 pb-0 flex flex-col gap-8">
-  <!-- Controls aligned to header -->
-  <div class="w-full md:w-3/4 mx-auto">
+<main class="pb-0 flex flex-col gap-8">
+  <!-- Controls aligned to header (matches the width pattern on Home and Compare) -->
+  <div class="w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] sm:mx-auto">
     <SeasonSelect
       bind:season
       bind:year

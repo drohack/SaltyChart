@@ -2,9 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Prevent accidental horizontal scroll on mobile caused by off-screen transforms */
+/* Prevent accidental horizontal scroll on mobile caused by off-screen transforms.
+   Uses `clip` instead of `hidden` so descendants can still use `position: sticky`
+   against the viewport (overflow: hidden creates a scroll container which breaks
+   sticky; overflow: clip only clips, no scroll container). */
 html, body {
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Combobox tweaks for Compare page */

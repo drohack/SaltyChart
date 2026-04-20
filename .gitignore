@@ -59,3 +59,9 @@ docker-compose.override.yml
 
 # Frontend build output
 frontend/dist/
+
+# Playwright MCP test artifacts (screenshots + page/console logs)
+/compare-*.png
+/randomize-*.png
+/home-*.png
+.playwright-mcp/

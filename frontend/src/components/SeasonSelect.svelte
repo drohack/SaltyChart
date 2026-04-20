@@ -75,8 +75,8 @@
   <!-- Responsive layout: 1 col (<1122px), 2 cols (>=1122px), 3 cols (>=1732px) -->
   <div class="grid w-full mb-6 gap-4 relative z-10 \
     grid-cols-1 2cols:grid-cols-[auto,1fr] 3cols:grid-cols-[auto,1fr,auto] items-center">
-  <!-- Left controls: season buttons + year dropdown -->
-  <div class="flex gap-4 items-center">
+  <!-- Left controls: season buttons + year dropdown (wraps on narrow viewports only) -->
+  <div class="flex flex-wrap sm:flex-nowrap gap-x-4 gap-y-2 items-center">
     <!-- Season buttons -->
     <div class="flex gap-2">
       {#each SEASONS as { value, label }}
@@ -92,7 +92,7 @@
 
     <!-- Year dropdown -->
     <select
-      class="select select-bordered w-20 sm:w-28 px-0 sm:px-4"
+      class="select select-bordered w-24 sm:w-28 pl-2 pr-8 sm:px-4"
       bind:value={year}
       on:change={updateYear}
     >
@@ -114,6 +114,7 @@
     </div>
   {/if}
 
+  {#if showAdultToggle || showSequelToggle || showListToggle || showCatchUpToggle}
   <!-- Right-aligned toggles; span both columns on 2cols -->
   <div class="flex items-center gap-6 text-sm 2cols:col-span-2 3cols:col-span-1">
     {#if showAdultToggle}
@@ -175,4 +176,5 @@
       </label>
     {/if}
   </div>
+  {/if}
 </div>
