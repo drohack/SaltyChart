@@ -58,49 +58,81 @@ If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PI
 
 ---
 
-## Recent Feature Highlights (July 2025)
+## Feature highlights
 
-SaltyChart is under active development.  The list below summarises key
-additions made after the first publication of this document so new
-contributors are not caught off-guard:
+SaltyChart is under active development. The list below summarises key
+additions so new contributors are not caught off-guard. Group is rough
+chronological order; all features listed are live.
 
-• **Hide from Wheel** – right-click a show in *My List* ➜ **Hide from Randomize**.
-  Persists the new `WatchList.hidden` boolean and is toggled via
-  `PATCH /api/list/hidden`.
+**Compare redesign (card layout, mobile-first)**
+- Cards replace the old 4-column grid — one anime per row with cover, title,
+  and a `[your rank | diff badge | other rank]` strip.
+- Sticky username bar pins to viewport top while cards scroll.
+- Unified controls block: season header + 2-column user grid (you + 2nd user)
+  with pre/post-watch selectors and combobox in one place.
+- Default sort is now your ranking (`rankA`) instead of difference.
+- Mobile layout matches desktop aesthetically; desktop shares ~75% of
+  Home's grid width (`calc(100vw - 40rem)` at 2cols breakpoint).
+- Custom nicknames take visual priority over canonical titles (primary
+  weight, up to 2-line clamp).
 
-• **Bulk list replace** – `PUT /api/list` can now replace an entire season’s
-  list in one request.  This powers the upcoming CSV importer and also allows
-  third-party integrations.
+**Randomize enhancements**
+- "Nicknames from" auto-checks users who have rankings for the current
+  season/year (via `GET /api/list/users-with-ratings`), re-running whenever
+  season or year changes.
+- Season row left-aligned to match Home and Compare.
 
-• **Nickname sharing** – pop-ups on Randomize/Compare now show friends’ custom
-  nicknames + ranks.  New helper endpoints:
-  `GET /api/list/users-with-nicknames` and `GET /api/list/nicknames?mediaId=`.
+**Hide from Wheel** – right-click a show in *My List* ➜ **Hide from Randomize**.
+Persists the `WatchList.hidden` boolean and is toggled via
+`PATCH /api/list/hidden`.
 
-• **Nickname user filter** – the global *Options* modal gained a **Nickname
-  User Picker** so you decide whose nicknames are displayed.
+**Bulk list replace** – `PUT /api/list` can replace an entire season's list
+in one request. Powers the CSV importer and third-party integrations.
 
-• **Real-time subtitle translation** – click a Japanese trailer and get live
-  English subtitles streamed via SSE.  Translations are cached in the database
-  so repeat plays are instant (~50ms).  A persistent Python daemon (`small`
-  model, chunked) handles on-demand requests; a batch script (`medium` model,
-  full-audio) pre-translates an entire season's trailers overnight as a safety
-  net. Short videos (<=30s) skip chunking for the small model too.
-  Concurrent requests are deduplicated and limited to 2. Subtitles sync to
-  YouTube's playback position (pause, scrub). Users can dismiss subtitles
-  via the CC toggle and the preference persists for all users.
+**Nickname sharing** – pop-ups on Randomize/Compare show friends' custom
+nicknames + ranks. Endpoints:
+`GET /api/list/users-with-nicknames`, `GET /api/list/nicknames?mediaId=`,
+`GET /api/list/users-with-ratings?season=&year=`, `GET /api/list/user-ratings?username=&season=&year=`.
 
-- **Local GPU translation** (`tools/local_translate.py`) — translates trailers
-  using Whisper large-v3 on your GPU for the highest quality. Medium and large
-  models use full-audio transcription (no chunking) for better context.
-  Includes automatic burned-in subtitle detection: OCR frames are compared to
-  Whisper translations using hybrid fuzzy + semantic matching (sentence-transformers).
-  Videos with burned-in subs are flagged so the frontend defaults subtitles off.
+**Nickname user filter** – the global *Options* modal's **Nickname User Picker**
+lets you choose whose nicknames are displayed.
 
-- **Per-user subtitle settings** — font size, font family, position, text/bg
-  color, opacity, text outline. Settings popup accessible via gear icon next to
-  the CC button. Stored per-user in the Settings table.
+**Real-time subtitle translation** – click a Japanese trailer and get live
+English subtitles streamed via SSE. Translations cached in the database so
+repeat plays are instant (~50ms). Persistent Python daemon (`small` model,
+chunked) handles on-demand requests; batch script (`medium` model, full-audio)
+pre-translates an entire season's trailers overnight as a safety net. Short
+videos (≤30s) skip chunking for the small model too. Concurrent requests are
+deduplicated and limited to 2. Subtitles sync to YouTube's playback position
+(pause, scrub). Users can dismiss subtitles via the CC toggle and the
+preference persists for all users.
 
-These features are fully documented in `AGENTS.md`; remember to update that
+**Local GPU translation** (`tools/local_translate.py`) — translates trailers
+using Whisper large-v3 on your GPU for highest quality. Medium and large
+models use full-audio transcription (no chunking). Automatic burned-in
+subtitle detection: OCR frames compared to Whisper translations via hybrid
+fuzzy + semantic matching (sentence-transformers). Burned-in videos flagged
+so the frontend defaults subtitles off.
+
+**Per-user subtitle settings** — font size, family, position, text/bg color,
+opacity, text outline. Settings popup via gear icon next to the CC button.
+Stored per-user in the Settings table.
+
+**Performance & hardening**
+- DB indexes on `WatchList(userId)`, `WatchList(season, year)`,
+  `Settings(hideFromCompare)` — created idempotently at startup in
+  `ensureDatabaseSchema()`.
+- Rate limit (60 req/min per IP) on the four unauthenticated
+  `/api/list/*` endpoints (`users-with-nicknames`, `users-with-ratings`,
+  `user-ratings`, `nicknames`); global 120 req/min limiter covers the rest;
+  20 req/min on `/api/auth`.
+- All error responses use a unified shape: `{ error: 'message', code: 'CODE_NAME' }`.
+  Codes include `BAD_REQUEST`, `UNAUTHORIZED`, `INVALID_CREDENTIALS`,
+  `INVALID_TOKEN`, `USER_NOT_FOUND`, `USER_EXISTS`, `ADMIN_REQUIRED`,
+  `BATCH_RUNNING`, `RATE_LIMITED`, `UPSTREAM_ERROR`, `SERVER_ERROR`.
+- `dom-to-image-more` is bundled as a lazy chunk (previously a CDN import).
+
+These features are fully documented in `CLAUDE.md`; remember to update that
 guide when expanding the API or database schema.
 
 The **frontend** Vite dev-server proxies all `/api/*` requests to the **backend**
@@ -145,7 +177,7 @@ Detailed walkthrough:
 1. **Transfer the file** (from your workstation)
 
    ```bash
-   scp saltychart_20250718.tar \
+   scp saltychart_YYYYMMDD.tar \
        <user>@<unraid-ip>:/mnt/user/SHARE/user/drohackfiles/
    ```
 
@@ -153,14 +185,14 @@ Detailed walkthrough:
 
    ```bash
    cd /mnt/user/SHARE/user/drohackfiles
-   docker load -i saltychart_20250718.tar
+   docker load -i saltychart_YYYYMMDD.tar
    ```
 
    Docker will spit out something like:
 
    ```text
-   Loaded image: saltychart-backend:20250718
-   Loaded image: saltychart-frontend:20250718
+   Loaded image: saltychart-backend:YYYYMMDD
+   Loaded image: saltychart-frontend:YYYYMMDD
    ```
 
 3. **Update Compose to reference today’s tags**
@@ -168,8 +200,8 @@ Detailed walkthrough:
    ```bash
    vi /mnt/user/appdata/saltychart/docker-compose.yml
    # change the image lines
-   #   backend:  image: saltychart-backend:20250718
-   #   frontend: image: saltychart-frontend:20250718
+   #   backend:  image: saltychart-backend:YYYYMMDD
+   #   frontend: image: saltychart-frontend:YYYYMMDD
    :wq
    ```
 

@@ -233,8 +233,9 @@ router.get('/users-with-nicknames', publicListLimiter, async (_req, res) => {
   }
 });
 
-// Returns array of usernames that have at least one watched=true entry for
-// the given season/year. Used by the "catch up on user's ratings" filter.
+// Returns array of usernames that have at least one entry in their list for
+// the given season/year (watched or not). Used by the Home-page "catch up on
+// user's ratings" filter and by the Randomize "Nicknames from" auto-check.
 router.get('/users-with-ratings', publicListLimiter, async (req, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
   if (!season || !year) return res.status(400).json({ error: 'Missing season/year', code: 'BAD_REQUEST' });
@@ -259,8 +260,8 @@ router.get('/users-with-ratings', publicListLimiter, async (req, res) => {
   }
 });
 
-// Returns array of mediaIds that the given user has watched=true for
-// the given season/year.
+// Returns array of mediaIds that the given user has in their list for
+// the given season/year (watched or not).
 router.get('/user-ratings', publicListLimiter, async (req, res) => {
   const { username, season, year } = req.query as { username?: string; season?: string; year?: string };
   if (!username || !season || !year) {

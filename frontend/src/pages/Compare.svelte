@@ -194,32 +194,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       (el as HTMLElement).style.whiteSpace = 'nowrap';
     });
 
-    /* After major DOM changes (select replacements) recalculate dimensions and
-       hide remote images in the new clone to prevent CORS issues. */
-
-    // Wait a tick for layout changes to settle before measuring size later
+    // Wait a tick for select-replacement layout changes to settle before
+    // measuring size later.
     await tick();
-
-    /* ------------------------------------------------------------------
-     * Hide the Cover column (header & cells) – images are already hidden.
-     * ----------------------------------------------------------------*/
-    // Hide header cell labeled "Cover"
-    clone.querySelectorAll('div,span,header,th').forEach((el) => {
-      if ((el as HTMLElement).textContent?.trim() === 'Cover') {
-        (el as HTMLElement).style.display = 'none';
-      }
-    });
-    // Hide parent cells that contained poster <img>
-    clone.querySelectorAll('img').forEach((img) => {
-      const parent = img.parentElement as HTMLElement | null;
-      if (parent) parent.style.display = 'none';
-    });
-
-    // Reduce grid to 3 columns instead of original 4 when cover column hidden
-    const grid = clone.querySelector('[style*="grid-template-columns"]') as HTMLElement | null;
-    if (grid) {
-      grid.style.gridTemplateColumns = '1fr auto 1fr';
-    }
 
     // Add explicit right-side padding so the capture has breathing room.
     clone.style.paddingRight = '12px';
