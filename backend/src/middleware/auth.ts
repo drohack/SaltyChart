@@ -14,7 +14,7 @@ export interface AuthRequest extends Request {
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token' });
+    return res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
   }
 
   const token = auth.slice(7);
@@ -22,13 +22,13 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   try {
     payload = jwt.verify(token, JWT_SECRET) as { id: number };
   } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
   }
 
   // Verify the user still exists
   const user = await prisma.user.findUnique({ where: { id: payload.id } });
   if (!user) {
-    return res.status(401).json({ error: 'User not found' });
+    return res.status(401).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
   }
   req.userId = payload.id;
   return next();

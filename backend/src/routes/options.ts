@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 
@@ -28,18 +29,14 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
   `;
   if (!rows || rows.length === 0) {
     // Return defaults if no record exists
-    console.log('[OPTIONS] GET no settings found, returning defaults');
     return res.json({ userId, ...DEFAULT_OPTIONS });
   }
   const s = rows[0];
-  console.log('[OPTIONS] GET raw from DB:', s);
-  const opts = {
+  return res.json({
     ...s,
     nicknameUserSel: s.nicknameUserSel ? JSON.parse(s.nicknameUserSel) : [],
     subtitlePrefs: s.subtitlePrefs ? JSON.parse(s.subtitlePrefs) : undefined,
-  };
-  console.log('[OPTIONS] GET returning:', opts);
-  return res.json(opts);
+  });
 });
 
 /**
@@ -61,23 +58,25 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
   if (!Array.isArray(nicknameUserSel)) nicknameUserSel = [];
   if (!addWatchedTo) addWatchedTo = 'BOTTOM';
 
-  console.log('[OPTIONS] PUT received:', { theme, titleLanguage, videoAutoplay, hideFromCompare, addWatchedTo });
-
   // Basic validation
   if (!theme || !titleLanguage || typeof videoAutoplay !== 'boolean' || typeof hideFromCompare !== 'boolean') {
-    return res.status(400).json({ error: 'Invalid options payload' });
+    return res.status(400).json({ error: 'Invalid options payload', code: 'BAD_REQUEST' });
   }
   try {
-    // Upsert *known* columns using Prisma, then update the nickname JSON
-    // and addWatchedTo separately via raw SQL to avoid client validation mismatches.
-    const createData: any = { userId, theme, titleLanguage, videoAutoplay, hideFromCompare };
-    const updateData: any = { theme, titleLanguage, videoAutoplay, hideFromCompare };
+    // Upsert *known* columns using Prisma, then update the nickname JSON,
+    // addWatchedTo, and subtitlePrefs separately via raw SQL — those columns
+    // exist in the DB but are not in the Prisma schema.
+    const createData: Prisma.SettingsCreateInput = {
+      theme, titleLanguage, videoAutoplay, hideFromCompare,
+      user: { connect: { id: userId } }
+    };
+    const updateData: Prisma.SettingsUpdateInput = { theme, titleLanguage, videoAutoplay, hideFromCompare };
 
     await prisma.settings.upsert({
       where: { userId },
       create: createData,
       update: updateData
-    } as any);
+    });
 
     // Persist nicknameUserSel, addWatchedTo, subtitlePrefs via raw UPDATE
     await prisma.$executeRawUnsafe(
@@ -88,23 +87,19 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
       userId
     );
 
-    console.log('[OPTIONS] Saved addWatchedTo:', addWatchedTo);
-
     // Fetch fresh row to return
     const rows: any[] = await prisma.$queryRaw`
       SELECT * FROM "Settings" WHERE userId = ${userId} LIMIT 1;
     `;
     const s = rows[0];
-    const result = {
+    return res.json({
       ...s,
       nicknameUserSel,
       subtitlePrefs: s.subtitlePrefs ? JSON.parse(s.subtitlePrefs) : undefined,
-    };
-    console.log('[OPTIONS] Returning:', result);
-    return res.json(result);
+    });
   } catch (err) {
     console.error('[options] failed to upsert settings', err);
-    return res.status(500).json({ error: 'Failed to save options' });
+    return res.status(500).json({ error: 'Failed to save options', code: 'SERVER_ERROR' });
   }
 });
 

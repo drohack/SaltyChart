@@ -255,7 +255,7 @@ process.on('SIGINT', () => {
 router.get('/check', async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid videoId' });
+    return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
@@ -354,7 +354,7 @@ router.get('/check', async (req: Request, res: Response) => {
 router.get('/stream', async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid videoId' });
+    return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
@@ -470,11 +470,11 @@ router.get('/stream', async (req: Request, res: Response) => {
  */
 router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
   }
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid videoId' });
+    return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   try {
     await prisma.$executeRawUnsafe(
@@ -484,7 +484,7 @@ router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => 
     return res.json({ ok: true, deleted: videoId });
   } catch (err) {
     console.error('[translate/cache]', err);
-    return res.status(500).json({ error: 'Failed to delete cache entry' });
+    return res.status(500).json({ error: 'Failed to delete cache entry', code: 'SERVER_ERROR' });
   }
 });
 
@@ -496,7 +496,7 @@ router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => 
 router.patch('/dismiss', express.json(), async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid videoId' });
+    return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   const disabled = req.body?.disabled !== false; // default true
 
@@ -511,7 +511,7 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
     return res.json({ ok: true });
   } catch (err) {
     console.error('[translate/dismiss]', err);
-    return res.status(500).json({ error: 'Failed to save preference' });
+    return res.status(500).json({ error: 'Failed to save preference', code: 'SERVER_ERROR' });
   }
 });
 
@@ -525,15 +525,15 @@ const MODEL_RANK: Record<string, number> = { tiny: 0, base: 1, small: 2, medium:
 
 router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
   }
 
   const { videoId, mediaId, modelName, segments, hasBurnedInSubs, force } = req.body || {};
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid videoId' });
+    return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   if (!modelName || !segments || !Array.isArray(segments)) {
-    return res.status(400).json({ error: 'Missing modelName or segments' });
+    return res.status(400).json({ error: 'Missing modelName or segments', code: 'BAD_REQUEST' });
   }
 
   const newRank = MODEL_RANK[modelName] ?? 0;
@@ -573,7 +573,7 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
     return res.json({ ok: true, action });
   } catch (err) {
     console.error('[translate/upload]', err);
-    return res.status(500).json({ error: 'Failed to save subtitles' });
+    return res.status(500).json({ error: 'Failed to save subtitles', code: 'SERVER_ERROR' });
   }
 });
 
@@ -600,11 +600,11 @@ function getBatchScriptPath(): string {
  */
 router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
   }
 
   if (batchProcess && batchStatus.running) {
-    return res.status(409).json({ error: 'Batch already running', status: batchStatus });
+    return res.status(409).json({ error: 'Batch already running', code: 'BATCH_RUNNING', status: batchStatus });
   }
 
   const { season, year, dryRun } = req.body || {};
@@ -656,7 +656,7 @@ router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res:
  */
 router.get('/batch/status', requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
   }
 
   return res.json(batchStatus);

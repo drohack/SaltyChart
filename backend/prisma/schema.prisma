@@ -47,6 +47,10 @@ model WatchList {
   hidden      Boolean @default(false)
 
   @@unique([userId, season, year, mediaId])
+  // Speeds up queries that filter by userId alone (e.g. /api/list?season=...)
+  // and by season/year (e.g. /users-with-ratings).
+  @@index([userId])
+  @@index([season, year])
 }
 
 /// User-specific display & UI preferences
@@ -65,4 +69,8 @@ model Settings {
   addWatchedTo    String  @default("BOTTOM")
 
   user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // /api/users filters by hideFromCompare on every request; index turns a
+  // table scan into an index lookup.
+  @@index([hideFromCompare])
 }

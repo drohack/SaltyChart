@@ -1186,6 +1186,8 @@ $: {
         </div>
         <ul class="flex-1 overflow-y-auto flex flex-col gap-3 pr-1">
           {#each unwatchedSorted as item (item.id)}
+            <!-- svelte-ignore a11y-no-noninteractive-element-to-interactive-role -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <li
               class={`flex items-center gap-3 group transition rounded p-1 ${
                 item.watched
@@ -1194,8 +1196,17 @@ $: {
                   ? 'opacity-40'
                   : 'cursor-pointer hover:bg-primary/20 hover:shadow-md'
               }`}
+              role="button"
+              tabindex={item.watched || item.hidden ? -1 : 0}
               on:click={() => {
                 if (!item.watched && !item.hidden) {
+                  selected = item;
+                  showModal = true;
+                }
+              }}
+              on:keydown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && !item.watched && !item.hidden) {
+                  e.preventDefault();
                   selected = item;
                   showModal = true;
                 }
@@ -1477,6 +1488,8 @@ $: {
               </div>
             {:else}
               <div
+                role="region"
+                aria-label="Drop image here or upload"
                 class="border-2 border-dashed border-base-300 rounded p-4 text-center transition"
                 on:dragover={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
                 on:dragleave={(e) => { e.currentTarget.classList.remove('border-primary'); }}
@@ -1502,6 +1515,8 @@ $: {
               </div>
             {:else}
               <div
+                role="region"
+                aria-label="Drop image here or upload"
                 class="border-2 border-dashed border-base-300 rounded p-4 text-center transition"
                 on:dragover={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
                 on:dragleave={(e) => { e.currentTarget.classList.remove('border-primary'); }}

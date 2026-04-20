@@ -346,6 +346,24 @@ async function ensureDatabaseSchema() {
     } catch (err) {
       console.warn('[DB] Failed to add subtitlesDisabled column', err);
     }
+
+    // --------------------- Performance indexes ---------------------
+    // CREATE INDEX IF NOT EXISTS is idempotent — runs on every startup, only
+    // actually builds the index on first boot after deploy. Indexes match the
+    // Prisma schema declarations.
+    try {
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "WatchList_userId_idx" ON "WatchList" ("userId");`
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "WatchList_season_year_idx" ON "WatchList" ("season", "year");`
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "Settings_hideFromCompare_idx" ON "Settings" ("hideFromCompare");`
+      );
+    } catch (err) {
+      console.warn('[DB] Failed to create performance indexes', err);
+    }
   } catch (err) {
     console.error('[DB] Failed to ensure schema', err);
   }
@@ -365,7 +383,7 @@ ensureDatabaseSchema().then(() => {
   const authLimiter = rateLimit({
     windowMs: 60_000, // 1 minute
     max: 20,
-    message: { error: 'Too many requests, please slow down.' },
+    message: { error: 'Too many requests, please slow down.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false
   });

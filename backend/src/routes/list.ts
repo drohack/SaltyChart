@@ -1,12 +1,24 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import prisma from '../db';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 const router = Router();
 
+// Rate-limit the handful of unauthenticated endpoints below (e.g. /nicknames,
+// /users-with-ratings) so scrapers can't hammer them. Authenticated endpoints
+// above are already covered by the server-wide generalLimiter in index.ts.
+const publicListLimiter = rateLimit({
+  windowMs: 60_000, // 1 minute
+  max: 60,
+  message: { error: 'Too many requests, please slow down.', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // Get list for season/year
 router.get('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
-  if (!season || !year) return res.status(400).json({ error: 'Missing params' });
+  if (!season || !year) return res.status(400).json({ error: 'Missing params', code: 'BAD_REQUEST' });
 
   const list = await prisma.watchList.findMany({
     where: { userId: req.userId!, season, year: Number(year) },
@@ -25,7 +37,7 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
   };
 
   if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
-    return res.status(400).json({ error: 'Bad body' });
+    return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
   }
 
   try {
@@ -87,7 +99,7 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
     return res.json({ updated: updated.count });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Failed to update' });
+    return res.status(500).json({ error: 'Failed to update', code: 'SERVER_ERROR' });
   }
 });
 
@@ -101,21 +113,19 @@ router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
   };
 
   if (!season || year === undefined || year === null || typeof mediaId !== 'number') {
-    return res.status(400).json({ error: 'Bad body' });
+    return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
   }
 
   try {
     const updated = await prisma.watchList.updateMany({
       where: { userId: req.userId!, season, year: Number(year), mediaId },
-      data: {
-        hidden: hidden ?? true
-      } as any
+      data: { hidden: hidden ?? true }
     });
 
     return res.json({ updated: updated.count });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Failed to update hidden status' });
+    return res.status(500).json({ error: 'Failed to update hidden status', code: 'SERVER_ERROR' });
   }
 });
 
@@ -123,7 +133,7 @@ router.patch('/hidden', requireAuth, async (req: AuthRequest, res) => {
 router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
   const { season, year, ids } = req.body as { season?: string; year?: number | string; ids?: number[] };
   if (!season || year === undefined || year === null || !Array.isArray(ids)) {
-    return res.status(400).json({ error: 'Bad body' });
+    return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
   }
 
   // Build update promises assigning watchedRank based on position
@@ -141,7 +151,7 @@ router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: 'Failed to update rank' });
+    return res.status(500).json({ error: 'Failed to update rank', code: 'SERVER_ERROR' });
   }
 });
 
@@ -153,7 +163,7 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
     items?: Array<{ mediaId: number; customName?: string; watched?: boolean; watchedAt?: string | Date | null } | number>;
   };
   if (!season || year === undefined || year === null || !Array.isArray(items)) {
-    return res.status(400).json({ error: 'Bad body' });
+    return res.status(400).json({ error: 'Bad body', code: 'BAD_REQUEST' });
   }
 
   // delete existing then recreate
@@ -197,7 +207,7 @@ export default router;
 
 // Returns array of user names that have at least one customName in any watch
 // list entry.  Used by Randomize page to populate the "nickname picker" UI.
-router.get('/users-with-nicknames', async (_req, res) => {
+router.get('/users-with-nicknames', publicListLimiter, async (_req, res) => {
   try {
     // Query watchList for rows with customName, then collect unique userIds
     const rows = await prisma.watchList.findMany({
@@ -219,15 +229,15 @@ router.get('/users-with-nicknames', async (_req, res) => {
     return res.json(names);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Failed to fetch users' });
+    return res.status(500).json({ error: 'Failed to fetch users', code: 'SERVER_ERROR' });
   }
 });
 
 // Returns array of usernames that have at least one watched=true entry for
 // the given season/year. Used by the "catch up on user's ratings" filter.
-router.get('/users-with-ratings', async (req, res) => {
+router.get('/users-with-ratings', publicListLimiter, async (req, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
-  if (!season || !year) return res.status(400).json({ error: 'Missing season/year' });
+  if (!season || !year) return res.status(400).json({ error: 'Missing season/year', code: 'BAD_REQUEST' });
   try {
     // Any entry in "My List" for this season counts (regardless of watched flag)
     const rows = await prisma.watchList.findMany({
@@ -245,16 +255,16 @@ router.get('/users-with-ratings', async (req, res) => {
     return res.json(names);
   } catch (err) {
     console.error('[list] users-with-ratings failed:', err);
-    return res.status(500).json({ error: 'Failed to fetch users with ratings' });
+    return res.status(500).json({ error: 'Failed to fetch users with ratings', code: 'SERVER_ERROR' });
   }
 });
 
 // Returns array of mediaIds that the given user has watched=true for
 // the given season/year.
-router.get('/user-ratings', async (req, res) => {
+router.get('/user-ratings', publicListLimiter, async (req, res) => {
   const { username, season, year } = req.query as { username?: string; season?: string; year?: string };
   if (!username || !season || !year) {
-    return res.status(400).json({ error: 'Missing username/season/year' });
+    return res.status(400).json({ error: 'Missing username/season/year', code: 'BAD_REQUEST' });
   }
   try {
     const user = await prisma.user.findUnique({
@@ -270,14 +280,14 @@ router.get('/user-ratings', async (req, res) => {
     return res.json(rows.map((r) => r.mediaId));
   } catch (err) {
     console.error('[list] user-ratings failed:', err);
-    return res.status(500).json({ error: 'Failed to fetch user ratings' });
+    return res.status(500).json({ error: 'Failed to fetch user ratings', code: 'SERVER_ERROR' });
   }
 });
 
 // Returns nickname list for a given mediaId: [{ userName, nickname, rank }]
-router.get('/nicknames', async (req, res) => {
+router.get('/nicknames', publicListLimiter, async (req, res) => {
   const mediaId = Number(req.query.mediaId);
-  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId' });
+  if (!mediaId) return res.status(400).json({ error: 'Missing mediaId', code: 'BAD_REQUEST' });
 
   try {
     const rows = await prisma.watchList.findMany({
@@ -314,6 +324,6 @@ router.get('/nicknames', async (req, res) => {
     return res.json(data);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Failed to fetch nicknames' });
+    return res.status(500).json({ error: 'Failed to fetch nicknames', code: 'SERVER_ERROR' });
   }
 });

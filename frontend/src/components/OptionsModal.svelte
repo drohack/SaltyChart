@@ -153,15 +153,24 @@
 {#if open}
   <!-- Modal overlay: covers the viewport and dims background without disabling page scroll -->
   <div class="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto">
-    <!-- Backdrop -->
-    <div class="absolute inset-0 bg-black/50" on:click={close}></div>
+    <!-- Backdrop (button so click/Enter/Escape all close the dialog) -->
+    <button
+      type="button"
+      class="absolute inset-0 bg-black/50 cursor-default"
+      aria-label="Close dialog"
+      on:click={close}
+    ></button>
 
-    <!-- Dialog box -->
+    <!-- Dialog box. stop-propagation is a correctness concern (prevents backdrop-click close when
+         user clicks inside the modal); role="dialog" is the correct ARIA role but Svelte's a11y
+         checker doesn't treat it as interactive, hence the ignore. -->
+    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
       class="modal-box relative z-10"
       role="dialog"
       aria-modal="true"
       on:click|stopPropagation
+      on:keydown|stopPropagation
     >
       <h3 class="font-bold text-lg mb-4">Options</h3>
 
@@ -212,7 +221,7 @@
       {#if $authToken && batchIsAdmin}
         <div class="divider"></div>
         <div class="form-control mb-4">
-          <label class="label"><span class="label-text font-semibold">Subtitle Pre-Translation</span></label>
+          <div class="label"><span class="label-text font-semibold">Subtitle Pre-Translation</span></div>
           <p class="text-sm text-base-content/60 mb-2">
             Batch translate trailers using a higher quality model.
           </p>

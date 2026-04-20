@@ -1,6 +1,3 @@
-import { defineConfig } from 'vite';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
-
 import { defineConfig, loadEnv } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 

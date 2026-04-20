@@ -105,23 +105,14 @@ $: _currentLang = $options.titleLanguage;
     subtitleSegments = [];
     currentSubtitle = '';
     translationStatus = 'Downloading audio...';
-    const sseStartTime = Date.now();
 
-    console.log('[translate] Opening SSE connection for', videoId);
     eventSource = new EventSource(`/api/translate/stream?videoId=${videoId}${mediaParam}`);
 
-    eventSource.onopen = () => {
-      const elapsed = ((Date.now() - sseStartTime) / 1000).toFixed(1);
-      console.log(`[translate] SSE connection opened after ${elapsed}s`);
-    };
-
     eventSource.onmessage = (event) => {
-      const elapsed = ((Date.now() - sseStartTime) / 1000).toFixed(1);
       try {
         const data = JSON.parse(event.data);
         if (data.cached) {
           // Cached response — skip spinner, go straight to translating mode
-          console.log(`[translate] [${elapsed}s] Serving from cache`);
           translationLoading = false;
           translating = true;
           checkResolved = true;
@@ -133,37 +124,32 @@ $: _currentLang = $options.titleLanguage;
           return;
         }
         if (data.error) {
-          console.warn(`[translate] [${elapsed}s] ERROR from server:`, data.error);
+          console.error('[translate] Server error:', data.error);
           translationLoading = false;
           stopTranslation();
           return;
         }
         if (data.done) {
-          console.log(`[translate] [${elapsed}s] DONE — ${subtitleSegments.length} total segments received`);
           translationLoading = false;
           eventSource?.close();
           eventSource = null;
           return;
         }
-        // Log every segment with timing
-        console.log(`[translate] [${elapsed}s] segment ${subtitleSegments.length + 1}: ${data.start}s-${data.end}s "${data.text}"`);
         subtitleSegments = [...subtitleSegments, data];
         if (translationLoading) {
           translationLoading = false;
           translating = true;
           const videoElapsed = modalOpenedAt ? (Date.now() - modalOpenedAt) / 1000 : 0;
           playerCurrentTime = videoElapsed;
-          console.log(`[translate] [${elapsed}s] FIRST SEGMENT — switching to translating mode, estimated video position: ${playerCurrentTime.toFixed(1)}s`);
           startSubtitleTick();
         }
       } catch (e) {
-        console.warn(`[translate] [${elapsed}s] Failed to parse SSE data:`, event.data);
+        console.warn('[translate] Failed to parse SSE data:', event.data);
       }
     };
 
-    eventSource.onerror = (e) => {
-      const elapsed = ((Date.now() - sseStartTime) / 1000).toFixed(1);
-      console.warn(`[translate] [${elapsed}s] SSE error/reconnect, segments so far: ${subtitleSegments.length}`);
+    eventSource.onerror = () => {
+      // SSE reconnect is normal during long translations; close if we already have segments
       if (subtitleSegments.length > 0) {
         eventSource?.close();
         eventSource = null;
@@ -203,7 +189,6 @@ $: _currentLang = $options.titleLanguage;
       // Stop ticking once we've passed the last segment
       const lastSeg = subtitleSegments[subtitleSegments.length - 1];
       if (lastSeg && playerCurrentTime > lastSeg.end + 5 && !eventSource) {
-        console.log('[translate] Past last segment, stopping tick');
         clearInterval(subtitleTickInterval!);
         subtitleTickInterval = null;
         currentSubtitle = '';

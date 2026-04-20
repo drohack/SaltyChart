@@ -14,7 +14,7 @@ router.post('/signup', async (req, res) => {
   };
 
   if (!username || !password) {
-    return res.status(400).json({ error: 'Missing fields' });
+    return res.status(400).json({ error: 'Missing fields', code: 'BAD_REQUEST' });
   }
 
   try {
@@ -23,17 +23,18 @@ router.post('/signup', async (req, res) => {
 
     // Initialize default Settings row for the new user so downstream
     // requests (e.g. GET /api/options) always have a record to read / update.
+    // nicknameUserSel defaults to NULL at the DB level and is set via the
+    // raw-SQL path in /api/options once the user saves preferences.
     try {
       await prisma.settings.create({
         data: {
-          userId: user.id,
+          user: { connect: { id: user.id } },
           theme: 'SYSTEM',
           titleLanguage: 'ENGLISH',
           videoAutoplay: true,
-          hideFromCompare: false,
-          nicknameUserSel: '[]'
+          hideFromCompare: false
         }
-      } as any);
+      });
     } catch (err: any) {
       // Ignore duplicate row errors in the unlikely event of a race.
       if (err.code !== 'P2002') {
@@ -44,10 +45,10 @@ router.post('/signup', async (req, res) => {
     res.json({ token, username });
   } catch (e: any) {
     if (e.code === 'P2002') {
-      return res.status(409).json({ error: 'Username already exists' });
+      return res.status(409).json({ error: 'Username already exists', code: 'USER_EXISTS' });
     }
     console.error(e);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error', code: 'SERVER_ERROR' });
   }
 });
 
@@ -57,14 +58,14 @@ router.post('/login', async (req, res) => {
     password?: string;
   };
   if (!username || !password) {
-    return res.status(400).json({ error: 'Missing fields' });
+    return res.status(400).json({ error: 'Missing fields', code: 'BAD_REQUEST' });
   }
 
   const user = await prisma.user.findUnique({ where: { username } });
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!user) return res.status(401).json({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
 
   const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!valid) return res.status(401).json({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
 
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, username });

@@ -20,7 +20,7 @@ router.get('/', async (req, res) => {
   const { season, year, format } = req.query as SeasonQuery;
 
   if (!season || !year) {
-    return res.status(400).json({ error: 'Missing "season" or "year" query param' });
+    return res.status(400).json({ error: 'Missing "season" or "year" query param', code: 'BAD_REQUEST' });
   }
 
   const formatArg = format ? ', format: $format' : '';
@@ -197,7 +197,7 @@ router.get('/', async (req, res) => {
       }
 
       if (response.status !== 200) {
-        return res.status(response.status).json({ error: 'AniList error' });
+        return res.status(response.status).json({ error: 'AniList error', code: 'UPSTREAM_ERROR' });
       }
 
       const pageData = response.data?.data?.Page;
@@ -221,7 +221,7 @@ router.get('/', async (req, res) => {
     res.json(allMedia);
   } catch (error) {
     console.error('AniList API error', error);
-    res.status(500).json({ error: 'Failed to fetch data from AniList' });
+    res.status(500).json({ error: 'Failed to fetch data from AniList', code: 'SERVER_ERROR' });
   }
 });
 

@@ -157,19 +157,9 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
     workEl.style.height = `${workEl.scrollHeight}px`;
 
     try {
-      // Dynamically import only when user clicks Share so html-to-image is
-      // not loaded during initial page render. Package is present in
-      // dependencies so Vite can resolve it without extra directives.
-      // Dynamically import html-to-image; use variable specifier so Vite does
-      // not try to pre-bundle. Fallback to CDN if not installed inside the
-      // container (e.g. node_modules volume wasn’t rebuilt).
-      // Lazy-load html-to-image with a literal specifier so Vite can analyse
-      // the import and keep quiet.
-      // Dynamically import the `dom-to-image-more` library only when the user
-      // clicks Share so it doesn’t bloat the initial bundle.
-      const domToImageMod = await import(
-        /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/dom-to-image-more@3.2.0/+esm'
-      );
+      // Lazy-load dom-to-image-more only when the user clicks Share so it
+      // doesn't bloat the initial bundle. Bundled locally (previously CDN).
+      const domToImageMod = await import('dom-to-image-more');
       // The library exports its API both as default and as named exports. We
       // normalise so `toJpeg` is always available regardless of the bundle
       // format.
@@ -697,10 +687,11 @@ $: {
           {/if}
 
           <div class="form-control w-full">
-            <label class="label px-0 pb-1">
+            <label class="label px-0 pb-1" for="watchlist-custom-name">
               <span class="label-text">Custom name</span>
             </label>
             <input
+              id="watchlist-custom-name"
               type="text"
               placeholder="Enter name…"
               bind:value={modalName}

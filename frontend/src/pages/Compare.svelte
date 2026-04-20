@@ -80,7 +80,7 @@ $: if (userA && selectedOther) {
   season;
   year;
 
-  const key = `${userA}|${typeof selectedOther === 'string' ? selectedOther : selectedOther?.value ?? selectedOther?.label}|${rankTypeA}|${rankTypeB}|${season}|${year}`;
+  const key = `${userA}|${getSelectedUsername(selectedOther)}|${rankTypeA}|${rankTypeB}|${season}|${year}`;
   if (key !== lastFetchKey) {
     lastFetchKey = key;
     fetchLists();
@@ -88,10 +88,15 @@ $: if (userA && selectedOther) {
 }
 
 
+  // selectedOther can be a primitive string or an svelte-select object ({ value, label, ... }).
+  // This helper normalises to a plain username string.
+  function getSelectedUsername(val: any): string {
+    if (typeof val === 'string') return val;
+    return val?.value ?? val?.label ?? '';
+  }
+
   // Display-friendly other username (handles string or object)
-  $: displayOther = typeof selectedOther === 'string'
-    ? selectedOther
-    : (selectedOther?.value ?? selectedOther?.label ?? '');
+  $: displayOther = getSelectedUsername(selectedOther);
   
   // Lists fetched from backend (raw WatchList rows)
   type WatchRow = {
@@ -138,11 +143,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     wrapper.appendChild(clone);
     document.body.appendChild(wrapper);
 
-    /* Tighten layout on the clone only */
-    [clone, ...clone.querySelectorAll('*')].forEach((n) => {
-      if (!(n instanceof HTMLElement)) return;
-      n.classList.remove('w-full', 'md:w-3/4', 'mx-auto');
-    });
+    /* Tighten layout on the clone only; the explicit width assignment below
+       (clone.style.width = 'max-content') overrides any tailwind width classes. */
 
     // Reduce gaps between cells
     clone.querySelectorAll('[style*="gap:"]').forEach((el) => {
@@ -173,12 +175,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     const freshClone = captureEl.cloneNode(true) as HTMLElement;
     wrapper.replaceChild(freshClone, clone);
     clone = freshClone; // update reference for later steps
-
-    // Remove centering / width utility classes from the fresh clone as well
-    [clone, ...clone.querySelectorAll('*')].forEach((n) => {
-      if (!(n instanceof HTMLElement)) return;
-      n.classList.remove('w-full', 'md:w-3/4', 'mx-auto');
-    });
 
     // Replace selects in the new clone with spans containing remembered labels
     clone.querySelectorAll('select').forEach((sel, idx) => {
@@ -250,10 +246,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     // Dimensions will be recalculated after final tweaks later.
 
     try {
-      // Lazy-load dom-to-image library
-      const mod = await import(
-        /* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/dom-to-image-more@3.2.0/+esm'
-      );
+      // Lazy-load dom-to-image-more so it only ships in a chunk when the user
+      // clicks share. Bundled locally (previously loaded from a CDN).
+      const mod = await import('dom-to-image-more');
       const toJpeg = (mod.toJpeg ?? mod.default?.toJpeg) as (
         node: HTMLElement,
         opts: any
@@ -300,9 +295,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         height: captureHeight
       });
 
-      // Re-enable previously disabled stylesheets
-      disabledSheets.forEach((ss) => ((ss as any).disabled = false));
-
       const w = window.open();
       if (w) {
         w.document.open();
@@ -329,12 +321,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     error = null;
     try {
       // extract actual usernames for API calls
-      const usernameA = typeof userA === 'string'
-        ? userA
-        : (userA as any).value ?? '';
-      const usernameB = typeof selectedOther === 'string'
-        ? selectedOther
-        : (selectedOther as any).value ?? (selectedOther as any).label ?? '';
+      const usernameA = getSelectedUsername(userA);
+      const usernameB = getSelectedUsername(selectedOther);
       const [aResp, bResp, animeResp] = await Promise.all([
         fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`),
         fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`),
@@ -431,9 +419,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   // Auto-set rank types when comparing with self
   let lastOther: string | null = null;
   $: {
-    const other = typeof selectedOther === 'string'
-      ? selectedOther
-      : (selectedOther?.value ?? selectedOther?.label ?? null);
+    const other = getSelectedUsername(selectedOther) || null;
 
     if (other !== lastOther) {
       lastOther = other;
@@ -446,9 +432,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   }
 
   $: if (mounted) {
-    const val = typeof selectedOther === 'string'
-      ? selectedOther
-      : (selectedOther?.value ?? selectedOther?.label ?? '');
+    const val = getSelectedUsername(selectedOther);
 
     if (val) {
       localStorage.setItem('compare-other', val);

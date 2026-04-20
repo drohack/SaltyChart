@@ -81,16 +81,12 @@ if (typeof window !== 'undefined') {
         });
         if (res.ok) {
           const data: Options = await res.json();
-          console.log('[OPTIONS] Loaded from backend:', data);
-          const merged = deepMergeOptions(data);
-          console.log('[OPTIONS] After merge with defaults:', merged);
-          options.set(merged);
+          options.set(deepMergeOptions(data));
         } else {
-          console.log('[OPTIONS] Backend fetch failed, using defaults');
           options.set(defaultOptions);
         }
       } catch (e) {
-        console.log('[OPTIONS] Backend fetch error, using defaults:', e);
+        console.error('[OPTIONS] Backend fetch error, using defaults:', e);
         options.set(defaultOptions);
       } finally {
         isLoading = false;
@@ -102,17 +98,12 @@ if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem('options');
         if (raw) {
-          const data = JSON.parse(raw);
-          console.log('[OPTIONS] Loaded from localStorage:', data);
-          const merged = deepMergeOptions(data);
-          console.log('[OPTIONS] After merge with defaults:', merged);
-          options.set(merged);
+          options.set(deepMergeOptions(JSON.parse(raw)));
         } else {
-          console.log('[OPTIONS] No localStorage data, using defaults');
           options.set(defaultOptions);
         }
       } catch (e) {
-        console.log('[OPTIONS] localStorage error, using defaults:', e);
+        console.error('[OPTIONS] localStorage error, using defaults:', e);
         options.set(defaultOptions);
       } finally {
         isLoading = false;
@@ -123,17 +114,13 @@ if (typeof window !== 'undefined') {
   // Persist changes whenever options change (debounced for backend saves)
   options.subscribe((value) => {
     // Skip saving during initial load to avoid overwriting with defaults
-    if (isLoading) {
-      console.log('[OPTIONS] Skipping save (loading in progress)');
-      return;
-    }
+    if (isLoading) return;
 
     const token = get(authToken);
     if (token) {
       // Debounce backend saves (500ms) to handle rapid slider changes
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        console.log('[OPTIONS] Saving to backend:', value);
         fetch('/api/options', {
           method: 'PUT',
           headers: {
@@ -142,9 +129,7 @@ if (typeof window !== 'undefined') {
           },
           body: JSON.stringify(value)
         }).then(res => {
-          if (res.ok) {
-            console.log('[OPTIONS] Saved successfully to backend');
-          } else {
+          if (!res.ok) {
             console.error('[OPTIONS] Failed to save to backend:', res.status);
           }
         }).catch(err => {
@@ -152,7 +137,6 @@ if (typeof window !== 'undefined') {
         });
       }, 500);
     } else {
-      console.log('[OPTIONS] Saving to localStorage:', value);
       try {
         localStorage.setItem('options', JSON.stringify(value));
       } catch (e) {

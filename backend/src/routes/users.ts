@@ -38,7 +38,7 @@ router.get('/', async (req, res) => {
     res.json(users.map((u) => u.username));
   } catch (err) {
     console.error('[users] failed', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
 

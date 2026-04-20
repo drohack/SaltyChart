@@ -19,12 +19,12 @@ router.get('/', async (req, res) => {
   };
 
   if (!username || !season || !year) {
-    return res.status(400).json({ error: 'Missing query params' });
+    return res.status(400).json({ error: 'Missing query params', code: 'BAD_REQUEST' });
   }
 
   try {
     const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
 
     const rankType = (type ?? 'pre').toLowerCase();
 
@@ -55,7 +55,7 @@ router.get('/', async (req, res) => {
     return res.json(list);
   } catch (err) {
     console.error('[public-list] failed', err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
 

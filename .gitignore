@@ -65,3 +65,7 @@ frontend/dist/
 /randomize-*.png
 /home-*.png
 .playwright-mcp/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

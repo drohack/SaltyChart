@@ -111,9 +111,9 @@
 
     <!-- Master toggle -->
     <div class="form-control mb-3">
-      <label class="label cursor-pointer py-1">
+      <label class="label cursor-pointer py-1" for="subtitle-all-videos">
         <span class="label-text">All videos</span>
-        <input type="checkbox" class="toggle toggle-sm toggle-primary"
+        <input id="subtitle-all-videos" type="checkbox" class="toggle toggle-sm toggle-primary"
           checked={prefs.enabled}
           on:change={(e) => update('enabled', e.currentTarget.checked)} />
       </label>
@@ -123,21 +123,21 @@
 
     <!-- Font size -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-font-size">
         <span class="label-text text-sm">Font size</span>
         <span class="label-text-alt">{prefs.fontSize}px</span>
       </label>
-      <input type="range" class="range range-xs range-primary" min="14" max="60" step="1"
+      <input id="subtitle-font-size" type="range" class="range range-xs range-primary" min="14" max="60" step="1"
         value={prefs.fontSize}
         on:input={(e) => update('fontSize', parseInt(e.currentTarget.value))} />
     </div>
 
     <!-- Font family -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-font-family">
         <span class="label-text text-sm">Font</span>
       </label>
-      <select class="select select-bordered select-sm w-full"
+      <select id="subtitle-font-family" class="select select-bordered select-sm w-full"
         value={prefs.fontFamily}
         on:change={(e) => update('fontFamily', e.currentTarget.value)}>
         {#each FONTS as font}
@@ -148,20 +148,20 @@
 
     <!-- Position -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-position">
         <span class="label-text text-sm">Position (from bottom)</span>
         <span class="label-text-alt">{prefs.position}px</span>
       </label>
-      <input type="range" class="range range-xs range-primary" min="0" max="500" step="1"
+      <input id="subtitle-position" type="range" class="range range-xs range-primary" min="0" max="500" step="1"
         value={prefs.position}
         on:input={(e) => update('position', parseInt(e.currentTarget.value))} />
     </div>
 
     <!-- Text color -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-text-color">
         <span class="label-text text-sm">Text color</span>
-        <input type="color" class="w-8 h-6 rounded cursor-pointer border border-base-content/20"
+        <input id="subtitle-text-color" type="color" class="w-8 h-6 rounded cursor-pointer border border-base-content/20"
           value={prefs.textColor}
           on:input={(e) => update('textColor', e.currentTarget.value)} />
       </label>
@@ -169,9 +169,9 @@
 
     <!-- Background color -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-bg-color">
         <span class="label-text text-sm">Background color</span>
-        <input type="color" class="w-8 h-6 rounded cursor-pointer border border-base-content/20"
+        <input id="subtitle-bg-color" type="color" class="w-8 h-6 rounded cursor-pointer border border-base-content/20"
           value={prefs.bgColor}
           on:input={(e) => update('bgColor', e.currentTarget.value)} />
       </label>
@@ -179,21 +179,21 @@
 
     <!-- Background opacity -->
     <div class="form-control mb-2">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-bg-opacity">
         <span class="label-text text-sm">Background opacity</span>
         <span class="label-text-alt">{prefs.bgOpacity}%</span>
       </label>
-      <input type="range" class="range range-xs range-primary" min="0" max="100" step="5"
+      <input id="subtitle-bg-opacity" type="range" class="range range-xs range-primary" min="0" max="100" step="5"
         value={prefs.bgOpacity}
         on:input={(e) => update('bgOpacity', parseInt(e.currentTarget.value))} />
     </div>
 
     <!-- Text border -->
     <div class="form-control mb-3">
-      <label class="label py-0.5">
+      <label class="label py-0.5" for="subtitle-text-border">
         <span class="label-text text-sm">Text outline</span>
       </label>
-      <select class="select select-bordered select-sm w-full"
+      <select id="subtitle-text-border" class="select select-bordered select-sm w-full"
         value={prefs.textBorder}
         on:change={(e) => update('textBorder', e.currentTarget.value)}>
         <option value="none">None</option>
@@ -207,11 +207,11 @@
 
     <div class="divider my-1"></div>
 
-    <!-- Preview -->
+    <!-- Preview (display-only, not an input, so no <label>) -->
     <div class="form-control mb-3">
-      <label class="label py-0.5">
+      <div class="label py-0.5">
         <span class="label-text text-sm">Preview</span>
-      </label>
+      </div>
       <div class="bg-base-100 rounded p-3 flex items-center justify-center min-h-[60px]">
         <span class="px-1.5 py-0.5 rounded text-center" style={previewStyle}>
           Sample subtitle text
