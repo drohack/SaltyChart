@@ -34,7 +34,11 @@ def check_subtitles(video_id: str, timeout: int = 10) -> dict:
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
             ytt = YouTubeTranscriptApi()
-            ytt.fetch(video_id, languages=["en"])
+            # list() + find_transcript() checks manually uploaded, auto-generated,
+            # AND transcripts translatable to English — not just manually uploaded ones.
+            # The old ytt.fetch(languages=["en"]) only found manually uploaded tracks.
+            transcript_list = ytt.list(video_id)
+            transcript_list.find_transcript(['en'])
             result["hasEnglish"] = True
         except Exception:
             pass

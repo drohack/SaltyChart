@@ -149,6 +149,7 @@ and may branch on `data.code` for programmatic handling.
 
 ### Translation routes (`/api/translate`)
 
+- `GET /api/translate/check-batch?videoIds=id1,id2,...` — bulk DB lookup for English sub status (up to 100 IDs); returns only confirmed positives; queues background Python checks for uncached IDs
 - `GET /api/translate/check?videoId=&mediaId=`  — checks English subs + subtitle dismiss state; cached
 - `GET /api/translate/stream?videoId=&mediaId=` — SSE subtitle stream; serves from cache on repeat plays
 - `PATCH /api/translate/dismiss?videoId=`       — persist subtitle on/off preference; no auth, all users
@@ -165,10 +166,43 @@ completion. Concurrent requests for the same uncached video are deduplicated
 
 The `/check` endpoint returns `{hasEnglish, subtitlesDisabled,
 hasCachedSegments, modelName}`. If `hasEnglish` or `subtitlesDisabled` is
-true the frontend hides translated subtitles by default. The dismiss state
+true the frontend hides the translated subtitle overlay. The dismiss state
 is set via the CC toggle button (calls `PATCH /dismiss`) and persists for
 all users. `hasCachedSegments` and `modelName` are used by the local
 translation script to decide whether to re-translate.
+
+YouTube caption control — two paths based on `SubtitleCache.hasEnglishSubs`:
+
+**Page load pre-fetch:** `Home.svelte` fires `GET /api/translate/check-batch`
+immediately after the anime list loads. Single DB query returns all video IDs
+with `hasEnglishSubs=1`; also queues background Python checks for uncached
+videos so the cache self-populates while users browse. Results stored in
+`prefetchedSubs` (a `Map<string, boolean>`) passed to each `AnimeGrid`.
+
+**Cached positive (`hasEnglishSubs = 1`):** `openModal` checks `prefetchedSubs`
+first — instant, no network round-trip. `hasEnglishSubs` is already `true` so
+`onApiChange` skips `unloadModule` and YouTube CC starts in English immediately.
+Translation is never started.
+
+**Not cached / cached negative:** Iframe renders immediately, `onApiChange`
+fires with `hasEnglishSubs = false` → `unloadModule('captions')` suppresses
+Japanese CC. `/check` runs in the background (Python may spawn). If it
+returns `hasEnglish: true`, the frontend calls `loadModule('captions')` +
+`setOption('captions', 'track', {languageCode: 'en'})` and hides the overlay.
+The `hasEnglishSubs = 1` result is cached so future opens use the fast path.
+If no English subs, translation overlay stays; YouTube CC stays suppressed.
+
+`check_subtitles()` in `backend/scripts/translate_stream.py` uses
+`ytt.list(videoId).find_transcript(['en'])` which detects manually uploaded,
+auto-generated, and auto-translatable English CC — not just manually uploaded
+ones (the old `ytt.fetch(languages=["en"])` only found manually uploaded tracks).
+
+The cache (`SubtitleCache.hasEnglishSubs`) only trusts a stored positive (1).
+A stored false (0) falls through to re-run Python so old incorrectly-cached
+results self-heal. The cache write never downgrades a stored true to false.
+
+`youtube_transcript_api` must be installed locally (`pip install youtube-transcript-api`)
+for the English sub detection to work in dev. It is pre-installed in Docker.
 
 On-demand translation uses a persistent Python daemon
 (`backend/scripts/translate_daemon.py`) with the `small` Whisper model
@@ -241,11 +275,12 @@ Path: `frontend/`
 - Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
-- The main anime grid (`AnimeGridTranslate.svelte`) includes real-time
-  Japanese subtitle translation for trailers via the `/api/translate`
-  endpoints. Subtitles sync to the YouTube iframe API's `currentTime`,
-  support play/pause/scrub, and the spinner is deferred until the
-  English-subtitle check completes to avoid UI flash.
+- The main anime grid (`AnimeGridTranslate.svelte`) handles trailer subtitles
+  via `/api/translate`. If the video has YouTube English CC (checked via a
+  batch pre-fetch on page load), YouTube CC is shown and no translation runs.
+  Otherwise, Japanese CC is suppressed and Whisper-translated subtitles are
+  overlaid. Subtitles sync to the YouTube iframe API's `currentTime` and
+  support play/pause/scrub.
 
 ### Additional UI features (grouped by surface)
 
@@ -352,6 +387,7 @@ Local development:
 ```bash
 cd backend && npm install && npm run dev
 cd frontend && npm install && npm run dev
+pip install youtube-transcript-api   # one-time; enables English CC detection locally
 ```
 
 Full stack via Docker Compose:
@@ -390,6 +426,13 @@ cd frontend && npm run build
   `anime.ts`.
 - For CORS or proxy issues, verify `vite.config.ts` proxy settings
   (frontend).
+- If every trailer shows Whisper auto-translation instead of YouTube English CC
+  locally, run `pip install youtube-transcript-api`. Without it the Python
+  `check_subtitles()` silently returns `hasEnglish: false` for all videos.
+  The backend ts-node-dev process must be restarted after installing.
+- The backend ts-node-dev process loses `DATABASE_URL` on hot-reload if it was
+  set only in the shell. Restart with the env var explicitly:
+  `DATABASE_URL="file:C:/Users/droha/Workspace/SaltyChart/backend/prisma/prisma/data.db" npx ts-node-dev --respawn --transpile-only src/index.ts`
 
 ## References
 

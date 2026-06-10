@@ -66,6 +66,20 @@ import { nextSeasonInfo } from '../stores/season';
   let anime: any[] = [];
   let prevSeasonAnime: any[] = [];
 
+  // Pre-fetch English sub status for all trailers. Populated after each season load.
+  let prefetchedSubs = new Map<string, boolean>();
+
+  function prefetchSubtitleStatus(current: any[], prev: any[]) {
+    const ids = [...current, ...prev]
+      .filter(a => a.trailer?.site === 'youtube')
+      .map(a => a.trailer.id as string);
+    if (ids.length === 0) return;
+    fetch(`/api/translate/check-batch?videoIds=${ids.join(',')}`)
+      .then(r => r.json())
+      .then((data: Record<string, boolean>) => { prefetchedSubs = new Map(Object.entries(data)); })
+      .catch(() => {});
+  }
+
   $: tvAnime = anime.filter((a) => a.format === 'TV');
   $: tvShorts = anime.filter((a) => a.format === 'TV_SHORT');
   $: movies = anime.filter((a) => a.format === 'MOVIE');
@@ -335,6 +349,7 @@ let autoRename = false;
 
       anime = currentData;
       prevSeasonAnime = prevData;
+      prefetchSubtitleStatus(currentData, prevData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -421,6 +436,7 @@ let autoRename = false;
         {hideSequels}
         {hideInList}
         {hideAdult}
+        {prefetchedSubs}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -441,6 +457,7 @@ let autoRename = false;
         {hideSequels}
         {hideInList}
         {hideAdult}
+        {prefetchedSubs}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -458,6 +475,7 @@ let autoRename = false;
         {hideSequels}
         {hideInList}
         {hideAdult}
+        {prefetchedSubs}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -475,6 +493,7 @@ let autoRename = false;
         {hideSequels}
         {hideInList}
         {hideAdult}
+        {prefetchedSubs}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -492,6 +511,7 @@ let autoRename = false;
         {hideSequels}
         {hideInList}
         {hideAdult}
+        {prefetchedSubs}
         {watchedIds}
         {inListIds}
         {autoRename}

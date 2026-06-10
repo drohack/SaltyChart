@@ -250,6 +250,66 @@ process.on('SIGINT', () => {
 // ---------------------------------------------------------------------------
 
 /**
+ * GET /check-batch?videoIds=id1,id2,...
+ * Lightweight bulk lookup: returns which videoIds have confirmed English subs
+ * (hasEnglishSubs=1 in DB). Only reads the DB — never spawns Python.
+ * Also queues background Python checks for IDs not yet in the DB so that
+ * subsequent /check calls hit the cache.
+ */
+router.get('/check-batch', async (req: Request, res: Response) => {
+  const raw = (req.query.videoIds as string) || '';
+  const ids = raw.split(',').map(s => s.trim()).filter(s => VIDEO_ID_RE.test(s)).slice(0, 100);
+  if (ids.length === 0) return res.json({});
+
+  // Single DB query for all requested IDs
+  let rows: any[] = [];
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    rows = await prisma.$queryRawUnsafe(
+      `SELECT "videoId", "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" IN (${placeholders})`,
+      ...ids
+    );
+  } catch (err) {
+    console.error('[translate/check-batch] DB lookup failed:', err);
+  }
+
+  const known = new Map<string, number>(rows.map((r: any) => [r.videoId, Number(r.hasEnglishSubs)]));
+
+  // Return confirmed positives immediately
+  const result: Record<string, boolean> = {};
+  for (const id of ids) {
+    if (known.get(id) === 1) result[id] = true;
+  }
+  res.json(result);
+
+  // Background: queue Python checks for IDs not in DB at all so the cache
+  // self-populates while the user browses.
+  const uncached = ids.filter(id => !known.has(id));
+  for (const videoId of uncached) {
+    (async () => {
+      try {
+        if (daemon && daemonReady) {
+          const rid = crypto.randomUUID();
+          const checkResult: any = await new Promise((resolve) => {
+            pendingChecks.set(rid, { resolve });
+            sendCommand({ cmd: 'check', rid, videoId });
+            setTimeout(() => { pendingChecks.delete(rid); resolve({ error: 'timeout' }); }, 15000);
+          });
+          if (checkResult?.hasEnglish !== undefined) {
+            prisma.$executeRawUnsafe(
+              `INSERT INTO "SubtitleCache" ("videoId", "hasEnglishSubs") VALUES (?, ?)
+               ON CONFLICT("videoId") DO UPDATE SET
+                 "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END`,
+              videoId, checkResult.hasEnglish ? 1 : 0
+            ).catch(() => {});
+          }
+        }
+      } catch {}
+    })();
+  }
+});
+
+/**
  * GET /check?videoId=xxx&mediaId=yyy
  * Quick check whether a YouTube video has English subtitles.
  * Returns cached result if available; otherwise checks and caches the result.
@@ -262,19 +322,28 @@ router.get('/check', async (req: Request, res: Response) => {
   const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
   // Check cache first
+  // cachedExtra preserves subtitlesDisabled/hasBurnedInSubs even when we fall
+  // through to re-run the Python check (e.g. when hasEnglishSubs was cached wrong).
+  let cachedExtra = { subtitlesDisabled: false, hasBurnedInSubs: false, hasCachedSegments: false, modelName: null as string | null };
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
       `SELECT "hasEnglishSubs", "subtitlesDisabled", "hasBurnedInSubs", "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
       videoId
     );
-    if (cached.length > 0 && cached[0].hasEnglishSubs !== null) {
-      return res.json({
-        hasEnglish: Boolean(cached[0].hasEnglishSubs),
+    if (cached.length > 0) {
+      cachedExtra = {
         subtitlesDisabled: Boolean(cached[0].subtitlesDisabled),
         hasBurnedInSubs: Boolean(cached[0].hasBurnedInSubs),
         hasCachedSegments: cached[0].segments != null,
         modelName: cached[0].modelName || null,
-      });
+      };
+      // Only trust a cached positive (1). A cached false (0) may have been set by
+      // the old check_subtitles() which missed auto-generated English CC — fall through
+      // to re-run Python so those get corrected and re-cached.
+      // Use Number() to handle both integer (1) and BigInt (1n) from SQLite.
+      if (Number(cached[0].hasEnglishSubs) === 1) {
+        return res.json({ hasEnglish: true, ...cachedExtra });
+      }
     }
   } catch (err) {
     console.error('[translate/cache] Check lookup failed:', err);
@@ -327,13 +396,15 @@ router.get('/check', async (req: Request, res: Response) => {
     });
   }
 
-  // Cache the result (non-blocking)
+  // Cache the result (non-blocking).
+  // Only update hasEnglishSubs when the new value is true — never overwrite a
+  // correct true with a potentially wrong false from a transient network failure.
   if (result && result.hasEnglish !== undefined) {
     prisma.$executeRawUnsafe(
       `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "hasEnglishSubs")
        VALUES (?, ?, ?)
        ON CONFLICT("videoId") DO UPDATE SET
-         "hasEnglishSubs" = excluded."hasEnglishSubs",
+         "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END,
          "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId")`,
       videoId,
       mediaId,
@@ -341,7 +412,9 @@ router.get('/check', async (req: Request, res: Response) => {
     ).catch((err: any) => console.error('[translate/cache] Failed to cache check result:', err));
   }
 
-  return res.json(result);
+  // Merge cached subtitlesDisabled/hasBurnedInSubs into the Python result so
+  // the frontend gets a complete response even on cache-miss/re-check paths.
+  return res.json({ ...cachedExtra, ...result });
 });
 
 /**

@@ -54,6 +54,13 @@ The `DATABASE_URL` is required — without it Prisma defaults to `/app/prisma/da
 (Docker path) which doesn't exist locally. The SQLite DB lives at
 `backend/prisma/prisma/data.db`.
 
+For English subtitle detection to work locally, also install:
+```bash
+pip install youtube-transcript-api
+```
+This is pre-installed in Docker; without it the backend silently falls back to
+Whisper auto-translation for every video.
+
 If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PID <pid> /F`.
 
 ---
@@ -98,8 +105,13 @@ nicknames + ranks. Endpoints:
 lets you choose whose nicknames are displayed.
 
 **Real-time subtitle translation** – click a Japanese trailer and get live
-English subtitles streamed via SSE. Translations cached in the database so
-repeat plays are instant (~50ms). Persistent Python daemon (`small` model,
+English subtitles streamed via SSE. If the video has YouTube English CC
+(manual or auto-generated), those are shown instead — they're higher quality.
+When no English CC exists, the app suppresses YouTube's Japanese CC and
+streams Whisper-translated subtitles. Translations cached in the database so
+repeat plays are instant (~50ms). On page load the app batch-checks all
+trailers against the cache (`/api/translate/check-batch`) so the CC decision
+is instant when the user clicks play. Persistent Python daemon (`small` model,
 chunked) handles on-demand requests; batch script (`medium` model, full-audio)
 pre-translates an entire season's trailers overnight as a safety net. Short
 videos (≤30s) skip chunking for the small model too. Concurrent requests are

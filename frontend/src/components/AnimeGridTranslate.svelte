@@ -45,6 +45,10 @@ $: _currentLang = $options.titleLanguage;
   // id of trailer currently open in modal (null = none)
   let modal: string | null = null;
 
+  // Pre-fetched English sub status — passed in from Home.svelte via check-batch.
+  // Key: YouTube video ID, Value: true = confirmed English CC in DB.
+  export let prefetchedSubs: Map<string, boolean> = new Map();
+
   // ── Translation state ──────────────────────────────────────────────
   let subtitleSegments: Array<{ start: number; end: number; text: string }> = [];
   let currentSubtitle = '';
@@ -57,6 +61,7 @@ $: _currentLang = $options.titleLanguage;
   let modalOpenedAt: number | null = null;
   // UI controls
   let subtitlesVisible = true;
+  let hasEnglishSubs = false;
   let subtitleSettingsOpen = false;
   let lastYouTubeTimeUpdate = 0;
   let videoPlaying = false;
@@ -74,31 +79,73 @@ $: _currentLang = $options.titleLanguage;
     }
   }
 
-  function openModal(id: string, mediaId?: number) {
-    modal = id;
+  async function openModal(id: string, mediaId?: number) {
+    hasEnglishSubs = false;
+    subtitlesVisible = true;
+    checkResolved = false;
     document.body.style.overflow = 'hidden';
 
     const mediaParam = mediaId ? `&mediaId=${mediaId}` : '';
 
-    // Start translation immediately — don't wait for check
+    // Fast path: use result pre-fetched by check-batch on page load.
+    if (prefetchedSubs.get(id) === true) {
+      hasEnglishSubs = true;
+      subtitlesVisible = false;
+      checkResolved = true;
+      modal = id;
+      return; // English CC confirmed — no translation needed
+    }
+
+    // Slow path: pre-fetch wasn't available (not yet in DB or negative).
+    // Race the individual /check against a 150ms timeout so the iframe doesn't
+    // block while Python runs in the background.
+    const checkPromise = fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
+      .then(res => res.json()).catch(() => null);
+
+    const precheck: any = await Promise.race([
+      checkPromise,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 150))
+    ]);
+
+    if (precheck) {
+      hasEnglishSubs = !!precheck.hasEnglish;
+      if (precheck.hasEnglish || precheck.subtitlesDisabled || precheck.hasBurnedInSubs) {
+        subtitlesVisible = false;
+      }
+      checkResolved = true;
+    }
+
+    // Show the iframe — hasEnglishSubs is already set for cached videos
+    modal = id;
+
+    if (hasEnglishSubs) {
+      // English CC confirmed — no translation needed
+      return;
+    }
+
+    // Start translation for videos without confirmed English subs
     translationLoading = true;
     startTranslation(id, mediaParam);
 
-    // Check runs in background — only affects default subtitle visibility.
-    // checkResolved gates the spinner so it doesn't flash then disappear
-    // on videos that have English subs (where subtitlesVisible gets set to false).
-    checkResolved = false;
-    // /check returns {hasEnglish, subtitlesDisabled, hasBurnedInSubs} — hide our
-    // subtitles if the video has English subs, burned-in subs, or was dismissed.
-    fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
-      .then(res => res.json())
-      .then(data => {
-        if (modal === id && (data.hasEnglish || data.subtitlesDisabled || data.hasBurnedInSubs)) {
+    if (!precheck) {
+      // Check timed out (Python still running) — handle when it resolves
+      checkPromise.then((data: any) => {
+        if (modal !== id || !data) { checkResolved = true; return; }
+        hasEnglishSubs = !!data.hasEnglish;
+        if (data.hasEnglish || data.subtitlesDisabled || data.hasBurnedInSubs) {
           subtitlesVisible = false;
         }
+        if (data.hasEnglish && iframeElement?.contentWindow) {
+          const win = iframeElement.contentWindow!;
+          win.postMessage(JSON.stringify({ event: 'command', func: 'loadModule', args: ['captions'] }), '*');
+          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+        }
         checkResolved = true;
-      })
-      .catch(() => { checkResolved = true; });
+        // Update prefetch map so re-opens of the same video use the fast path
+        if (data.hasEnglish) prefetchedSubs.set(id, true);
+      }).catch(() => { checkResolved = true; });
+    }
   }
 
   function startTranslation(videoId: string, mediaParam: string = '') {
@@ -428,28 +475,42 @@ const dispatch = createEventDispatcher();
       } catch {
         return;
       }
-      // onReady: subscribe to API change events
+      // onReady: subscribe to events and immediately suppress captions
       if (data.event === 'onReady') {
         const win = iframeElement!.contentWindow!;
         win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onApiChange'] }), '*');
         win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
+        // Kill captions immediately on ready — before onApiChange fires
+        if (!hasEnglishSubs) {
+          win.postMessage(JSON.stringify({ event: 'command', func: 'unloadModule', args: ['captions'] }), '*');
+        }
       }
       // Track play/pause state
       if (data.event === 'onStateChange') {
         if (data.info === 1) { videoPlaying = true; showControls(); }    // PLAYING
         if (data.info === 2) { videoPlaying = false; showControls(); } // PAUSED
-        // Set captions when not translating
-        if (data.info === 1 && !translating && !translationLoading) {
+        // On play: enforce caption state (safety net for re-plays)
+        if (data.info === 1) {
           const win = iframeElement!.contentWindow!;
-          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
-          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+          if (hasEnglishSubs) {
+            win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+            win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+          } else {
+            win.postMessage(JSON.stringify({ event: 'command', func: 'unloadModule', args: ['captions'] }), '*');
+          }
         }
       }
-      // onApiChange: set English captions (only when not translating)
-      if (data.event === 'onApiChange' && !translating && !translationLoading) {
+      // onApiChange: fires early (before /check resolves), so hasEnglishSubs is
+      // false → unloadModule kills any Japanese auto-captions immediately.
+      // When /check later confirms English subs, the check handler re-enables them.
+      if (data.event === 'onApiChange') {
         const win = iframeElement!.contentWindow!;
-        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
-        win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+        if (hasEnglishSubs) {
+          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+          win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+        } else {
+          win.postMessage(JSON.stringify({ event: 'command', func: 'unloadModule', args: ['captions'] }), '*');
+        }
       }
       // Primary time source: YouTube's currentTime from infoDelivery (~250ms intervals).
       // Captured during translationLoading too so the first tick has accurate time.
@@ -672,7 +733,7 @@ const dispatch = createEventDispatcher();
         title="Trailer video"
         bind:this={iframeElement}
         class="w-full h-full rounded"
-        src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=1&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
+        src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=0&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowfullscreen
         on:load={onIframeLoad}
