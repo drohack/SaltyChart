@@ -52,7 +52,8 @@ Flags:
   --dry-run          List eligible trailers without translating
   --force            Force re-translation even if cached
   --log [PATH]       Log output to file (default: tools/logs/translate.log)
-  --within-days N    Exit if next season is more than N days away
+  --within-days N    Exit if next season is more than N days away (not used
+                     in translate.bat — runs always, covering 3 seasons)
 
 Windows wrapper: tools/translate.bat (uses py -3.13)
 """
@@ -177,6 +178,28 @@ def next_season_info() -> tuple:
     idx = SEASONS.index(current)
     next_idx = (idx + 1) % 4
     return SEASONS[next_idx], now.year + (1 if next_idx == 0 else 0)
+
+
+def get_seasons_to_process() -> list:
+    """Return [(season, year), ...] covering prev, current-displayed, and next season.
+
+    The app defaults to showing the upcoming season 76 days before it starts,
+    so users browse 3 seasons of content. This ensures all of them are cached.
+    """
+    current, year = next_season_info()
+    idx = SEASONS.index(current)
+
+    prev_idx = (idx - 1) % 4
+    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER→FALL wraps back a year
+
+    next_idx = (idx + 1) % 4
+    next_year = year + (1 if next_idx == 0 else 0)   # FALL→WINTER wraps forward a year
+
+    return [
+        (SEASONS[prev_idx], prev_year),
+        (current, year),
+        (SEASONS[next_idx], next_year),
+    ]
 
 
 # Approximate first day of each season
@@ -664,11 +687,11 @@ def main():
         if not args.username or not args.password:
             parser.error("Provide --username and --password, or --token (not needed with --video --no-upload)")
 
-    # Determine season
+    # Determine seasons to process
     if args.season and args.year:
-        season, year = args.season.upper(), args.year
+        seasons_to_process = [(args.season.upper(), args.year)]
     else:
-        season, year = next_season_info()
+        seasons_to_process = get_seasons_to_process()
 
     # Detect device — auto-install GPU dependencies if missing
     device = args.device
@@ -738,88 +761,105 @@ def main():
             print("[local] --no-upload: skipping upload")
         return
 
-    print(f"[local] Season: {season} {year}")
-
-    # Fetch anime
-    print("[local] Fetching anime list from AniList...")
-    anime = fetch_season_anime(season, year)
-    print(f"[local] Found {len(anime)} total anime for {season} {year}")
-
-    eligible = filter_eligible(anime)
-    print(f"[local] {len(eligible)} eligible trailers")
+    print(f"[local] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
     print()
 
-    # Check server cache
-    uncached = []
-    for show in eligible:
-        vid = show["trailer"]["id"]
-        if args.force:
-            uncached.append((show, "forced"))
-        else:
-            is_cached, cached_model = check_server_cache(server, vid, args.model)
-            if is_cached:
-                print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
-            else:
-                reason = f"upgrade from {cached_model}" if cached_model else "not cached"
-                uncached.append((show, reason))
-
-    print()
-    print(f"[local] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} cached)")
-    print()
-
-    if args.dry_run:
-        print("[local] DRY RUN — trailers that would be translated:")
-        for show, reason in uncached:
-            vid = show["trailer"]["id"]
-            print(f"  {show['format']:10s} {get_title(show)} ({vid}) [{reason}]")
-        return
-
-    if not uncached:
-        print("[local] All trailers already cached. Done!")
-        return
-
-    # Load model
-    print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
-    from faster_whisper import WhisperModel
-    model = WhisperModel(args.model, device=device, compute_type=compute_type)
-    print("[local] Model loaded.")
-    print()
-
-    # Translate and upload
-    translated = 0
-    errors = 0
+    # Model loaded lazily on first translation need, then reused across seasons
+    model = None
     use_chunking = args.model == "small"
-    for i, (show, reason) in enumerate(uncached):
-        vid = show["trailer"]["id"]
-        title = get_title(show)
-        print(f"[{i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
 
-        try:
-            start_time = time.time()
-            segments, video_url = translate_video(model, vid, use_chunking=use_chunking)
-            elapsed = time.time() - start_time
-            print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
+    for season, year in seasons_to_process:
+        print(f"[local] -- {season} {year} {'-' * 50}")
 
-            # Check for burned-in subtitles
-            has_burned_in = False
-            if segments:
-                try:
-                    has_burned_in = detect_burned_in_subs(vid, segments, video_url=video_url)
-                except Exception as e:
-                    print(f"  Burned-in detection failed: {e}")
+        # Fetch anime
+        print("[local] Fetching anime list from AniList...")
+        anime = fetch_season_anime(season, year)
+        print(f"[local] Found {len(anime)} total anime for {season} {year}")
 
-            # Upload to server
-            result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in, args.force)
-            print(f"  Uploaded: {result.get('action', 'ok')}")
-            translated += 1
+        eligible = filter_eligible(anime)
+        print(f"[local] {len(eligible)} eligible trailers")
+        print()
 
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            errors += 1
+        if not eligible:
+            print(f"[local] Nothing to translate for {season} {year}.")
+            print()
+            continue
 
-    print()
-    print(f"[local] Complete: {translated} translated, {errors} errors"
-          + (f", {len(uncached) - translated - errors} remaining" if len(uncached) - translated - errors > 0 else ""))
+        # Check server cache
+        uncached = []
+        for show in eligible:
+            vid = show["trailer"]["id"]
+            if args.force:
+                uncached.append((show, "forced"))
+            else:
+                is_cached, cached_model = check_server_cache(server, vid, args.model)
+                if is_cached:
+                    print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
+                else:
+                    reason = f"upgrade from {cached_model}" if cached_model else "not cached"
+                    uncached.append((show, reason))
+
+        print()
+        print(f"[local] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} cached)")
+        print()
+
+        if args.dry_run:
+            print(f"[local] DRY RUN — {season} {year} trailers that would be translated:")
+            for show, reason in uncached:
+                vid = show["trailer"]["id"]
+                print(f"  {show['format']:10s} {get_title(show)} ({vid}) [{reason}]")
+            print()
+            continue
+
+        if not uncached:
+            print(f"[local] All {season} {year} trailers already cached.")
+            print()
+            continue
+
+        # Load model lazily — once, then reused for all subsequent seasons
+        if model is None:
+            print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
+            from faster_whisper import WhisperModel
+            model = WhisperModel(args.model, device=device, compute_type=compute_type)
+            print("[local] Model loaded.")
+            print()
+
+        # Translate and upload
+        translated = 0
+        errors = 0
+        for i, (show, reason) in enumerate(uncached):
+            vid = show["trailer"]["id"]
+            title = get_title(show)
+            print(f"[{i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
+
+            try:
+                start_time = time.time()
+                segments, video_url = translate_video(model, vid, use_chunking=use_chunking)
+                elapsed = time.time() - start_time
+                print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
+
+                # Check for burned-in subtitles
+                has_burned_in = False
+                if segments:
+                    try:
+                        has_burned_in = detect_burned_in_subs(vid, segments, video_url=video_url)
+                    except Exception as e:
+                        print(f"  Burned-in detection failed: {e}")
+
+                # Upload to server
+                result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in, args.force)
+                print(f"  Uploaded: {result.get('action', 'ok')}")
+                translated += 1
+
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                errors += 1
+
+        print()
+        remaining = len(uncached) - translated - errors
+        print(f"[local] {season} {year}: {translated} translated, {errors} errors"
+              + (f", {remaining} remaining" if remaining > 0 else ""))
+        print()
 
     if log_file:
         log_file.write(f"\nRun ended: {datetime.now().isoformat()}\n")

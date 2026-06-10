@@ -2,8 +2,8 @@
 Batch pre-translation of anime trailers for upcoming seasons.
 
 Safety net behind the local GPU script (tools/local_translate.py) which runs
-large-v3 weekly starting 35 days before the season. This batch runs on
-Wednesdays within 21 days, catching any trailers the local run missed.
+large-v3 every Sunday with no window gate, covering 3 seasons. This batch
+runs on Wednesdays within 50 days, catching any trailers the local run missed.
 
 Uses the Whisper `medium` model (int8 quantized, ~1.5GB RAM) with full-audio
 transcription (no chunking) for better quality than the on-demand `small` model.
@@ -28,7 +28,7 @@ Usage:
 Note: use -u flag for unbuffered stdout when spawned as a child process.
 
 Scheduling: auto-scheduled by the backend (index.ts) on Wednesdays 2-4am,
-21 days before season start.
+50 days before season start.
 
 Can also be triggered from the Options modal (admin only) via POST /api/translate/batch.
 """
@@ -174,7 +174,7 @@ SEASON_STARTS = {
 
 
 def next_season_info() -> tuple:
-    """Return (season, year) for the next upcoming season."""
+    """Return (season, year) for the next upcoming season (matches the app's default view)."""
     now = datetime.now()
     month = now.month
 
@@ -193,6 +193,28 @@ def next_season_info() -> tuple:
     next_year = now.year + (1 if next_idx == 0 else 0)
 
     return next_season, next_year
+
+
+def get_seasons_to_process() -> list:
+    """Return [(season, year), ...] covering prev, current-displayed, and next season.
+
+    The app defaults to showing the upcoming season 76 days before it starts,
+    so users browse 3 seasons of content. This ensures all of them are cached.
+    """
+    current, year = next_season_info()
+    idx = SEASONS.index(current)
+
+    prev_idx = (idx - 1) % 4
+    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER→FALL wraps back a year
+
+    next_idx = (idx + 1) % 4
+    next_year = year + (1 if next_idx == 0 else 0)   # FALL→WINTER wraps forward a year
+
+    return [
+        (SEASONS[prev_idx], prev_year),
+        (current, year),
+        (SEASONS[next_idx], next_year),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -288,11 +310,11 @@ def main():
     parser.add_argument("--db", type=str, default=None, help="SQLite database path")
     args = parser.parse_args()
 
-    # Determine season
+    # Determine seasons to process
     if args.season and args.year:
-        season, year = args.season.upper(), args.year
+        seasons_to_process = [(args.season.upper(), args.year)]
     else:
-        season, year = next_season_info()
+        seasons_to_process = get_seasons_to_process()
 
     # Determine DB path
     db_path = args.db
@@ -307,106 +329,119 @@ def main():
         else:
             db_path = "/app/prisma/prisma/data.db"
 
-    print(f"[batch] Season: {season} {year}")
+    print(f"[batch] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
     print(f"[batch] Database: {db_path}")
     print(f"[batch] Cutoff: {args.cutoff}:00")
     print()
 
-    # Fetch anime list
-    print(f"[batch] Fetching anime list from AniList...")
-    anime = fetch_season_anime(season, year)
-    print(f"[batch] Found {len(anime)} total anime for {season} {year}")
-
-    # Filter eligible
-    eligible = filter_eligible(anime)
-    print(f"[batch] {len(eligible)} eligible trailers (after filtering 18+, sequels, no-trailer)")
-    print()
-
-    if not eligible:
-        print("[batch] Nothing to translate.")
-        return
-
-    # Single persistent DB connection for entire batch run
+    # Single persistent DB connection and lazily-loaded model reused across all seasons
     conn = sqlite3.connect(db_path)
+    model = None
     try:
-        # Batch cache check — one query per video but reusing connection
-        uncached = []
-        cache_info = {}  # vid → (has_english,) for videos already in cache
-        for show in eligible:
-            vid = show["trailer"]["id"]
-            row = conn.execute(
-                'SELECT "segments", "modelName", "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
-                (vid,),
-            ).fetchone()
-            if row and row[0] is not None and MODEL_RANK.get(row[1] or "small", 0) >= MODEL_RANK.get("medium", 3):
-                print(f"  [SKIP] {get_display_title(show)} ({vid}) -- already cached ({row[1]})")
-            else:
-                reason = f"upgrade from {row[1]}" if row and row[0] else "not cached"
-                # Carry forward hasEnglishSubs if already checked (skip YouTube API call)
-                has_english = bool(row[2]) if row and row[2] is not None else None
-                uncached.append((show, reason, has_english))
+        for season, year in seasons_to_process:
+            print(f"[batch] -- {season} {year} {'-' * 50}")
 
-        print()
-        print(f"[batch] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} already cached)")
-        print()
+            # Fetch anime list
+            print(f"[batch] Fetching anime list from AniList...")
+            anime = fetch_season_anime(season, year)
+            print(f"[batch] Found {len(anime)} total anime for {season} {year}")
 
-        if args.dry_run:
-            print("[batch] DRY RUN -- trailers that would be translated:")
-            for show, reason, _ in uncached:
+            # Filter eligible
+            eligible = filter_eligible(anime)
+            print(f"[batch] {len(eligible)} eligible trailers (after filtering 18+, sequels, no-trailer)")
+            print()
+
+            if not eligible:
+                print(f"[batch] Nothing to translate for {season} {year}.")
+                print()
+                continue
+
+            # Batch cache check — one query per video, reusing connection
+            uncached = []
+            for show in eligible:
                 vid = show["trailer"]["id"]
-                print(f"  {show['format']:10s} {get_display_title(show)} ({vid}) [{reason}]")
-            return
+                row = conn.execute(
+                    'SELECT "segments", "modelName", "hasEnglishSubs" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1',
+                    (vid,),
+                ).fetchone()
+                if row and row[0] is not None and MODEL_RANK.get(row[1] or "small", 0) >= MODEL_RANK.get("medium", 3):
+                    print(f"  [SKIP] {get_display_title(show)} ({vid}) -- already cached ({row[1]})")
+                else:
+                    reason = f"upgrade from {row[1]}" if row and row[0] else "not cached"
+                    has_english = bool(row[2]) if row and row[2] is not None else None
+                    uncached.append((show, reason, has_english))
 
-        if not uncached:
-            print("[batch] All trailers already cached. Done!")
-            return
+            print()
+            print(f"[batch] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} already cached)")
+            print()
 
-        # Load model
-        print(f"[batch] Loading Whisper medium model (int8)... this may take a while on first run")
-        from faster_whisper import WhisperModel
-        model = WhisperModel("medium", device="cpu", compute_type="int8")
-        print(f"[batch] Model loaded.")
-        print()
+            if args.dry_run:
+                print(f"[batch] DRY RUN -- {season} {year} trailers that would be translated:")
+                for show, reason, _ in uncached:
+                    vid = show["trailer"]["id"]
+                    print(f"  {show['format']:10s} {get_display_title(show)} ({vid}) [{reason}]")
+                print()
+                continue
 
-        # Translate with ETA tracking
-        translated = 0
-        errors = 0
-        elapsed_sum = 0.0
-        for i, (show, reason, has_english) in enumerate(uncached):
-            # Time cutoff check
-            now = datetime.now()
-            if now.hour >= args.cutoff:
-                print(f"\n[batch] Cutoff reached ({now.strftime('%H:%M')} >= {args.cutoff}:00). Stopping.")
-                break
+            if not uncached:
+                print(f"[batch] All {season} {year} trailers already cached.")
+                print()
+                continue
 
-            vid = show["trailer"]["id"]
-            title = get_display_title(show)
+            # Load model lazily — once, then reused for all subsequent seasons
+            if model is None:
+                print(f"[batch] Loading Whisper medium model (int8)... this may take a while on first run")
+                from faster_whisper import WhisperModel
+                model = WhisperModel("medium", device="cpu", compute_type="int8")
+                print(f"[batch] Model loaded.")
+                print()
 
-            # ETA based on rolling average
-            eta_str = ""
-            if translated > 0:
-                avg = elapsed_sum / translated
-                remaining_count = len(uncached) - i
-                eta_min = (avg * remaining_count) / 60
-                eta_str = f" [ETA: {eta_min:.0f}m]"
+            # Translate with ETA tracking
+            translated = 0
+            errors = 0
+            elapsed_sum = 0.0
+            cutoff_hit = False
+            for i, (show, reason, has_english) in enumerate(uncached):
+                # Time cutoff check — stop all remaining seasons too
+                now = datetime.now()
+                if now.hour >= args.cutoff:
+                    print(f"\n[batch] Cutoff reached ({now.strftime('%H:%M')} >= {args.cutoff}:00). Stopping.")
+                    cutoff_hit = True
+                    break
 
-            print(f"[{i+1}/{len(uncached)}] {title} ({vid}) [{reason}]{eta_str}...")
+                vid = show["trailer"]["id"]
+                title = get_display_title(show)
 
-            try:
-                start_time = time.time()
-                num_segments = translate_video(model, vid, show["id"], conn, has_english=has_english)
-                elapsed = time.time() - start_time
-                elapsed_sum += elapsed
-                print(f"  Done -- {num_segments} segments in {elapsed:.1f}s")
-                translated += 1
-            except Exception as e:
-                print(f"  ERROR: {e}")
-                errors += 1
+                # ETA based on rolling average
+                eta_str = ""
+                if translated > 0:
+                    avg = elapsed_sum / translated
+                    remaining_count = len(uncached) - i
+                    eta_min = (avg * remaining_count) / 60
+                    eta_str = f" [ETA: {eta_min:.0f}m]"
 
-        print()
-        remaining = len(uncached) - translated - errors
-        print(f"[batch] Complete: {translated} translated, {errors} errors"
-              + (f", {remaining} remaining" if remaining > 0 else ""))
+                print(f"[{i+1}/{len(uncached)}] {title} ({vid}) [{reason}]{eta_str}...")
+
+                try:
+                    start_time = time.time()
+                    num_segments = translate_video(model, vid, show["id"], conn, has_english=has_english)
+                    elapsed = time.time() - start_time
+                    elapsed_sum += elapsed
+                    print(f"  Done -- {num_segments} segments in {elapsed:.1f}s")
+                    translated += 1
+                except Exception as e:
+                    print(f"  ERROR: {e}")
+                    errors += 1
+
+            print()
+            remaining = len(uncached) - translated - errors
+            print(f"[batch] {season} {year}: {translated} translated, {errors} errors"
+                  + (f", {remaining} remaining" if remaining > 0 else ""))
+            print()
+
+            if cutoff_hit:
+                break  # Don't start further seasons after cutoff
+
     finally:
         conn.close()
 

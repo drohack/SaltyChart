@@ -217,9 +217,15 @@ higher quality and automatically upgrades videos previously translated with
 `hasEnglishSubs` to avoid a Python spawn on first play.
 
 The backend includes an auto-scheduler (in `index.ts`) that runs the batch
-script automatically between 2-4 am when the next anime season is within
-30 days. Runs once per day max, with a `--cutoff 10` to stop by 10 am. No
-external cron setup needed.
+script automatically on Wednesdays between 2–4am when the next anime season
+is within **50 days**. The local large-v3 GPU script runs every Sunday (no
+window gate) and handles all 3 seasons first; this medium batch is the
+fallback for anything large-v3 missed. Runs once per Wednesday max, with
+`--cutoff 10` to stop by 10am. No external cron setup needed.
+
+Each batch run covers **three seasons** automatically (prev, current-displayed,
+next) so coverage is complete regardless of which season the app is showing.
+Passing `--season`/`--year` explicitly overrides to a single season.
 
 Audio is chunked with a ramp-up strategy (5 s, 5 s, 10 s, 10 s, then 20 s)
 starting from second 0. On-demand uses `beam_size=1` +
@@ -235,7 +241,17 @@ pre-downloaded in the Docker image.
 GPU support (`large-v3` + `float16` on CUDA) and uploads results via
 `POST /api/translate/upload`. Supports `--video` for single videos,
 `--no-upload` for local-only testing, `--dry-run`, `--season` / `--year`,
-and `-u` / `-p` for login. `tools/translate.bat` is a Windows wrapper.
+and `-u` / `-p` for login. `tools/translate.bat` is a Windows wrapper with
+no `--within-days` gate — it always runs and covers 3 seasons, skipping
+already-cached videos automatically.
+
+**Windows Scheduled Task:** "SaltyChart Translate" (`\SaltyChart Translate`
+in Task Scheduler root) runs `translate.bat` every **Sunday at 5am** using
+`py -3.13` with server http://192.168.1.2:8085. To update arguments, open
+Task Scheduler → SaltyChart Translate → Properties → Actions → Edit (requires
+Windows password). The task was created 2026-04-08 with `LogonType: Password`
+so programmatic updates require credentials. The Sunday run ensures large-v3
+always completes before the server medium batch runs on Wednesday.
 
 ### Database schema
 

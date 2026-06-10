@@ -112,19 +112,27 @@ streams Whisper-translated subtitles. Translations cached in the database so
 repeat plays are instant (~50ms). On page load the app batch-checks all
 trailers against the cache (`/api/translate/check-batch`) so the CC decision
 is instant when the user clicks play. Persistent Python daemon (`small` model,
-chunked) handles on-demand requests; batch script (`medium` model, full-audio)
-pre-translates an entire season's trailers overnight as a safety net. Short
-videos (≤30s) skip chunking for the small model too. Concurrent requests are
-deduplicated and limited to 2. Subtitles sync to YouTube's playback position
-(pause, scrub). Users can dismiss subtitles via the CC toggle and the
-preference persists for all users.
+chunked) handles on-demand requests. Short videos (≤30s) skip chunking. 
+Concurrent requests are deduplicated and limited to 2. Subtitles sync to
+YouTube's playback position (pause, scrub). Users can dismiss subtitles via
+the CC toggle and the preference persists for all users.
 
-**Local GPU translation** (`tools/local_translate.py`) — translates trailers
-using Whisper large-v3 on your GPU for highest quality. Medium and large
-models use full-audio transcription (no chunking). Automatic burned-in
-subtitle detection: OCR frames compared to Whisper translations via hybrid
-fuzzy + semantic matching (sentence-transformers). Burned-in videos flagged
-so the frontend defaults subtitles off.
+**Pre-translation pipeline** — two-tier system covering the previous, current,
+and next seasons on every run:
+- **Local GPU** (`tools/local_translate.py`, `large-v3` float16): runs every
+  Sunday at 5am via Windows Scheduled Task ("SaltyChart Translate"). No window
+  gate — always runs and caches new trailers for all 3 seasons.
+- **Server batch** (`backend/scripts/batch_translate.py`, `medium` int8 CPU):
+  runs automatically on Wednesdays 2–4am when within 50 days of a season start.
+  Fallback only — skips anything already cached at `large-v3`. Stops at 10am.
+
+Both scripts detect model rank and never downgrade a higher-quality translation.
+
+**Local GPU translation** (`tools/local_translate.py`) — Whisper large-v3 on
+GPU. Full-audio transcription (no chunking) for highest quality. Automatic
+burned-in subtitle detection: OCR frames compared to Whisper translations via
+hybrid fuzzy + semantic matching (sentence-transformers). Burned-in videos
+flagged so the frontend defaults subtitles off.
 
 **Per-user subtitle settings** — font size, family, position, text/bg color,
 opacity, text outline. Settings popup via gear icon next to the CC button.

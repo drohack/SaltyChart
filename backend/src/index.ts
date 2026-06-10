@@ -391,13 +391,15 @@ ensureDatabaseSchema().then(() => {
 
   // ────────────────────────────────────────────────────────────────────────────
   // Batch translation scheduler (medium model, server-side fallback)
-  // Only runs on Wednesdays 2am-4am, within 21 days of next season.
-  // The local GPU script (large-v3, --within-days 35) should beat this most
-  // of the time — this is a safety net so trailers still get *some* subs.
+  // Runs on Wednesdays 2am-4am, within 50 days of the next season start.
+  // The local GPU large-v3 script (Sunday 5am, no window gate) runs first
+  // and covers all 3 seasons — this batch only translates what large-v3
+  // hasn't cached yet. 50 days gives medium a chance to catch up on anything
+  // the local script missed without starting too aggressively early.
   // ────────────────────────────────────────────────────────────────────────────
   const BATCH_SCHEDULER_HOUR_START = 2;  // Start window (2am)
   const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) — only starts new batches in this range
-  const BATCH_DAYS_BEFORE_SEASON = 21;   // How many days before season start to begin batching
+  const BATCH_DAYS_BEFORE_SEASON = 50;   // How many days before season start to begin batching
   const BATCH_DAY_OF_WEEK = 3;           // Wednesday (0=Sun, 3=Wed)
 
   const SEASON_STARTS: Array<{ season: string; month: number; day: number }> = [
@@ -478,7 +480,7 @@ ensureDatabaseSchema().then(() => {
   // then hourly after that.
   setTimeout(checkBatchSchedule, 10_000); // 10s after startup
   setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
-  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 21 days before season)');
+  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 50 days before season, 3-season coverage)');
 
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
