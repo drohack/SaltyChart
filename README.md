@@ -50,16 +50,15 @@ cd frontend
 npm run dev
 ```
 
-The `DATABASE_URL` is required — without it Prisma defaults to `/app/prisma/data.db`
-(Docker path) which doesn't exist locally. The SQLite DB lives at
-`backend/prisma/prisma/data.db`.
-
-For English subtitle detection to work locally, also install:
+One-time local setup:
 ```bash
-pip install youtube-transcript-api
+cp backend/.env.example backend/.env   # provides DATABASE_URL — required for ts-node-dev
+pip install youtube-transcript-api     # enables YouTube English CC detection; pre-installed in Docker
 ```
-This is pre-installed in Docker; without it the backend silently falls back to
-Whisper auto-translation for every video.
+
+`DATABASE_URL` must be set — without it the backend now exits immediately with
+a `[FATAL]` message. The `.env` file persists it across ts-node-dev hot-reloads.
+The SQLite DB lives at `backend/prisma/prisma/data.db`.
 
 If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PID <pid> /F`.
 

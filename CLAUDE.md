@@ -246,12 +246,15 @@ no `--within-days` gate — it always runs and covers 3 seasons, skipping
 already-cached videos automatically.
 
 **Windows Scheduled Task:** "SaltyChart Translate" (`\SaltyChart Translate`
-in Task Scheduler root) runs `translate.bat` every **Sunday at 5am** using
-`py -3.13` with server http://192.168.1.2:8085. To update arguments, open
+in Task Scheduler root) runs `local_translate.py` directly every **Sunday at
+5am** using `py -3.13` with server http://192.168.1.2:8085. Note: the task
+calls `local_translate.py` directly, not through `translate.bat`, so changes
+to `translate.bat` do NOT affect the scheduled run — update task arguments in
 Task Scheduler → SaltyChart Translate → Properties → Actions → Edit (requires
-Windows password). The task was created 2026-04-08 with `LogonType: Password`
-so programmatic updates require credentials. The Sunday run ensures large-v3
-always completes before the server medium batch runs on Wednesday.
+Windows password). The task was created 2026-04-08 with `LogonType: Password`.
+No `--within-days` flag (removed; the script always runs covering 3 seasons).
+`--within-days` never applied to batch_translate.py or the live daemon.
+The Sunday run ensures large-v3 always completes before Wednesday's medium batch.
 
 ### Database schema
 
@@ -405,9 +408,12 @@ Compose file: `docker-compose.yml`
 
 Local development:
 ```bash
+# One-time setup
+cp backend/.env.example backend/.env   # provides DATABASE_URL for ts-node-dev
+pip install youtube-transcript-api     # enables English CC detection locally
+
 cd backend && npm install && npm run dev
 cd frontend && npm install && npm run dev
-pip install youtube-transcript-api   # one-time; enables English CC detection locally
 ```
 
 Full stack via Docker Compose:
@@ -450,9 +456,9 @@ cd frontend && npm run build
   locally, run `pip install youtube-transcript-api`. Without it the Python
   `check_subtitles()` silently returns `hasEnglish: false` for all videos.
   The backend ts-node-dev process must be restarted after installing.
-- The backend ts-node-dev process loses `DATABASE_URL` on hot-reload if it was
-  set only in the shell. Restart with the env var explicitly:
-  `DATABASE_URL="file:C:/Users/droha/Workspace/SaltyChart/backend/prisma/prisma/data.db" npx ts-node-dev --respawn --transpile-only src/index.ts`
+- If the backend starts but every request returns 500, `DATABASE_URL` is
+  missing. The server now exits with `[FATAL]` on startup if it's not set.
+  Fix: ensure `backend/.env` exists (copy from `backend/.env.example`).
 
 ## References
 

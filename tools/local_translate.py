@@ -622,6 +622,11 @@ def upload_segments(server: str, token: str, video_id: str, media_id: int, model
 # ---------------------------------------------------------------------------
 
 def main():
+    # Ensure stdout uses UTF-8 so show titles with non-cp1252 chars don't crash on Windows
+    import sys as _sys
+    if hasattr(_sys.stdout, 'reconfigure'):
+        _sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
     parser = argparse.ArgumentParser(description="Local GPU subtitle translation for SaltyChart")
     parser.add_argument("--server", required=True, help="SaltyChart server URL (e.g. http://192.168.1.X:8085)")
     parser.add_argument("--username", "-u", type=str, help="SaltyChart username")
@@ -646,6 +651,9 @@ def main():
     if args.log:
         log_path = args.log
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        # Rotate when the log exceeds 5 MB — keeps current + one .old archive.
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 5 * 1024 * 1024:
+            os.replace(log_path, log_path + '.old')
         log_file = open(log_path, "a", encoding="utf-8")
         log_file.write(f"\n{'='*60}\n")
         log_file.write(f"Run started: {datetime.now().isoformat()}\n")

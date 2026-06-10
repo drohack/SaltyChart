@@ -1,6 +1,13 @@
 import dotenv from 'dotenv';
 // Load env variables FIRST so later imports (Prisma client) see final value.
+// backend/.env provides DATABASE_URL for local dev; Docker injects it via env.
 dotenv.config();
+
+if (!process.env.DATABASE_URL) {
+  console.error('[FATAL] DATABASE_URL is not set.');
+  console.error('[FATAL] Create backend/.env containing: DATABASE_URL=file:./prisma/prisma/data.db');
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Networking tweaks

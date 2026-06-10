@@ -84,7 +84,10 @@ import { nextSeasonInfo } from '../stores/season';
         prefetchedSubs = new Map(Object.entries(data));
         prefetchComplete = true;
       })
-      .catch(() => { prefetchComplete = true; });
+      .catch((err) => {
+      console.warn('[translate] check-batch failed, falling back to per-video checks:', err);
+      prefetchComplete = true;
+    });
   }
 
   $: tvAnime = anime.filter((a) => a.format === 'TV');
