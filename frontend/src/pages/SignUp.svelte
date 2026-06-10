@@ -37,4 +37,5 @@ import { authToken, userName } from '../stores/auth';
   <input bind:this={userInput} class="input w-full" placeholder="Username" bind:value={username} />
   <input class="input w-full" type="password" placeholder="Password" bind:value={password} />
   <button class="btn btn-primary w-full" type="submit">Create Account</button>
+  <p class="text-sm text-center">Already have an account? <a href="/login" class="link" on:click|preventDefault={() => { window.history.pushState({}, '', '/login'); dispatchEvent(new PopStateEvent('popstate')); }}>Log in here</a></p>
 </form>

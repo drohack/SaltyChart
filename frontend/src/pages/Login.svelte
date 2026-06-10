@@ -42,4 +42,8 @@ import { authToken, userName } from '../stores/auth';
   <input bind:this={userInput} class="input w-full" placeholder="Username" bind:value={username} />
   <input class="input w-full" type="password" placeholder="Password" bind:value={password} />
   <button class="btn btn-primary w-full" type="submit">Login</button>
+  <div class="text-sm text-center space-y-1">
+    <p>Don't have an account? <a href="/signup" class="link" on:click|preventDefault={() => { window.history.pushState({}, '', '/signup'); dispatchEvent(new PopStateEvent('popstate')); }}>Sign up here</a></p>
+    <p>Forgot your password? <a href="/reset-password" class="link" on:click|preventDefault={() => { window.history.pushState({}, '', '/reset-password'); dispatchEvent(new PopStateEvent('popstate')); }}>Reset it here</a></p>
+  </div>
 </form>

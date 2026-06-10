@@ -71,4 +71,26 @@ router.post('/login', async (req, res) => {
   res.json({ token, username });
 });
 
+router.post('/reset-password', async (req, res) => {
+  const { username, newPassword } = req.body as {
+    username?: string;
+    newPassword?: string;
+  };
+  if (!username || !newPassword) {
+    return res.status(400).json({ error: 'Missing fields', code: 'BAD_REQUEST' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { username } });
+  if (!user) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+
+  try {
+    const hashed = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await prisma.user.update({ where: { username }, data: { password: hashed } });
+    res.json({ message: 'Password reset successfully' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error', code: 'SERVER_ERROR' });
+  }
+});
+
 export default router;

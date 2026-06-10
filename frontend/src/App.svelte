@@ -3,6 +3,7 @@
   let Home: any;
   let Login: any;
   let SignUp: any;
+  let ResetPassword: any;
   let Randomize: any;
   let Compare: any;
 
@@ -57,6 +58,9 @@ $: {
       case '/signup':
         SignUp = SignUp || (await import('./pages/SignUp.svelte')).default;
         return SignUp;
+      case '/reset-password':
+        ResetPassword = ResetPassword || (await import('./pages/ResetPassword.svelte')).default;
+        return ResetPassword;
       case '/random':
         Randomize = Randomize || (await import('./pages/Randomize.svelte')).default;
         return Randomize;
