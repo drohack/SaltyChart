@@ -48,9 +48,9 @@ import { nextSeasonInfo } from '../stores/season';
     const today = new Date();
     const curSeason = ((): Season => {
       const m = today.getMonth();
-      if (m <= 1) return 'WINTER';
-      if (m <= 4) return 'SPRING';
-      if (m <= 7) return 'SUMMER';
+      if (m <= 2) return 'WINTER';
+      if (m <= 5) return 'SPRING';
+      if (m <= 8) return 'SUMMER';
       return 'FALL';
     })();
 

@@ -33,7 +33,10 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 if (typeof window !== 'undefined') {
   window.addEventListener('keydown', (e) => {
-    if ((e.key === 'F5' || e.keyCode === 116) && e.ctrlKey) {
+    if (
+      (e.ctrlKey && (e.key === 'F5' || e.keyCode === 116)) ||       // Ctrl+F5
+      (e.ctrlKey && e.shiftKey && (e.key === 'R' || e.key === 'r')) // Ctrl+Shift+R
+    ) {
       try {
         sessionStorage.setItem('forceSeasonReset', '1');
       } catch {
@@ -85,10 +88,7 @@ function loadPersisted(): { season: Season; year: number } | null {
   return null;
 }
 
-const initial = loadPersisted() ?? {
-  season: currentSeason(),
-  year: new Date().getFullYear()
-};
+const initial = loadPersisted() ?? computeInitialSeason();
 
 export const seasonYear: Writable<{ season: Season; year: number }> = writable(initial);
 
@@ -148,20 +148,37 @@ export function getCurrentSeasonFromAPI(): Promise<{ season: Season; seasonYear:
   return _apiPromise;
 }
 
-// Helper to compute next season start (AniList boundaries)
+// Helper to compute next season start (anime industry boundaries: Jan/Apr/Jul/Oct)
 export function nextSeasonInfo(
   season: Season,
   year: number
 ): { season: Season; year: number; starts: Date } {
   switch (season) {
     case 'WINTER':
-      return { season: 'SPRING', year, starts: new Date(year, 2, 1) }; // 1 Mar
+      return { season: 'SPRING', year, starts: new Date(year, 3, 1) }; // 1 Apr
     case 'SPRING':
-      return { season: 'SUMMER', year, starts: new Date(year, 5, 1) }; // 1 Jun
+      return { season: 'SUMMER', year, starts: new Date(year, 6, 1) }; // 1 Jul
     case 'SUMMER':
-      return { season: 'FALL', year, starts: new Date(year, 8, 1) }; // 1 Sep
+      return { season: 'FALL', year, starts: new Date(year, 9, 1) }; // 1 Oct
     case 'FALL':
     default:
-      return { season: 'WINTER', year: year + 1, starts: new Date(year, 11, 1) }; // 1 Dec
+      return { season: 'WINTER', year: year + 1, starts: new Date(year + 1, 0, 1) }; // 1 Jan next yr
   }
+}
+
+// Returns the season to show by default: the upcoming season if within 28 days of its start,
+// otherwise the current season. Handles the cross-year case (FALL→WINTER) correctly.
+function computeInitialSeason(date: Date = new Date()): { season: Season; year: number } {
+  const m = date.getMonth();
+  let raw: Season;
+  if (m <= 2) raw = 'WINTER';
+  else if (m <= 5) raw = 'SPRING';
+  else if (m <= 8) raw = 'SUMMER';
+  else raw = 'FALL';
+
+  const rawYear = date.getFullYear();
+  const next = nextSeasonInfo(raw, rawYear);
+  const daysUntil = (next.starts.getTime() - date.getTime()) / 86_400_000;
+  if (daysUntil <= 28) return { season: next.season, year: next.year };
+  return { season: raw, year: rawYear };
 }
