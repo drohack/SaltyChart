@@ -118,6 +118,19 @@ so the frontend defaults subtitles off.
 opacity, text outline. Settings popup via gear icon next to the CC button.
 Stored per-user in the Settings table.
 
+**Auth improvements**
+- Login page links directly to Sign Up and Password Reset.
+- Sign Up page links back to Login.
+- Password reset (`POST /api/auth/reset-password`) — username-only, no email
+  required. Three-step page: enter username → confirm → set new password.
+
+**Season default look-ahead**
+- On first load the app now defaults to the *upcoming* season if it starts
+  within 76 days (~2 weeks after the current season's first episode airs),
+  so users land on next-season trailers rather than what's already airing.
+- Fixed the "X days until next season" countdown which was miscalculating
+  season start dates (was using Mar/Jun/Sep/Dec instead of Apr/Jul/Oct/Jan).
+
 **Performance & hardening**
 - DB indexes on `WatchList(userId)`, `WatchList(season, year)`,
   `Settings(hideFromCompare)` — created idempotently at startup in

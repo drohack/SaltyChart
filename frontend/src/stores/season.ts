@@ -179,6 +179,6 @@ function computeInitialSeason(date: Date = new Date()): { season: Season; year: 
   const rawYear = date.getFullYear();
   const next = nextSeasonInfo(raw, rawYear);
   const daysUntil = (next.starts.getTime() - date.getTime()) / 86_400_000;
-  if (daysUntil <= 28) return { season: next.season, year: next.year };
+  if (daysUntil <= 76) return { season: next.season, year: next.year };
   return { season: raw, year: rawYear };
 }

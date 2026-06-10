@@ -113,7 +113,7 @@ Path: `backend/`
 
 - `/api/health`          (health check)
 - `/api/anime`           (AniList GraphQL proxy + cache)
-- `/api/auth`            (login, signup, JWT issuance)
+- `/api/auth`            (login, signup, password reset, JWT issuance)
 - `/api/list`            (user watchlist CRUD)
 - `/api/public-list`     (public watchlist read-only)
 - `/api/users`           (user management)
@@ -129,6 +129,7 @@ Routes inside existing routers:
 - `GET   /api/list/user-ratings?username=&season=&year=` — mediaIds a user has in a season (**rate-limited**)
 - `GET   /api/list/nicknames?mediaId=` — nicknames & ranks for a given series (**rate-limited**)
 - `PUT   /api/list` — replace entire list for a season/year in one shot
+- `POST  /api/auth/reset-password` — reset a user's password by username; no auth required (intentionally low-security — no email, small friend-group app)
 
 ### Rate limiting
 
@@ -238,7 +239,7 @@ Path: `frontend/`
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (produces static assets)
 - Preview: `npm run preview`
-- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, Randomize, Compare
+- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 - The main anime grid (`AnimeGridTranslate.svelte`) includes real-time
   Japanese subtitle translation for trailers via the `/api/translate`
@@ -302,9 +303,18 @@ Path: `frontend/`
   independently (you can compare your pre-watch vs their post-watch).
 
 **Misc**
-- App auto-detects the current season on first load and shows "X days until
-  next season" helper text.
-- The last selected season/year is remembered across navigations.
+- On first load (or after cache expiry), the default season uses a **76-day
+  look-ahead**: if the next anime season starts within 76 days, that season
+  is shown instead of the current one. This means the app switches to the
+  upcoming season roughly 2 weeks after the current season's first episode
+  airs — the goal is to browse trailers for what's coming next.
+  `computeInitialSeason()` in `src/stores/season.ts` owns this logic.
+- The home page shows "X days until [next season]" helper text, derived
+  locally from the browser date (no API call). Season start dates used are
+  Jan 1 / Apr 1 / Jul 1 / Oct 1 (`nextSeasonInfo()` in `season.ts`).
+- Ctrl+Shift+R (or Ctrl+F5) hard-reloads the page and resets the cached
+  season selection back to the computed default.
+- The last selected season/year is remembered across navigations (1-hour TTL).
 
 ## Prisma
 
