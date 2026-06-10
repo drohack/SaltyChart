@@ -171,26 +171,30 @@ is set via the CC toggle button (calls `PATCH /dismiss`) and persists for
 all users. `hasCachedSegments` and `modelName` are used by the local
 translation script to decide whether to re-translate.
 
-YouTube caption control — two paths based on `SubtitleCache.hasEnglishSubs`:
+YouTube caption control — three paths in `openModal` (`AnimeGridTranslate.svelte`):
 
 **Page load pre-fetch:** `Home.svelte` fires `GET /api/translate/check-batch`
-immediately after the anime list loads. Single DB query returns all video IDs
-with `hasEnglishSubs=1`; also queues background Python checks for uncached
-videos so the cache self-populates while users browse. Results stored in
-`prefetchedSubs` (a `Map<string, boolean>`) passed to each `AnimeGrid`.
+immediately after the anime list loads (~5ms DB-only). Returns all video IDs
+with `hasEnglishSubs=1` and queues background Python checks for uncached IDs.
+Results stored in `prefetchedSubs` (`Map<string, boolean>`) + `prefetchComplete`
+boolean, both passed as props to each `AnimeGrid`.
 
-**Cached positive (`hasEnglishSubs = 1`):** `openModal` checks `prefetchedSubs`
-first — instant, no network round-trip. `hasEnglishSubs` is already `true` so
-`onApiChange` skips `unloadModule` and YouTube CC starts in English immediately.
-Translation is never started.
+**Path A — confirmed English (`prefetchedSubs.get(id) === true`):**
+Instant, no network call. `hasEnglishSubs = true` so `onApiChange` skips
+`unloadModule`; YouTube CC starts in English immediately. Translation never starts.
 
-**Not cached / cached negative:** Iframe renders immediately, `onApiChange`
-fires with `hasEnglishSubs = false` → `unloadModule('captions')` suppresses
-Japanese CC. `/check` runs in the background (Python may spawn). If it
-returns `hasEnglish: true`, the frontend calls `loadModule('captions')` +
-`setOption('captions', 'track', {languageCode: 'en'})` and hides the overlay.
-The `hasEnglishSubs = 1` result is cached so future opens use the fast path.
-If no English subs, translation overlay stays; YouTube CC stays suppressed.
+**Path B — batch complete, video not in map (`prefetchComplete === true`):**
+Iframe opens immediately (no wait). `onApiChange` calls `unloadModule` to
+suppress Japanese CC; translation starts. `/check` fires async in the
+background — if Python has since completed and returns `hasEnglish: true`,
+the frontend calls `loadModule` + `setOption` to switch to English CC and
+hides the overlay. The server deduplicates translations so a video is only
+ever translated once; if cached segments already exist the stream returns
+instantly (~50ms).
+
+**Path C — batch not yet complete (user clicked within ~5ms of page load):**
+Races `/check` against a 150ms timeout. If check returns fast (cached positive
+in DB), uses the result; otherwise falls through to the same behavior as path B.
 
 `check_subtitles()` in `backend/scripts/translate_stream.py` uses
 `ytt.list(videoId).find_transcript(['en'])` which detects manually uploaded,

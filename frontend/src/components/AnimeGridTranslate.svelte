@@ -48,6 +48,9 @@ $: _currentLang = $options.titleLanguage;
   // Pre-fetched English sub status — passed in from Home.svelte via check-batch.
   // Key: YouTube video ID, Value: true = confirmed English CC in DB.
   export let prefetchedSubs: Map<string, boolean> = new Map();
+  // True once the batch has returned — lets openModal skip the 150ms precheck
+  // race for videos not in prefetchedSubs (batch already said: no English CC).
+  export let prefetchComplete: boolean = false;
 
   // ── Translation state ──────────────────────────────────────────────
   let subtitleSegments: Array<{ start: number; end: number; text: string }> = [];
@@ -87,18 +90,46 @@ $: _currentLang = $options.titleLanguage;
 
     const mediaParam = mediaId ? `&mediaId=${mediaId}` : '';
 
-    // Fast path: use result pre-fetched by check-batch on page load.
+    // Fast path: batch prefetch confirmed English CC — instant, no network call.
     if (prefetchedSubs.get(id) === true) {
       hasEnglishSubs = true;
       subtitlesVisible = false;
       checkResolved = true;
       modal = id;
-      return; // English CC confirmed — no translation needed
+      return;
     }
 
-    // Slow path: pre-fetch wasn't available (not yet in DB or negative).
-    // Race the individual /check against a 150ms timeout so the iframe doesn't
-    // block while Python runs in the background.
+    // If the batch has already run and this video wasn't in it, we know there's
+    // no confirmed English CC — skip the precheck race and go straight to
+    // translation. Still fire /check async to catch subtitlesDisabled/hasBurnedInSubs
+    // and to pick up any Python result that completed after the batch ran.
+    if (prefetchComplete) {
+      modal = id;
+      translationLoading = true;
+      startTranslation(id, mediaParam);
+      fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
+        .then(res => res.json())
+        .then((data: any) => {
+          if (modal !== id || !data) { checkResolved = true; return; }
+          hasEnglishSubs = !!data.hasEnglish;
+          if (data.hasEnglish || data.subtitlesDisabled || data.hasBurnedInSubs) {
+            subtitlesVisible = false;
+          }
+          if (data.hasEnglish && iframeElement?.contentWindow) {
+            const win = iframeElement.contentWindow!;
+            win.postMessage(JSON.stringify({ event: 'command', func: 'loadModule', args: ['captions'] }), '*');
+            win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
+            win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
+          }
+          if (data.hasEnglish) prefetchedSubs.set(id, true);
+          checkResolved = true;
+        })
+        .catch(() => { checkResolved = true; });
+      return;
+    }
+
+    // Batch hasn't run yet (user clicked very fast) — race /check against 150ms
+    // so the iframe doesn't block while Python potentially runs.
     const checkPromise = fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
       .then(res => res.json()).catch(() => null);
 
@@ -115,20 +146,14 @@ $: _currentLang = $options.titleLanguage;
       checkResolved = true;
     }
 
-    // Show the iframe — hasEnglishSubs is already set for cached videos
     modal = id;
 
-    if (hasEnglishSubs) {
-      // English CC confirmed — no translation needed
-      return;
-    }
+    if (hasEnglishSubs) return;
 
-    // Start translation for videos without confirmed English subs
     translationLoading = true;
     startTranslation(id, mediaParam);
 
     if (!precheck) {
-      // Check timed out (Python still running) — handle when it resolves
       checkPromise.then((data: any) => {
         if (modal !== id || !data) { checkResolved = true; return; }
         hasEnglishSubs = !!data.hasEnglish;
@@ -141,9 +166,8 @@ $: _currentLang = $options.titleLanguage;
           win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['captions', 'track', { languageCode: 'en' }] }), '*');
           win.postMessage(JSON.stringify({ event: 'command', func: 'setOption', args: ['cc', 'track', { languageCode: 'en' }] }), '*');
         }
-        checkResolved = true;
-        // Update prefetch map so re-opens of the same video use the fast path
         if (data.hasEnglish) prefetchedSubs.set(id, true);
+        checkResolved = true;
       }).catch(() => { checkResolved = true; });
     }
   }

@@ -68,16 +68,23 @@ import { nextSeasonInfo } from '../stores/season';
 
   // Pre-fetch English sub status for all trailers. Populated after each season load.
   let prefetchedSubs = new Map<string, boolean>();
+  // True once the batch has returned — openModal uses this to skip the 150ms
+  // precheck race for videos not in the map (batch already said: no English CC).
+  let prefetchComplete = false;
 
   function prefetchSubtitleStatus(current: any[], prev: any[]) {
+    prefetchComplete = false;
     const ids = [...current, ...prev]
       .filter(a => a.trailer?.site === 'youtube')
       .map(a => a.trailer.id as string);
-    if (ids.length === 0) return;
+    if (ids.length === 0) { prefetchComplete = true; return; }
     fetch(`/api/translate/check-batch?videoIds=${ids.join(',')}`)
       .then(r => r.json())
-      .then((data: Record<string, boolean>) => { prefetchedSubs = new Map(Object.entries(data)); })
-      .catch(() => {});
+      .then((data: Record<string, boolean>) => {
+        prefetchedSubs = new Map(Object.entries(data));
+        prefetchComplete = true;
+      })
+      .catch(() => { prefetchComplete = true; });
   }
 
   $: tvAnime = anime.filter((a) => a.format === 'TV');
@@ -437,6 +444,7 @@ let autoRename = false;
         {hideInList}
         {hideAdult}
         {prefetchedSubs}
+        {prefetchComplete}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -458,6 +466,7 @@ let autoRename = false;
         {hideInList}
         {hideAdult}
         {prefetchedSubs}
+        {prefetchComplete}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -476,6 +485,7 @@ let autoRename = false;
         {hideInList}
         {hideAdult}
         {prefetchedSubs}
+        {prefetchComplete}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -494,6 +504,7 @@ let autoRename = false;
         {hideInList}
         {hideAdult}
         {prefetchedSubs}
+        {prefetchComplete}
         {watchedIds}
         {inListIds}
         {autoRename}
@@ -512,6 +523,7 @@ let autoRename = false;
         {hideInList}
         {hideAdult}
         {prefetchedSubs}
+        {prefetchComplete}
         {watchedIds}
         {inListIds}
         {autoRename}
