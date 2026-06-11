@@ -8,12 +8,15 @@ const router = Router();
 // Rate-limit the handful of unauthenticated endpoints below (e.g. /nicknames,
 // /users-with-ratings) so scrapers can't hammer them. Authenticated endpoints
 // above are already covered by the server-wide generalLimiter in index.ts.
+// Disabled in dev so the parallel pre-deploy test suite doesn't trip it.
+const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 const publicListLimiter = rateLimit({
   windowMs: 60_000, // 1 minute
   max: 60,
   message: { error: 'Too many requests, please slow down.', code: 'RATE_LIMITED' },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  skip: () => _isDev,
 });
 
 // Get list for season/year

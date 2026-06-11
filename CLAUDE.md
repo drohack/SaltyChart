@@ -59,14 +59,54 @@ When your diff touches any of these, update the listed locations too:
 
 1. `cd frontend && npm run build` → zero a11y warnings, clean exit.
 2. `cd backend && npx tsc --noEmit` → clean exit.
-3. Skim `README.md` and this file for stale mentions of the old behaviour
+3. **Before building Docker images for deploy**: run the full pre-deploy
+   suite (`tools/tests/run_all.py`) — see *Testing* section below.
+4. Skim `README.md` and this file for stale mentions of the old behaviour
    and update them.
-4. If you touched `shareCompare()` in `Compare.svelte` or `shareMyList()`
+5. If you touched `shareCompare()` in `Compare.svelte` or `shareMyList()`
    in `WatchListSidebar.svelte`, manually verify the share button still
    exports a reasonable image — both functions are DOM-clone-heavy and
    brittle to layout changes.
-5. **Clean up Playwright screenshots** at the repo root:
+6. **Clean up Playwright screenshots** at the repo root:
    `rm compare-*.png randomize-*.png home-*.png home-desktop-after-gap-fix.png 2>/dev/null`
+
+### Testing
+
+A regression / smoke-test suite lives at `tools/tests/`. Run it before
+building Docker images, after any change to a route, schema, store, or
+translation pipeline. Documentation at `tools/tests/README.md`.
+
+```bash
+# 0. Kill stale ts-node-dev / vite processes (avoids port conflicts)
+py -3.13 tools/tests/kill_stale.py
+
+# 1. Backend dev on :3000, frontend dev on :5173 (Vite strictPort=true)
+cd backend && npm run dev   # terminal 1
+cd frontend && npm run dev  # terminal 2
+
+# 2. Run the suite
+py -3.13 -u tools/tests/run_all.py
+
+# Skip the GPU-heavy burned-in detection test
+py -3.13 -u tools/tests/run_all.py --skip-burned-in
+```
+
+The backend's `/api/auth/*` rate limiter (20 req/min in prod) is **disabled
+when `NODE_ENV !== 'production'`** so rapid signups during tests don't trip it.
+
+Suite includes:
+| File | Covers |
+|---|---|
+| `test_season_lookahead.py` | 76-day next-season cutover logic (regression for the "X days till" bug) |
+| `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
+| `test_api_negative.py` | 10 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates |
+| `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
+| `test_ui_interactions.py` | 10 button-click flows: login, search filter, hide 18+, season change, add-to-list, theme, wheel spin, logout, modal Escape, Compare with 2 users |
+| `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
+| `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
+
+Final line on success: `Pre-deploy: 8/8 passed — ready to build`. On failure:
+`Pre-deploy: FAILED at step X — DO NOT deploy`.
 
 ---
 
@@ -83,7 +123,8 @@ SaltyChart/
 ├── backend/          # Express + TypeScript REST API
 │   └── prisma/       # Prisma schema + SQLite datasource (nested prisma/data.db)
 ├── frontend/         # Svelte 4 + Vite + Tailwind/DaisyUI single-page app
-├── tools/            # Python helper scripts (local_translate.py etc.)
+├── tools/            # Python helper scripts (local_translate.py, benchmark, tests/)
+│   └── tests/        # Pre-deploy smoke/regression suite (run_all.py)
 ├── docker-compose.yml
 ├── README.md         # High-level overview & quick-start instructions
 └── CLAUDE.md         # this file — contributor/agent guide
@@ -194,9 +235,12 @@ in DB), uses the result; otherwise falls through to the same behavior as path B.
 auto-generated, and auto-translatable English CC — not just manually uploaded
 ones (the old `ytt.fetch(languages=["en"])` only found manually uploaded tracks).
 
-The cache (`SubtitleCache.hasEnglishSubs`) only trusts a stored positive (1).
-A stored false (0) falls through to re-run Python so old incorrectly-cached
-results self-heal. The cache write never downgrades a stored true to false.
+The cache (`SubtitleCache.hasEnglishSubs`) trusts both stored values: positive
+(1) and negative (0). Both come from the current `check_subtitles()` which
+uses `list().find_transcript(['en'])` and reliably detects manual,
+auto-generated, and translatable English CC. Avoiding re-checks on cached-false
+eliminates redundant YouTube API hits and rate-limit risk. The cache write
+never downgrades a stored true to false.
 
 `youtube_transcript_api` must be installed locally (`pip install youtube-transcript-api`)
 for the English sub detection to work in dev. It is pre-installed in Docker.

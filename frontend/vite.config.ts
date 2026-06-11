@@ -12,6 +12,9 @@ export default ({ mode }) => {
     plugins: [svelte()],
     server: {
       port: 5173,
+      // Fail fast if 5173 is taken — forces us to clean up stale node processes
+      // rather than silently falling through to 5174 and confusing the test suite.
+      strictPort: true,
       proxy: {
         // Proxy /api requests to the backend service
         '/api': {

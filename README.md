@@ -171,8 +171,22 @@ container, so no additional environment configuration is required.
 
 ## Production build
 
-Each sub-directory ships a **multi-stage Dockerfile** that produces a minimal
-runtime image.
+**Before building, run the pre-deploy suite** to catch regressions:
+
+```bash
+# 0. Kill stale ts-node-dev / vite processes from prior sessions
+py -3.13 tools/tests/kill_stale.py
+
+# 1. Backend + frontend dev servers must be running (npm run dev in each)
+# Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
+py -3.13 -u tools/tests/run_all.py
+
+# Expect: "Pre-deploy: 8/8 passed — ready to build"
+# Skip the GPU test with --skip-burned-in if no CUDA
+```
+
+Then each sub-directory ships a **multi-stage Dockerfile** that produces a
+minimal runtime image.
 
 ```bash
 # Back-end – Express (listens on 3000 inside)

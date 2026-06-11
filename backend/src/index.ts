@@ -77,12 +77,15 @@ app.use(compression());
 // Rate limiting
 // ────────────────────────────────────────────────────────────────────────────
 
-// General limiter: 120 requests per minute per IP
+// General limiter: 120 requests per minute per IP. Disabled in dev so the
+// parallel pre-deploy test suite doesn't trip it.
+const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 const generalLimiter = rateLimit({
   windowMs: 60_000,
   max: 120,
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  skip: () => _isDev,
 });
 
 app.use(generalLimiter);
@@ -376,12 +379,16 @@ ensureDatabaseSchema().then(() => {
   });
 
   app.use('/api/anime', animeRouter);
+  // Auth limiter: 20 req/min on /api/auth in prod (brute-force protection).
+  // Disabled in dev so smoke tests / rapid signups don't trip it.
+  const isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
   const authLimiter = rateLimit({
-    windowMs: 60_000, // 1 minute
+    windowMs: 60_000,
     max: 20,
     message: { error: 'Too many requests, please slow down.', code: 'RATE_LIMITED' },
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    skip: () => isDev,
   });
 
   app.use('/api/auth', authLimiter, authRouter);

@@ -332,12 +332,15 @@ router.get('/check', async (req: Request, res: Response) => {
         hasCachedSegments: cached[0].segments != null,
         modelName: cached[0].modelName || null,
       };
-      // Only trust a cached positive (1). A cached false (0) may have been set by
-      // the old check_subtitles() which missed auto-generated English CC — fall through
-      // to re-run Python so those get corrected and re-cached.
+      // Trust the cached hasEnglishSubs flag in both directions. Both true(1)
+      // and false(0) come from the current check_subtitles() which uses
+      // list().find_transcript(['en']) and correctly identifies manual,
+      // auto-generated, and translatable English CC. Avoiding the re-check on
+      // cached-false prevents repeated YouTube API hits and rate-limit risk.
       // Use Number() to handle both integer (1) and BigInt (1n) from SQLite.
-      if (Number(cached[0].hasEnglishSubs) === 1) {
-        return res.json({ hasEnglish: true, ...cachedExtra });
+      const cachedHasEn = Number(cached[0].hasEnglishSubs);
+      if (cachedHasEn === 0 || cachedHasEn === 1) {
+        return res.json({ hasEnglish: cachedHasEn === 1, ...cachedExtra });
       }
     }
   } catch (err) {
