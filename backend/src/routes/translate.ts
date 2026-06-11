@@ -320,9 +320,15 @@ router.get('/check', async (req: Request, res: Response) => {
   // cachedExtra preserves subtitlesDisabled/hasBurnedInSubs even when we fall
   // through to re-run the Python check (e.g. when hasEnglishSubs was cached wrong).
   let cachedExtra = { subtitlesDisabled: false, hasBurnedInSubs: false, hasCachedSegments: false, modelName: null as string | null };
+  // Re-check stale "no English CC" results every 7 days so newly-added YouTube
+  // CC eventually gets picked up. Positives are trusted forever (English CC
+  // doesn't get removed). This keeps YouTube API calls roughly bounded by
+  // "1 per uncached video per week" instead of "every play" — the rate-limit
+  // risk that hit us before.
+  const NEG_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
-      `SELECT "hasEnglishSubs", "subtitlesDisabled", "hasBurnedInSubs", "segments", "modelName" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
+      `SELECT "hasEnglishSubs", "subtitlesDisabled", "hasBurnedInSubs", "segments", "modelName", "lastEnCheckAt" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
       videoId
     );
     if (cached.length > 0) {
@@ -332,15 +338,18 @@ router.get('/check', async (req: Request, res: Response) => {
         hasCachedSegments: cached[0].segments != null,
         modelName: cached[0].modelName || null,
       };
-      // Trust the cached hasEnglishSubs flag in both directions. Both true(1)
-      // and false(0) come from the current check_subtitles() which uses
-      // list().find_transcript(['en']) and correctly identifies manual,
-      // auto-generated, and translatable English CC. Avoiding the re-check on
-      // cached-false prevents repeated YouTube API hits and rate-limit risk.
-      // Use Number() to handle both integer (1) and BigInt (1n) from SQLite.
       const cachedHasEn = Number(cached[0].hasEnglishSubs);
-      if (cachedHasEn === 0 || cachedHasEn === 1) {
-        return res.json({ hasEnglish: cachedHasEn === 1, ...cachedExtra });
+      if (cachedHasEn === 1) {
+        // Trust positives forever
+        return res.json({ hasEnglish: true, ...cachedExtra });
+      }
+      if (cachedHasEn === 0 && cached[0].lastEnCheckAt) {
+        const age = Date.now() - new Date(cached[0].lastEnCheckAt).getTime();
+        if (age < NEG_RECHECK_MS) {
+          // Negative is fresh — trust it, skip the YouTube hit
+          return res.json({ hasEnglish: false, ...cachedExtra });
+        }
+        // Otherwise: stale negative, fall through to re-check
       }
     }
   } catch (err) {
@@ -394,16 +403,18 @@ router.get('/check', async (req: Request, res: Response) => {
     });
   }
 
-  // Cache the result (non-blocking).
-  // Only update hasEnglishSubs when the new value is true — never overwrite a
-  // correct true with a potentially wrong false from a transient network failure.
+  // Cache the result + stamp lastEnCheckAt so we don't re-hit YouTube for 7
+  // days. Only update hasEnglishSubs when the new value is true — never
+  // overwrite a correct true with a potentially wrong false from a transient
+  // network failure.
   if (result && result.hasEnglish !== undefined) {
     prisma.$executeRawUnsafe(
-      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "hasEnglishSubs")
-       VALUES (?, ?, ?)
+      `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "hasEnglishSubs", "lastEnCheckAt")
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT("videoId") DO UPDATE SET
          "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END,
-         "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId")`,
+         "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
+         "lastEnCheckAt" = CURRENT_TIMESTAMP`,
       videoId,
       mediaId,
       result.hasEnglish ? 1 : 0

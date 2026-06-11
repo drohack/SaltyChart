@@ -342,8 +342,17 @@ async function ensureDatabaseSchema() {
           `ALTER TABLE "SubtitleCache" ADD COLUMN "hasBurnedInSubs" BOOLEAN`
         );
       }
+      // lastEnCheckAt: when /check last asked YouTube. Used to decide when to
+      // re-check a cached "no English CC" result so newly-added YouTube CC
+      // gets picked up without re-checking on every play.
+      if (!scCols.some((c) => c.name === 'lastEnCheckAt')) {
+        console.log('[DB] Adding lastEnCheckAt column to SubtitleCache');
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "SubtitleCache" ADD COLUMN "lastEnCheckAt" DATETIME`
+        );
+      }
     } catch (err) {
-      console.warn('[DB] Failed to add subtitlesDisabled column', err);
+      console.warn('[DB] Failed to add SubtitleCache columns', err);
     }
 
     // --------------------- Performance indexes ---------------------

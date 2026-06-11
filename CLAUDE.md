@@ -235,12 +235,13 @@ in DB), uses the result; otherwise falls through to the same behavior as path B.
 auto-generated, and auto-translatable English CC — not just manually uploaded
 ones (the old `ytt.fetch(languages=["en"])` only found manually uploaded tracks).
 
-The cache (`SubtitleCache.hasEnglishSubs`) trusts both stored values: positive
-(1) and negative (0). Both come from the current `check_subtitles()` which
-uses `list().find_transcript(['en'])` and reliably detects manual,
-auto-generated, and translatable English CC. Avoiding re-checks on cached-false
-eliminates redundant YouTube API hits and rate-limit risk. The cache write
-never downgrades a stored true to false.
+The cache (`SubtitleCache.hasEnglishSubs`) trusts positives forever (English
+CC doesn't get removed from YouTube videos) and trusts negatives for **7 days**
+via `lastEnCheckAt`. After 7 days, a cached `hasEnglishSubs=0` falls through
+to re-run Python so newly-added YouTube CC eventually gets picked up. This
+balances "don't re-check on every play" (rate-limit risk) with "eventually
+notice when CC is added". The cache write never downgrades a stored true to
+false (transient network failure protection).
 
 `youtube_transcript_api` must be installed locally (`pip install youtube-transcript-api`)
 for the English sub detection to work in dev. It is pre-installed in Docker.
