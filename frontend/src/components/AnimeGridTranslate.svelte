@@ -55,6 +55,8 @@ $: _currentLang = $options.titleLanguage;
   // ── Translation state ──────────────────────────────────────────────
   let subtitleSegments: Array<{ start: number; end: number; text: string }> = [];
   let currentSubtitle = '';
+  // Pointer into subtitleSegments for O(1) tick lookups — advances forward only
+  let currentSegIdx = 0;
   let eventSource: EventSource | null = null;
   let subtitleTickInterval: number | null = null;
   let translating = false;
@@ -86,6 +88,7 @@ $: _currentLang = $options.titleLanguage;
     hasEnglishSubs = false;
     subtitlesVisible = true;
     checkResolved = false;
+    currentSegIdx = 0;
     document.body.style.overflow = 'hidden';
 
     const mediaParam = mediaId ? `&mediaId=${mediaId}` : '';
@@ -254,8 +257,14 @@ $: _currentLang = $options.titleLanguage;
         playerCurrentTime = (Date.now() - modalOpenedAt) / 1000;
       }
 
-      const seg = subtitleSegments.find(s => playerCurrentTime >= s.start && playerCurrentTime <= s.end);
-      currentSubtitle = seg?.text ?? '';
+      // Advance pointer forward (segments are chronological) — O(1) for stable playback
+      while (currentSegIdx < subtitleSegments.length - 1 &&
+             playerCurrentTime > subtitleSegments[currentSegIdx].end) {
+        currentSegIdx++;
+      }
+      const seg = subtitleSegments[currentSegIdx];
+      currentSubtitle = (seg && playerCurrentTime >= seg.start && playerCurrentTime <= seg.end)
+        ? seg.text : '';
 
       // Stop ticking once we've passed the last segment
       const lastSeg = subtitleSegments[subtitleSegments.length - 1];
@@ -269,6 +278,7 @@ $: _currentLang = $options.titleLanguage;
 
   function closeModal() {
     modal = null;
+    currentSegIdx = 0;
     document.body.style.overflow = '';
     stopTranslation();
     subtitleSegments = [];
@@ -383,6 +393,14 @@ $: _currentLang = $options.titleLanguage;
   // Helper to determine if a show has sequel/prequel relation
   function isSequel(show: any): boolean {
     return relationTags(show.relations).length > 0;
+  }
+
+  function sanitizeHtml(html: string): string {
+    return html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+      .replace(/\bon\w+\s*=/gi, 'data-blocked=')
+      .replace(/javascript:/gi, '');
   }
 
   // Get display title based on user preference
@@ -721,7 +739,7 @@ const dispatch = createEventDispatcher();
       <!-- Row 3: Summary -->
       {#if show.description}
         <div class="px-3 pb-3 text-sm overflow-y-auto max-h-60 flex-1 min-h-0 prose prose-sm dark:prose-invert">
-          {@html show.description}
+          {@html sanitizeHtml(show.description)}
         </div>
       {/if}
       {#if !show.description}

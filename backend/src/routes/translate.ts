@@ -91,7 +91,7 @@ function handleDaemonLine(line: string): void {
 
     // Save collected segments to cache and resolve in-flight waiters
     const pending = pendingSegments.get(rid);
-    if (pending && pending.segments.length > 0) {
+    if (pending) {  // cache even 0-segment results — prevents re-translating silent videos
       pendingSegments.delete(rid);
       const segJson = JSON.stringify(pending.segments);
       prisma.$executeRawUnsafe(
@@ -127,16 +127,6 @@ function handleDaemonLine(line: string): void {
           }
         }
       });
-    } else {
-      pendingSegments.delete(rid);
-      // Resolve in-flight waiters even if no segments (e.g. silent video)
-      if (pending) {
-        const inFlight = inFlightTranslations.get(pending.videoId);
-        if (inFlight) {
-          inFlightTranslations.delete(pending.videoId);
-          inFlight.resolve();
-        }
-      }
     }
     return;
   }
@@ -158,6 +148,11 @@ function handleDaemonLine(line: string): void {
 }
 
 function cleanupDaemon(): void {
+  if (daemon) {
+    daemon.stdout?.removeAllListeners();
+    daemon.stderr?.removeAllListeners();
+    daemon.removeAllListeners();
+  }
   daemon = null;
   daemonReady = false;
   daemonBuffer = '';
@@ -709,8 +704,8 @@ router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res:
     const lines = chunk.toString().split('\n').filter(Boolean);
     for (const line of lines) {
       batchStatus.log.push(line);
-      // Keep only last 200 log lines
-      if (batchStatus.log.length > 200) batchStatus.log.shift();
+      // Keep last 2000 lines — a full 8-hour batch produces ~500-1000 lines
+      if (batchStatus.log.length > 2000) batchStatus.log.shift();
     }
   });
 

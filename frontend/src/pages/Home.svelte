@@ -71,8 +71,12 @@ import { nextSeasonInfo } from '../stores/season';
   // True once the batch has returned — openModal uses this to skip the 150ms
   // precheck race for videos not in the map (batch already said: no English CC).
   let prefetchComplete = false;
+  // Incremented on every prefetch call; stale responses are discarded when they
+  // don't match the latest ID (prevents rapid season-switching race condition).
+  let _prefetchReqId = 0;
 
   function prefetchSubtitleStatus(current: any[], prev: any[]) {
+    const reqId = ++_prefetchReqId;
     prefetchComplete = false;
     const ids = [...current, ...prev]
       .filter(a => a.trailer?.site === 'youtube')
@@ -81,13 +85,15 @@ import { nextSeasonInfo } from '../stores/season';
     fetch(`/api/translate/check-batch?videoIds=${ids.join(',')}`)
       .then(r => r.json())
       .then((data: Record<string, boolean>) => {
+        if (reqId !== _prefetchReqId) return; // stale response — discard
         prefetchedSubs = new Map(Object.entries(data));
         prefetchComplete = true;
       })
       .catch((err) => {
-      console.warn('[translate] check-batch failed, falling back to per-video checks:', err);
-      prefetchComplete = true;
-    });
+        if (reqId !== _prefetchReqId) return;
+        console.warn('[translate] check-batch failed, falling back to per-video checks:', err);
+        prefetchComplete = true;
+      });
   }
 
   $: tvAnime = anime.filter((a) => a.format === 'TV');
@@ -110,7 +116,7 @@ import { nextSeasonInfo } from '../stores/season';
       return true;
     }
     // Match user's custom name if present in watchList
-    const entry = watchList.find(w => w.mediaId === a.id);
+    const entry = watchListByMediaId.get(a.id);
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
@@ -121,7 +127,7 @@ import { nextSeasonInfo } from '../stores/season';
     if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
       return true;
     }
-    const entry = watchList.find(w => w.mediaId === a.id);
+    const entry = watchListByMediaId.get(a.id);
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
@@ -132,7 +138,7 @@ import { nextSeasonInfo } from '../stores/season';
     if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
       return true;
     }
-    const entry = watchList.find(w => w.mediaId === a.id);
+    const entry = watchListByMediaId.get(a.id);
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
@@ -143,7 +149,7 @@ import { nextSeasonInfo } from '../stores/season';
     if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
       return true;
     }
-    const entry = watchList.find(w => w.mediaId === a.id);
+    const entry = watchListByMediaId.get(a.id);
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
@@ -154,7 +160,7 @@ import { nextSeasonInfo } from '../stores/season';
     if ([t.english, t.romaji, t.native].some(ts => ts?.toLowerCase().includes(q))) {
       return true;
     }
-    const entry = watchList.find(w => w.mediaId === a.id);
+    const entry = watchListByMediaId.get(a.id);
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
@@ -387,6 +393,8 @@ let autoRename = false;
   }
 
   $: inListIds = new Set(watchList.map((w) => w.mediaId));
+  // Map for O(1) custom-name lookup during search filtering
+  $: watchListByMediaId = new Map(watchList.map((w) => [w.mediaId, w]));
 
   // Set of IDs already marked as watched (watched = true or watchedAt not null)
   $: watchedIds = new Set(

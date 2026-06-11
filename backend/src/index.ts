@@ -442,8 +442,8 @@ ensureDatabaseSchema().then(() => {
     if (now.getDay() !== BATCH_DAY_OF_WEEK) return;
     if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
 
-    // Already ran today?
-    const todayStr = now.toISOString().slice(0, 10);
+    // Already ran today? Use UTC date to match toISOString() format consistently
+    const todayStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')}`;
     if (lastBatchDate === todayStr) return;
 
     // Batch already running (from Options modal or previous scheduler spawn)?

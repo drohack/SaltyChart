@@ -608,7 +608,15 @@ const sliceWorker: Worker = new SliceWorker();
     sliceData = ev.data.sliceData;
   };
 
-  $: sliceWorker.postMessage({ count: wheelItems.length });
+  // Only recompute slice angles when item COUNT changes — not on name/visibility updates
+  let _lastWheelCount = -1;
+  $: {
+    const count = wheelItems.length;
+    if (count !== _lastWheelCount) {
+      _lastWheelCount = count;
+      sliceWorker.postMessage({ count });
+    }
+  }
 
   // radial distance for label (in SVG units, radius is 50)
   const LABEL_R_OUTER = 48; // near rim (SVG units, radius is 50)
