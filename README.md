@@ -40,25 +40,20 @@ open http://localhost:8085
 ### Local dev (no Docker, Windows)
 
 ```bash
+# One-time setup
+cp backend/.env.example backend/.env   # provides DATABASE_URL for ts-node-dev
+pip install youtube-transcript-api     # enables YouTube English CC detection
+
 # Terminal 1 — backend (port 3000)
-cd backend
-export DATABASE_URL="file:C:/Users/droha/Workspace/SaltyChart/backend/prisma/prisma/data.db"
-npx ts-node-dev --respawn --transpile-only src/index.ts
+cd backend && npm install && npm run dev
 
 # Terminal 2 — frontend (port 5173)
-cd frontend
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-One-time local setup:
-```bash
-cp backend/.env.example backend/.env   # provides DATABASE_URL — required for ts-node-dev
-pip install youtube-transcript-api     # enables YouTube English CC detection; pre-installed in Docker
-```
-
-`DATABASE_URL` must be set — without it the backend now exits immediately with
-a `[FATAL]` message. The `.env` file persists it across ts-node-dev hot-reloads.
-The SQLite DB lives at `backend/prisma/prisma/data.db`.
+`DATABASE_URL` is required — the server exits with `[FATAL]` on startup without
+it. The `.env` file keeps it in place across ts-node-dev hot-reloads. SQLite DB
+lives at `backend/prisma/prisma/data.db`.
 
 If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PID <pid> /F`.
 
@@ -247,16 +242,6 @@ Detailed walkthrough:
 That’s it—the stack will come back online using the freshly imported images.
 
 ---
-
-## House-keeping
-
-Old development artefacts from an **earlier SvelteKit prototype** were removed
-(`src/`, `build/`, root-level `Dockerfile`, etc.).  All user-facing
-functionality lives exclusively in the two folders listed above which should
-make day-to-day navigation and onboarding much simpler.
-
-Happy charting 🚀
-
 
 ## Backup and Restore database
 

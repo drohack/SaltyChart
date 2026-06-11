@@ -59,21 +59,14 @@ When your diff touches any of these, update the listed locations too:
 
 1. `cd frontend && npm run build` → zero a11y warnings, clean exit.
 2. `cd backend && npx tsc --noEmit` → clean exit.
-3. If you touched a feature/API/schema/default surface, skim `README.md`
-   and this file for stale mentions of the old behaviour and update them.
+3. Skim `README.md` and this file for stale mentions of the old behaviour
+   and update them.
 4. If you touched `shareCompare()` in `Compare.svelte` or `shareMyList()`
    in `WatchListSidebar.svelte`, manually verify the share button still
    exports a reasonable image — both functions are DOM-clone-heavy and
    brittle to layout changes.
-5. **Clean up Playwright test artefacts.** If you used
-   `browser_take_screenshot` during verification, delete the resulting
-   PNG files at the repo root before finishing the task. They land there
-   because the MCP tool accepts relative filenames and resolves them
-   against the CWD. The `.gitignore` already covers `compare-*.png`,
-   `randomize-*.png`, and `home-*.png`, but leaving them bloats the
-   working tree — `rm compare-*.png randomize-*.png home-*.png
-   home-desktop-after-gap-fix.png 2>/dev/null` is the full-coverage
-   sweep. Also works for any other page-prefixed screenshot you named.
+5. **Clean up Playwright screenshots** at the repo root:
+   `rm compare-*.png randomize-*.png home-*.png home-desktop-after-gap-fix.png 2>/dev/null`
 
 ---
 
