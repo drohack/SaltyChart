@@ -216,6 +216,20 @@ higher quality and automatically upgrades videos previously translated with
 `small`. The batch also pre-checks English subtitles and caches
 `hasEnglishSubs` to avoid a Python spawn on first play.
 
+`local_translate.py` uses `beam_size=10` (benchmarked against 30 settings
+on 10 full Summer 2026 trailers; beam_10 captured most of the quality gain
+over the default beam_5 with diminishing returns beyond beam_10).
+
+Benchmark data lives in `tools/benchmark_data/` (gitignored) and results in
+`tools/benchmark_results.txt`. Script: `tools/benchmark_whisper_settings.py`.
+Key findings from the benchmark:
+- `beam_size=10` gives ~+7 score improvement over beam_5 baseline
+- `repetition_penalty=1.2` gives similar ~+7 improvement individually
+- **Combining them doesn't stack** — together scores only +6.6, same as either alone
+- `hallucination_silence_threshold`, `log_prob_threshold`, `initial_prompt` all hurt
+- `suppress_blank`, `auto_lang`, `best_of` had zero effect (identical to baseline)
+- `vad_filter=False` much worse (-37 vs -29 baseline)
+
 The backend includes an auto-scheduler (in `index.ts`) that runs the batch
 script automatically on Wednesdays between 2–4am when the next anime season
 is within **50 days**. The local large-v3 GPU script runs every Sunday (no
@@ -230,7 +244,10 @@ Passing `--season`/`--year` explicitly overrides to a single season.
 Audio is chunked with a ramp-up strategy (5 s, 5 s, 10 s, 10 s, then 20 s)
 starting from second 0. On-demand uses `beam_size=1` +
 `condition_on_previous_text=False` for speed; batch uses `beam_size=5` +
-`condition_on_previous_text=True` for quality. Subtitle timing syncs to
+`condition_on_previous_text=True` for quality. All transcription calls use
+`word_timestamps=True` — segment start times are taken from `words[0].start`
+rather than `seg.start`, which eliminates the pre-speech lead-in that caused
+subtitles to appear before the person actually spoke. Subtitle timing syncs to
 YouTube's iframe API `currentTime` and respects play/pause state.
 
 Python dependencies: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`,

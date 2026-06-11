@@ -244,15 +244,17 @@ def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connectio
         segs, _ = model.transcribe(
             full_audio, language="ja", task="translate",
             vad_filter=True, beam_size=5,
-            condition_on_previous_text=True
+            condition_on_previous_text=True,
+            word_timestamps=True,
         )
         for seg in segs:
             text = seg.text.strip()
             if not text:
                 continue
+            w = seg.words
             segments.append({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
+                "start": round(w[0].start if w else seg.start, 2),
+                "end":   round(w[-1].end  if w else seg.end,   2),
                 "text": text,
             })
 

@@ -112,9 +112,11 @@ repeat plays are instant (~50ms). On page load the app batch-checks all
 trailers against the cache (`/api/translate/check-batch`) so the CC decision
 is instant when the user clicks play. Persistent Python daemon (`small` model,
 chunked) handles on-demand requests. Short videos (≤30s) skip chunking. 
-Concurrent requests are deduplicated and limited to 2. Subtitles sync to
-YouTube's playback position (pause, scrub). Users can dismiss subtitles via
-the CC toggle and the preference persists for all users.
+Concurrent requests are deduplicated and limited to 2. Subtitles sync to YouTube's playback position (pause, scrub). All transcription
+uses `word_timestamps=True` so segment start/end times align to actual word
+boundaries rather than Whisper's coarser segment estimates — eliminates the
+"subtitle appears before speech" issue. Users can dismiss subtitles via the CC
+toggle and the preference persists for all users.
 
 **Pre-translation pipeline** — two-tier system covering the previous, current,
 and next seasons on every run:

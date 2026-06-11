@@ -308,16 +308,18 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
             # Full-audio pass — better translations due to full context
             segs, _ = model.transcribe(
                 full_audio, language="ja", task="translate",
-                vad_filter=True, beam_size=5,
+                vad_filter=True, beam_size=10,
                 condition_on_previous_text=True,
+                word_timestamps=True,
             )
             segments = []
             for seg in segs:
                 text = seg.text.strip()
                 if text:
+                    w = seg.words
                     segments.append({
-                        "start": round(seg.start, 2),
-                        "end": round(seg.end, 2),
+                        "start": round(w[0].start if w else seg.start, 2),
+                        "end":   round(w[-1].end  if w else seg.end,   2),
                         "text": text,
                     })
             return segments, video_url
@@ -339,13 +341,15 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
                         chunk_path, language="ja", task="translate",
                         vad_filter=True, beam_size=5,
                         condition_on_previous_text=True,
+                        word_timestamps=True,
                     )
                     for seg in segs:
                         text = seg.text.strip()
                         if text:
+                            w = seg.words
                             segments.append({
-                                "start": round(seg.start + chunk_start, 2),
-                                "end": round(seg.end + chunk_start, 2),
+                                "start": round((w[0].start if w else seg.start) + chunk_start, 2),
+                                "end":   round((w[-1].end  if w else seg.end)   + chunk_start, 2),
                                 "text": text,
                             })
                 finally:

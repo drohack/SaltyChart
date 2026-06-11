@@ -1,0 +1,190 @@
+Benchmark: large-v3 full trailers — SUMMER 2026  (2026-06-11 11:12)
+Device: cuda (float16)  |  Videos: 10  |  With CC: 9  |  Scoring: timestamp-aligned ±3s window
+
+========================================================================
+SUMMARY  (sorted by score; overlap and halluc are averaged across videos with CC)
+Setting                     segs  overlap   halluc   SCORE
+------------------------------------------------------------------------
+reppenalty_120              18.3    25.5%    47.1%  -21.6 ★
+beam10                      19.1    24.8%    46.4%  -21.6
+beam10_rep120               18.7    25.5%    47.6%  -22.1
+beam10_rep120_suppress      18.7    25.5%    47.6%  -22.1
+beam10_rep120_vadmin300     18.5    25.1%    48.8%  -23.8
+suppress_blank              19.5    23.0%    51.8%  -28.7
+baseline                    19.5    23.0%    51.8%  -28.7
+auto_lang                   19.5    23.0%    51.8%  -28.7
+no_vad                      27.1    20.9%    58.1%  -37.3
+
+========================================================================
+SETTING: baseline  (baseline)
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    10    35.1%    50.0%  -14.9
+  p0JRE_K6s5A I Became a Legend After My 10     16    20.5%    62.5%  -42.0
+  ECtHlHde3EQ Otome Kaijuu Caramelise           13    26.3%    46.2%  -19.9
+  y-efbopLrYk Young Ladies Don't Play Fighti    12    19.5%    75.0%  -55.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    31    23.7%    54.8%  -31.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    27    24.7%    59.3%  -34.5
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    31.4%    50.0%  -18.6
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    27.9%    50.0%  -22.1
+  7ObipYqbOd8 Sparks of Tomorrow                43    21.1%    69.8%  -48.7
+
+========================================================================
+SETTING: beam10  {'beam_size': 10}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    10    36.9%    50.0%  -13.1
+  p0JRE_K6s5A I Became a Legend After My 10     16    20.5%    62.5%  -42.0
+  ECtHlHde3EQ Otome Kaijuu Caramelise           10    34.5%    20.0%   14.5
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    17.5%    76.9%  -59.4
+  nR_vqhD2rGM Though I Am an Inept Villaines    30    28.4%    50.0%  -21.6
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    27    25.7%    59.3%  -33.5
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    31.6%    50.0%  -18.4
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    30.0%    33.3%   -3.4
+  7ObipYqbOd8 Sparks of Tomorrow                42    22.6%    61.9%  -39.3
+
+========================================================================
+SETTING: reppenalty_120  {'repetition_penalty': 1.2}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita     6    45.9%    33.3%   12.6
+  p0JRE_K6s5A I Became a Legend After My 10     17    21.1%    70.6%  -49.5
+  ECtHlHde3EQ Otome Kaijuu Caramelise           10    33.5%    20.0%   13.5
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    17.9%    84.6%  -66.7
+  nR_vqhD2rGM Though I Am an Inept Villaines    29    26.2%    48.3%  -22.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    29    25.3%    58.6%  -33.3
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    30.7%    50.0%  -19.3
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    30.6%    50.0%  -19.4
+  7ObipYqbOd8 Sparks of Tomorrow                36    23.6%    55.6%  -31.9
+
+========================================================================
+SETTING: beam10_rep120  {'beam_size': 10, 'repetition_penalty': 1.2}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita     7    45.2%    28.6%   16.6
+  p0JRE_K6s5A I Became a Legend After My 10     19    20.3%    78.9%  -58.7
+  ECtHlHde3EQ Otome Kaijuu Caramelise           10    33.2%    20.0%   13.2
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    18.1%    84.6%  -66.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    26    29.4%    38.5%   -9.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    28    25.5%    57.1%  -31.6
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    30.5%    50.0%  -19.5
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    30.6%    50.0%  -19.4
+  7ObipYqbOd8 Sparks of Tomorrow                41    22.1%    68.3%  -46.2
+
+========================================================================
+SETTING: suppress_blank  {'suppress_blank': True}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    10    35.1%    50.0%  -14.9
+  p0JRE_K6s5A I Became a Legend After My 10     16    20.5%    62.5%  -42.0
+  ECtHlHde3EQ Otome Kaijuu Caramelise           13    26.3%    46.2%  -19.9
+  y-efbopLrYk Young Ladies Don't Play Fighti    12    19.5%    75.0%  -55.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    31    23.7%    54.8%  -31.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    27    24.7%    59.3%  -34.5
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    31.4%    50.0%  -18.6
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    27.9%    50.0%  -22.1
+  7ObipYqbOd8 Sparks of Tomorrow                43    21.2%    69.8%  -48.5
+
+========================================================================
+SETTING: beam10_rep120_suppress  {'beam_size': 10, 'repetition_penalty': 1.2, 'suppress_blank': True}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita     7    45.2%    28.6%   16.6
+  p0JRE_K6s5A I Became a Legend After My 10     19    20.3%    78.9%  -58.7
+  ECtHlHde3EQ Otome Kaijuu Caramelise           10    33.2%    20.0%   13.2
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    18.1%    84.6%  -66.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    26    29.4%    38.5%   -9.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    28    25.5%    57.1%  -31.6
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    30.5%    50.0%  -19.5
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    30.6%    50.0%  -19.4
+  7ObipYqbOd8 Sparks of Tomorrow                41    22.1%    68.3%  -46.2
+
+========================================================================
+SETTING: no_vad  {'vad_filter': False}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    12    36.7%    25.0%   11.7
+  p0JRE_K6s5A I Became a Legend After My 10     17    20.8%    64.7%  -43.9
+  ECtHlHde3EQ Otome Kaijuu Caramelise           19    20.2%    68.4%  -48.2
+  y-efbopLrYk Young Ladies Don't Play Fighti    26    14.6%    92.3%  -77.7
+  nR_vqhD2rGM Though I Am an Inept Villaines    43    27.5%    55.8%  -28.3
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    27    27.0%    51.9%  -24.9
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     28    23.0%    78.6%  -55.6
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          27     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                     18    20.0%    72.2%  -52.2
+  7ObipYqbOd8 Sparks of Tomorrow                54    18.8%    72.2%  -53.4
+
+========================================================================
+SETTING: auto_lang  {'language': None}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    10    35.1%    50.0%  -14.9
+  p0JRE_K6s5A I Became a Legend After My 10     16    20.5%    62.5%  -42.0
+  ECtHlHde3EQ Otome Kaijuu Caramelise           13    26.3%    46.2%  -19.9
+  y-efbopLrYk Young Ladies Don't Play Fighti    12    19.5%    75.0%  -55.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    31    23.7%    54.8%  -31.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    27    24.7%    59.3%  -34.5
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    31.4%    50.0%  -18.6
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      6    27.9%    50.0%  -22.1
+  7ObipYqbOd8 Sparks of Tomorrow                43    21.1%    69.8%  -48.7
+
+========================================================================
+SETTING: beam10_rep120_vadmin300  {'beam_size': 10, 'repetition_penalty': 1.2, 'vad_parameters': {'min_speech_duration_ms': 300}}
+  Video                                 segs  overlap   halluc  score
+  --------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita     7    45.2%    28.6%   16.6
+  p0JRE_K6s5A I Became a Legend After My 10     19    20.3%    78.9%  -58.7
+  ECtHlHde3EQ Otome Kaijuu Caramelise            9    31.8%    22.2%    9.6
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    18.1%    84.6%  -66.5
+  nR_vqhD2rGM Though I Am an Inept Villaines    26    29.4%    38.5%   -9.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    28    25.5%    57.1%  -31.6
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     12    30.5%    50.0%  -19.5
+  OMCPr9YwHdM Iwamoto-senpai no Suisen          25     0.0%     0.0%    0.0
+  -FVOUh7_obU Goodbye, Lara                      5    28.0%    60.0%  -32.0
+  7ObipYqbOd8 Sparks of Tomorrow                41    22.1%    68.3%  -46.2
+
+========================================================================
+SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+
+  --- baseline (10 segs, score=-28.7) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→32.0] My name is Ritsu Minetsuki.
+    [32.9→34.9] Nice to meet you.
+    [35.0→43.2] I'm the last one.
+
+  --- beam10 (10 segs, score=-21.6) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→32.0] My name is Ritsu Minetsuki.
+    [32.9→34.9] Nice to meet you for a long time.
+    [35.0→43.2] I'm the last one.
+
+  --- reppenalty_120 (6 segs, score=-21.6) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→34.2] My name is Ritsu Minetsuki, nice to meet you for a long time.
+    [35.0→45.0] I'm the last one in my team...
+    [45.0→47.9] Don't lose, Fuji Miyako!
+
+  --- beam10_rep120 (7 segs, score=-22.1) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→32.0] My name is Ritsu Minetsuki.
+    [32.9→34.9] Nice to meet you for a long time.
+    [35.0→45.1] I'm the last one, Wanderage...
+
+  --- suppress_blank (10 segs, score=-28.7) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→32.0] My name is Ritsu Minetsuki.
+    [32.9→34.9] Nice to meet you.
+    [35.0→43.2] I'm the last one.
+
+  --- beam10_rep120_suppress (7 segs, score=-22.1) ---
+    [10.9→11.7] My name is Akamachi Arale.
+    [12.6→32.0] My name is Ritsu Minetsuki.
+    [32.9→34.9] Nice to meet you for a long time.
+    [35.0→45.1] I'm the last one, Wanderage...

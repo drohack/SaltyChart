@@ -143,7 +143,8 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
         segments, _ = model.transcribe(
             full_audio, language="ja", task="translate",
             vad_filter=True, beam_size=1,
-            condition_on_previous_text=False
+            condition_on_previous_text=False,
+            word_timestamps=True,
         )
         for seg in segments:
             if cancelled and cancelled.is_set():
@@ -151,9 +152,10 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
             text = seg.text.strip()
             if not text:
                 continue
+            w = seg.words
             emit({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
+                "start": round(w[0].start if w else seg.start, 2),
+                "end":   round(w[-1].end  if w else seg.end,   2),
                 "text": text,
             })
         return
@@ -183,7 +185,8 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
                 segments, _ = model.transcribe(
                     chunk_path, language="ja", task="translate",
                     vad_filter=True, beam_size=1,
-                    condition_on_previous_text=False
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
                 )
 
                 for seg in segments:
@@ -192,9 +195,10 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
                     text = seg.text.strip()
                     if not text:
                         continue
+                    w = seg.words
                     emit({
-                        "start": round(seg.start + chunk_start, 2),
-                        "end": round(seg.end + chunk_start, 2),
+                        "start": round((w[0].start if w else seg.start) + chunk_start, 2),
+                        "end":   round((w[-1].end  if w else seg.end)   + chunk_start, 2),
                         "text": text,
                     })
             finally:
