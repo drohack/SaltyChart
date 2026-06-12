@@ -128,12 +128,11 @@ PHASE2 = [
     {"name": "whisperJP_then_qwen", "audio": "vocals",
      "asr_kwargs": {"task": "transcribe", "beam_size": 10},
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
-    # Near-oracle: YouTube Japanese CC -> Qwen translate. Beating the row above
-    # means Whisper's JP ASR is the bottleneck; tying it means translation is.
-    # DEFERRED: needs --refetch-cc-ja, currently blocked by a YouTube IP block.
-    # Re-enable once the block clears (data is otherwise all cached).
-    # {"name": "jpCC_then_qwen", "asr": "jp_cc",
-    #  "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
+    # Near-oracle: YouTube Japanese CC -> Qwen translate. Beating the whisperJP
+    # row means Whisper's JP ASR is the bottleneck; tying it means translation is.
+    # (YouTube JP CC is auto-generated here, so it's an imperfect oracle.)
+    {"name": "jpCC_then_qwen", "asr": "jp_cc",
+     "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
 # ── Phase 3: model bake-off. Phase 2 showed the split's bottleneck is Whisper's
@@ -204,6 +203,18 @@ QWEN359 = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": "qwen3.5:9b"}},
 ]
 
+# ── Turbo comparison: large-v3 vs large-v3-turbo for the transcribe step (both
+#    -> qwen3.5). Quantifies turbo's quality trade (it's ~4-8x faster). large-v3
+#    is kept as the default; turbo stays available via --model large-v3-turbo.
+TURBOCMP = [
+    {"name": "split_large-v3", "audio": "vocals", "asr_model": "large-v3",
+     "asr_kwargs": _SPLIT_ASR, "translator": "ollama_qwen",
+     "translator_kwargs": {"model": "qwen3.5:9b"}},
+    {"name": "split_large-v3-turbo", "audio": "vocals", "asr_model": "large-v3-turbo",
+     "asr_kwargs": _SPLIT_ASR, "translator": "ollama_qwen",
+     "translator_kwargs": {"model": "qwen3.5:9b"}},
+]
+
 SUITES = {
     "baseline": BASELINE,
     "phase1":   PHASE1,
@@ -213,6 +224,7 @@ SUITES = {
     "champion": CHAMPION,
     "qwen38":   QWEN38,
     "qwen359":  QWEN359,
+    "turbocmp": TURBOCMP,
 }
 
 # ---------------------------------------------------------------------------
@@ -524,7 +536,7 @@ def run_pipeline(spec, vdata, cache_dir=None):
 
 # Stable display order; suites not listed append in the order they were first run.
 _SUITE_ORDER = ["baseline", "phase1", "phase2", "phase3", "phase4",
-                "champion", "qwen38", "qwen359"]
+                "champion", "qwen38", "qwen359", "turbocmp"]
 
 
 def read_result_sections(path):

@@ -428,20 +428,13 @@ def translate_video(model, video_id: str, use_chunking: bool = True, *,
 # Phased split-pipeline stages (one model resident at a time — fits 10 GB)
 # ---------------------------------------------------------------------------
 
-def _prepare_audio(video_id: str, split: bool):
-    """Phase-1 unit: download (bestaudio) + optional Demucs vocal separation.
-    Returns (tmpdir, audio_for_asr, video_url). The caller owns tmpdir cleanup
-    and calls `bp.release_demucs()` once after the whole separation phase (so
-    Demucs loads once, not per video)."""
+def _download_audio_to_tmp(video_id: str):
+    """Phase-1a unit (parallelizable): download bestaudio into a fresh tmpdir.
+    Pure network I/O — safe to run in parallel threads. Demucs separation runs
+    later in phase 1b (GPU, sequential). Returns (tmpdir, full_audio, video_url)."""
     tmpdir = tempfile.mkdtemp()
     full_audio, _duration, video_url = download_audio(video_id, tmpdir)
-    audio_for_asr = full_audio
-    if split:
-        try:
-            audio_for_asr = bp.separate_vocals(full_audio)
-        except Exception as e:
-            print(f"  [warn] vocal separation failed ({e}); using raw audio")
-    return tmpdir, audio_for_asr, video_url
+    return tmpdir, full_audio, video_url
 
 
 def _transcribe_jp(model, audio_path: str):
@@ -811,18 +804,38 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False):
     loads once. `items`: list of {vid, title, media_id}. Returns (translated, errors)."""
     n = len(items)
 
-    # Phase 1: download + Demucs vocal separation (Demucs loaded once).
-    print(f"[local] Phase 1/3: download + vocal separation ({n} trailer(s))...")
+    # Phase 1: download all concurrently (1a, network — GPU would otherwise sit
+    # idle), then Demucs-separate sequentially (1b, GPU, loaded once).
+    workers = max(1, getattr(args, "download_workers", 4) or 4)
+    print(f"[local] Phase 1/3: download ({workers} parallel) + vocal separation ({n} trailer(s))...")
     prepared, errors = [], 0
-    for i, it in enumerate(items, 1):
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    downloaded = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(_download_audio_to_tmp, it["vid"]): idx for idx, it in enumerate(items)}
+        done = 0
+        for fut in as_completed(futs):
+            idx = futs[fut]; label = items[idx]["title"] or items[idx]["vid"]; done += 1
+            try:
+                downloaded[idx] = fut.result()
+                print(f"  [{done}/{n}] {label}: downloaded")
+            except Exception as e:
+                print(f"  [{done}/{n}] {label}: DOWNLOAD ERROR: {e}")
+                errors += 1
+
+    for idx, it in enumerate(items):          # separate in stable item order
+        if idx not in downloaded:
+            continue
+        tmpdir, full_audio, url = downloaded[idx]
         label = it["title"] or it["vid"]
+        audio = full_audio
         try:
-            tmpdir, audio, url = _prepare_audio(it["vid"], split=True)
-            prepared.append({**it, "tmpdir": tmpdir, "audio": audio, "url": url, "ja": None})
-            print(f"  [{i}/{n}] {label}: separated")
+            audio = bp.separate_vocals(full_audio)
         except Exception as e:
-            print(f"  [{i}/{n}] {label}: PREP ERROR: {e}")
-            errors += 1
+            print(f"  {label}: vocal separation failed ({e}); using raw audio")
+        prepared.append({**it, "tmpdir": tmpdir, "audio": audio, "url": url, "ja": None})
+        print(f"  {label}: separated")
     bp.release_demucs()
     if not prepared:
         return 0, errors
@@ -923,6 +936,9 @@ def main():
                         help="Leave Ollama running after the run (default: unload model + stop if we started it)")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
                         help="Cap the number of trailers translated per season (for testing)")
+    parser.add_argument("--download-workers", type=int, default=4, metavar="N",
+                        help="Concurrent trailer downloads in phase 1 (default: 4; "
+                             "lower it if YouTube rate-limits)")
     args = parser.parse_args()
 
     # --- File logging ---

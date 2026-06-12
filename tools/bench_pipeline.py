@@ -19,11 +19,20 @@ Phase 3 extras: `pip install whisperx sentencepiece` and the model weights.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import urllib.request
+
+# Hiragana, katakana, CJK ideographs, halfwidth katakana — used to detect lines
+# the translator left untranslated (still Japanese) so we can retry them.
+_CJK_RE = re.compile("[぀-ヿ㐀-鿿ｦ-ﾟ]")
+
+
+def _has_cjk(text):
+    return bool(_CJK_RE.search(text or ""))
 
 # ---------------------------------------------------------------------------
 # Model cache — lazy-load each backend once, reuse across all videos/variants
@@ -365,33 +374,60 @@ def _parse_numbered(text, n):
     return lines
 
 
+def _translate_lines(texts, model, host, system, keep_alive):
+    """Translate a list of JP lines via one numbered Ollama call. Returns a list
+    of EN strings (same length; '' where the model dropped/garbled a line)."""
+    if not texts:
+        return []
+    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+    resp = _ollama_generate(numbered, model, host=host, system=system, keep_alive=keep_alive)
+    return _parse_numbered(resp, len(texts))
+
+
 def translate_ollama_qwen(segs, model="qwen3.5:9b", host="http://127.0.0.1:11434",
-                          context=None, keep_alive=None):
-    """Translate a whole trailer's lines in one Ollama call for coherence.
+                          context=None, keep_alive=None, max_lines=20):
+    """Translate a trailer's lines via Ollama, preserving 1:1 segment alignment.
 
     Default qwen3.5:9b — benchmarked clearly better than text-only qwen3:8b on the
     bake-off corpus (content 57.3 vs 53.6, halluc 34.5% vs 41.0%; see suites
     `qwen359`/`qwen38`), so worth keeping despite a downside: the Ollama qwen3.5:9b
     build is a *vision* model whose ~1.2 GB vision encoder sits unused in RAM (the
     LLM itself runs 100% on GPU). qwen2.5 produces multilingual word-salad in this
-    Ollama build — avoid. Thinking is disabled so the response is just the numbered
-    translations.
+    Ollama build — avoid. Thinking is disabled.
+
+    Long trailers are split into <=max_lines chunks (short numbered prompts are
+    reliable; a single long prompt occasionally drops lines). Any line the model
+    still leaves untranslated (empty or containing Japanese) is retried once in
+    isolation; if it still fails, the original Japanese is kept as a last resort.
 
     context: optional show name injected into the system prompt to help with
-    proper nouns (character/place names). keep_alive: forwarded to Ollama (0 to
-    unload the model after the call, freeing VRAM between videos)."""
+    proper nouns. keep_alive: forwarded to Ollama (0 unloads after each call)."""
     if not segs:
         return segs
     system = _ANIME_SYS_PROMPT
     if context:
         system += f" This dialogue is from the anime \"{context}\" — use it to get character and place names right."
-    numbered = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(segs))
-    resp = _ollama_generate(numbered, model, host=host, system=system, keep_alive=keep_alive)
-    translations = _parse_numbered(resp, len(segs))
+
+    texts = [s["text"] for s in segs]
     out = []
-    for s, t in zip(segs, translations):
-        out.append({**s, "text": t or s["text"]})
-    return out
+    for i in range(0, len(texts), max_lines):
+        out.extend(_translate_lines(texts[i:i + max_lines], model, host, system, keep_alive))
+    out = (out + [""] * len(texts))[:len(texts)]  # guard length
+
+    # Retry lines the model dropped or left in Japanese, isolated (short prompt).
+    bad = [i for i, t in enumerate(out) if (not t.strip()) or _has_cjk(t)]
+    if bad:
+        retried = _translate_lines([texts[i] for i in bad], model, host, system, keep_alive)
+        for j, i in enumerate(bad):
+            r = retried[j] if j < len(retried) else ""
+            if r.strip() and not _has_cjk(r):
+                out[i] = r
+
+    def _pick(t, jp):
+        t = (t or "").strip()
+        return t if (t and not _has_cjk(t)) else jp  # fall back to original JP
+
+    return [{**s, "text": _pick(t, s["text"])} for s, t in zip(segs, out)]
 
 
 def translate_nllb(segs, model_name="facebook/nllb-200-distilled-1.3B"):  # Phase 3

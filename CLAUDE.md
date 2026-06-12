@@ -268,7 +268,8 @@ ad-hoc result files). `--output` overrides the path. The harness
 `tools/bench_pipeline.py` (audio source → ASR → optional translate → optional
 align) so each layer can be A/B'd in isolation. A variant is a *pipeline spec*;
 related variants are grouped into **suites** run via `--suite` (`baseline`,
-`phase1`…`phase4`, `champion`, `qwen38`/`qwen359` translator A/B). ASR outputs are
+`phase1`…`phase4`, `champion`, `qwen38`/`qwen359` translator A/B, `turbocmp`
+large-v3-vs-turbo). ASR outputs are
 cached to `benchmark_data/<vid>/cache/` keyed by audio+model+decode-args, so re-runs
 and translator-only sweeps don't recompute transcription (`--no-cache` to force).
 
@@ -373,6 +374,13 @@ sits unused in RAM; the LLM itself runs 100% on GPU. `--translate-model` overrid
   `ollama pull qwen3.5:9b`. **Do not install `torchcodec`** (torchaudio routes
   through it and it breaks faster-whisper; audio I/O uses the ffmpeg binary).
   `qwen2.5` is broken in the local Ollama build (word-salad) — use `qwen3`/`qwen3.5`.
+- Phase 1 **downloads run in parallel** (`--download-workers`, default 4) so the GPU
+  isn't idle waiting on YouTube; Demucs separation then runs sequentially. Long
+  trailers are **sub-batched** in the translator (≤20 lines/Ollama call) and any line
+  the model leaves in Japanese is retried — prevents the occasional untranslated line.
+- Transcriber: large-v3 is the default. `large-v3-turbo` benchmarks comparable content
+  (56.6 vs 56.8) but slightly more hallucination (suite `turbocmp`); it's ~4–8× faster
+  and available via `--model large-v3-turbo` if speed ever matters.
 - VRAM (10 GB): the season run is **phased** — separate-all (Demucs) → transcribe-all
   (Whisper, then `del`+`gc.collect()` to free it) → translate-all (translator stays warm).
   Only one model is GPU-resident at a time, so measured peak is **~6.4 GB** (vs ~9.8 GB
