@@ -239,6 +239,33 @@ def days_until_next_season() -> int:
 # Audio download & chunking (self-contained, no backend imports)
 # ---------------------------------------------------------------------------
 
+# YouTube auth (set from the CLI in main). Bulk downloads trip YouTube's "Sign in
+# to confirm you're not a bot" wall; yt-dlp needs cookies to get past it.
+_COOKIES_FROM_BROWSER = None   # e.g. "edge", "chrome", "firefox"
+_COOKIES_FILE = None           # path to a Netscape cookies.txt
+
+
+def _cookie_opts():
+    """yt-dlp options for YouTube auth, per the CLI flags (empty if none set)."""
+    opts = {}
+    if _COOKIES_FROM_BROWSER:
+        opts["cookiesfrombrowser"] = (_COOKIES_FROM_BROWSER,)
+    if _COOKIES_FILE:
+        opts["cookiefile"] = _COOKIES_FILE
+    return opts
+
+
+class BotBlockError(Exception):
+    """YouTube returned a 'confirm you're not a bot' challenge. Raised so the run
+    aborts immediately instead of hammering YouTube with the remaining downloads
+    (which only deepens the block)."""
+
+
+def _is_bot_block(msg: str) -> bool:
+    m = (msg or "").lower()
+    return ("confirm you" in m and "not a bot" in m) or "sign in to confirm" in m
+
+
 def download_audio(video_id: str, tmpdir: str):
     """Download audio as WAV and extract video stream URL for frame grabs.
     Returns (audio_path, duration, video_url).  video_url is the direct URL
@@ -257,6 +284,11 @@ def download_audio(video_id: str, tmpdir: str):
         "noprogress": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
         "outtmpl": os.path.join(tmpdir, "full.%(ext)s"),
+        # ~1.5s between the metadata/API calls yt-dlp makes per video (yt-dlp's
+        # own recommended anti-rate-limit setting); the between-trailer gap is
+        # handled by --download-delay in the serial Phase-1 loop.
+        "sleep_interval_requests": 1.5,
+        **_cookie_opts(),
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
@@ -849,32 +881,47 @@ def start_vram_monitor(interval=0.5):
 # Phased split run — separate-all -> transcribe-all -> translate-all
 # ---------------------------------------------------------------------------
 
-def run_phased(items, server, token, args, device, compute_type, verbose=False):
+def run_phased(items, server, token, args, device, compute_type, verbose=False, prefix=""):
     """Run the split pipeline over `items` in three phases so only one model is
     GPU-resident at a time (peak ~6.2 GB vs ~9.8 GB per-video) and each model
-    loads once. `items`: list of {vid, title, media_id}. Returns (translated, errors)."""
+    loads once. `items`: list of {vid, title, media_id}. `prefix` (e.g.
+    "SUMMER 2026 (2/3)") is prepended to every progress line so the status bar
+    shows overall position + current step. Returns (translated, errors)."""
     n = len(items)
+    head = f"{prefix} " if prefix else ""
 
-    # Phase 1: download all concurrently (1a, network — GPU would otherwise sit
-    # idle), then Demucs-separate sequentially (1b, GPU, loaded once).
-    workers = max(1, getattr(args, "download_workers", 4) or 4)
-    print(f"[local] Phase 1/3: download ({workers} parallel) + vocal separation ({n} trailer(s))...")
+    def tag(step, k, total):
+        """Self-contained progress label: [<season pos> | <step> k/total]."""
+        return f"[{prefix + ' | ' if prefix else ''}{step} {k}/{total}]"
+
+    # Phase 1: download SERIALLY with a delay between trailers (never parallel —
+    # bursty parallel downloads are what trip YouTube's bot-detection), then
+    # Demucs-separate sequentially (GPU, loaded once). One season at a time.
+    delay = max(0.0, getattr(args, "download_delay", 5.0) or 0.0)
+    print(f"[local] {head}Phase 1/3: download (serial, ~{delay:.0f}s apart) + separate ({n} trailer(s))...")
     prepared, errors = [], 0
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     downloaded = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_download_audio_to_tmp, it["vid"]): idx for idx, it in enumerate(items)}
-        done = 0
-        for fut in as_completed(futs):
-            idx = futs[fut]; label = items[idx]["title"] or items[idx]["vid"]; done += 1
-            try:
-                downloaded[idx] = fut.result()
-                print(f"  [{done}/{n}] {label}: downloaded")
-            except Exception as e:
-                print(f"  [{done}/{n}] {label}: DOWNLOAD ERROR: {e}")
-                errors += 1
+    for i, it in enumerate(items):
+        label = it["title"] or it["vid"]
+        if i > 0 and delay:
+            time.sleep(delay)
+        try:
+            downloaded[i] = _download_audio_to_tmp(it["vid"])
+            print(f"  {tag('download', i + 1, n)} {label}")
+        except Exception as e:
+            msg = str(e)
+            print(f"  {tag('download', i + 1, n)} {label}: DOWNLOAD ERROR: {msg[:120]}")
+            errors += 1
+            if _is_bot_block(msg):
+                # Stop NOW rather than hammering YouTube with the rest (which only
+                # deepens the block). Bubbles up to abort the whole run.
+                raise BotBlockError(
+                    "YouTube is challenging downloads ('not a bot'). Aborted before "
+                    "the remaining trailers. Wait for a cool-down, then re-run with "
+                    "--cookies <cookies.txt>.")
 
+    sep_total, sep_done = len(downloaded), 0
     for idx, it in enumerate(items):          # separate in stable item order
         if idx not in downloaded:
             continue
@@ -886,22 +933,24 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False):
         except Exception as e:
             print(f"  {label}: vocal separation failed ({e}); using raw audio")
         prepared.append({**it, "tmpdir": tmpdir, "audio": audio, "url": url, "ja": None})
-        print(f"  {label}: separated")
+        sep_done += 1
+        print(f"  {tag('separate', sep_done, sep_total)} {label}")
     bp.release_demucs()
     if not prepared:
         return 0, errors
 
     # Phase 2: transcribe (Whisper loaded once, then freed to reclaim VRAM).
-    print(f"[local] Phase 2/3: transcribe ({args.model})...")
+    np = len(prepared)
+    print(f"[local] {head}Phase 2/3: transcribe ({args.model}) — {np} trailer(s)...")
     from faster_whisper import WhisperModel
     model = WhisperModel(args.model, device=device, compute_type=compute_type)
     for i, p in enumerate(prepared, 1):
         label = p["title"] or p["vid"]
         try:
             p["ja"] = _transcribe_jp(model, p["audio"])
-            print(f"  [{i}/{len(prepared)}] {label}: {len(p['ja'])} JP segs")
+            print(f"  {tag('transcribe', i, np)} {label}: {len(p['ja'])} JP segs")
         except Exception as e:
-            print(f"  [{i}/{len(prepared)}] {label}: TRANSCRIBE ERROR: {e}")
+            print(f"  {tag('transcribe', i, np)} {label}: TRANSCRIBE ERROR: {e}")
     del model
     gc.collect()
     if device == "cuda":
@@ -912,7 +961,7 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False):
             pass
 
     # Phase 3: translate + burned-in + upload (qwen3.5 stays warm — no reload).
-    print(f"[local] Phase 3/3: translate ({args.translate_model}) + upload...")
+    print(f"[local] {head}Phase 3/3: translate ({args.translate_model}) + upload — {np} trailer(s)...")
     translated = 0
     for i, p in enumerate(prepared, 1):
         label = p["title"] or p["vid"]
@@ -927,19 +976,19 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False):
                 try:
                     has_burned_in = detect_burned_in_subs(p["vid"], en, video_url=p["url"])
                 except Exception as e:
-                    print(f"  [{i}/{len(prepared)}] {label}: burned-in failed: {e}")
+                    print(f"  {tag('translate', i, np)} {label}: burned-in failed: {e}")
             if verbose:
                 for s in en:
                     print(f"    [{s['start']:6.1f}s - {s['end']:6.1f}s] {s['text']}")
             if not args.no_upload and token:
                 result = upload_segments(server, token, p["vid"], p.get("media_id", 0),
                                          "large-v3-split", en, has_burned_in, args.force)
-                print(f"  [{i}/{len(prepared)}] {label}: {len(en)} segs -> {result.get('action', 'ok')}")
+                print(f"  {tag('translate', i, np)} {label}: {len(en)} segs -> {result.get('action', 'ok')}")
             else:
-                print(f"  [{i}/{len(prepared)}] {label}: {len(en)} segs (no upload)")
+                print(f"  {tag('translate', i, np)} {label}: {len(en)} segs (no upload)")
             translated += 1
         except Exception as e:
-            print(f"  [{i}/{len(prepared)}] {label}: TRANSLATE ERROR: {e}")
+            print(f"  {tag('translate', i, np)} {label}: TRANSLATE ERROR: {e}")
             errors += 1
         finally:
             shutil.rmtree(p["tmpdir"], ignore_errors=True)
@@ -996,10 +1045,25 @@ def main():
     parser.add_argument("--vram-log", action="store_true",
                         help="Sample total GPU VRAM every 0.5s and interleave it with the "
                              "phase log (diagnostic for peak-usage attribution)")
-    parser.add_argument("--download-workers", type=int, default=4, metavar="N",
-                        help="Concurrent trailer downloads in phase 1 (default: 4; "
-                             "lower it if YouTube rate-limits)")
+    parser.add_argument("--download-delay", type=float, default=5.0, metavar="SECONDS",
+                        help="Seconds between trailer downloads (default: 5). Downloads "
+                             "are always serial — bursty parallel downloads trip YouTube "
+                             "bot-detection. Raise it if you still get challenged.")
+    parser.add_argument("--download-workers", type=int, default=1, metavar="N",
+                        help=argparse.SUPPRESS)  # deprecated/ignored: downloads are serial now
+    parser.add_argument("--cookies-from-browser", type=str, default=None, metavar="BROWSER",
+                        help="Pass YouTube cookies from a browser (edge/chrome/firefox) to "
+                             "yt-dlp to get past bot-detection. The browser may need to be "
+                             "closed for yt-dlp to read its cookie DB on Windows.")
+    parser.add_argument("--cookies", type=str, default=None, metavar="FILE",
+                        help="Path to a Netscape cookies.txt for yt-dlp (alternative to "
+                             "--cookies-from-browser)")
     args = parser.parse_args()
+
+    # Apply YouTube auth globally (read by download_audio's yt-dlp opts).
+    global _COOKIES_FROM_BROWSER, _COOKIES_FILE
+    _COOKIES_FROM_BROWSER = args.cookies_from_browser
+    _COOKIES_FILE = args.cookies
 
     # --- File logging ---
     log_file = None
@@ -1149,8 +1213,9 @@ def main():
     model = None
     use_chunking = args.model == "small"
 
-    for season, year in seasons_to_process:
-        print(f"[local] -- {season} {year} {'-' * 50}")
+    ns = len(seasons_to_process)
+    for si, (season, year) in enumerate(seasons_to_process, 1):
+        print(f"[local] === SEASON {si}/{ns}: {season} {year} {'=' * 40}")
 
         # Fetch anime
         print("[local] Fetching anime list from AniList...")
@@ -1205,7 +1270,12 @@ def main():
             # Phased split run (VRAM-optimal: one model resident at a time)
             items = [{"vid": s["trailer"]["id"], "title": get_title(s), "media_id": s["id"]}
                      for (s, _r) in uncached]
-            translated, errors = run_phased(items, server, token, args, device, compute_type)
+            try:
+                translated, errors = run_phased(items, server, token, args, device, compute_type,
+                                                prefix=f"{season} {year} ({si}/{ns})")
+            except BotBlockError as e:
+                print(f"\n[local] ABORT: {e}")
+                break
         else:
             # Legacy / fallback per-video e2e translate (Whisper only). When
             # split_enabled but Ollama is down, translate_video still separates
@@ -1221,7 +1291,7 @@ def main():
             for i, (show, reason) in enumerate(uncached):
                 vid = show["trailer"]["id"]
                 title = get_title(show)
-                print(f"[{i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
+                print(f"[{season} {year} ({si}/{ns}) | {i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
                 try:
                     segments, video_url, used_split = translate_video(
                         model, vid, use_chunking=use_chunking, title=title,
@@ -1244,7 +1314,7 @@ def main():
 
         print()
         remaining = len(uncached) - translated - errors
-        print(f"[local] {season} {year}: {translated} translated, {errors} errors"
+        print(f"[local] SEASON {si}/{ns} done — {season} {year}: {translated} translated, {errors} errors"
               + (f", {remaining} remaining" if remaining > 0 else ""))
         print()
 

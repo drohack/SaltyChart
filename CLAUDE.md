@@ -439,8 +439,15 @@ sits unused in RAM; the LLM itself runs 100% on GPU. `--translate-model` overrid
   `ollama pull qwen3.5:9b`. **Do not install `torchcodec`** (torchaudio routes
   through it and it breaks faster-whisper; audio I/O uses the ffmpeg binary).
   `qwen2.5` is broken in the local Ollama build (word-salad) — use `qwen3`/`qwen3.5`.
-- Phase 1 **downloads run in parallel** (`--download-workers`, default 4) so the GPU
-  isn't idle waiting on YouTube; Demucs separation then runs sequentially. Long
+- Phase 1 **downloads run serially** with a delay between trailers
+  (`--download-delay`, default 5 s) — bursty parallel downloads were what tripped
+  YouTube's "confirm you're not a bot" wall, so parallelism was removed (the
+  `--download-workers` flag is now ignored). yt-dlp also gets `sleep_interval_requests=1.5`.
+  On a bot-challenge the run **aborts immediately** (`BotBlockError`) instead of
+  hammering the rest. YouTube auth via `--cookies <cookies.txt>` (Netscape format;
+  `--cookies-from-browser` exists but fails on modern Edge/Chrome — App-Bound
+  Encryption / DPAPI, yt-dlp #10927 — so a cookies.txt export is the reliable path).
+  Seasons are processed **one at a time** (fetch → phase 1/2/3 → next season). Long
   trailers are **sub-batched** in the translator (≤20 lines/Ollama call) and any line
   the model leaves in Japanese is retried — prevents the occasional untranslated line.
 - Transcriber: large-v3 is the default. `large-v3-turbo` benchmarks comparable content
