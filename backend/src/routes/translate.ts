@@ -607,7 +607,10 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
  * Admin only. Upserts into SubtitleCache — upgrades if new model is higher rank.
  * Body: { videoId, mediaId?, modelName, segments: [{start, end, text}, ...] }
  */
-const MODEL_RANK: Record<string, number> = { tiny: 0, base: 1, small: 2, medium: 3, 'large-v2': 4, 'large-v3': 5 };
+// 'large-v3-split' (6) = local champion pipeline (Demucs vocals + large-v3
+// transcribe + qwen3.5 translate); outranks plain 'large-v3' so it auto-upgrades
+// existing entries. Keep in sync with MODEL_RANK in tools/local_translate.py.
+const MODEL_RANK: Record<string, number> = { tiny: 0, base: 1, small: 2, medium: 3, 'large-v2': 4, 'large-v3': 5, 'large-v3-split': 6 };
 
 router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {

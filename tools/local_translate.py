@@ -6,18 +6,31 @@ then uploads results to your SaltyChart server.  Much faster and higher
 quality than the server-side CPU translation.
 
 Requirements:
-  pip install faster-whisper yt-dlp easyocr sentence-transformers Pillow
+  pip install faster-whisper yt-dlp easyocr sentence-transformers Pillow demucs
+  Ollama installed + `ollama pull qwen3.5:9b`  (split-pipeline translator; it's the
+  Ollama vision build, so its ~1.2 GB vision encoder sits unused in RAM, but it
+  benchmarks clearly better than text-only qwen3:8b — see CLAUDE.md)
 
   For GPU (recommended):
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+  Do NOT install torchcodec — torchaudio routes through it and it breaks
+  faster-whisper's decoder; audio I/O here uses the ffmpeg binary instead.
+
+Pipeline (the champion config from the bake-off — see CLAUDE.md):
+  bestaudio -> Demucs vocal separation -> large-v3 transcribe(ja, beam10 +
+  rep_penalty1.2 + vad_min300) -> qwen3.5:9b translate (via Ollama). Uploaded as
+  modelName 'large-v3-split' (rank 6, above plain 'large-v3'). The script starts
+  Ollama if it isn't running and stops it (+ unloads the model) when done.
+  --legacy-translate forces the old end-to-end Whisper translate (tagged
+  'large-v3'); the same fallback runs automatically if Ollama is unavailable.
 
 Notes:
-  - Medium and large models use full-audio transcription (no chunking) for
-    better translation quality. Only the small model uses chunking.
+  - Only the full-audio (large) path uses the split pipeline; the small model
+    keeps the legacy chunked end-to-end translate.
   - Burned-in subtitle detection runs automatically after each translation.
-    Compares OCR text from video frames to Whisper translations using hybrid
-    fuzzy + semantic matching. Videos with burned-in subs are flagged so the
-    frontend defaults subtitles to off.
+    Compares OCR text (easyocr on CPU) from video frames to the translated
+    segments using hybrid fuzzy + semantic matching. Videos with burned-in subs
+    are flagged so the frontend defaults subtitles to off.
 
 Usage:
   # Translate all eligible trailers for the upcoming season
@@ -54,11 +67,16 @@ Flags:
   --log [PATH]       Log output to file (default: tools/logs/translate.log)
   --within-days N    Exit if next season is more than N days away (not used
                      in translate.bat — runs always, covering 3 seasons)
+  --legacy-translate Use old end-to-end Whisper translate (skip Demucs + Qwen)
+  --translate-model  Ollama model for the split translator (default: qwen3.5:9b)
+  --ollama-host      Ollama server URL (default: http://127.0.0.1:11434)
+  --keep-ollama      Leave Ollama running after the run (default: stop it)
 
 Windows wrapper: tools/translate.bat (uses py -3.13)
 """
 
 import argparse
+import gc
 import json
 import os
 import subprocess
@@ -68,6 +86,10 @@ import shutil
 import time
 import urllib.request
 from datetime import datetime
+
+# Swappable pipeline stages (Demucs vocal separation, Ollama qwen3.5 translation)
+# shared with the bake-off harness. Sits next to this file in tools/.
+import bench_pipeline as bp
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +248,10 @@ def download_audio(video_id: str, tmpdir: str):
 
     full_audio = os.path.join(tmpdir, "full.wav")
     ydl_opts = {
-        "format": "worstaudio",
+        # bestaudio: Demucs vocal separation needs full-band audio (separating
+        # low-quality audio hurt in benchmarking). Whisper resamples to 16 kHz
+        # regardless, so there's no downside for the transcription step.
+        "format": "bestaudio",
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
@@ -290,41 +315,87 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
 # Translation
 # ---------------------------------------------------------------------------
 
-def translate_video(model, video_id: str, use_chunking: bool = True):
-    """Translate a video, return (segments, video_url).
+def _whisper_segments(segs_gen, offset: float = 0.0):
+    """faster-whisper segment generator → [{start, end, text}], using word-level
+    start/end (eliminates pre-speech lead-in). offset shifts a chunk into global time."""
+    out = []
+    for seg in segs_gen:
+        text = seg.text.strip()
+        if not text:
+            continue
+        w = seg.words
+        out.append({
+            "start": round((w[0].start if w else seg.start) + offset, 2),
+            "end":   round((w[-1].end  if w else seg.end)   + offset, 2),
+            "text": text,
+        })
+    return out
 
-    segments: list of {start, end, text} dicts.
-    video_url: direct URL to <=720p video stream (for burned-in detection).
 
-    use_chunking=False transcribes the full audio in one pass — better quality
-    (Whisper has full context) but requires more memory. Recommended for medium
-    and large models on GPU. The small model on the server should use chunking.
+def translate_video(model, video_id: str, use_chunking: bool = True, *,
+                    title: str = None, split: bool = True,
+                    translate_model: str = "qwen3.5:9b",
+                    ollama_host: str = "http://127.0.0.1:11434",
+                    ollama_ready: bool = False):
+    """Translate a video → (segments, video_url, used_split).
+
+    Champion split pipeline (split=True, full-audio): Demucs vocal separation →
+    large-v3 transcribe(ja, beam10+rep_penalty1.2+vad_min300) → qwen3.5 translate.
+    Falls back to end-to-end Whisper translate (on the separated vocals) if Ollama
+    isn't ready or anything fails. `used_split` tells the caller which modelName
+    tag to upload (large-v3-split vs large-v3).
+
+    use_chunking=True (small model / CPU) keeps the legacy chunked e2e-translate
+    path unchanged.
     """
     tmpdir = tempfile.mkdtemp()
     try:
         full_audio, duration, video_url = download_audio(video_id, tmpdir)
 
+        if not use_chunking and split:
+            # --- Champion split pipeline ---
+            audio_for_asr = full_audio
+            try:
+                audio_for_asr = bp.separate_vocals(full_audio)
+            except Exception as e:
+                print(f"  [warn] vocal separation failed ({e}); using raw audio")
+            finally:
+                bp.release_demucs()  # free Demucs VRAM before ASR + translate
+
+            if ollama_ready:
+                try:
+                    segs, _ = model.transcribe(
+                        audio_for_asr, language="ja", task="transcribe",
+                        beam_size=10, repetition_penalty=1.2,
+                        vad_filter=True, vad_parameters={"min_speech_duration_ms": 300},
+                        condition_on_previous_text=True, word_timestamps=True,
+                    )
+                    ja = _whisper_segments(segs)
+                    en = bp.translate_ollama_qwen(
+                        ja, model=translate_model, host=ollama_host,
+                        context=title, keep_alive=0)
+                    return en, video_url, True
+                except Exception as e:
+                    print(f"  [warn] split translate failed ({e}); falling back to Whisper translate")
+
+            # Fallback: end-to-end Whisper translate on the separated vocals
+            segs, _ = model.transcribe(
+                audio_for_asr, language="ja", task="translate",
+                vad_filter=True, beam_size=10,
+                condition_on_previous_text=True, word_timestamps=True,
+            )
+            return _whisper_segments(segs), video_url, False
+
         if not use_chunking:
-            # Full-audio pass — better translations due to full context
+            # Legacy full-audio e2e translate (--legacy-translate) on raw audio
             segs, _ = model.transcribe(
                 full_audio, language="ja", task="translate",
                 vad_filter=True, beam_size=10,
-                condition_on_previous_text=True,
-                word_timestamps=True,
+                condition_on_previous_text=True, word_timestamps=True,
             )
-            segments = []
-            for seg in segs:
-                text = seg.text.strip()
-                if text:
-                    w = seg.words
-                    segments.append({
-                        "start": round(w[0].start if w else seg.start, 2),
-                        "end":   round(w[-1].end  if w else seg.end,   2),
-                        "text": text,
-                    })
-            return segments, video_url
+            return _whisper_segments(segs), video_url, False
 
-        # Chunked pass — for small model / CPU / low memory
+        # Chunked pass — for small model / CPU / low memory (legacy e2e translate)
         from concurrent.futures import ThreadPoolExecutor, Future
         chunks = generate_chunks(duration)
         segments = []
@@ -343,22 +414,45 @@ def translate_video(model, video_id: str, use_chunking: bool = True):
                         condition_on_previous_text=True,
                         word_timestamps=True,
                     )
-                    for seg in segs:
-                        text = seg.text.strip()
-                        if text:
-                            w = seg.words
-                            segments.append({
-                                "start": round((w[0].start if w else seg.start) + chunk_start, 2),
-                                "end":   round((w[-1].end  if w else seg.end)   + chunk_start, 2),
-                                "text": text,
-                            })
+                    segments.extend(_whisper_segments(segs, offset=chunk_start))
                 finally:
                     if os.path.exists(chunk_path):
                         os.unlink(chunk_path)
 
-        return segments, video_url
+        return segments, video_url, False
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Phased split-pipeline stages (one model resident at a time — fits 10 GB)
+# ---------------------------------------------------------------------------
+
+def _prepare_audio(video_id: str, split: bool):
+    """Phase-1 unit: download (bestaudio) + optional Demucs vocal separation.
+    Returns (tmpdir, audio_for_asr, video_url). The caller owns tmpdir cleanup
+    and calls `bp.release_demucs()` once after the whole separation phase (so
+    Demucs loads once, not per video)."""
+    tmpdir = tempfile.mkdtemp()
+    full_audio, _duration, video_url = download_audio(video_id, tmpdir)
+    audio_for_asr = full_audio
+    if split:
+        try:
+            audio_for_asr = bp.separate_vocals(full_audio)
+        except Exception as e:
+            print(f"  [warn] vocal separation failed ({e}); using raw audio")
+    return tmpdir, audio_for_asr, video_url
+
+
+def _transcribe_jp(model, audio_path: str):
+    """Phase-2 unit: large-v3 Japanese transcription with champion decode params."""
+    segs, _ = model.transcribe(
+        audio_path, language="ja", task="transcribe",
+        beam_size=10, repetition_penalty=1.2,
+        vad_filter=True, vad_parameters={"min_speech_duration_ms": 300},
+        condition_on_previous_text=True, word_timestamps=True,
+    )
+    return _whisper_segments(segs)
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +463,10 @@ _ocr_reader = None
 _sem_model = None
 
 def _get_ocr_reader():
-    """Lazy-init singleton easyocr Reader (avoids reloading model per video)."""
+    """Lazy-init singleton easyocr Reader (avoids reloading model per video).
+    Runs on GPU: the phased run keeps peak VRAM ~6.4 GB, so the ~1 GB OCR model
+    fits comfortably (phase-3 total ~7.4 GB), and keeping OCR off the CPU avoids
+    adding system-RAM / CPU load."""
     global _ocr_reader
     if _ocr_reader is None:
         import easyocr
@@ -560,7 +657,12 @@ def detect_burned_in_subs(video_id: str, segments: list, video_url: str = None) 
 # Server communication
 # ---------------------------------------------------------------------------
 
-MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5}
+# large-v3-split (rank 6) = the champion pipeline (Demucs vocals + large-v3
+# transcribe + qwen3.5 translate). Outranks plain large-v3 (the e2e fallback /
+# legacy path) so existing large-v3 subs auto-upgrade. Keep in sync with the
+# server's MODEL_RANK in backend/src/routes/translate.ts.
+MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4,
+              "large-v3": 5, "large-v3-split": 6}
 
 
 def check_server_cache(server: str, video_id: str, model_name: str) -> tuple:
@@ -622,6 +724,166 @@ def upload_segments(server: str, token: str, video_id: str, media_id: int, model
 
 
 # ---------------------------------------------------------------------------
+# Ollama lifecycle — start the server if needed, unload model + stop when done
+# ---------------------------------------------------------------------------
+
+def _ollama_up(host: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{host}/api/version", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _ollama_has_model(host: str, model: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as r:
+            data = json.loads(r.read().decode())
+        return any(m.get("name") == model for m in data.get("models", []))
+    except Exception:
+        return False
+
+
+def ensure_ollama_running(host: str, model: str):
+    """Ensure Ollama is serving and `model` is present; start `ollama serve` if
+    it's down. Returns (ready, proc): ready=False → caller falls back to Whisper
+    translate; proc is the serve process if we started it (so we can stop it)."""
+    proc = None
+    if not _ollama_up(host):
+        if not shutil.which("ollama"):
+            print("[local] Ollama not installed — using Whisper translate.")
+            return False, None
+        print("[local] Starting Ollama server...")
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            proc = subprocess.Popen(["ollama", "serve"], **kwargs)
+        except Exception as e:
+            print(f"[local] Could not start Ollama ({e}) — using Whisper translate.")
+            return False, None
+        for _ in range(30):
+            if _ollama_up(host):
+                break
+            time.sleep(1)
+        else:
+            print("[local] Ollama did not start in time — using Whisper translate.")
+            return False, proc
+    if not _ollama_has_model(host, model):
+        print(f"[local] Ollama model '{model}' not found (try: ollama pull {model}) — using Whisper translate.")
+        return False, proc
+    print(f"[local] Ollama ready ({model}).")
+    return True, proc
+
+
+def shutdown_ollama(host: str, model: str, proc, keep: bool = False):
+    """Unload the model (free VRAM) and stop the serve process if we started it,
+    so the system is left clean."""
+    if keep:
+        return
+    if shutil.which("ollama") and _ollama_up(host):
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            subprocess.run(["ollama", "stop", model], **kwargs)
+        except Exception:
+            pass
+    if proc is not None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+            print("[local] Stopped Ollama server.")
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Phased split run — separate-all -> transcribe-all -> translate-all
+# ---------------------------------------------------------------------------
+
+def run_phased(items, server, token, args, device, compute_type, verbose=False):
+    """Run the split pipeline over `items` in three phases so only one model is
+    GPU-resident at a time (peak ~6.2 GB vs ~9.8 GB per-video) and each model
+    loads once. `items`: list of {vid, title, media_id}. Returns (translated, errors)."""
+    n = len(items)
+
+    # Phase 1: download + Demucs vocal separation (Demucs loaded once).
+    print(f"[local] Phase 1/3: download + vocal separation ({n} trailer(s))...")
+    prepared, errors = [], 0
+    for i, it in enumerate(items, 1):
+        label = it["title"] or it["vid"]
+        try:
+            tmpdir, audio, url = _prepare_audio(it["vid"], split=True)
+            prepared.append({**it, "tmpdir": tmpdir, "audio": audio, "url": url, "ja": None})
+            print(f"  [{i}/{n}] {label}: separated")
+        except Exception as e:
+            print(f"  [{i}/{n}] {label}: PREP ERROR: {e}")
+            errors += 1
+    bp.release_demucs()
+    if not prepared:
+        return 0, errors
+
+    # Phase 2: transcribe (Whisper loaded once, then freed to reclaim VRAM).
+    print(f"[local] Phase 2/3: transcribe ({args.model})...")
+    from faster_whisper import WhisperModel
+    model = WhisperModel(args.model, device=device, compute_type=compute_type)
+    for i, p in enumerate(prepared, 1):
+        label = p["title"] or p["vid"]
+        try:
+            p["ja"] = _transcribe_jp(model, p["audio"])
+            print(f"  [{i}/{len(prepared)}] {label}: {len(p['ja'])} JP segs")
+        except Exception as e:
+            print(f"  [{i}/{len(prepared)}] {label}: TRANSCRIBE ERROR: {e}")
+    del model
+    gc.collect()
+    if device == "cuda":
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    # Phase 3: translate + burned-in + upload (qwen3.5 stays warm — no reload).
+    print(f"[local] Phase 3/3: translate ({args.translate_model}) + upload...")
+    translated = 0
+    for i, p in enumerate(prepared, 1):
+        label = p["title"] or p["vid"]
+        try:
+            if p["ja"] is None:
+                errors += 1
+                continue
+            en = bp.translate_ollama_qwen(p["ja"], model=args.translate_model,
+                                          host=args.ollama_host, context=p["title"])
+            has_burned_in = False
+            if en:
+                try:
+                    has_burned_in = detect_burned_in_subs(p["vid"], en, video_url=p["url"])
+                except Exception as e:
+                    print(f"  [{i}/{len(prepared)}] {label}: burned-in failed: {e}")
+            if verbose:
+                for s in en:
+                    print(f"    [{s['start']:6.1f}s - {s['end']:6.1f}s] {s['text']}")
+            if not args.no_upload and token:
+                result = upload_segments(server, token, p["vid"], p.get("media_id", 0),
+                                         "large-v3-split", en, has_burned_in, args.force)
+                print(f"  [{i}/{len(prepared)}] {label}: {len(en)} segs -> {result.get('action', 'ok')}")
+            else:
+                print(f"  [{i}/{len(prepared)}] {label}: {len(en)} segs (no upload)")
+            translated += 1
+        except Exception as e:
+            print(f"  [{i}/{len(prepared)}] {label}: TRANSLATE ERROR: {e}")
+            errors += 1
+        finally:
+            shutil.rmtree(p["tmpdir"], ignore_errors=True)
+
+    return translated, errors
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -648,6 +910,19 @@ def main():
                         help="Log output to file (default: tools/logs/translate.log)")
     parser.add_argument("--within-days", type=int, default=None, metavar="N",
                         help="Exit if next season is more than N days away")
+    parser.add_argument("--legacy-translate", action="store_true",
+                        help="Use the old end-to-end Whisper translate (skip Demucs + Qwen split); tags subs 'large-v3'")
+    parser.add_argument("--translate-model", type=str, default="qwen3.5:9b",
+                        help="Ollama model for the split-pipeline translation step "
+                             "(default: qwen3.5:9b — benchmarked better than qwen3:8b; "
+                             "it's a vision build so ~1.2 GB of vision weights sit unused "
+                             "in RAM, but the LLM runs on GPU)")
+    parser.add_argument("--ollama-host", type=str, default="http://127.0.0.1:11434",
+                        help="Ollama server URL (default: http://127.0.0.1:11434)")
+    parser.add_argument("--keep-ollama", action="store_true",
+                        help="Leave Ollama running after the run (default: unload model + stop if we started it)")
+    parser.add_argument("--limit", type=int, default=None, metavar="N",
+                        help="Cap the number of trailers translated per season (for testing)")
     args = parser.parse_args()
 
     # --- File logging ---
@@ -736,41 +1011,52 @@ def main():
     print(f"[local] Model:  {args.model} ({compute_type} on {device})")
     if device == "cpu":
         print(f"[local] WARNING: Running on CPU — this will be slow. Install CUDA for GPU acceleration.")
+
+    # Champion split pipeline (Demucs vocals -> transcribe -> qwen3.5) is the
+    # default for the full-audio (large) path; the small model keeps the legacy
+    # chunked e2e translate. --legacy-translate forces the old e2e path.
+    split_enabled = (not args.legacy_translate) and (args.model != "small")
+    target_tag = "large-v3-split" if split_enabled else args.model
+    print(f"[local] Pipeline: {'split (Demucs + transcribe + ' + args.translate_model + ')' if split_enabled else 'legacy e2e translate'}")
+
+    # Start Ollama if needed (only when we'll actually translate via the split).
+    ollama_ready, ollama_proc = False, None
+    if split_enabled and not args.dry_run:
+        ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
     print()
 
     # Single video mode
     if args.video:
         print(f"[local] Single video mode: {args.video}")
-        print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
-        from faster_whisper import WhisperModel
-        model = WhisperModel(args.model, device=device, compute_type=compute_type)
-        print("[local] Model loaded.")
-        print()
-
-        start_time = time.time()
-        use_chunking = args.model == "small"
-        segments, video_url = translate_video(model, args.video, use_chunking=use_chunking)
-        elapsed = time.time() - start_time
-        print(f"[local] Translated: {len(segments)} segments in {elapsed:.1f}s")
-        print()
-        for seg in segments:
-            print(f"  [{seg['start']:6.1f}s - {seg['end']:6.1f}s] {seg['text']}")
-
-        # Check for burned-in subtitles
-        has_burned_in = False
-        if segments:
-            try:
-                has_burned_in = detect_burned_in_subs(args.video, segments, video_url=video_url)
-            except Exception as e:
-                print(f"[local] Burned-in detection failed: {e}")
-
-        if not args.no_upload and token:
-            print()
-            result = upload_segments(server, token, args.video, 0, args.model, segments, has_burned_in, args.force)
-            print(f"[local] Uploaded: {result.get('action', 'ok')}")
-        elif args.no_upload:
-            print()
-            print("[local] --no-upload: skipping upload")
+        if split_enabled and ollama_ready:
+            run_phased([{"vid": args.video, "title": None, "media_id": 0}],
+                       server, token, args, device, compute_type, verbose=True)
+        else:
+            # Legacy / fallback: single-pass e2e translate (Whisper only)
+            print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
+            from faster_whisper import WhisperModel
+            model = WhisperModel(args.model, device=device, compute_type=compute_type)
+            use_chunking = args.model == "small"
+            segments, video_url, used_split = translate_video(
+                model, args.video, use_chunking=use_chunking, title=None,
+                split=split_enabled, translate_model=args.translate_model,
+                ollama_host=args.ollama_host, ollama_ready=ollama_ready)
+            model_name = "large-v3-split" if used_split else args.model
+            print(f"[local] Translated: {len(segments)} segments [{model_name}]")
+            for seg in segments:
+                print(f"  [{seg['start']:6.1f}s - {seg['end']:6.1f}s] {seg['text']}")
+            has_burned_in = False
+            if segments:
+                try:
+                    has_burned_in = detect_burned_in_subs(args.video, segments, video_url=video_url)
+                except Exception as e:
+                    print(f"[local] Burned-in detection failed: {e}")
+            if not args.no_upload and token:
+                result = upload_segments(server, token, args.video, 0, model_name, segments, has_burned_in, args.force)
+                print(f"[local] Uploaded: {result.get('action', 'ok')}")
+            elif args.no_upload:
+                print("[local] --no-upload: skipping upload")
+        shutdown_ollama(args.ollama_host, args.translate_model, ollama_proc, keep=args.keep_ollama)
         return
 
     print(f"[local] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
@@ -804,12 +1090,16 @@ def main():
             if args.force:
                 uncached.append((show, "forced"))
             else:
-                is_cached, cached_model = check_server_cache(server, vid, args.model)
+                is_cached, cached_model = check_server_cache(server, vid, target_tag)
                 if is_cached:
                     print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
                 else:
                     reason = f"upgrade from {cached_model}" if cached_model else "not cached"
                     uncached.append((show, reason))
+
+        if args.limit and len(uncached) > args.limit:
+            uncached = uncached[:args.limit]
+            print(f"[local] --limit {args.limit}: capping to {len(uncached)} trailer(s)")
 
         print()
         print(f"[local] {len(uncached)} trailers need translation ({len(eligible) - len(uncached)} cached)")
@@ -828,50 +1118,54 @@ def main():
             print()
             continue
 
-        # Load model lazily — once, then reused for all subsequent seasons
-        if model is None:
-            print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
-            from faster_whisper import WhisperModel
-            model = WhisperModel(args.model, device=device, compute_type=compute_type)
-            print("[local] Model loaded.")
-            print()
-
-        # Translate and upload
-        translated = 0
-        errors = 0
-        for i, (show, reason) in enumerate(uncached):
-            vid = show["trailer"]["id"]
-            title = get_title(show)
-            print(f"[{i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
-
-            try:
-                start_time = time.time()
-                segments, video_url = translate_video(model, vid, use_chunking=use_chunking)
-                elapsed = time.time() - start_time
-                print(f"  Translated: {len(segments)} segments in {elapsed:.1f}s")
-
-                # Check for burned-in subtitles
-                has_burned_in = False
-                if segments:
-                    try:
-                        has_burned_in = detect_burned_in_subs(vid, segments, video_url=video_url)
-                    except Exception as e:
-                        print(f"  Burned-in detection failed: {e}")
-
-                # Upload to server
-                result = upload_segments(server, token, vid, show["id"], args.model, segments, has_burned_in, args.force)
-                print(f"  Uploaded: {result.get('action', 'ok')}")
-                translated += 1
-
-            except Exception as e:
-                print(f"  ERROR: {e}")
-                errors += 1
+        if split_enabled and ollama_ready:
+            # Phased split run (VRAM-optimal: one model resident at a time)
+            items = [{"vid": s["trailer"]["id"], "title": get_title(s), "media_id": s["id"]}
+                     for (s, _r) in uncached]
+            translated, errors = run_phased(items, server, token, args, device, compute_type)
+        else:
+            # Legacy / fallback per-video e2e translate (Whisper only). When
+            # split_enabled but Ollama is down, translate_video still separates
+            # vocals and does e2e translate on them (tagged large-v3).
+            if model is None:
+                print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
+                from faster_whisper import WhisperModel
+                model = WhisperModel(args.model, device=device, compute_type=compute_type)
+                print("[local] Model loaded.")
+                print()
+            translated = 0
+            errors = 0
+            for i, (show, reason) in enumerate(uncached):
+                vid = show["trailer"]["id"]
+                title = get_title(show)
+                print(f"[{i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
+                try:
+                    segments, video_url, used_split = translate_video(
+                        model, vid, use_chunking=use_chunking, title=title,
+                        split=split_enabled, translate_model=args.translate_model,
+                        ollama_host=args.ollama_host, ollama_ready=ollama_ready)
+                    model_name = "large-v3-split" if used_split else args.model
+                    print(f"  Translated: {len(segments)} segments [{model_name}]")
+                    has_burned_in = False
+                    if segments:
+                        try:
+                            has_burned_in = detect_burned_in_subs(vid, segments, video_url=video_url)
+                        except Exception as e:
+                            print(f"  Burned-in detection failed: {e}")
+                    result = upload_segments(server, token, vid, show["id"], model_name, segments, has_burned_in, args.force)
+                    print(f"  Uploaded: {result.get('action', 'ok')}")
+                    translated += 1
+                except Exception as e:
+                    print(f"  ERROR: {e}")
+                    errors += 1
 
         print()
         remaining = len(uncached) - translated - errors
         print(f"[local] {season} {year}: {translated} translated, {errors} errors"
               + (f", {remaining} remaining" if remaining > 0 else ""))
         print()
+
+    shutdown_ollama(args.ollama_host, args.translate_model, ollama_proc, keep=args.keep_ollama)
 
     if log_file:
         log_file.write(f"\nRun ended: {datetime.now().isoformat()}\n")

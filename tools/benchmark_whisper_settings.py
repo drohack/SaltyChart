@@ -56,6 +56,10 @@ TEST_VIDEOS = [
 ]
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "benchmark_data")
+# Single consolidated results file: one delimited section per suite. A run only
+# replaces (or appends) its own suite's section — other suites are left intact.
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "benchmark_results.txt")
+_SECTION_MARK = "@@@ BENCHMARK SUITE: {} @@@"
 
 # ---------------------------------------------------------------------------
 # Pipeline specs
@@ -184,6 +188,22 @@ CHAMPION = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
+# ── Translator comparison: same champion ASR (cached), only the translator model
+#    differs. Run as TWO separate single-arm suites (warm, default keep_alive) so
+#    the two models never co-reside in VRAM and neither suffers cold-reload
+#    corruption — `ollama stop <model>` between runs. Judge `content`.
+#    (An earlier combined suite with keep_alive=0 cold-reloaded per video and
+#    corrupted qwen3:8b's output — don't do that.)
+_SPLIT_ASR = {"task": "transcribe", **_BEST}
+QWEN38 = [
+    {"name": "split_qwen3-8b", "audio": "vocals", "asr_kwargs": _SPLIT_ASR,
+     "translator": "ollama_qwen", "translator_kwargs": {"model": "qwen3:8b"}},
+]
+QWEN359 = [
+    {"name": "split_qwen3.5-9b", "audio": "vocals", "asr_kwargs": _SPLIT_ASR,
+     "translator": "ollama_qwen", "translator_kwargs": {"model": "qwen3.5:9b"}},
+]
+
 SUITES = {
     "baseline": BASELINE,
     "phase1":   PHASE1,
@@ -191,6 +211,8 @@ SUITES = {
     "phase3":   PHASE3,
     "phase4":   PHASE4,
     "champion": CHAMPION,
+    "qwen38":   QWEN38,
+    "qwen359":  QWEN359,
 }
 
 # ---------------------------------------------------------------------------
@@ -497,6 +519,52 @@ def run_pipeline(spec, vdata, cache_dir=None):
     return segs
 
 # ---------------------------------------------------------------------------
+# Consolidated results file (one delimited section per suite)
+# ---------------------------------------------------------------------------
+
+# Stable display order; suites not listed append in the order they were first run.
+_SUITE_ORDER = ["baseline", "phase1", "phase2", "phase3", "phase4",
+                "champion", "qwen38", "qwen359"]
+
+
+def read_result_sections(path):
+    """Parse the consolidated results file into an ordered {suite: text} dict.
+    Tolerates a non-sectioned legacy file by returning it untouched under no key."""
+    sections = {}
+    if not os.path.exists(path):
+        return sections
+    prefix, suffix = "@@@ BENCHMARK SUITE: ", " @@@"
+    cur, buf = None, []
+    for line in open(path, encoding="utf-8"):
+        s = line.rstrip("\n")
+        if s.startswith(prefix) and s.endswith(suffix):
+            if cur is not None:
+                sections[cur] = "".join(buf).strip("\n")
+            cur, buf = s[len(prefix):-len(suffix)].strip(), []
+        elif cur is not None:
+            buf.append(line)
+    if cur is not None:
+        sections[cur] = "".join(buf).strip("\n")
+    return sections
+
+
+def write_result_section(path, suite, report):
+    """Replace (or append) this suite's section in the consolidated file, leaving
+    every other suite's section intact."""
+    sections = read_result_sections(path)
+    sections[suite] = report
+    order = [s for s in _SUITE_ORDER if s in sections]
+    order += [s for s in sections if s not in order]
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("SaltyChart benchmark results — one section per suite. Each run "
+                "replaces only its own suite's section.\n")
+        for s in order:
+            f.write("\n" + _SECTION_MARK.format(s) + "\n\n")
+            f.write(sections[s].rstrip("\n") + "\n")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -518,11 +586,15 @@ def main():
     parser.add_argument("--audio", default=None, choices=["raw", "vocals"],
                         help="Override every variant's audio source (e.g. carry "
                              "the Phase-1 winner into later suites)")
-    parser.add_argument("--output", default=os.path.join(
-        os.path.dirname(__file__), "benchmark_results.txt"))
+    parser.add_argument("--output", default=None,
+                        help="Output file (default: tools/benchmark_results.txt — one "
+                             "consolidated file; a run replaces only its suite's section)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable the on-disk ASR result cache (force recompute)")
     args = parser.parse_args()
+
+    if args.output is None:
+        args.output = RESULTS_FILE
 
     specs = [_spec(e) for e in SUITES[args.suite]]
     if args.audio:
@@ -794,9 +866,8 @@ def main():
 
     report = "\n".join(lines)
     print("\n" + report)
-    with open(args.output, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"\nSaved: {args.output}")
+    write_result_section(args.output, args.suite, report)
+    print(f"\nSaved: {args.suite} section -> {args.output}")
 
 
 if __name__ == "__main__":

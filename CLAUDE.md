@@ -260,14 +260,17 @@ trailers; beam_10 captured most of the quality gain over the default beam_5
 with diminishing returns beyond beam_10 — see the bake-off harness below).
 
 **Benchmark / pipeline bake-off harness.** Data lives in `tools/benchmark_data/`
-(gitignored) and results in `tools/benchmark_results.txt`. The harness
+(gitignored). All results go to **one consolidated file `tools/benchmark_results.txt`**
+with a delimited section per suite (`@@@ BENCHMARK SUITE: <name> @@@`); each run
+**replaces only its own suite's section** (others left intact — no proliferation of
+ad-hoc result files). `--output` overrides the path. The harness
 `tools/benchmark_whisper_settings.py` composes swappable pipeline stages from
 `tools/bench_pipeline.py` (audio source → ASR → optional translate → optional
 align) so each layer can be A/B'd in isolation. A variant is a *pipeline spec*;
-related variants are grouped into **suites** run via `--suite`
-(`baseline`, `phase1`…`phase4`). ASR outputs are cached to
-`benchmark_data/<vid>/cache/` keyed by audio+model+decode-args, so re-runs and
-translator-only sweeps don't recompute transcription (`--no-cache` to force).
+related variants are grouped into **suites** run via `--suite` (`baseline`,
+`phase1`…`phase4`, `champion`, `qwen38`/`qwen359` translator A/B). ASR outputs are
+cached to `benchmark_data/<vid>/cache/` keyed by audio+model+decode-args, so re-runs
+and translator-only sweeps don't recompute transcription (`--no-cache` to force).
 
 Corpus: 11 Summer 2026 trailers with **real timestamped English CC** fetched via
 `youtube_transcript_api` (`--refetch-cc`) — *not* yt-dlp VTT, which silently
@@ -350,6 +353,36 @@ and `-u` / `-p` for login. `tools/translate.bat` is a Windows wrapper with
 no `--within-days` gate — it always runs and covers 3 seasons, skipping
 already-cached videos automatically.
 
+The full-audio (large) path uses the **champion split pipeline** (the bake-off
+winner — see the bake-off harness section above): bestaudio → **Demucs vocal
+separation** → large-v3 `task=transcribe` (ja, `beam_size=10,
+repetition_penalty=1.2, vad_min_speech_300`) → **`qwen3.5:9b` translate via
+Ollama** (greedy, anime-title context). Uploaded as **`modelName=large-v3-split`**
+(rank 6, above plain `large-v3`), so existing `large-v3` subs auto-upgrade on the
+next run. Reuses `bench_pipeline.separate_vocals` / `translate_ollama_qwen`.
+(Translator choice: `qwen3.5:9b` benchmarked clearly better than text-only
+`qwen3:8b` — content 57.3 vs 53.6, halluc 34.5% vs 41.0% (suites `qwen359`/`qwen38`),
+so it's kept despite being the Ollama *vision* build whose ~1.2 GB vision encoder
+sits unused in RAM; the LLM itself runs 100% on GPU. `--translate-model` overrides.)
+- The script **manages Ollama**: starts `ollama serve` if it's down and
+  unloads the model + stops the server when finished (leaves the box clean;
+  `--keep-ollama` to skip). If Ollama is unreachable or the model is missing it
+  **falls back to end-to-end Whisper translate** (tagged `large-v3`) so a run
+  never produces nothing. `--legacy-translate` forces the old e2e path.
+- Extra deps on the local box: `pip install demucs` + Ollama with
+  `ollama pull qwen3.5:9b`. **Do not install `torchcodec`** (torchaudio routes
+  through it and it breaks faster-whisper; audio I/O uses the ffmpeg binary).
+  `qwen2.5` is broken in the local Ollama build (word-salad) — use `qwen3`/`qwen3.5`.
+- VRAM (10 GB): the season run is **phased** — separate-all (Demucs) → transcribe-all
+  (Whisper, then `del`+`gc.collect()` to free it) → translate-all (translator stays warm).
+  Only one model is GPU-resident at a time, so measured peak is **~6.4 GB** (vs ~9.8 GB
+  if Whisper + the translator co-resided per-video) and each model loads once (no
+  per-video reloads). All inference is on GPU; easyocr (burned-in OCR) on GPU (~1 GB).
+  `run_phased()` in `local_translate.py` owns this; the legacy/fallback per-video path
+  is Whisper-only.
+- To re-translate the back-catalog with the new pipeline, re-run with `--force`
+  (or rely on the rank-6 auto-upgrade for any still tagged `large-v3`).
+
 **Windows Scheduled Task:** "SaltyChart Translate" (`\SaltyChart Translate`
 in Task Scheduler root) runs `local_translate.py` directly every **Sunday at
 5am** using `py -3.13` with server http://192.168.1.2:8085. Note: the task
@@ -380,7 +413,10 @@ Tables / columns:
 - `SubtitleCache` — `videoId` unique, `mediaId`, `modelName`,
   `hasEnglishSubs`, `subtitlesDisabled`, `hasBurnedInSubs`, `segments` JSON,
   `createdAt`. Caches check results, translated segments, and user subtitle
-  preferences per YouTube video.
+  preferences per YouTube video. `modelName` rank order (upload only upgrades to
+  an equal-or-higher rank): tiny < base < small < medium < large-v2 < large-v3 <
+  **large-v3-split** (the local champion pipeline). The rank table lives in both
+  `backend/src/routes/translate.ts` and `tools/local_translate.py` — keep in sync.
 
 Performance indexes (added via `CREATE INDEX IF NOT EXISTS` at startup):
 

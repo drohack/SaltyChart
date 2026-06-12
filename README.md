@@ -115,20 +115,26 @@ toggle and the preference persists for all users.
 
 **Pre-translation pipeline** — two-tier system covering the previous, current,
 and next seasons on every run:
-- **Local GPU** (`tools/local_translate.py`, `large-v3` float16): runs every
-  Sunday at 5am via Windows Scheduled Task ("SaltyChart Translate"). No window
-  gate — always runs and caches new trailers for all 3 seasons.
+- **Local GPU** (`tools/local_translate.py`): runs every Sunday at 5am via
+  Windows Scheduled Task ("SaltyChart Translate"). No window gate — always runs
+  and caches new trailers for all 3 seasons. Uses the **split pipeline**:
+  Demucs vocal isolation → `large-v3` Japanese transcription → LLM translation
+  (`qwen3.5:9b` via Ollama), tagged `large-v3-split`.
 - **Server batch** (`backend/scripts/batch_translate.py`, `medium` int8 CPU):
   runs automatically on Wednesdays 2–4am when within 50 days of a season start.
-  Fallback only — skips anything already cached at `large-v3`. Stops at 10am.
+  Fallback only — skips anything already cached at higher quality. Stops at 10am.
 
 Both scripts detect model rank and never downgrade a higher-quality translation.
 
-**Local GPU translation** (`tools/local_translate.py`) — Whisper large-v3 on
-GPU. Full-audio transcription (no chunking) for highest quality. Automatic
-burned-in subtitle detection: OCR frames compared to Whisper translations via
-hybrid fuzzy + semantic matching (sentence-transformers). Burned-in videos
-flagged so the frontend defaults subtitles off.
+**Local GPU translation** (`tools/local_translate.py`) — the highest-quality
+tier, benchmarked as the bake-off winner. Pipeline: best-quality audio → Demucs
+vocal separation (removes music/SFX so Whisper hallucinates less) → `large-v3`
+Japanese transcription → natural English translation by a local LLM
+(`qwen3.5:9b` via Ollama, started and stopped automatically). Falls back to
+end-to-end Whisper translate if Ollama is unavailable. Automatic burned-in
+subtitle detection: OCR frames compared to the translated segments via hybrid
+fuzzy + semantic matching (sentence-transformers); burned-in videos are flagged
+so the frontend defaults subtitles off.
 
 **Per-user subtitle settings** — font size, family, position, text/bg color,
 opacity, text outline. Settings popup via gear icon next to the CC button.

@@ -74,6 +74,20 @@ def _get_demucs(model="htdemucs"):
     return _demucs_model
 
 
+def release_demucs():
+    """Free the cached Demucs model + GPU memory. Call after separation so Demucs
+    isn't resident alongside the ASR model and the Ollama translator (which would
+    blow a 10 GB card). The model reloads on the next separate_vocals call."""
+    global _demucs_model
+    _demucs_model = None
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def _decode_ffmpeg(path, sr, channels):
     """Decode any audio file to a float32 torch tensor [channels, samples] at
     the requested sample rate via the ffmpeg *binary* (no torchaudio)."""
@@ -312,13 +326,16 @@ _ANIME_SYS_PROMPT = (
 
 
 def _ollama_generate(prompt, model, host="http://127.0.0.1:11434", system=None,
-                     think=False, temperature=0.0):
+                     think=False, temperature=0.0, keep_alive=None):
     # temperature 0 (greedy) for reproducible benchmark scores — at 0.2 the
     # translation varied several SCORE points run-to-run, making rankings noisy.
     body = {"model": model, "prompt": prompt, "stream": False,
             "think": think, "options": {"temperature": temperature, "seed": 1}}
     if system:
         body["system"] = system
+    if keep_alive is not None:
+        # e.g. 0 → unload the model right after this call (frees VRAM between videos)
+        body["keep_alive"] = keep_alive
     req = urllib.request.Request(
         f"{host}/api/generate",
         data=json.dumps(body).encode("utf-8"),
@@ -348,18 +365,28 @@ def _parse_numbered(text, n):
     return lines
 
 
-def translate_ollama_qwen(segs, model="qwen3.5:9b", host="http://127.0.0.1:11434"):
+def translate_ollama_qwen(segs, model="qwen3.5:9b", host="http://127.0.0.1:11434",
+                          context=None, keep_alive=None):
     """Translate a whole trailer's lines in one Ollama call for coherence.
 
-    Default qwen3.5:9b — newest Qwen that fits 10 GB VRAM (Qwen3.6's smallest is
-    27B), translation-specialised (201 languages). NOTE: qwen2.5 produces
-    multilingual word-salad in Ollama 0.30.6 on this machine (model-specific
-    runtime bug); qwen3 / qwen3.5 are fine. Thinking is disabled so the response
-    is just the numbered translations."""
+    Default qwen3.5:9b — benchmarked clearly better than text-only qwen3:8b on the
+    bake-off corpus (content 57.3 vs 53.6, halluc 34.5% vs 41.0%; see suites
+    `qwen359`/`qwen38`), so worth keeping despite a downside: the Ollama qwen3.5:9b
+    build is a *vision* model whose ~1.2 GB vision encoder sits unused in RAM (the
+    LLM itself runs 100% on GPU). qwen2.5 produces multilingual word-salad in this
+    Ollama build — avoid. Thinking is disabled so the response is just the numbered
+    translations.
+
+    context: optional show name injected into the system prompt to help with
+    proper nouns (character/place names). keep_alive: forwarded to Ollama (0 to
+    unload the model after the call, freeing VRAM between videos)."""
     if not segs:
         return segs
+    system = _ANIME_SYS_PROMPT
+    if context:
+        system += f" This dialogue is from the anime \"{context}\" — use it to get character and place names right."
     numbered = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(segs))
-    resp = _ollama_generate(numbered, model, host=host, system=_ANIME_SYS_PROMPT)
+    resp = _ollama_generate(numbered, model, host=host, system=system, keep_alive=keep_alive)
     translations = _parse_numbered(resp, len(segs))
     out = []
     for s, t in zip(segs, translations):
