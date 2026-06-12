@@ -769,6 +769,20 @@ def ensure_ollama_running(host: str, model: str):
     return True, proc
 
 
+def unload_ollama_model(host: str, model: str):
+    """Unload a model from VRAM but leave the server running (so it can reload
+    cheaply later). Used between seasons so a still-warm translator doesn't
+    co-reside with the next season's Demucs/Whisper."""
+    if shutil.which("ollama") and _ollama_up(host):
+        kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            subprocess.run(["ollama", "stop", model], **kwargs)
+        except Exception:
+            pass
+
+
 def shutdown_ollama(host: str, model: str, proc, keep: bool = False):
     """Unload the model (free VRAM) and stop the serve process if we started it,
     so the system is left clean."""
@@ -792,6 +806,43 @@ def shutdown_ollama(host: str, model: str, proc, keep: bool = False):
             print("[local] Stopped Ollama server.")
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# VRAM monitor (diagnostic) — samples total GPU memory and interleaves it with
+# the phase log so a peak can be attributed to Demucs / Whisper / translate.
+# ---------------------------------------------------------------------------
+
+def _vram_used_mb():
+    """Total GPU memory in use (MB) via nvidia-smi, or -1 if unavailable.
+    Uses nvidia-smi (not torch) so it captures ctranslate2 + Ollama + Demucs too."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        return int(out.stdout.strip().splitlines()[0])
+    except Exception:
+        return -1
+
+
+def start_vram_monitor(interval=0.5):
+    """Spawn a daemon thread that prints `[vram +Ns] used=X peak=Y` every
+    `interval`s. Returns (stop_event, peak_dict) — set the event to stop."""
+    import threading
+    stop = threading.Event()
+    peak = {"v": 0}
+    t0 = time.time()
+
+    def loop():
+        while not stop.is_set():
+            mb = _vram_used_mb()
+            if mb > peak["v"]:
+                peak["v"] = mb
+            print(f"[vram +{time.time() - t0:5.1f}s] used={mb}MB peak={peak['v']}MB", flush=True)
+            stop.wait(interval)
+
+    threading.Thread(target=loop, daemon=True).start()
+    return stop, peak
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +944,12 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False):
         finally:
             shutil.rmtree(p["tmpdir"], ignore_errors=True)
 
+    # Free the translator's VRAM before returning so the NEXT season's Demucs +
+    # Whisper don't stack on top of a still-warm qwen3.5 — that cross-season
+    # co-residence (qwen ~7 GB + large-v3 ~3 GB) is what pushed peak VRAM to
+    # ~9.6 GB. qwen reloads at the next season's Phase 3 (one quick reload/season).
+    unload_ollama_model(args.ollama_host, args.translate_model)
+
     return translated, errors
 
 
@@ -936,6 +993,9 @@ def main():
                         help="Leave Ollama running after the run (default: unload model + stop if we started it)")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
                         help="Cap the number of trailers translated per season (for testing)")
+    parser.add_argument("--vram-log", action="store_true",
+                        help="Sample total GPU VRAM every 0.5s and interleave it with the "
+                             "phase log (diagnostic for peak-usage attribution)")
     parser.add_argument("--download-workers", type=int, default=4, metavar="N",
                         help="Concurrent trailer downloads in phase 1 (default: 4; "
                              "lower it if YouTube rate-limits)")
@@ -1039,6 +1099,13 @@ def main():
     ollama_ready, ollama_proc = False, None
     if split_enabled and not args.dry_run:
         ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
+
+    # Optional VRAM diagnostic — runs for the whole job; prints a final PEAK line.
+    if getattr(args, "vram_log", False):
+        import atexit
+        _vstop, _vpeak = start_vram_monitor()
+        atexit.register(lambda: (_vstop.set(),
+                                 print(f"[vram] PEAK = {_vpeak['v']}MB", flush=True)))
     print()
 
     # Single video mode
