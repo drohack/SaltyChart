@@ -186,7 +186,7 @@ and may branch on `data.code` for programmatic handling.
 
 - `GET /api/translate/check-batch?videoIds=id1,id2,...` — bulk DB lookup for English sub status (up to 100 IDs); returns only confirmed positives; queues background Python checks for uncached IDs
 - `GET /api/translate/check?videoId=&mediaId=`  — checks English subs + subtitle dismiss state; cached
-- `GET /api/translate/stream?videoId=&mediaId=` — SSE subtitle stream; serves from cache on repeat plays
+- `GET /api/translate/stream?videoId=&mediaId=&start=` — SSE subtitle stream; serves from cache on repeat plays. Optional `start=<sec>` begins transcription at the viewer's playhead (live CPU savings); `start>0` runs are partial and not cached
 - `PATCH /api/translate/dismiss?videoId=`       — persist subtitle on/off preference; no auth, all users
 - `POST /api/translate/upload`                  — upload pre-translated subtitles; admin only, respects model rank
 - `DELETE /api/translate/cache?videoId=`        — delete a cached translation; admin only
@@ -255,6 +255,36 @@ higher quality and automatically upgrades videos previously translated with
 `small`. The batch also pre-checks English subtitles and caches
 `hasEnglishSubs` to avoid a Python spawn on first play.
 
+**Live path is CPU-only and shares the Unraid box with Plex** (which transcodes
+most of the time, ~5 GB RAM free), so the daemon is tuned to be cheap and a good
+neighbour rather than to max the cores:
+
+- `os.nice(10)` at startup (Linux) so Whisper yields CPU to Plex.
+- Env knobs (apply bench winners without code changes): `WHISPER_LIVE_MODEL`
+  (default `small`), `WHISPER_LIVE_THREADS` (CTranslate2 `cpu_threads`; **default
+  2** — benchmarked sweet spot, `0`=CT2 default), `WHISPER_LIVE_WORKERS`
+  (max concurrent, default 2),
+  `WHISPER_LIVE_IDLE` (idle-exit seconds), `WHISPER_LIVE_NICE`.
+- **Single ffmpeg pass:** the live `download_audio(..., as_wav=False)` keeps the
+  native audio (no whole-file WAV transcode); `extract_chunk` slices 16 kHz-mono
+  chunks straight from it with `-threads 1`. (Batch still uses `as_wav=True` for
+  its full-audio pass — unchanged.)
+- **Playhead start:** `/api/translate/stream?start=<sec>` makes the daemon begin
+  at the viewer's current position (`generate_chunks(duration, start)`) instead of
+  second 0, so it doesn't translate already-watched audio. The frontend
+  (`AnimeGridTranslate.svelte`) sends `start` only when the playhead is >3 s in;
+  the common open-from-start case stays `start=0`. **`start>0` runs are partial
+  and NOT cached** (the batch produces the complete cached version) — gated by the
+  `cache` flag on `pendingSegments` in `translate.ts`.
+- The daemon logs a per-request timing line to stderr (→ backend console):
+  `[daemon] <vid> model=… thr=… start=…s dur=…s dl=…s ttfs=…s total=…s segs=…`,
+  so live latency is observable and comparable across pipeline changes.
+- faster-whisper 1.2.1 quirk: a `vad_filter` pass that finds no speech (common on
+  a trailer's silent first 5 s) can poison **later** transcriptions on the same
+  `base`-model instance; `small` recovers, so the production daemon (small) is
+  safe. If `WHISPER_LIVE_MODEL` is changed to `base`/`tiny`, the daemon would need
+  a fresh model per request (the bench loads fresh per video for this reason).
+
 `local_translate.py` uses `beam_size=10` (benchmarked on full Summer 2026
 trailers; beam_10 captured most of the quality gain over the default beam_5
 with diminishing returns beyond beam_10 — see the bake-off harness below).
@@ -284,6 +314,41 @@ match its audio). Data-prep flags: `--download` (16 kHz mono for Whisper),
 `content` (timing-independent best-match similarity — judges text quality when
 timestamps are unreliable), `halluc` (% segments <0.25 sim), `SCORE = overlap −
 halluc`.
+
+**Live CPU benchmark** (`tools/bench_live_cpu.py`, suite section `live_cpu`).
+Separate harness for the on-server live path: sweeps model `{tiny,base,small}` ×
+`cpu_threads {1,2,3,4}` over the same corpus and reports **TTFS** (extract+
+transcribe of the first 5 s chunk — the latency the viewer feels), `total`
+wall-clock, `xRT` (total/audio-len), `cpu_s` (process CPU-seconds = the
+Plex-contention cost, rises with threads), `rss_mb`, plus `content`/`halluc` as a
+quality floor so we don't ship gibberish (`tiny` is ~97% halluc — unusable). It
+loads a **fresh model per video** (timing excludes load; also dodges the
+`base`+VAD poisoning quirk above). **Benchmark on the dev PC, not the server**
+(the server runs prod and can't be tested on) — this PC's CPU is faster per-core
+than the i5-10400 and isn't Plex-contended, so treat absolute numbers as
+optimistic and prefer **relative** ranking + low thread counts; quality numbers
+transfer exactly.
+
+Finding (suite `live_cpu`, 2026-06): **`small` wins on both axes — keep it.**
+`tiny`/`base` are *slower* in total wall-clock (they hallucinate into repetition
+loops) *and* far worse quality (`tiny` 86–93% halluc = garbage, `base` 63% vs
+`small` 47%). There is no faster CPU model to switch to for ja→en. And
+transcription is **not** the bottleneck: `small` at 1 thread already runs at
+xRT ≈ 0.13 (≈8× faster than playback), so thread count only shifts TTFS by ~1–2 s
+while doubling `cpu_s` per extra thread. The latency the viewer feels is the
+**audio download**, which the bench excludes — hence the pipeline changes (native
+single-pass download, playhead `start`) target the right thing, not the model.
+`word_timestamps` is kept on despite a ~10–20% cost: transcription is already far
+ahead of playback, and it trims the pre-speech lead-in (better subtitle timing).
+
+**Download** (suite `download`, `tools/bench_download.py`): the audio download is at
+its floor — **no config beats the ~1.2 s `worstaudio` baseline**, and overriding the
+yt-dlp `player_client` is *risky*: `ios`/`tv`/`web_safari` all failed (6/6 — PO-token
+gated in 2026), `concurrent_fragments` and a specific opus itag were slightly slower,
+and **`aria2c -x16` was ~20–28× slower** (≈32 s vs 1.2 s). Multi-connection is
+pointless on a 0.3–0.6 MB file whose cost is YouTube's extraction handshake, not
+bandwidth. So `download_audio` stays on the plain default client and there's no
+aria2c in the image — the bench exists to prove there's nothing to chase here.
 
 Key findings (production still uses large-v3 end-to-end `task=translate`; these
 are not yet promoted):

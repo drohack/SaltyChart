@@ -29,7 +29,7 @@ const pendingStreams = new Map<string, Response>();
 // Map of request ID → { resolve } (for check requests)
 const pendingChecks = new Map<string, { resolve: (data: any) => void }>();
 // Map of request ID → collected segments (for caching after translation completes)
-const pendingSegments = new Map<string, { videoId: string; mediaId: number | null; segments: any[] }>();
+const pendingSegments = new Map<string, { videoId: string; mediaId: number | null; segments: any[]; cache: boolean }>();
 // Track in-flight translations by videoId to deduplicate concurrent requests
 const inFlightTranslations = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 
@@ -91,7 +91,17 @@ function handleDaemonLine(line: string): void {
 
     // Save collected segments to cache and resolve in-flight waiters
     const pending = pendingSegments.get(rid);
-    if (pending) {  // cache even 0-segment results — prevents re-translating silent videos
+    if (pending && !pending.cache) {
+      // Partial run (started mid-playback at start>0) — don't cache it as if it
+      // were the full video; the batch produces the complete cached version.
+      // Still resolve any in-flight waiters so they fall through and re-translate.
+      pendingSegments.delete(rid);
+      const inFlight = inFlightTranslations.get(pending.videoId);
+      if (inFlight) {
+        inFlightTranslations.delete(pending.videoId);
+        inFlight.resolve();
+      }
+    } else if (pending) {  // cache even 0-segment results — prevents re-translating silent videos
       pendingSegments.delete(rid);
       const segJson = JSON.stringify(pending.segments);
       prisma.$executeRawUnsafe(
@@ -441,6 +451,9 @@ router.get('/stream', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
   }
   const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
+  // Playhead offset: begin transcription near the viewer's current position so we
+  // don't burn CPU on already-watched audio. start>0 ⇒ partial run, not cached.
+  const startSec = req.query.start ? Math.max(0, parseFloat(req.query.start as string) || 0) : 0;
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -527,10 +540,10 @@ router.get('/stream', async (req: Request, res: Response) => {
 
   // Register this SSE response and start collecting segments for caching
   pendingStreams.set(rid, res);
-  pendingSegments.set(rid, { videoId, mediaId, segments: [] });
+  pendingSegments.set(rid, { videoId, mediaId, segments: [], cache: startSec === 0 });
 
   // Send translate command to daemon
-  sendCommand({ cmd: 'translate', rid, videoId });
+  sendCommand({ cmd: 'translate', rid, videoId, start: startSec });
 
   // Client disconnected: cancel the request in the daemon
   req.on('close', () => {

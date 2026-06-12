@@ -37,8 +37,18 @@ from translate_stream import (
     transcribe_chunks,
 )
 
-IDLE_TIMEOUT = 2 * 60 * 60  # 2 hours
-MAX_WORKERS = 2  # Max concurrent translate requests (safety net; Node also limits)
+IDLE_TIMEOUT = int(os.environ.get("WHISPER_LIVE_IDLE", str(2 * 60 * 60)))  # 2h default
+MAX_WORKERS = int(os.environ.get("WHISPER_LIVE_WORKERS", "2") or "2")  # safety net; Node also limits
+
+# Live-translation knobs, env-tunable so the model/thread choice from the bench
+# (tools/bench_live_cpu.py) can be applied without code changes. Defaults match
+# the historical behaviour (small model, CTranslate2's own thread default).
+MODEL_NAME = os.environ.get("WHISPER_LIVE_MODEL", "small")
+# Default 2 threads: benchmarked sweet spot on the Plex-contended box — TTFS ~2.5s,
+# ~half the CPU-seconds of 4 threads, and transcription still runs many× faster than
+# playback (xRT well under 1). The bench showed smaller models (tiny/base) are both
+# slower AND far worse quality, so `small` stays. 0 = let CTranslate2 decide.
+CPU_THREADS = int(os.environ.get("WHISPER_LIVE_THREADS", "2") or "2")
 
 # Thread-safe stdout writing
 _stdout_lock = threading.Lock()
@@ -54,26 +64,49 @@ def emit(rid: str, data: dict):
         sys.stdout.flush()
 
 
-def handle_translate(model, rid: str, video_id: str, cancelled: threading.Event):
-    """Worker: download audio, transcribe chunks, emit results."""
+def handle_translate(model, rid: str, video_id: str, cancelled: threading.Event,
+                     start: float = 0.0):
+    """Worker: download audio, transcribe chunks, emit results.
+
+    `start` begins transcription near the viewer's current playback position so
+    we don't burn CPU on audio they've already watched (those segments would be
+    discarded by the frontend's forward-only subtitle pointer anyway)."""
     tmpdir = tempfile.mkdtemp()
+    # Timing record so we can compare against future pipeline changes. Lands in
+    # the daemon's stderr (Node pipes it to the backend console/logs).
+    t0 = time.time()
+    stats = {"n": 0, "first": None}
+
+    def _emit(data):
+        if "text" in data and "start" in data:
+            stats["n"] += 1
+            if stats["first"] is None:
+                stats["first"] = time.time()
+        emit(rid, data)
+
     try:
-        full_audio, duration = download_audio(video_id, tmpdir)
+        # Native download (no whole-file WAV transcode) — chunks are sliced on the fly.
+        full_audio, duration = download_audio(video_id, tmpdir, as_wav=False)
+        dl = time.time() - t0
 
         if cancelled.is_set():
             return
 
         emit(rid, {"progress": "transcribing"})
 
-        chunks = generate_chunks(duration)
-        transcribe_chunks(
-            model, chunks, tmpdir, full_audio,
-            lambda data: emit(rid, data),
-            cancelled=cancelled,
-        )
+        chunks = generate_chunks(duration, start)
+        transcribe_chunks(model, chunks, tmpdir, full_audio, _emit, cancelled=cancelled)
 
         if not cancelled.is_set():
             emit(rid, {"done": True})
+
+        ttfs = (stats["first"] - t0) if stats["first"] else -1.0
+        sys.stderr.write(
+            f"[daemon] {video_id} model={MODEL_NAME} thr={CPU_THREADS or 'def'} "
+            f"start={start:.0f}s dur={duration:.0f}s dl={dl:.1f}s "
+            f"ttfs={ttfs:.1f}s total={time.time() - t0:.1f}s segs={stats['n']}\n"
+        )
+        sys.stderr.flush()
 
     except Exception as e:
         emit(rid, {"error": str(e)})
@@ -91,9 +124,20 @@ def handle_check(rid: str, video_id: str):
 
 
 def main():
-    # Load model once at startup
+    # Be a good neighbour to Plex (shares the server) — yield CPU under contention.
+    # Best-effort; only meaningful on Linux (the Unraid host).
+    try:
+        if hasattr(os, "nice"):
+            os.nice(int(os.environ.get("WHISPER_LIVE_NICE", "10")))
+    except Exception:
+        pass
+
+    # Load model once at startup (model + thread count are env-tunable).
     from faster_whisper import WhisperModel
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    model_kwargs = {"device": "cpu", "compute_type": "int8"}
+    if CPU_THREADS > 0:
+        model_kwargs["cpu_threads"] = CPU_THREADS
+    model = WhisperModel(MODEL_NAME, **model_kwargs)
 
     # Signal ready
     with _stdout_lock:
@@ -163,16 +207,20 @@ def main():
 
         if action == "translate":
             video_id = cmd.get("videoId", "")
+            try:
+                start = float(cmd.get("start", 0) or 0)
+            except (TypeError, ValueError):
+                start = 0.0
             cancelled = threading.Event()
             active_requests[rid] = cancelled
 
-            def _worker(rid=rid, video_id=video_id, cancelled=cancelled):
+            def _worker(rid=rid, video_id=video_id, cancelled=cancelled, start=start):
                 # Limit concurrent translations via semaphore
                 if not _worker_semaphore.acquire(timeout=30):
                     emit(rid, {"error": "Server busy, try again shortly"})
                     return
                 try:
-                    handle_translate(model, rid, video_id, cancelled)
+                    handle_translate(model, rid, video_id, cancelled, start)
                 finally:
                     _worker_semaphore.release()
                     active_requests.pop(rid, None)

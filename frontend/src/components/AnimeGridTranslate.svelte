@@ -180,7 +180,15 @@ $: _currentLang = $options.titleLanguage;
     currentSubtitle = '';
     translationStatus = 'Downloading audio...';
 
-    eventSource = new EventSource(`/api/translate/stream?videoId=${videoId}${mediaParam}`);
+    // If the viewer is already several seconds into the trailer (re-open, or
+    // they scrubbed ahead), tell the backend to begin transcription near the
+    // playhead instead of second 0 — it won't waste CPU on already-watched audio
+    // that the forward-only subtitle pointer would discard anyway. The common
+    // open-from-start case keeps start=0 so the result is still cached fully.
+    const startSec = Math.floor(playerCurrentTime);
+    const startParam = startSec > 3 ? `&start=${startSec}` : '';
+
+    eventSource = new EventSource(`/api/translate/stream?videoId=${videoId}${mediaParam}${startParam}`);
 
     eventSource.onmessage = (event) => {
       try {

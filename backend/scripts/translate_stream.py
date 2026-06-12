@@ -50,11 +50,13 @@ def check_subtitles(video_id: str, timeout: int = 10) -> dict:
 
 
 def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
-    """Extract a single audio chunk via ffmpeg. Returns the chunk path.
+    """Extract a 16 kHz-mono audio chunk via ffmpeg, decoding straight from the
+    native downloaded file (single pass — no whole-file WAV transcode upfront).
+    `-threads 1` keeps ffmpeg from grabbing cores Plex needs on the server.
     Only used by the small model for chunked streaming. Medium/large use full-audio."""
     chunk_path = os.path.join(tmpdir, f"chunk_{chunk_start}.wav")
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-threads", "1",
         "-ss", str(chunk_start),
     ]
     if chunk_end is not None:
@@ -81,44 +83,62 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
     return chunk_path
 
 
-def download_audio(video_id: str, tmpdir: str):
-    """Download full audio as WAV. Returns (full_audio_path, duration)."""
+def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
+    """Download the worst-quality audio track. Returns (audio_path, duration).
+
+    as_wav=True  (default; used by batch_translate): transcode the whole file to
+                 WAV via yt-dlp's postprocessor — convenient for full-audio passes.
+    as_wav=False (live daemon): keep the NATIVE audio (m4a/webm/opus) and skip the
+                 whole-file transcode. The chunked path slices 16 kHz-mono chunks
+                 straight from it via extract_chunk(), so the upfront full-file WAV
+                 conversion (wasted work for chunked streaming) is avoided entirely.
+    """
     import yt_dlp
 
-    full_audio = os.path.join(tmpdir, "full.wav")
     ydl_opts = {
         "format": "worstaudio",
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "wav",
-        }],
         "outtmpl": os.path.join(tmpdir, "full.%(ext)s"),
     }
+    if as_wav:
+        ydl_opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "wav",
+        }]
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
             f"https://www.youtube.com/watch?v={video_id}", download=True
         )
         duration = info.get("duration", 120)
-    return full_audio, duration
+
+    # Locate the produced file (extension depends on as_wav / source format).
+    for name in os.listdir(tmpdir):
+        if name.startswith("full."):
+            return os.path.join(tmpdir, name), duration
+    raise RuntimeError("download produced no audio file")
 
 
-def generate_chunks(duration: float):
-    """Generate chunk boundaries. Ramps up chunk size for fast first subtitles."""
+def generate_chunks(duration: float, start: float = 0.0):
+    """Generate chunk boundaries, ramping up chunk size for fast first subtitles.
+
+    `start` lets the live path begin near the user's current playback position
+    instead of second 0, so the daemon doesn't spend CPU translating audio the
+    viewer has already watched (those segments get discarded by the frontend's
+    forward-only subtitle pointer anyway). Chunk timestamps stay absolute."""
     # Chunk sizes: 5, 5, 10, 10, 20, 20, 20, ...
     RAMP = [5, 5, 10, 10]
     CHUNK_SIZE = 20
     chunks = []
-    start = 0
+    pos = max(0.0, start)
     i = 0
-    while start < duration:
+    while pos < duration:
         size = RAMP[i] if i < len(RAMP) else CHUNK_SIZE
         i += 1
-        end = min(start + size, duration)
-        chunks.append((start, end))
-        start = end
+        end = min(pos + size, duration)
+        chunks.append((pos, end))
+        pos = end
     return chunks
 
 
@@ -138,26 +158,35 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
         emit: callable(dict) to output each segment/progress
         cancelled: optional threading.Event, checked between chunks
     """
-    # Short videos: full-audio is faster than chunking overhead
+    # Short videos: one full-tail pass beats chunking overhead. Extract a single
+    # 16 kHz-mono WAV from the native download (from the playhead onward) and
+    # transcribe it — still a single decode pass, and reliable regardless of the
+    # native audio codec.
     if len(chunks) <= 4:
-        segments, _ = model.transcribe(
-            full_audio, language="ja", task="translate",
-            vad_filter=True, beam_size=1,
-            condition_on_previous_text=False,
-            word_timestamps=True,
-        )
-        for seg in segments:
-            if cancelled and cancelled.is_set():
-                return
-            text = seg.text.strip()
-            if not text:
-                continue
-            w = seg.words
-            emit({
-                "start": round(w[0].start if w else seg.start, 2),
-                "end":   round(w[-1].end  if w else seg.end,   2),
-                "text": text,
-            })
+        seg_start = chunks[0][0] if chunks else 0.0
+        src = extract_chunk(seg_start, None, tmpdir, full_audio)
+        try:
+            segments, _ = model.transcribe(
+                src, language="ja", task="translate",
+                vad_filter=True, beam_size=1,
+                condition_on_previous_text=False,
+                word_timestamps=True,
+            )
+            for seg in segments:
+                if cancelled and cancelled.is_set():
+                    return
+                text = seg.text.strip()
+                if not text:
+                    continue
+                w = seg.words
+                emit({
+                    "start": round((w[0].start if w else seg.start) + seg_start, 2),
+                    "end":   round((w[-1].end  if w else seg.end)   + seg_start, 2),
+                    "text": text,
+                })
+        finally:
+            if os.path.exists(src):
+                os.unlink(src)
         return
 
     # Longer videos: chunk for fast time-to-first-segment
@@ -206,7 +235,7 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
                     os.unlink(chunk_path)
 
 
-def translate_audio(video_id: str):
+def translate_audio(video_id: str, start: float = 0.0):
     """Standalone mode: download, load model, transcribe, print to stdout."""
     from concurrent.futures import ThreadPoolExecutor, Future
 
@@ -220,15 +249,16 @@ def translate_audio(video_id: str):
     try:
         tmpdir = tempfile.mkdtemp()
 
-        # Start model loading in background while we download audio
+        # Start model loading in background while we download audio (native, no
+        # whole-file WAV transcode — chunks are sliced from it on the fly).
         with ThreadPoolExecutor(max_workers=1) as model_pool:
             model_future: Future = model_pool.submit(_load_model)
-            full_audio, duration = download_audio(video_id, tmpdir)
+            full_audio, duration = download_audio(video_id, tmpdir, as_wav=False)
             model = model_future.result()
 
         emit({"progress": "transcribing"})
 
-        chunks = generate_chunks(duration)
+        chunks = generate_chunks(duration, start)
         transcribe_chunks(model, chunks, tmpdir, full_audio, emit)
         emit({"done": True})
 
