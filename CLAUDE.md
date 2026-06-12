@@ -123,7 +123,8 @@ SaltyChart/
 ├── backend/          # Express + TypeScript REST API
 │   └── prisma/       # Prisma schema + SQLite datasource (nested prisma/data.db)
 ├── frontend/         # Svelte 4 + Vite + Tailwind/DaisyUI single-page app
-├── tools/            # Python helper scripts (local_translate.py, benchmark, tests/)
+├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
+│   │                 #   + bench_pipeline.py (swappable ASR/translate/align stages)
 │   └── tests/        # Pre-deploy smoke/regression suite (run_all.py)
 ├── docker-compose.yml
 ├── README.md         # High-level overview & quick-start instructions
@@ -254,19 +255,68 @@ higher quality and automatically upgrades videos previously translated with
 `small`. The batch also pre-checks English subtitles and caches
 `hasEnglishSubs` to avoid a Python spawn on first play.
 
-`local_translate.py` uses `beam_size=10` (benchmarked against 30 settings
-on 10 full Summer 2026 trailers; beam_10 captured most of the quality gain
-over the default beam_5 with diminishing returns beyond beam_10).
+`local_translate.py` uses `beam_size=10` (benchmarked on full Summer 2026
+trailers; beam_10 captured most of the quality gain over the default beam_5
+with diminishing returns beyond beam_10 — see the bake-off harness below).
 
-Benchmark data lives in `tools/benchmark_data/` (gitignored) and results in
-`tools/benchmark_results.txt`. Script: `tools/benchmark_whisper_settings.py`.
-Key findings from the benchmark:
-- `beam_size=10` gives ~+7 score improvement over beam_5 baseline
-- `repetition_penalty=1.2` gives similar ~+7 improvement individually
-- **Combining them doesn't stack** — together scores only +6.6, same as either alone
-- `hallucination_silence_threshold`, `log_prob_threshold`, `initial_prompt` all hurt
-- `suppress_blank`, `auto_lang`, `best_of` had zero effect (identical to baseline)
-- `vad_filter=False` much worse (-37 vs -29 baseline)
+**Benchmark / pipeline bake-off harness.** Data lives in `tools/benchmark_data/`
+(gitignored) and results in `tools/benchmark_results.txt`. The harness
+`tools/benchmark_whisper_settings.py` composes swappable pipeline stages from
+`tools/bench_pipeline.py` (audio source → ASR → optional translate → optional
+align) so each layer can be A/B'd in isolation. A variant is a *pipeline spec*;
+related variants are grouped into **suites** run via `--suite`
+(`baseline`, `phase1`…`phase4`). ASR outputs are cached to
+`benchmark_data/<vid>/cache/` keyed by audio+model+decode-args, so re-runs and
+translator-only sweeps don't recompute transcription (`--no-cache` to force).
+
+Corpus: 11 Summer 2026 trailers with **real timestamped English CC** fetched via
+`youtube_transcript_api` (`--refetch-cc`) — *not* yt-dlp VTT, which silently
+returned empty files and made the harness fall back to fabricated even-spaced
+timestamps. One video (`OMCPr9YwHdM`) is excluded (auto-generated CC that doesn't
+match its audio). Data-prep flags: `--download` (16 kHz mono for Whisper),
+`--download-hq` (best-quality source for Demucs), `--refetch-cc`,
+`--refetch-cc-ja` (Japanese CC as an alt translation input). Metrics per variant:
+`overlap` (±4 s semantic similarity vs CC), `timing` (mean segment-span IoU),
+`content` (timing-independent best-match similarity — judges text quality when
+timestamps are unreliable), `halluc` (% segments <0.25 sim), `SCORE = overlap −
+halluc`.
+
+Key findings (production still uses large-v3 end-to-end `task=translate`; these
+are not yet promoted):
+- **Decode params** (refreshed on real CC): the `beam_size=10` + `repetition_penalty=1.2`
+  family is best; `beam10_rep120_vadmin300` marginally tops it. `no_vad`,
+  `suppress_blank`, `auto_lang` are no better than baseline. `beam_size=10`
+  remains a reasonable default for `local_translate.py`.
+- **Demucs vocal separation helps** (htdemucs, two-stems) — ~+6–8 SCORE, ~5–6 pp
+  less hallucination. *Must separate from full-quality source audio*, not the
+  16 kHz-mono Whisper input (separating mono upsampled audio actually hurts).
+- **Best overall config (suite `champion`): `split_best`** — vocals + large-v3
+  `task=transcribe` with `beam_size=10, repetition_penalty=1.2,
+  vad_parameters.min_speech_duration_ms=300` → **qwen3.5:9b** translate (Ollama,
+  greedy/temp 0). SCORE **1.9** vs end-to-end translate **1.0**, winning timing
+  (52.7 vs 43.6 IoU) and hallucination (34.5% vs 35.7%), matching content. The
+  tuned decode params *help the transcribe path* (rescued the hallucination-prone
+  clips: Tanya −53→+13, Inept Villainess −29→−1) but *hurt* end-to-end translate
+  (e2e SCORE 1.0→−1.6) — they interact with the task, which is why no single
+  earlier phase found this; only the fully-stacked run did. Splitting translation
+  out of Whisper also yields more natural English; its residual weakness is
+  mis-heard proper names.
+- **Japanese-specialised ASR did NOT help on this domain**: kotoba-whisper-v2.0
+  (content 51.3) and Qwen3-ASR-1.7B (52.2) both *lose* to large-v3 transcribe
+  (55.8) — their clean-speech leaderboard CER wins don't transfer to stylized
+  anime-trailer audio (music/SFX/dramatic delivery/proper nouns).
+
+Bench-environment gotchas (Windows, this machine):
+- **Do not leave `torchcodec` installed** — torchaudio≥2.9 routes through it and it
+  hijacks faster-whisper's decoder (gibberish/crash). `separate_vocals` does audio
+  I/O via the ffmpeg *binary* instead.
+- **qwen2.5 produces multilingual word-salad in this Ollama build** (0.30.6) — use
+  qwen3 / qwen3.5; disable thinking (`think:false`).
+- The `qwen-asr` package downgrades transformers (5.5.3→4.57.6); core (faster-whisper,
+  sentence-transformers) still works but verify after install.
+- kotoba can't emit word-level timestamps (distilled → DTW alignment crash) and its
+  chunk timestamps are coarse; Qwen3-ASR needs a separate `Qwen3-ForcedAligner` for
+  timing. Both make them poor subtitle-timing fits regardless of text quality.
 
 The backend includes an auto-scheduler (in `index.ts`) that runs the batch
 script automatically on Wednesdays between 2–4am when the next anime season

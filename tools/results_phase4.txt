@@ -1,0 +1,80 @@
+Benchmark: suite 'phase4' — SUMMER 2026 trailers  (2026-06-12 12:27)
+Device: cuda (float16)  |  Videos: 11  |  With CC: 11
+Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+
+========================================================================================
+SUMMARY  (sorted by score; metrics averaged across all videos)
+Setting                       segs  overlap   timing  content   halluc   SCORE
+----------------------------------------------------------------------------------------
+e2e_translate                 20.0    36.7%    43.6%    57.9%    35.7%    1.0 ★
+whisperJP_then_qwen           20.5    36.1%    51.8%    55.8%    37.4%   -1.4
+qwen3asrJP_then_qwen          20.5    25.1%    40.5%    52.2%    58.8%  -33.7
+
+========================================================================================
+SETTING: e2e_translate  {'audio': 'vocals', 'asr_model': 'large-v3', 'asr_kwargs': {'task': 'translate', 'beam_size': 10}}
+  Video                                 segs  overlap   timing  content   halluc  score
+  ------------------------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    16    44.4%    27.8%    64.3%    26.7%   17.7
+  p0JRE_K6s5A I Became a Legend After My 10     16    25.0%    42.1%    49.2%    62.5%  -37.5
+  ECtHlHde3EQ Otome Kaijuu Caramelise           12    40.3%    52.4%    63.2%    33.3%    6.9
+  y-efbopLrYk Young Ladies Don't Play Fighti    13    32.2%    49.3%    50.9%    46.2%  -13.9
+  nR_vqhD2rGM Though I Am an Inept Villaines    16    33.4%    46.5%    53.8%    31.2%    2.1
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    24    39.7%    45.7%    60.7%    33.3%    6.4
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     15    41.5%    46.0%    59.2%    26.7%   14.8
+  -FVOUh7_obU Goodbye, Lara                     15    33.8%    41.2%    56.5%    26.7%    7.2
+  7ObipYqbOd8 Sparks of Tomorrow                52    25.2%    35.2%    48.8%    55.8%  -30.5
+  3-Cj3dXwQWI Saga of Tanya the Evil Season     19    35.3%    47.0%    53.1%    36.8%   -1.5
+  ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    53.2%    46.0%    76.9%    13.6%   39.6
+
+========================================================================================
+SETTING: whisperJP_then_qwen  {'audio': 'vocals', 'asr_model': 'large-v3', 'asr_kwargs': {'task': 'transcribe', 'beam_size': 10}, 'translator': 'ollama_qwen'}
+  Video                                 segs  overlap   timing  content   halluc  score
+  ------------------------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    13    44.6%    53.5%    61.7%    25.0%   19.6
+  p0JRE_K6s5A I Became a Legend After My 10     16    30.2%    62.0%    50.4%    50.0%  -19.8
+  ECtHlHde3EQ Otome Kaijuu Caramelise           12    36.4%    62.4%    56.4%    33.3%    3.0
+  y-efbopLrYk Young Ladies Don't Play Fighti    10    32.0%    52.2%    50.1%    30.0%    2.0
+  nR_vqhD2rGM Though I Am an Inept Villaines    34    20.9%    55.7%    42.4%    70.6%  -49.7
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    28    34.6%    51.5%    57.4%    42.9%   -8.3
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     16    48.8%    47.5%    60.9%    18.8%   30.1
+  -FVOUh7_obU Goodbye, Lara                      7    48.7%    41.8%    64.5%     0.0%   48.7
+  7ObipYqbOd8 Sparks of Tomorrow                51    32.9%    50.1%    56.2%    43.1%  -10.2
+  3-Cj3dXwQWI Saga of Tanya the Evil Season     12    22.9%    39.2%    50.5%    75.0%  -52.1
+  ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    26    44.9%    54.3%    63.5%    23.1%   21.8
+
+========================================================================================
+SETTING: qwen3asrJP_then_qwen  {'audio': 'vocals', 'asr_model': 'Qwen/Qwen3-ASR-1.7B', 'translator': 'ollama_qwen'}
+  Video                                 segs  overlap   timing  content   halluc  score
+  ------------------------------------------------------------------------------------
+  7fdSXo-be7o BanG Dream! Yume Infinity Mita    13    24.8%    32.2%    54.7%    58.3%  -33.6
+  p0JRE_K6s5A I Became a Legend After My 10     16    18.7%    47.2%    52.3%    68.8%  -50.1
+  ECtHlHde3EQ Otome Kaijuu Caramelise           12    21.5%    24.4%    49.7%    80.0%  -58.5
+  y-efbopLrYk Young Ladies Don't Play Fighti     7    23.1%    29.0%    52.7%    42.9%  -19.8
+  nR_vqhD2rGM Though I Am an Inept Villaines    31    21.7%    53.5%    35.9%    71.0%  -49.3
+  aQWo0lR5lNw Otomege Sekai wa Mob ni Kibish    28    24.0%    50.9%    52.2%    64.3%  -40.2
+  HZW_fbHDsT8 Toumei na Yoru ni Kakeru Kimi     15    29.9%    40.6%    59.4%    40.0%  -10.1
+  -FVOUh7_obU Goodbye, Lara                     11    21.7%    30.8%    51.1%    54.5%  -32.9
+  7ObipYqbOd8 Sparks of Tomorrow                50    20.2%    44.7%    47.7%    74.0%  -53.8
+  3-Cj3dXwQWI Saga of Tanya the Evil Season     26    20.1%    45.0%    42.9%    69.2%  -49.1
+  ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    17    50.2%    47.1%    75.2%    23.5%   26.7
+
+================================================================================
+SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+
+  --- e2e_translate (16 segs, score=35.7) ---
+    [10.5→11.2] My name is Arale Nakamachi.
+    [12.2→14.9] I love to sing and talk a lot.
+    [22.2→22.8] I love everyone.
+    [30.9→31.9] My name is Ritsu Minetsuki.
+
+  --- whisperJP_then_qwen (13 segs, score=37.4) ---
+    [10.5→11.8] I'm Nakamachi Arare!
+    [12.9→14.9] I love singing and chatting!
+    [22.2→24.3] I love everyone so much!
+    [31.2→32.7] My name is Minazuki Ritsui.
+
+  --- qwen3asrJP_then_qwen (13 segs, score=58.8) ---
+    [0.0→6.8] That's Interim-chan!
+    [6.8→13.6] She loves singing and chatting so much.
+    [13.6→20.4] Ushinaga-chan really loves everyone here.
+    [20.4→27.2] My name is Shimetsuki Ritsuru.
