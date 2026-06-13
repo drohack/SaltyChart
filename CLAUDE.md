@@ -394,9 +394,12 @@ window gate) and handles all 3 seasons first; this medium batch is the
 fallback for anything large-v3 missed. Runs once per Wednesday max, with
 `--cutoff 10` to stop by 10am. No external cron setup needed.
 
-Each batch run covers **three seasons** automatically (prev, current-displayed,
-next) so coverage is complete regardless of which season the app is showing.
-Passing `--season`/`--year` explicitly overrides to a single season.
+Each batch run covers **only the current-displayed season** by default — so a run
+never hits YouTube with more than one season's worth of downloads (avoids the bot
+wall). `--all-seasons` restores the old prev+current+next sweep; `--season`/`--year`
+overrides to a specific one. Downloads are **sequential with a `--download-delay`
+(default 5 s)** between trailers, and the run **aborts on a YouTube bot-challenge**
+(`_is_bot_block`) instead of hammering the rest — mirroring `local_translate.py`.
 
 Audio is chunked with a ramp-up strategy (5 s, 5 s, 10 s, 10 s, then 20 s)
 starting from second 0. On-demand uses `beam_size=1` +

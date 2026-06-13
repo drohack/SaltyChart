@@ -221,6 +221,13 @@ def get_seasons_to_process() -> list:
 # Translation
 # ---------------------------------------------------------------------------
 
+def _is_bot_block(msg: str) -> bool:
+    """True if YouTube returned a 'confirm you're not a bot' challenge — we abort
+    the run on this rather than hammering YouTube with the remaining trailers."""
+    m = (msg or "").lower()
+    return ("confirm you" in m and "not a bot" in m) or "sign in to confirm" in m
+
+
 def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connection,
                      has_english: bool = None):
     """Translate a single video and save to SubtitleCache.
@@ -310,13 +317,23 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="List trailers without translating")
     parser.add_argument("--cutoff", type=int, default=10, help="Stop after this hour (24h, default: 10)")
     parser.add_argument("--db", type=str, default=None, help="SQLite database path")
+    parser.add_argument("--download-delay", type=float, default=5.0, metavar="SECONDS",
+                        help="Seconds between trailers to stay polite to YouTube / avoid "
+                             "bot-detection (default: 5). Downloads are sequential.")
+    parser.add_argument("--all-seasons", action="store_true",
+                        help="Process prev + current + next season (3). Default is the "
+                             "single current-displayed season only, so a run never hits "
+                             "YouTube with more than one season's worth of downloads.")
     args = parser.parse_args()
 
-    # Determine seasons to process
+    # Determine seasons to process. Default = just the current-displayed season
+    # (the one the app shows); --all-seasons restores the old 3-season sweep.
     if args.season and args.year:
         seasons_to_process = [(args.season.upper(), args.year)]
-    else:
+    elif args.all_seasons:
         seasons_to_process = get_seasons_to_process()
+    else:
+        seasons_to_process = [next_season_info()]
 
     # Determine DB path
     db_path = args.db
@@ -339,6 +356,7 @@ def main():
     # Single persistent DB connection and lazily-loaded model reused across all seasons
     conn = sqlite3.connect(db_path)
     model = None
+    bot_blocked = False
     try:
         for season, year in seasons_to_process:
             print(f"[batch] -- {season} {year} {'-' * 50}")
@@ -424,6 +442,11 @@ def main():
 
                 print(f"[{i+1}/{len(uncached)}] {title} ({vid}) [{reason}]{eta_str}...")
 
+                # Polite gap between trailers (downloads are sequential). Skip
+                # before the first one.
+                if i > 0 and args.download_delay:
+                    time.sleep(args.download_delay)
+
                 try:
                     start_time = time.time()
                     num_segments = translate_video(model, vid, show["id"], conn, has_english=has_english)
@@ -432,6 +455,11 @@ def main():
                     print(f"  Done -- {num_segments} segments in {elapsed:.1f}s")
                     translated += 1
                 except Exception as e:
+                    if _is_bot_block(str(e)):
+                        print(f"\n[batch] ABORT: YouTube bot-challenge ('not a bot') — "
+                              f"stopping to avoid deepening the block. Re-run after a cool-down.")
+                        bot_blocked = True
+                        break
                     print(f"  ERROR: {e}")
                     errors += 1
 
@@ -441,8 +469,8 @@ def main():
                   + (f", {remaining} remaining" if remaining > 0 else ""))
             print()
 
-            if cutoff_hit:
-                break  # Don't start further seasons after cutoff
+            if cutoff_hit or bot_blocked:
+                break  # Don't start further seasons after cutoff / bot-block
 
     finally:
         conn.close()
