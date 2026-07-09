@@ -25,7 +25,7 @@ services:
     expose:
       - "3000"
     environment:
-      JWT_SECRET: ba2d63b9ffd3fb8f9149456935bf6e70ebac1cb453bef06e8ed5a9b317f410bd
+      JWT_SECRET: ${JWT_SECRET}
       DATABASE_URL: file:/app/prisma/data.db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
