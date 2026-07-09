@@ -175,91 +175,95 @@ container, so no additional environment configuration is required.
 
 ---
 
-## Production build
+## Deployment (automatic — push to master)
 
-**Before building, run the pre-deploy suite** to catch regressions:
+Deploys are handled by CI + an Unraid pull script. **Pushing to `master` is
+deploying**; there is no manual build/transfer step.
+
+1. **Run the pre-deploy suite locally** (CI can't run Playwright/GPU tests):
+
+   ```bash
+   # 0. Kill stale ts-node-dev / vite processes from prior sessions
+   py -3.13 tools/tests/kill_stale.py
+
+   # 1. Backend + frontend dev servers must be running (npm run dev in each)
+   # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
+   py -3.13 -u tools/tests/run_all.py
+
+   # Expect: "Pre-deploy: 8/8 passed — ready to build"
+   # Skip the GPU test with --skip-burned-in if no CUDA
+   ```
+
+2. **Push to `master`.** The `deploy` workflow
+   (`.github/workflows/deploy.yml`) typechecks the backend, builds the
+   frontend, then builds & pushes both images to GHCR:
+   `ghcr.io/drohack/saltychart-{backend,frontend}`, tagged `latest` plus an
+   immutable `YYYYMMDD-<shortsha>` for rollback. The push is atomic — a
+   failed backend build never publishes a frontend-only update.
+
+3. **The server updates itself.** The `update_saltychart` User Script on
+   Unraid (cron, every 10 min; reference copy at
+   `tools/unraid/update_saltychart.sh`) runs `docker compose pull` and, only
+   when a new image arrived, backs up the DB (existing
+   `backup_saltychart_db` script), runs `docker compose up -d`, prunes old
+   images, and logs to `/mnt/user/appdata/saltychart/update.log`.
+
+A code change is typically live ~15 minutes after the push (CI ~5 min + poll
+interval). The SQLite DB lives in the external `saltychart_db` volume, which
+deploys never touch.
+
+### The base image (why deploys are small)
+
+The backend's heavy layers — python3, ffmpeg, pip deps, and the ~2 GB of
+pre-downloaded Whisper models — live in a separate **pinned base image**,
+`ghcr.io/drohack/saltychart-backend-base:vN`, built from
+`backend/Dockerfile.base`. `backend/Dockerfile` builds `FROM` that pinned
+tag, so a routine deploy only transfers ~100 MB of app layers.
+
+To update the base (new yt-dlp, model change, etc.):
+
+1. Edit `backend/Dockerfile.base`.
+2. Run the **build-base** workflow (GitHub → Actions → build-base → Run
+   workflow) with the next version, e.g. `v2`.
+3. Bump the `FROM ...saltychart-backend-base:v2` line in
+   `backend/Dockerfile` and push — that one deploy pulls the full base once,
+   then deploys are small again.
+
+### Rollback
+
+Every deploy leaves an immutable tag and a fresh DB backup:
 
 ```bash
-# 0. Kill stale ts-node-dev / vite processes from prior sessions
-py -3.13 tools/tests/kill_stale.py
-
-# 1. Backend + frontend dev servers must be running (npm run dev in each)
-# Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
-py -3.13 -u tools/tests/run_all.py
-
-# Expect: "Pre-deploy: 8/8 passed — ready to build"
-# Skip the GPU test with --skip-burned-in if no CUDA
+# On the server: pin compose to the previous tag…
+vi /mnt/user/appdata/saltychart/docker-compose.yml
+#   image: ghcr.io/drohack/saltychart-backend:YYYYMMDD-abc1234  (and frontend)
+docker compose up -d
+# …and if data must rewind, run the restore_saltychart_db User Script.
 ```
 
-Then each sub-directory ships a **multi-stage Dockerfile** that produces a
-minimal runtime image.
-
-```bash
-# Back-end – Express (listens on 3000 inside)
-docker build -t saltychart-backend:$(date +%Y%m%d) ./backend
-
-# Front-end – Static assets served by Nginx (listens on 80 inside)
-docker build -t saltychart-frontend:$(date +%Y%m%d) ./frontend
-
-# Optional: bundle into a single archive for off-line transfer
-docker save -o saltychart_$(date +%Y%m%d).tar \
-  saltychart-backend:$(date +%Y%m%d)            \
-  saltychart-frontend:$(date +%Y%m%d)
-```
-
-> The image tags use the build date, but a Git commit SHA works just as well.
+(Return to `:latest` afterwards or the auto-updater won't pick up new
+deploys for the pinned service.)
 
 ---
 
-### Deploying the bundle to Unraid
+### Offline fallback (manual tar deploy)
 
-The resulting **`.tar`** archive contains both the backend and frontend images
-and can be moved to the server completely off-line.  The high-level flow is:
+If GitHub/GHCR is unavailable, the old manual path still works:
 
-1. Copy the archive to a shared folder on the Unraid box
-2. Load the images into Docker
-3. Point `docker-compose.yml` at the new tags
-4. Bounce the compose stack from the GUI
+```bash
+# Build locally (backend needs the base image present or pullable)
+docker build -t saltychart-backend:$(date +%Y%m%d) ./backend
+docker build -t saltychart-frontend:$(date +%Y%m%d) ./frontend
+docker save -o saltychart_$(date +%Y%m%d).tar \
+  saltychart-backend:$(date +%Y%m%d) saltychart-frontend:$(date +%Y%m%d)
 
-Detailed walkthrough:
+# Transfer + load
+scp saltychart_YYYYMMDD.tar <user>@<unraid-ip>:/mnt/user/SHARE/user/drohackfiles/
+ssh <user>@<unraid-ip> docker load -i /mnt/user/SHARE/user/drohackfiles/saltychart_YYYYMMDD.tar
 
-1. **Transfer the file** (from your workstation)
-
-   ```bash
-   scp saltychart_YYYYMMDD.tar \
-       <user>@<unraid-ip>:/mnt/user/SHARE/user/drohackfiles/
-   ```
-
-2. **Load the images** (inside an SSH session on the server)
-
-   ```bash
-   cd /mnt/user/SHARE/user/drohackfiles
-   docker load -i saltychart_YYYYMMDD.tar
-   ```
-
-   Docker will spit out something like:
-
-   ```text
-   Loaded image: saltychart-backend:YYYYMMDD
-   Loaded image: saltychart-frontend:YYYYMMDD
-   ```
-
-3. **Update Compose to reference today’s tags**
-
-   ```bash
-   vi /mnt/user/appdata/saltychart/docker-compose.yml
-   # change the image lines
-   #   backend:  image: saltychart-backend:YYYYMMDD
-   #   frontend: image: saltychart-frontend:YYYYMMDD
-   :wq
-   ```
-
-4. **Redeploy from the Unraid GUI**
-
-   • Navigate to **Docker ➜ Compose** in the Unraid web UI.  
-   • Select the *saltychart* project, click **Compose Down**, wait a moment, then **Compose Up**.
-
-That’s it—the stack will come back online using the freshly imported images.
+# Point /mnt/user/appdata/saltychart/docker-compose.yml at the loaded tags,
+# then Docker ➜ Compose ➜ Compose Down / Compose Up in the Unraid GUI.
+```
 
 ---
 

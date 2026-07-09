@@ -1,24 +1,26 @@
 # ---------------------------------------------------------------------------
 #  SaltyChart Docker-Compose stack
 #
-#  • Runs the two production images (backend API + frontend static site)
+#  • Runs the two production images (backend API + frontend static site),
+#    pulled from GHCR. CI (.github/workflows/deploy.yml) pushes a new
+#    :latest pair on every push to master; on the Unraid server the
+#    `update_saltychart` User Script (tools/unraid/update_saltychart.sh)
+#    polls with `docker compose pull` and swaps containers automatically.
+#  • Rollback: pin the image lines to a previous immutable YYYYMMDD-<sha>
+#    tag (visible on the GHCR package pages) and `docker compose up -d`.
 #  • Adds a *named* volume for the SQLite database instead of a bind-mount so
 #    the DB survives image upgrades and the file permissions remain correct on
 #    Unraid.
 #  • Creates an explicit bridge network (salty-net) to ensure the container
 #    IPs stay stable between restarts – many Unraid users like to reference
 #    them from other stacks or fail2ban rules.
-#  • Maps the nginx 80 port to 8085 on the host (that’s what the screenshots
-#    in the ticket showed) while keeping the API internal-only.
-#  • Accepts an optional TAG env-var so you can switch image revisions without
-#    having to edit the file ( `TAG=20250719 docker compose up -d`).  When the
-#    var is missing Compose falls back to the latest tag that was previously
-#    loaded via `docker load …`.
+#  • Maps the nginx 80 port to 8085 on the host while keeping the API
+#    internal-only.
 # ---------------------------------------------------------------------------
 
 services:
   backend:
-    image: saltychart-backend:2026-01-20
+    image: ghcr.io/drohack/saltychart-backend:latest
     container_name: saltychart-backend
     volumes:
       - saltychart_db:/app/prisma
@@ -37,10 +39,8 @@ services:
       - salty-net
 
   frontend:
-    image: saltychart-frontend:2026-01-20
+    image: ghcr.io/drohack/saltychart-frontend:latest
     container_name: saltychart-frontend
-    volumes:
-      - ./frontend:/app:ro     # Optional, can remove if not using for dev
     ports:
       - "8085:80"
     depends_on:

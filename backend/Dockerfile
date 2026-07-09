@@ -1,7 +1,8 @@
 ################  Backend – multi-stage build ################
 
 # 1) builder  – installs dev deps, generates Prisma client, compiles TS
-# 2) runtime  – Alpine + production node_modules copied from builder
+# 2) runtime  – pinned base image (Dockerfile.base: python/ffmpeg/Whisper
+#               models) + production node_modules copied from builder
 
 # ---------- builder ---------------------------------------------------------
 FROM node:20-slim AS builder
@@ -23,24 +24,14 @@ RUN npm run generate && npm run build
 RUN npm prune --production
 
 # ---------- runtime ---------------------------------------------------------
-FROM node:20-slim AS runtime
+# The base image (see Dockerfile.base) carries the heavy, slow-changing
+# layers: apt packages (python3, ffmpeg, curl, openssl), pip translation
+# deps, and the pre-downloaded Whisper models. It is pinned by tag so those
+# ~3.3 GB of layers keep identical digests across deploys — the server only
+# ever pulls the app layers below. Bump the tag only after dispatching the
+# `build-base` workflow with the matching version.
+FROM ghcr.io/drohack/saltychart-backend-base:v1 AS runtime
 WORKDIR /app
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-     curl openssl libssl-dev \
-     python3 python3-pip python3-venv \
-     ffmpeg \
-  && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies for real-time subtitle translation
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    faster-whisper yt-dlp youtube-transcript-api
-
-# Pre-download Whisper models so first use doesn't wait for a download.
-# small: used by the on-demand daemon for live translation (~500MB)
-# medium: used by batch pre-translation for higher quality (~1.5GB)
-RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8'); WhisperModel('medium', device='cpu', compute_type='int8')"
 
 # Always provide DATABASE_URL so Prisma connects even when not passed via
 # docker run or compose.

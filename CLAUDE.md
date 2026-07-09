@@ -125,7 +125,10 @@ SaltyChart/
 ├── frontend/         # Svelte 4 + Vite + Tailwind/DaisyUI single-page app
 ├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
 │   │                 #   + bench_pipeline.py (swappable ASR/translate/align stages)
-│   └── tests/        # Pre-deploy smoke/regression suite (run_all.py)
+│   ├── tests/        # Pre-deploy smoke/regression suite (run_all.py)
+│   └── unraid/       # Reference copy of the update_saltychart User Script
+├── .github/workflows/ # CI: deploy.yml (push→GHCR), build-base.yml (manual)
+├── docs/superpowers/specs/  # Design specs (e.g. CI/CD deployment)
 ├── docker-compose.yml
 ├── README.md         # High-level overview & quick-start instructions
 └── CLAUDE.md         # this file — contributor/agent guide
@@ -632,13 +635,50 @@ from the old SvelteKit prototype has been removed).
 
 ## Docker Compose
 
-Compose file: `docker-compose.yml`
+Compose file: `docker-compose.yml` (mirrors the production compose on the
+Unraid server at `/mnt/user/appdata/saltychart/docker-compose.yml`).
 
-- `backend` service: builds `backend/Dockerfile`, mounts `dev.db` volume,
-  exposes 3000, health-checked before frontend startup.
-- `frontend` service: builds multi-stage `frontend/Dockerfile`, mounts
-  source for hot reload, serves on port 80.
-- Usage: `docker compose up --build`
+- `backend` service: `ghcr.io/drohack/saltychart-backend:latest`, SQLite in
+  the external named volume `saltychart_db`, exposes 3000 internally,
+  health-checked before frontend startup. `JWT_SECRET` comes from an
+  untracked `.env`.
+- `frontend` service: `ghcr.io/drohack/saltychart-frontend:latest`, nginx
+  serving on host port 8085.
+- Local usage: `docker build` the images yourself (see Deployment below) or
+  `docker compose pull && docker compose up -d` to run what CI published.
+
+## Deployment (CI/CD)
+
+**Push to `master` = deploy.** No manual builds, transfers, or GUI steps.
+
+- `.github/workflows/deploy.yml` — on every push to master (ignoring
+  `**.md`, `docs/**`, `tools/**`): gates on backend `tsc --noEmit` +
+  frontend `vite build`, then builds and pushes
+  `ghcr.io/drohack/saltychart-{backend,frontend}` tagged `latest` +
+  immutable `YYYYMMDD-<shortsha>`. Single job; both images push together
+  atomically after both builds succeed.
+- `.github/workflows/build-base.yml` — **manual dispatch only**, takes a
+  `version` input. Builds `backend/Dockerfile.base` →
+  `ghcr.io/drohack/saltychart-backend-base:<version>` (~3.3 GB: python3,
+  ffmpeg, pip deps, pre-downloaded Whisper small+medium).
+- `backend/Dockerfile`'s runtime stage is `FROM` the **pinned** base tag, so
+  routine deploys transfer only ~100 MB of app layers, never the models.
+  **Rule: any edit to `backend/Dockerfile.base` requires dispatching
+  `build-base` with a new version AND bumping the `FROM` tag in
+  `backend/Dockerfile` to match** — the base is never rebuilt automatically.
+- Pull side: Unraid User Script `update_saltychart` (cron `*/10`, reference
+  copy `tools/unraid/update_saltychart.sh`) — `docker compose pull`; if a
+  new image arrived it backs up the DB via the existing
+  `backup_saltychart_db` script, then `docker compose up -d` + image prune,
+  logging to `/mnt/user/appdata/saltychart/update.log`.
+- The full pre-deploy suite (`tools/tests/run_all.py`) **cannot run in CI**
+  (Playwright against live dev servers + GPU test) — run it locally before
+  pushing to master (see *Testing* above).
+- Data safety: the `saltychart_db` volume is never touched by deploys, and
+  every applied update is preceded by a DB backup. Rollback = pin compose to
+  a previous `YYYYMMDD-<sha>` tag (+ `restore_saltychart_db` if needed).
+- Design spec: `docs/superpowers/specs/2026-07-09-cicd-deployment-design.md`.
+  README has the user-facing walkthrough incl. offline tar fallback.
 
 ## Common Workflows
 
