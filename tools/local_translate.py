@@ -1164,6 +1164,15 @@ def main():
     if split_enabled and not args.dry_run:
         ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
 
+    # If the split translator is unavailable, the run falls back to end-to-end
+    # Whisper translate (uploaded as args.model, e.g. large-v3). Lower target_tag
+    # to match — otherwise the cache/skip comparison treats every already-
+    # large-v3 row as a large-v3-split upgrade target and reprocesses the whole
+    # back-catalog only to have each upload rejected as a downgrade.
+    if split_enabled and not ollama_ready and not args.dry_run:
+        target_tag = args.model
+        print(f"[local] Ollama unavailable — falling back to e2e translate; target tag now '{target_tag}'")
+
     # Optional VRAM diagnostic — runs for the whole job; prints a final PEAK line.
     if getattr(args, "vram_log", False):
         import atexit
@@ -1288,9 +1297,15 @@ def main():
                 print()
             translated = 0
             errors = 0
+            dl_delay = getattr(args, "download_delay", 5.0) or 0.0
+            bot_blocked = False
             for i, (show, reason) in enumerate(uncached):
                 vid = show["trailer"]["id"]
                 title = get_title(show)
+                # Serial politeness: gap between trailers so we don't burst
+                # YouTube (bursty downloads are what trip the bot wall).
+                if i > 0 and dl_delay:
+                    time.sleep(dl_delay)
                 print(f"[{season} {year} ({si}/{ns}) | {i + 1}/{len(uncached)}] {title} ({vid}) [{reason}]...")
                 try:
                     segments, video_url, used_split = translate_video(
@@ -1308,9 +1323,24 @@ def main():
                     result = upload_segments(server, token, vid, show["id"], model_name, segments, has_burned_in, args.force)
                     print(f"  Uploaded: {result.get('action', 'ok')}")
                     translated += 1
+                except BotBlockError as e:
+                    print(f"\n[local] ABORT: {e}")
+                    bot_blocked = True
+                    break
                 except Exception as e:
-                    print(f"  ERROR: {e}")
+                    msg = str(e)
+                    print(f"  ERROR: {msg}")
                     errors += 1
+                    # Abort on a YouTube bot-challenge instead of hammering the
+                    # rest of the list (which only deepens the block).
+                    if _is_bot_block(msg):
+                        print("\n[local] ABORT: YouTube bot-challenge detected — stopping to avoid deepening the block.")
+                        bot_blocked = True
+                        break
+
+            # A bot-challenge is IP-wide — stop the whole run, not just this season.
+            if bot_blocked:
+                break
 
         print()
         remaining = len(uncached) - translated - errors

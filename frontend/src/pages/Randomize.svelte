@@ -45,11 +45,16 @@ $: _lang = $options.titleLanguage;
   // Track last selected wheel item ID to avoid immediate repeats
   let lastSelectedId: number | null = null;
 
-  // Derived: current user rank for selected show (1-based).  Null when not
-  // watched or rank not set.
+  // Derived: current user's watched rank for the selected show (1-based). Null
+  // when not watched. Uses watchedRank so it's on the same scale as the other
+  // users' ranks shown alongside it (not the pre-watch list-array position).
   $: myRank = selected
     ? (() => {
-        const idx = watchList.findIndex((w) => w.mediaId === selected.id);
+        const entry = watchList.find((w) => w.mediaId === selected.id);
+        if (!entry || !entry.watched) return null;
+        if (typeof entry.watchedRank === 'number') return entry.watchedRank + 1;
+        // Watched but no persisted rank yet — fall back to the sidebar position.
+        const idx = watchedRank.findIndex((it) => it.id === selected.id);
         return idx === -1 ? null : idx + 1;
       })()
     : null;
@@ -938,6 +943,22 @@ $: {
           },
           body: JSON.stringify({ season, year, mediaId: id, watched })
         });
+
+        // Persist the full watched-rank ordering too. /watched alone always
+        // stores the new row at the bottom server-side, which would discard the
+        // TOP placement (and the renormalized order after an unwatch) the user
+        // just saw. Mirrors the drag handler's rank PATCH.
+        const idOrder = watchedRank.map((it) => it.id);
+        if (idOrder.length) {
+          await fetch('/api/list/rank', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${$authToken}`
+            },
+            body: JSON.stringify({ season, year, ids: idOrder })
+          });
+        }
       } catch (err) {
         console.error('Failed to update watched flag', err);
       }

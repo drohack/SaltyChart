@@ -30,7 +30,10 @@ import requests
 from playwright.sync_api import sync_playwright
 
 # Test videos — must exist in SubtitleCache with the right state
-VIDEO_EN_CC      = "7ObipYqbOd8"   # has YouTube English CC (Path A/B)
+VIDEO_EN_CC      = "-W2vs2etG9o"   # has YouTube English CC (Path A/B). NOTE:
+# must be a trailer in the CURRENT season or its Home button won't render and
+# the test times out — refresh when it ages out (pick one that check-batch
+# reports as an English-CC positive for the current season).
 VIDEO_WHISPER    = "ByOF3FLlAws"   # hasEnglishSubs=0, has cached segments
 
 

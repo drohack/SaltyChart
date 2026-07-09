@@ -19,6 +19,13 @@ const publicListLimiter = rateLimit({
   skip: () => _isDev,
 });
 
+// Users who opted out of public compare (Settings.hideFromCompare) must not
+// leak through the unauthenticated endpoints below. Include a user only when
+// they have no settings row or hideFromCompare is false. Mirrors users.ts.
+const notHiddenFromCompare = {
+  OR: [{ settings: { hideFromCompare: false } }, { settings: null }]
+};
+
 // Get list for season/year
 router.get('/', requireAuth, async (req: AuthRequest, res) => {
   const { season, year } = req.query as { season?: string; year?: string };
@@ -185,37 +192,64 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
-  // delete existing then recreate
-  // Normalize items into objects with mediaId + optional customName
-  const normalized = items.map((it) => {
-    if (typeof it === 'number') return { mediaId: it, watched: false, watchedAt: null };
-    return {
-      mediaId: it.mediaId,
-      customName: it.customName ?? null,
-      watched: it.watched ?? Boolean(it.watchedAt),
-      watchedAt: it.watchedAt ?? (it.watched ? new Date() : null)
-    };
-  });
+  // Validate + normalize items up front. An invalid mediaId/watchedAt would
+  // otherwise reject the $transaction below; Express 4 doesn't forward that
+  // rejection, so it would crash the Node process (one-request DoS).
+  const normalized: Array<{ mediaId: number; customName: string | null; watched: boolean; watchedAt: Date | null }> = [];
+  for (const it of items) {
+    const mediaId = typeof it === 'number' ? it : it.mediaId;
+    if (!Number.isInteger(mediaId) || mediaId <= 0) {
+      return res.status(400).json({ error: 'Invalid mediaId in items', code: 'BAD_REQUEST' });
+    }
+    let watchedAt: Date | null = null;
+    if (typeof it !== 'number' && it.watchedAt != null) {
+      const t = new Date(it.watchedAt as string | Date);
+      if (isNaN(t.getTime())) {
+        return res.status(400).json({ error: 'Invalid watchedAt in items', code: 'BAD_REQUEST' });
+      }
+      watchedAt = t;
+    }
+    const customName = typeof it === 'number' ? null : (it.customName ?? null);
+    const watched = typeof it === 'number' ? false : (it.watched ?? Boolean(watchedAt));
+    if (watched && !watchedAt) watchedAt = new Date();
+    normalized.push({ mediaId, customName, watched, watchedAt });
+  }
 
-  await prisma.$transaction([
-    prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year: Number(year) } }),
-    ...normalized.map((entry, idx) =>
-      prisma.watchList.create({
-        data: {
-          userId: req.userId!,
-          season,
-          year: Number(year),
-          mediaId: entry.mediaId,
-          customName: entry.customName ?? null,
-          watched: entry.watched ?? false,
-          watchedAt: entry.watchedAt ?? null,
-          order: idx
-        }
-      })
-    )
-  ]);
+  try {
+    // Preserve watchedRank + hidden across delete/recreate. They're set by the
+    // /rank and /hidden routes; recreating rows without them would wipe the
+    // Randomize rankings and hidden-from-wheel flags on every sidebar edit.
+    const existing = await prisma.watchList.findMany({
+      where: { userId: req.userId!, season, year: Number(year) },
+      select: { mediaId: true, watchedRank: true, hidden: true }
+    });
+    const prior = new Map(existing.map((e) => [e.mediaId, { watchedRank: e.watchedRank, hidden: e.hidden }]));
 
-  res.json({ ok: true });
+    await prisma.$transaction([
+      prisma.watchList.deleteMany({ where: { userId: req.userId!, season, year: Number(year) } }),
+      ...normalized.map((entry, idx) =>
+        prisma.watchList.create({
+          data: {
+            userId: req.userId!,
+            season,
+            year: Number(year),
+            mediaId: entry.mediaId,
+            customName: entry.customName,
+            watched: entry.watched,
+            watchedAt: entry.watchedAt,
+            watchedRank: prior.get(entry.mediaId)?.watchedRank ?? null,
+            hidden: prior.get(entry.mediaId)?.hidden ?? false,
+            order: idx
+          }
+        })
+      )
+    ]);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to replace list', code: 'SERVER_ERROR' });
+  }
 });
 
 export default router;
@@ -239,7 +273,7 @@ router.get('/users-with-nicknames', publicListLimiter, async (_req, res) => {
     if (userIds.length === 0) return res.json([]);
 
     const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
+      where: { id: { in: userIds }, ...notHiddenFromCompare },
       select: { id: true, username: true }
     });
 
@@ -271,7 +305,7 @@ router.get('/users-with-ratings', publicListLimiter, async (req, res) => {
     if (userIds.length === 0) return res.json([]);
 
     const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
+      where: { id: { in: userIds }, ...notHiddenFromCompare },
       select: { id: true, username: true },
     });
     const names = users.map((u) => u.username ?? `User-${String(u.id).slice(0, 6)}`).sort();
@@ -295,9 +329,10 @@ router.get('/user-ratings', publicListLimiter, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { username },
-      select: { id: true },
+      select: { id: true, settings: { select: { hideFromCompare: true } } },
     });
-    if (!user) return res.json([]);
+    // Empty result for unknown users and for users who opted out of compare.
+    if (!user || user.settings?.hideFromCompare) return res.json([]);
 
     const rows = await prisma.watchList.findMany({
       where: { userId: user.id, season, year: Number(year) },
@@ -328,7 +363,7 @@ router.get('/nicknames', publicListLimiter, async (req, res) => {
     const userIds = Array.from(new Set(rows.map((r) => r.userId)));
 
     const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
+      where: { id: { in: userIds }, ...notHiddenFromCompare },
       select: { id: true, username: true }
     });
 
@@ -339,7 +374,10 @@ router.get('/nicknames', publicListLimiter, async (req, res) => {
       idToName.set(u.id, display);
     });
 
-    const data = rows.map((r) => ({
+    // Drop rows belonging to users who opted out of compare (not in idToName).
+    const data = rows
+      .filter((r) => idToName.has(r.userId))
+      .map((r) => ({
       userName: idToName.get(r.userId) ?? 'Unknown',
       nickname: r.customName,
       rank:

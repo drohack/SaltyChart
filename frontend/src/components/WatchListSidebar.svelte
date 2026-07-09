@@ -8,6 +8,7 @@
   export let user: string | null = null;
 import { dragged } from '../stores/drag';
 import { authToken } from '../stores/auth';
+import DOMPurify from 'dompurify';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 /**
@@ -90,11 +91,6 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
       return;
     }
 
-    // Snapshot entire inline-style attribute for later restoration. This way
-    // we can roll back in one shot instead of tracking each property.
-    const ulOriginalStyleAttr = ul.getAttribute('style');
-    const sidebarOriginalStyleAttr = sidebarEl.getAttribute('style');
-
     // Expand to show full list with no scrollbars & keep titles on one line
     // Remove Tailwind scroll-related classes from the clone to avoid embedded
     // scrollbars in the captured image.
@@ -156,6 +152,15 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
     // Re-compute height now that width is fixed.
     workEl.style.height = `${workEl.scrollHeight}px`;
 
+    // Declared before the try so the finally block can always restore/clean up
+    // even if an early await (e.g. the dynamic import) throws — otherwise the
+    // finally itself throws a ReferenceError and leaks the off-screen clone.
+    let posters: HTMLImageElement[] = [];
+    let posterDisplay: string[] = [];
+    let borderFix: HTMLStyleElement | null = null;
+    let items: HTMLLIElement[] = [];
+    let itemBorders: string[] = [];
+
     try {
       // Lazy-load dom-to-image-more only when the user clicks Share so it
       // doesn't bloat the initial bundle. Bundled locally (previously CDN).
@@ -192,22 +197,20 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
       // Temporarily hide poster <img> elements to avoid CORS-tainted canvas
       // (remote images cause the captured canvas to be cleared, resulting in
       // a blank white output). They are restored in the finally block.
-      const posters: HTMLImageElement[] = Array.from(
-        workEl.querySelectorAll('img')
-      );
-      const posterDisplay = posters.map((p) => p.style.display);
+      posters = Array.from(workEl.querySelectorAll('img'));
+      posterDisplay = posters.map((p) => p.style.display);
       posters.forEach((p) => (p.style.display = 'none'));
 
       // Add a temporary style element that forces all borders transparent so
       // dom-to-image doesn’t fall back to white when CSS variables are lost.
-      const borderFix = document.createElement('style');
+      borderFix = document.createElement('style');
       borderFix.textContent = '*{border-color:transparent !important;}';
       workEl.prepend(borderFix);
 
       // Remove list-item borders—they render as white lines in the exported
       // image because CSS variables aren’t resolved in the cloned DOM.
-      const items: HTMLLIElement[] = Array.from(workEl.querySelectorAll('li'));
-      const itemBorders = items.map((it) => it.style.border);
+      items = Array.from(workEl.querySelectorAll('li'));
+      itemBorders = items.map((it) => it.style.border);
       items.forEach((it) => (it.style.border = 'none'));
 
       const dataUrl = await toJpeg(wrapper, {
@@ -234,7 +237,7 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
       // no need to restore shareBtn visibility on live DOM – only clone was affected
       if (renameLabel) renameLabel.style.display = renameDisplay;
       posters.forEach((p, idx) => (p.style.display = posterDisplay[idx]));
-      borderFix.remove();
+      borderFix?.remove();
       // restore list-item borders in clone (redundant but safe)
       items.forEach((it, idx) => (it.style.border = itemBorders[idx]));
       wrapper.remove();
@@ -689,7 +692,7 @@ $: {
 
           {#if editingItem.description}
             <div class="text-sm max-h-40 overflow-y-auto mb-4 whitespace-pre-wrap">
-              {@html editingItem.description}
+              {@html DOMPurify.sanitize(editingItem.description)}
             </div>
           {/if}
 

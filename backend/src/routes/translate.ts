@@ -142,7 +142,23 @@ function handleDaemonLine(line: string): void {
   }
 
   if (payload.error) {
+    // Terminal: mirror the `done` teardown so an errored translation doesn't
+    // hold a MAX_CONCURRENT slot or leave the dedup lock stuck forever.
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    pendingStreams.delete(rid);
+    activeTranslations = Math.max(0, activeTranslations - 1);
+    res.end();
+
+    const pending = pendingSegments.get(rid);
+    pendingSegments.delete(rid);
+    if (pending) {
+      const inFlight = inFlightTranslations.get(pending.videoId);
+      if (inFlight) {
+        inFlightTranslations.delete(pending.videoId);
+        inFlight.resolve();
+      }
+    }
     return;
   }
 
@@ -185,6 +201,14 @@ function cleanupDaemon(): void {
   }
   pendingStreams.clear();
   pendingSegments.clear();
+
+  // Resolve dedup waiters so blocked /stream requests fall through and can
+  // re-translate instead of awaiting a promise that will never settle.
+  for (const [, inFlight] of inFlightTranslations) {
+    inFlight.resolve();
+  }
+  inFlightTranslations.clear();
+
   activeTranslations = 0;
 }
 
@@ -288,30 +312,42 @@ router.get('/check-batch', async (req: Request, res: Response) => {
   res.json(result);
 
   // Background: queue Python checks for IDs not in DB at all so the cache
-  // self-populates while the user browses.
+  // self-populates while the user browses. Bounded concurrency — a burst of
+  // ~80 parallel youtube_transcript_api hits from one IP trips YouTube's bot
+  // wall and poisons results with false negatives.
   const uncached = ids.filter(id => !known.has(id));
-  for (const videoId of uncached) {
-    (async () => {
-      try {
-        if (daemon && daemonReady) {
-          const rid = crypto.randomUUID();
-          const checkResult: any = await new Promise((resolve) => {
-            pendingChecks.set(rid, { resolve });
-            sendCommand({ cmd: 'check', rid, videoId });
-            setTimeout(() => { pendingChecks.delete(rid); resolve({ error: 'timeout' }); }, 15000);
-          });
-          if (checkResult?.hasEnglish !== undefined) {
-            prisma.$executeRawUnsafe(
-              `INSERT INTO "SubtitleCache" ("videoId", "hasEnglishSubs") VALUES (?, ?)
-               ON CONFLICT("videoId") DO UPDATE SET
-                 "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END`,
-              videoId, checkResult.hasEnglish ? 1 : 0
-            ).catch(() => {});
-          }
+  const CHECK_CONCURRENCY = 2;
+  let cursor = 0;
+  const runCheck = async (videoId: string) => {
+    try {
+      if (daemon && daemonReady) {
+        const rid = crypto.randomUUID();
+        const checkResult: any = await new Promise((resolve) => {
+          pendingChecks.set(rid, { resolve });
+          sendCommand({ cmd: 'check', rid, videoId });
+          setTimeout(() => { pendingChecks.delete(rid); resolve({ error: 'timeout' }); }, 15000);
+        });
+        if (checkResult?.hasEnglish !== undefined) {
+          // Stamp lastEnCheckAt so the /check 7-day negative-recheck logic
+          // trusts this batch-populated row (it ignores negatives with a null
+          // timestamp, otherwise re-hitting YouTube on the first modal open).
+          prisma.$executeRawUnsafe(
+            `INSERT INTO "SubtitleCache" ("videoId", "hasEnglishSubs", "lastEnCheckAt") VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT("videoId") DO UPDATE SET
+               "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END,
+               "lastEnCheckAt" = CURRENT_TIMESTAMP`,
+            videoId, checkResult.hasEnglish ? 1 : 0
+          ).catch(() => {});
         }
-      } catch {}
-    })();
-  }
+      }
+    } catch {}
+  };
+  const worker = async () => {
+    while (cursor < uncached.length) {
+      await runCheck(uncached[cursor++]);
+    }
+  };
+  for (let i = 0; i < Math.min(CHECK_CONCURRENCY, uncached.length); i++) void worker();
 });
 
 /**
@@ -710,23 +746,39 @@ router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res:
   }
 
   const { season, year, dryRun } = req.body || {};
-  const args = ['-u', getBatchScriptPath()]; // -u = unbuffered stdout
+  const args: string[] = [];
   if (season) args.push('--season', String(season).toUpperCase());
   if (year) args.push('--year', String(year));
   if (dryRun) args.push('--dry-run');
   args.push('--cutoff', '23'); // no cutoff when triggered manually (effectively)
 
+  startBatch(args, { season: season || undefined, year: year || undefined });
+
+  return res.json({ ok: true, message: 'Batch started', status: batchStatus });
+});
+
+/**
+ * Spawn the batch pre-translation script and wire up status tracking. Shared by
+ * POST /batch and the auto-scheduler (index.ts) so BOTH paths flip
+ * batchStatus.running — otherwise a scheduler-spawned run is invisible to the
+ * 409 guard and /batch/status, allowing a concurrent double-run. Callers must
+ * check the 409 guard / batchStatus.running first. `args` are the batch script
+ * flags after the script path (e.g. ['--cutoff','10']).
+ */
+export function startBatch(args: string[], meta: { season?: string; year?: number } = {}): void {
+  const fullArgs = ['-u', getBatchScriptPath(), ...args]; // -u = unbuffered stdout
+
   batchStatus = {
     running: true,
-    season: season || 'auto',
-    year: year || 0,
+    season: meta.season || 'auto',
+    year: meta.year || 0,
     startedAt: new Date().toISOString(),
     log: [],
   };
 
-  console.log(`[translate/batch] Starting batch: ${args.join(' ')}`);
+  console.log(`[translate/batch] Starting batch: ${fullArgs.join(' ')}`);
 
-  batchProcess = spawn(PYTHON, args, {
+  batchProcess = spawn(PYTHON, fullArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -748,9 +800,7 @@ router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res:
     batchStatus.running = false;
     batchProcess = null;
   });
-
-  return res.json({ ok: true, message: 'Batch started', status: batchStatus });
-});
+}
 
 /**
  * GET /batch/status

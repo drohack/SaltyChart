@@ -9,6 +9,27 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// In production, refuse to boot on a missing or insecure default JWT_SECRET —
+// otherwise tokens would be signed with the publicly-known 'dev-secret' and
+// anyone could forge an admin token. Dev keeps the fallback for convenience.
+if (
+  process.env.NODE_ENV === 'production' &&
+  (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-secret')
+) {
+  console.error('[FATAL] JWT_SECRET is unset or the insecure dev default in production.');
+  console.error('[FATAL] Set a strong, secret JWT_SECRET in the environment before starting.');
+  process.exit(1);
+}
+
+// Backstop: a single rejected promise or thrown async error (e.g. a bad request
+// body reaching Prisma) must not hard-kill the whole process for every user.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
 // ---------------------------------------------------------------------------
 // Networking tweaks
 // ---------------------------------------------------------------------------
@@ -51,7 +72,7 @@ import listRouter from './routes/list';
 import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
-import translateRouter from './routes/translate';
+import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -66,19 +87,13 @@ app.set('trust proxy', 'loopback');
 app.use(cors());
 app.use(helmet());
 
-// Register SSE translate route BEFORE compression middleware.
-// compression() wraps response streams and buffers them internally,
-// which prevents SSE from streaming in real-time to the browser.
-app.use('/api/translate', translateRouter);
-
-app.use(compression());
-
 // ────────────────────────────────────────────────────────────────────────────
 // Rate limiting
 // ────────────────────────────────────────────────────────────────────────────
 
 // General limiter: 120 requests per minute per IP. Disabled in dev so the
-// parallel pre-deploy test suite doesn't trip it.
+// parallel pre-deploy test suite doesn't trip it. Defined before the translate
+// mount below so those routes are covered too.
 const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 const generalLimiter = rateLimit({
   windowMs: 60_000,
@@ -87,6 +102,15 @@ const generalLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => _isDev,
 });
+
+// Register SSE translate route BEFORE compression middleware.
+// compression() wraps response streams and buffers them internally,
+// which prevents SSE from streaming in real-time to the browser. The rate
+// limiter doesn't buffer responses, so it's safe (and necessary) here — the
+// unthrottled /check-batch loop otherwise lets a client fan out YouTube hits.
+app.use('/api/translate', generalLimiter, translateRouter);
+
+app.use(compression());
 
 app.use(generalLimiter);
 app.use(express.json());
@@ -458,13 +482,16 @@ ensureDatabaseSchema().then(() => {
     if (now.getDay() !== BATCH_DAY_OF_WEEK) return;
     if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
 
-    // Already ran today? Use UTC date to match toISOString() format consistently
-    const todayStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')}`;
+    // Already ran today? Build the key from the same local clock the day/hour
+    // gates above use — mixing a UTC date key with local gates could flip the
+    // key mid-window in a non-UTC zone and allow a second run the same night.
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     if (lastBatchDate === todayStr) return;
 
-    // Batch already running (from Options modal or previous scheduler spawn)?
-    const { batchStatus: bs } = require('./routes/translate');
-    if (bs.running) {
+    // Batch already running (from the Options modal or a previous scheduler
+    // spawn)? startBatch() flips batchStatus.running for BOTH paths, so this
+    // now also catches the scheduler's own in-flight run.
+    if (batchStatus.running) {
       console.log('[batch-scheduler] Batch already running, skipping');
       return;
     }
@@ -473,30 +500,11 @@ ensureDatabaseSchema().then(() => {
     const next = getNextSeasonInfo();
     if (!next) return;
 
-    // Spawn the batch
+    // Start the batch via the shared helper so batchStatus is set (keeps the
+    // 409 guard and /batch/status honest). Output is captured into batchStatus.log.
     console.log(`[batch-scheduler] Starting batch for ${next.season} ${next.year} (${next.daysUntil} days until season)`);
     lastBatchDate = todayStr;
-
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = require('path').resolve(__dirname, '../scripts/batch_translate.py');
-    const child = require('child_process').spawn(pythonCmd, ['-u', scriptPath, '--cutoff', '10'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    child.stdout.on('data', (chunk: Buffer) => {
-      const lines = chunk.toString().split('\n').filter(Boolean);
-      for (const line of lines) {
-        console.log(`[batch-scheduler] ${line}`);
-      }
-    });
-
-    child.stderr.on('data', (chunk: Buffer) => {
-      console.error('[batch-scheduler]', chunk.toString());
-    });
-
-    child.on('close', (code: number) => {
-      console.log(`[batch-scheduler] Batch exited with code ${code}`);
-    });
+    startBatch(['--cutoff', '10'], { season: next.season, year: next.year });
   }
 
   // Run the check immediately on startup (in case server starts during batch window)

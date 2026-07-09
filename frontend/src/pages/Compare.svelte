@@ -224,6 +224,11 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
     // Dimensions will be recalculated after final tweaks later.
 
+    // Declared before the try so the finally can always re-enable the sheets,
+    // even if an early await (the dynamic import) throws — otherwise the finally
+    // throws a ReferenceError and the off-screen clone leaks into the DOM.
+    const disabledSheets: CSSStyleSheet[] = [];
+
     try {
       // Lazy-load dom-to-image-more so it only ships in a chunk when the user
       // clicks share. Bundled locally (previously loaded from a CDN).
@@ -235,7 +240,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
       // Temporarily disable cross-origin Google Fonts stylesheets to avoid
       // SecurityError when dom-to-image enumerates cssRules.
-      const disabledSheets: CSSStyleSheet[] = [];
       Array.from(document.styleSheets).forEach((ss) => {
         const href = (ss as CSSStyleSheet).href;
         if (href && href.startsWith('https://fonts.googleapis.com')) {
@@ -302,10 +306,15 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       const usernameA = getSelectedUsername(userA);
       const usernameB = selectedOther ? getSelectedUsername(selectedOther) : null;
 
-      // Fetch user A + anime metadata unconditionally; user B only when a
-      // 2nd user is selected. Keeps the solo view working with no comparison.
-      const aPromise = fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`);
+      // User A is always the authenticated current user, so fetch their own
+      // list via the authenticated endpoint — it isn't gated by hideFromCompare
+      // (the public endpoint now 404s opted-out users, which would otherwise
+      // break the user's own Compare page). User B (someone else) still uses
+      // public-list, which correctly 404s a user who opted out.
       const animePromise = fetch(`/api/anime?season=${season}&year=${year}`);
+      const aPromise = $authToken
+        ? fetch(`/api/list?season=${season}&year=${year}`, { headers: { Authorization: `Bearer ${$authToken}` } })
+        : fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`);
       const bPromise = usernameB
         ? fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`)
         : Promise.resolve(null);
@@ -313,10 +322,35 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       const [aResp, bResp, animeResp] = await Promise.all([aPromise, bPromise, animePromise]);
 
       if (!aResp.ok) throw new Error(`Failed to fetch your list (${aResp.status})`);
-      if (bResp && !bResp.ok) throw new Error(`Failed to fetch other list (${bResp.status})`);
 
-      listA = (await aResp.json()) ?? [];
-      listB = bResp ? ((await bResp.json()) ?? []) : [];
+      // A saved comparison target who has since enabled hideFromCompare now
+      // 404s — clear the stale selection and drop the comparison rather than
+      // wedging the page on an error every load.
+      if (bResp && bResp.status === 404) {
+        try { localStorage.removeItem('compare-other'); } catch {}
+        selectedOther = null;
+        otherInput = '';
+        listB = [];
+      } else if (bResp && !bResp.ok) {
+        throw new Error(`Failed to fetch other list (${bResp.status})`);
+      }
+
+      let rowsA = (await aResp.json()) ?? [];
+      // When A came from the authenticated /api/list it's raw (order asc);
+      // apply the same pre/post ordering the public endpoint applies server-side.
+      if ($authToken && Array.isArray(rowsA)) {
+        if (rankTypeA === 'post') {
+          rowsA = rowsA
+            .filter((r: any) => r.watched)
+            .sort((a: any, b: any) =>
+              (a.watchedRank ?? Number.MAX_SAFE_INTEGER) - (b.watchedRank ?? Number.MAX_SAFE_INTEGER)
+              || (new Date(a.watchedAt ?? 0).getTime() - new Date(b.watchedAt ?? 0).getTime()));
+        } else {
+          rowsA = [...rowsA].sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+        }
+      }
+      listA = rowsA;
+      listB = bResp && bResp.ok ? ((await bResp.json()) ?? []) : (listB ?? []);
       animeData = (await animeResp.json()) ?? [];
     } catch (e: any) {
       console.error(e);

@@ -47,8 +47,12 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from translate_stream import download_audio, check_subtitles
 
-# Model quality ranking — used for cache comparison
-MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5}
+# Model quality ranking — used for cache comparison. Keep in sync with the
+# copies in backend/src/routes/translate.ts and tools/local_translate.py.
+# 'large-v3-split' (the local champion pipeline) MUST be here — without it a
+# Sunday-uploaded large-v3-split row ranks as 0 and the Wednesday batch
+# needlessly re-downloads + re-transcribes the whole season for a no-op write.
+MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5, "large-v3-split": 6}
 
 # ---------------------------------------------------------------------------
 # AniList GraphQL
@@ -268,13 +272,14 @@ def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connectio
         # Save to database (using persistent connection)
         seg_json = json.dumps(segments)
         conn.execute(
-            """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments")
-               VALUES (?, ?, 'medium', ?, ?)
+            """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments", "lastEnCheckAt")
+               VALUES (?, ?, 'medium', ?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT("videoId") DO UPDATE SET
                  "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
                  "modelName" = excluded."modelName",
                  "hasEnglishSubs" = excluded."hasEnglishSubs",
-                 "segments" = excluded."segments"
+                 "segments" = excluded."segments",
+                 "lastEnCheckAt" = CURRENT_TIMESTAMP
                WHERE "SubtitleCache"."modelName" IS NULL
                   OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
             """,

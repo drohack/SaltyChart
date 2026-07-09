@@ -141,7 +141,10 @@ Path: `backend/`
 - Build: `npm run build`
 - Start: `npm run start`
 - Env variables:
-  - `JWT_SECRET` (required for auth token signing)
+  - `JWT_SECRET` (required for auth token signing). In production the server
+    **fails fast at startup** (`[FATAL]`, `process.exit(1)`) if it's unset or
+    left as the insecure `'dev-secret'` default. Supplied via an untracked
+    `.env` (`JWT_SECRET: ${JWT_SECRET}` in the compose files), never committed.
   - `DATABASE_URL` (defaults to `file:./prisma/data.db` in production)
 
 ### API routes mounted under `/api/*`
@@ -168,7 +171,10 @@ Routes inside existing routers:
 
 ### Rate limiting
 
-A 120 req/min per-IP `generalLimiter` covers all routes by default.
+A 120 req/min per-IP `generalLimiter` covers all routes. `/api/translate/*`
+mounts before `compression()` (SSE can't be buffered), so the limiter is
+applied explicitly on that mount — `app.use('/api/translate', generalLimiter,
+translateRouter)` — rather than relying on the later global `app.use`.
 `/api/auth/*` has a stricter 20 req/min limiter. The 4 unauthenticated
 `/api/list/*` endpoints above additionally sit behind a 60 req/min
 `publicListLimiter`.
@@ -494,12 +500,15 @@ Tables / columns:
 - `WatchList.hidden` — boolean; when true the show is skipped by the
   Randomize wheel.
 - `SubtitleCache` — `videoId` unique, `mediaId`, `modelName`,
-  `hasEnglishSubs`, `subtitlesDisabled`, `hasBurnedInSubs`, `segments` JSON,
-  `createdAt`. Caches check results, translated segments, and user subtitle
-  preferences per YouTube video. `modelName` rank order (upload only upgrades to
-  an equal-or-higher rank): tiny < base < small < medium < large-v2 < large-v3 <
-  **large-v3-split** (the local champion pipeline). The rank table lives in both
-  `backend/src/routes/translate.ts` and `tools/local_translate.py` — keep in sync.
+  `hasEnglishSubs`, `lastEnCheckAt`, `subtitlesDisabled`, `hasBurnedInSubs`,
+  `segments` JSON, `createdAt`. Caches check results, translated segments, and
+  user subtitle preferences per YouTube video. `modelName` rank order (upload
+  only upgrades to an equal-or-higher rank): tiny < base < small < medium <
+  large-v2 < large-v3 < **large-v3-split** (the local champion pipeline). The
+  rank table lives in **three** places — `backend/src/routes/translate.ts`,
+  `backend/scripts/batch_translate.py`, and `tools/local_translate.py` — keep
+  all three in sync (a missing `large-v3-split` in any one makes that path treat
+  the champion output as rank 0 and needlessly reprocess it).
 
 Performance indexes (added via `CREATE INDEX IF NOT EXISTS` at startup):
 

@@ -355,17 +355,25 @@ let autoRename = false;
   async function fetchAnime() {
     loading = true;
     try {
-      const currentReq = fetch(`/api/anime?season=${season}&year=${year}`);
       const prev = prevSeasonYear(season, year);
-      const prevReq = fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`);
+      const [curRes, prevRes] = await Promise.all([
+        fetch(`/api/anime?season=${season}&year=${year}`),
+        fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`)
+      ]);
 
-      const [currentData, prevData] = await Promise.all([currentReq, prevReq]).then((resps) =>
-        Promise.all(resps.map((r) => r.json()))
-      );
-
-      anime = currentData;
-      prevSeasonAnime = prevData;
-      prefetchSubtitleStatus(currentData, prevData);
+      // Only assign on a successful array response. On an API error the body is
+      // { error, code }; assigning that to `anime` makes the reactive
+      // `anime.filter(...)` blocks throw outside this try and blank the page.
+      // Keep the prior data for whichever request failed.
+      if (curRes.ok) {
+        const currentData = await curRes.json();
+        if (Array.isArray(currentData)) anime = currentData;
+      }
+      if (prevRes.ok) {
+        const prevData = await prevRes.json();
+        if (Array.isArray(prevData)) prevSeasonAnime = prevData;
+      }
+      prefetchSubtitleStatus(anime, prevSeasonAnime);
     } catch (e) {
       console.error(e);
     } finally {

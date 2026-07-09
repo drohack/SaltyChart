@@ -1,6 +1,7 @@
 <script lang="ts">
 import { options } from '../stores/options';
 import SubtitleSettings from './SubtitleSettings.svelte';
+import DOMPurify from 'dompurify';
 // Reactive trigger so title-language changes re-render grid
 $: _currentLang = $options.titleLanguage;
 
@@ -265,7 +266,14 @@ $: _currentLang = $options.titleLanguage;
         playerCurrentTime = (Date.now() - modalOpenedAt) / 1000;
       }
 
-      // Advance pointer forward (segments are chronological) — O(1) for stable playback
+      // Re-seek on a backward scrub — the pointer only advances forward, so
+      // without this a rewind would never re-show earlier subtitles.
+      if (currentSegIdx > 0 && playerCurrentTime < subtitleSegments[currentSegIdx].start) {
+        currentSegIdx = 0;
+      }
+
+      // Advance pointer forward (segments are chronological) — O(1) for stable
+      // playback, O(n) only on the tick right after a rewind.
       while (currentSegIdx < subtitleSegments.length - 1 &&
              playerCurrentTime > subtitleSegments[currentSegIdx].end) {
         currentSegIdx++;
@@ -273,14 +281,9 @@ $: _currentLang = $options.titleLanguage;
       const seg = subtitleSegments[currentSegIdx];
       currentSubtitle = (seg && playerCurrentTime >= seg.start && playerCurrentTime <= seg.end)
         ? seg.text : '';
-
-      // Stop ticking once we've passed the last segment
-      const lastSeg = subtitleSegments[subtitleSegments.length - 1];
-      if (lastSeg && playerCurrentTime > lastSeg.end + 5 && !eventSource) {
-        clearInterval(subtitleTickInterval!);
-        subtitleTickInterval = null;
-        currentSubtitle = '';
-      }
+      // NOTE: the interval is intentionally NOT self-cleared past the last
+      // segment — a backward scrub must still re-display subtitles. It's cleared
+      // in stopTranslation()/closeModal().
     }, 200);
   }
 
@@ -401,14 +404,6 @@ $: _currentLang = $options.titleLanguage;
   // Helper to determine if a show has sequel/prequel relation
   function isSequel(show: any): boolean {
     return relationTags(show.relations).length > 0;
-  }
-
-  function sanitizeHtml(html: string): string {
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
-      .replace(/\bon\w+\s*=/gi, 'data-blocked=')
-      .replace(/javascript:/gi, '');
   }
 
   // Get display title based on user preference
@@ -747,7 +742,7 @@ const dispatch = createEventDispatcher();
       <!-- Row 3: Summary -->
       {#if show.description}
         <div class="px-3 pb-3 text-sm overflow-y-auto max-h-60 flex-1 min-h-0 prose prose-sm dark:prose-invert">
-          {@html sanitizeHtml(show.description)}
+          {@html DOMPurify.sanitize(show.description)}
         </div>
       {/if}
       {#if !show.description}

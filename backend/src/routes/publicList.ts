@@ -27,8 +27,15 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { id: true, settings: { select: { hideFromCompare: true } } }
+    });
+    // Treat opted-out users (Settings.hideFromCompare) the same as unknown ones
+    // so their list can't be pulled via this unauthenticated endpoint.
+    if (!user || user.settings?.hideFromCompare) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
 
     const rankType = (type ?? 'pre').toLowerCase();
 
