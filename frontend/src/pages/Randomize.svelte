@@ -266,13 +266,19 @@ $: _lang = $options.titleLanguage;
   // season/year. Fires on initial mount once the nickname-user list is loaded and
   // again whenever season or year changes. Manual toggles persist only until the
   // next season/year change.
+  // Bumped per call; a stale response (from a prior season/year) is discarded
+  // when its id no longer matches — prevents rapid season-switch races from
+  // applying the wrong season's selection.
+  let _autoSelectReqId = 0;
   async function autoSelectByRatings(s: Season, y: number) {
     const nickUsers = get(nicknameAllUsers);
     if (nickUsers.length === 0) return;
+    const reqId = ++_autoSelectReqId;
     try {
       const res = await fetch(`/api/list/users-with-ratings?season=${s}&year=${y}`);
-      if (!res.ok) return;
+      if (reqId !== _autoSelectReqId || !res.ok) return;
       const ratedUsers: string[] = await res.json();
+      if (reqId !== _autoSelectReqId) return; // stale response — discard
       const self = get(activeUserName);
       const toSelect = ratedUsers.filter((u) => u !== self && nickUsers.includes(u));
       nicknameSelected.set(new Set(toSelect));

@@ -330,18 +330,31 @@ let autoRename = false;
         : null;
     })
     .filter(Boolean);
-  function saveList() {
+  async function saveList() {
     if (!$authToken) return;
     const payload = watchList.map(({ mediaId, customName, watchedAt }) => ({ mediaId, customName, watchedAt }));
 
-    fetch('/api/list', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${$authToken}`
-      },
-      body: JSON.stringify({ season, year, items: payload })
-    });
+    try {
+      const res = await fetch('/api/list', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${$authToken}`
+        },
+        body: JSON.stringify({ season, year, items: payload })
+      });
+      if (res.status === 401) {
+        // Expired/invalid token: clear auth so the UI reflects logged-out state.
+        authToken.set(null);
+        userName.set(null);
+        return;
+      }
+      if (!res.ok) {
+        console.error(`[Home] saveList failed: ${res.status}`);
+      }
+    } catch (err) {
+      console.error('[Home] saveList network error', err);
+    }
   }
 
 

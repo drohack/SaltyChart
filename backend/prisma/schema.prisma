@@ -1,5 +1,9 @@
-// Prisma schema for user accounts
-// Run `npx prisma migrate dev --name init` to create the SQLite database.
+// Prisma schema for SaltyChart.
+// NOTE: production does NOT run `prisma migrate`. The raw SQL in
+// ensureDatabaseSchema() (backend/src/index.ts) is authoritative at runtime —
+// it creates/patches every table (incl. SeasonCache & SubtitleCache) on
+// startup. Keep this schema in sync with that SQL; run `npx prisma generate`
+// (not `migrate`) after edits so the client types match.
 
 generator client {
   provider      = "prisma-client-js"
@@ -67,10 +71,43 @@ model Settings {
   hideFromCompare Boolean @default(false)
   /// Where to add newly watched items: TOP or BOTTOM
   addWatchedTo    String  @default("BOTTOM")
+  /// JSON array: which users' custom nicknames to surface in pop-ups (raw-SQL column)
+  nicknameUserSel String?
+  /// JSON: per-video subtitle on/off preferences (raw-SQL column)
+  subtitlePrefs   String?
 
   user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // /api/users filters by hideFromCompare on every request; index turns a
   // table scan into an index lookup.
   @@index([hideFromCompare])
+}
+
+/// AniList season-listing cache. Created & maintained by the raw SQL in
+/// ensureDatabaseSchema() (index.ts); mirrored here so `prisma migrate` doesn't
+/// see it as drift and so the generated client is typed for it.
+model SeasonCache {
+  season    String
+  year      Int
+  format    String
+  data      String
+  updatedAt DateTime
+
+  @@id([season, year, format])
+}
+
+/// Per-YouTube-video subtitle cache: check results, translated segments, and
+/// user subtitle preferences. Created & maintained by the raw SQL in
+/// ensureDatabaseSchema() (index.ts); mirrored here (same reason as SeasonCache).
+model SubtitleCache {
+  id                Int       @id @default(autoincrement())
+  videoId           String    @unique
+  mediaId           Int?
+  modelName         String    @default("small")
+  hasEnglishSubs    Boolean?
+  hasBurnedInSubs   Boolean?
+  segments          String?
+  createdAt         DateTime  @default(now())
+  subtitlesDisabled Boolean?  @default(false)
+  lastEnCheckAt     DateTime?
 }

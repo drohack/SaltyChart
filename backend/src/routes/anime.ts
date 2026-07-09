@@ -130,9 +130,11 @@ router.get('/', async (req, res) => {
       const currentEpoch = Math.floor(Date.now() / 1000);
       const ageSeconds = currentEpoch - Number(cached[0].updatedEpoch);
       if (ageSeconds < ONE_HOUR_SECONDS) {
-        // Serve from DB cache and populate in-memory cache for faster subsequent calls
+        // Serve from DB cache and populate in-memory cache for faster subsequent
+        // calls. Seed with the DB row's *remaining* freshness (not a full fresh
+        // hour) so the in-memory copy doesn't outlive the DB row's 1h validity.
         const data = JSON.parse(cached[0].data);
-        memory.set(memKey, data);
+        memory.set(memKey, data, { ttl: Math.max(1, ONE_HOUR_SECONDS - ageSeconds) * 1000 });
         return res.json(data);
       }
     }

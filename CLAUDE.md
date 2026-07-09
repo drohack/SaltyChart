@@ -612,10 +612,13 @@ Path: `frontend/`
 Path: `backend/prisma/schema.prisma` (a legacy root-level `prisma/` folder
 from the old SvelteKit prototype has been removed).
 
-- Defines `User`, `WatchList` (with `watchedRank`, `hidden` columns), and
-  `Settings` models. `Settings` in the live DB also has `nicknameUserSel`,
-  `addWatchedTo`, and `subtitlePrefs` columns that are not in the Prisma
-  schema — they're read/written via raw SQL in `/api/options`.
+- Defines `User`, `WatchList` (with `watchedRank`, `hidden` columns),
+  `Settings`, and the two runtime caches `SeasonCache` / `SubtitleCache`.
+  `Settings.nicknameUserSel` and `subtitlePrefs` (JSON, read/written via raw SQL
+  in `/api/options`) are now declared on the model too. `SeasonCache` /
+  `SubtitleCache` are created & patched only by the raw SQL in `index.ts`; the
+  Prisma models mirror them so `prisma migrate` doesn't flag drift (and offer a
+  reset that would drop cached translations) and so the client is typed for them.
 - Index declarations in the schema: `@@index([userId])`,
   `@@index([season, year])` on `WatchList`; `@@index([hideFromCompare])`
   on `Settings`. These are also created at runtime via

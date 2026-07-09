@@ -57,17 +57,22 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
+  // Normalize once: an omitted `watched` means "mark watched". Using this
+  // uniformly avoids the edge where `watched ?? true` set watched=true but
+  // `watched ? ... : null` left watchedAt null and skipped rank assignment.
+  const isWatched = watched ?? true;
+
   try {
     const updated = await prisma.watchList.updateMany({
       where: { userId: req.userId!, season, year: Number(year), mediaId },
       data: {
-        watched: watched ?? true,
-        watchedAt: watched ? new Date() : null
+        watched: isWatched,
+        watchedAt: isWatched ? new Date() : null
       }
     });
 
     // If existing row was updated to watched=true we must assign a watchedRank
-    if (updated.count > 0 && watched) {
+    if (updated.count > 0 && isWatched) {
       // Fetch current count of watched items *after* the flag flip so the new
       // item is included in the tally.
       const watchedCount = await prisma.watchList.count({

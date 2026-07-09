@@ -98,6 +98,7 @@ const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 const generalLimiter = rateLimit({
   windowMs: 60_000,
   max: 120,
+  message: { error: 'Too many requests, please slow down.', code: 'RATE_LIMITED' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => _isDev,
@@ -511,7 +512,7 @@ ensureDatabaseSchema().then(() => {
   // then hourly after that.
   setTimeout(checkBatchSchedule, 10_000); // 10s after startup
   setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
-  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 50 days before season, 3-season coverage)');
+  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 50 days before season, current season only)');
 
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];

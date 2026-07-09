@@ -166,7 +166,7 @@ export function nextSeasonInfo(
   }
 }
 
-// Returns the season to show by default: the upcoming season if within 28 days of its start,
+// Returns the season to show by default: the upcoming season if within 76 days of its start,
 // otherwise the current season. Handles the cross-year case (FALL→WINTER) correctly.
 function computeInitialSeason(date: Date = new Date()): { season: Season; year: number } {
   const m = date.getMonth();

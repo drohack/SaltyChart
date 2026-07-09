@@ -882,6 +882,19 @@ def start_vram_monitor(interval=0.5):
 # ---------------------------------------------------------------------------
 
 def run_phased(items, server, token, args, device, compute_type, verbose=False, prefix=""):
+    """Guarantee every downloaded temp dir is removed even if a phase raises
+    (BotBlockError in Phase 1, model-load failure in Phase 2, etc.) — the
+    per-item Phase-3 finally only covers items that actually reach Phase 3."""
+    tmpdirs = set()
+    try:
+        return _run_phased(items, server, token, args, device, compute_type, tmpdirs,
+                           verbose=verbose, prefix=prefix)
+    finally:
+        for d in tmpdirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbose=False, prefix=""):
     """Run the split pipeline over `items` in three phases so only one model is
     GPU-resident at a time (peak ~6.2 GB vs ~9.8 GB per-video) and each model
     loads once. `items`: list of {vid, title, media_id}. `prefix` (e.g.
@@ -908,6 +921,7 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False, 
             time.sleep(delay)
         try:
             downloaded[i] = _download_audio_to_tmp(it["vid"])
+            tmpdirs.add(downloaded[i][0])  # track for guaranteed cleanup (see run_phased)
             print(f"  {tag('download', i + 1, n)} {label}")
         except Exception as e:
             msg = str(e)
@@ -1082,7 +1096,10 @@ def main():
         _original_print = builtins.print
         def tee_print(*args, **kwargs):
             _original_print(*args, **kwargs)
-            _original_print(*args, **{**kwargs, "file": log_file, "flush": True})
+            # Guard: atexit hooks (e.g. --vram-log's PEAK line) print after main()
+            # has closed log_file; writing to a closed file raises ValueError.
+            if log_file and not log_file.closed:
+                _original_print(*args, **{**kwargs, "file": log_file, "flush": True})
         builtins.print = tee_print
 
     # --- Within-days gate ---
@@ -1164,6 +1181,20 @@ def main():
     if split_enabled and not args.dry_run:
         ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
 
+    # Guarantee the spawned `ollama serve` is stopped even if an unhandled
+    # exception (e.g. a Phase-2 model-load failure) escapes main() — a bare
+    # straight-line shutdown call would be skipped, orphaning the server. atexit
+    # runs on normal exit AND on unhandled-exception termination; the flag makes
+    # it idempotent so the explicit calls below don't double-stop.
+    import atexit
+    _ollama_shut = {"done": False}
+    def _cleanup_ollama():
+        if _ollama_shut["done"]:
+            return
+        _ollama_shut["done"] = True
+        shutdown_ollama(args.ollama_host, args.translate_model, ollama_proc, keep=args.keep_ollama)
+    atexit.register(_cleanup_ollama)
+
     # If the split translator is unavailable, the run falls back to end-to-end
     # Whisper translate (uploaded as args.model, e.g. large-v3). Lower target_tag
     # to match — otherwise the cache/skip comparison treats every already-
@@ -1212,7 +1243,7 @@ def main():
                 print(f"[local] Uploaded: {result.get('action', 'ok')}")
             elif args.no_upload:
                 print("[local] --no-upload: skipping upload")
-        shutdown_ollama(args.ollama_host, args.translate_model, ollama_proc, keep=args.keep_ollama)
+        _cleanup_ollama()
         return
 
     print(f"[local] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
@@ -1348,7 +1379,7 @@ def main():
               + (f", {remaining} remaining" if remaining > 0 else ""))
         print()
 
-    shutdown_ollama(args.ollama_host, args.translate_model, ollama_proc, keep=args.keep_ollama)
+    _cleanup_ollama()
 
     if log_file:
         log_file.write(f"\nRun ended: {datetime.now().isoformat()}\n")

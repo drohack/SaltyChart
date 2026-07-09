@@ -541,13 +541,17 @@ _SUITE_ORDER = ["baseline", "phase1", "phase2", "phase3", "phase4",
 
 def read_result_sections(path):
     """Parse the consolidated results file into an ordered {suite: text} dict.
-    Tolerates a non-sectioned legacy file by returning it untouched under no key."""
+    A file with no '@@@ BENCHMARK SUITE:' markers parses to an empty dict (its
+    pre-marker content is not in our format); write_result_section guards
+    against clobbering such a file."""
     sections = {}
     if not os.path.exists(path):
         return sections
     prefix, suffix = "@@@ BENCHMARK SUITE: ", " @@@"
     cur, buf = None, []
-    for line in open(path, encoding="utf-8"):
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    for line in lines:
         s = line.rstrip("\n")
         if s.startswith(prefix) and s.endswith(suffix):
             if cur is not None:
@@ -564,6 +568,13 @@ def write_result_section(path, suite, report):
     """Replace (or append) this suite's section in the consolidated file, leaving
     every other suite's section intact."""
     sections = read_result_sections(path)
+    # Refuse to clobber a non-empty file that isn't in our sectioned format —
+    # opening it "w" below would erase it (the parse dropped its content).
+    if not sections and os.path.exists(path) and os.path.getsize(path) > 0:
+        raise SystemExit(
+            f"[bench] refusing to overwrite '{path}': it has content but no "
+            f"'@@@ BENCHMARK SUITE:' markers (not a consolidated results file). "
+            f"Move it aside or pass a different --output.")
     sections[suite] = report
     order = [s for s in _SUITE_ORDER if s in sections]
     order += [s for s in sections if s not in order]
