@@ -49,8 +49,9 @@ fi
 
 echo "$(date '+%F %T') new image(s) pulled — backing up DB before swap" >> "$LOG_FILE"
 
-if [ -x "$BACKUP_SCRIPT" ]; then
-  if ! "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
+# /boot is mounted noexec on Unraid, so invoke via bash rather than directly
+if [ -f "$BACKUP_SCRIPT" ]; then
+  if ! bash "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
     echo "$(date '+%F %T') BACKUP FAILED — aborting update, containers untouched" >> "$LOG_FILE"
     exit 1
   fi
