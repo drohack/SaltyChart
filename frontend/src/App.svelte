@@ -18,6 +18,10 @@ import { options } from './stores/options';
 
   let Page: any = null;
   let showOptions = false;
+
+  // Deploy version (YYYYMMDD-<sha> image tag), baked in by CI via the
+  // APP_VERSION build-arg → VITE_APP_VERSION. 'dev' outside Docker builds.
+  const appVersion: string = import.meta.env.VITE_APP_VERSION || 'dev';
 // Apply theme by setting data-theme or class on document <html>
 $: {
   const t = $options.theme;
@@ -83,8 +87,8 @@ $: {
 
   <!-- ── Row 1: logo left, actions right ─────────────────────────────── -->
   <div class="w-full flex items-center justify-between">
-    <!-- Logo / Home link -->
-    <h1 class="text-3xl font-bold">
+    <!-- Logo / Home link (with version tooltip at its top-right corner) -->
+    <h1 class="text-3xl font-bold relative inline-block">
       <a
         href="/"
         class="cursor-pointer"
@@ -92,6 +96,10 @@ $: {
       >
         SaltyChart
       </a>
+      <span
+        class="tooltip tooltip-bottom absolute -top-1 -right-4 w-4 h-4 flex items-center justify-center rounded-full border border-current text-[10px] font-normal opacity-50 hover:opacity-100 cursor-help select-none"
+        data-tip={`Version: ${appVersion}`}
+      >?</span>
     </h1>
 
     <!-- Actions (options, login/logout) -->

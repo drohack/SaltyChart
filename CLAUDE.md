@@ -597,6 +597,10 @@ Path: `frontend/`
   independently (you can compare your pre-watch vs their post-watch).
 
 **Misc**
+- The header logo carries a small `?` badge (top-right of "SaltyChart" in
+  `App.svelte`) whose tooltip shows the deployed version — the
+  `YYYYMMDD-<sha>` tag injected by CI as the `APP_VERSION` build-arg →
+  `VITE_APP_VERSION` (frontend Dockerfile). Local/dev builds show `dev`.
 - On first load (or after cache expiry), the default season uses a **76-day
   look-ahead**: if the next anime season starts within 76 days, that season
   is shown instead of the current one. This means the app switches to the

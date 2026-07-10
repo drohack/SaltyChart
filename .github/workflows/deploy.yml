@@ -88,6 +88,8 @@ jobs:
           context: frontend
           push: false
           load: true
+          build-args: |
+            APP_VERSION=${{ steps.tags.outputs.date_sha }}
           tags: |
             ghcr.io/drohack/saltychart-frontend:latest
             ghcr.io/drohack/saltychart-frontend:${{ steps.tags.outputs.date_sha }}

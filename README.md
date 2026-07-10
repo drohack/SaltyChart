@@ -65,6 +65,11 @@ SaltyChart is under active development. The list below summarises key
 additions so new contributors are not caught off-guard. Group is rough
 chronological order; all features listed are live.
 
+**Version badge in header**
+- A small `?` at the top-right of the SaltyChart logo shows the deployed
+  version (the `YYYYMMDD-<sha>` image tag) in a tooltip on hover — `dev`
+  when running outside a CI-built image.
+
 **Compare redesign (card layout, mobile-first)**
 - Cards replace the old 4-column grid — one anime per row with cover, title,
   and a `[your rank | diff badge | other rank]` strip.

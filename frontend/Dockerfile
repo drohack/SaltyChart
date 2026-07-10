@@ -15,6 +15,10 @@ RUN npm ci
 
 # ---------- build layer ------------------------------------------------------
 FROM deps AS builder
+# Deploy version (YYYYMMDD-<sha> image tag) shown in the header's ? tooltip;
+# passed by CI (deploy.yml), stays 'dev' for local builds.
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=$APP_VERSION
 COPY . ./
 RUN npm run build
 
