@@ -12,8 +12,8 @@
 #      backup_saltychart_db User Script), swap containers with
 #      `docker compose up -d`, prune the now-untagged old images, and log.
 #
-# The SQLite DB lives in the external named volume `saltychart_db`, which
-# pull/up -d never touch — the backup is belt-and-suspenders.
+# The SQLite DB is bind-mounted from /mnt/user/appdata/saltychart/prisma,
+# which pull/up -d never touch — the backup is belt-and-suspenders.
 
 set -u
 

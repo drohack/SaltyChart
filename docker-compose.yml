@@ -8,9 +8,10 @@
 #    polls with `docker compose pull` and swaps containers automatically.
 #  • Rollback: pin the image lines to a previous immutable YYYYMMDD-<sha>
 #    tag (visible on the GHCR package pages) and `docker compose up -d`.
-#  • Adds a *named* volume for the SQLite database instead of a bind-mount so
-#    the DB survives image upgrades and the file permissions remain correct on
-#    Unraid.
+#  • The SQLite DB is a bind mount at /mnt/user/appdata/saltychart/prisma so
+#    it survives image upgrades and is directly visible/backupable on the
+#    host. (A legacy `saltychart_db` named volume from an older revision of
+#    this file went stale in April 2026 — do not resurrect it.)
 #  • Creates an explicit bridge network (salty-net) to ensure the container
 #    IPs stay stable between restarts – many Unraid users like to reference
 #    them from other stacks or fail2ban rules.
@@ -23,7 +24,7 @@ services:
     image: ghcr.io/drohack/saltychart-backend:latest
     container_name: saltychart-backend
     volumes:
-      - saltychart_db:/app/prisma
+      - /mnt/user/appdata/saltychart/prisma:/app/prisma
     expose:
       - "3000"
     environment:
@@ -53,10 +54,6 @@ services:
 # ---------------------------------------------------------------------------
 #  Named resources
 # ---------------------------------------------------------------------------
-
-volumes:
-  saltychart_db:
-    external: true
 
 networks:
   salty-net:

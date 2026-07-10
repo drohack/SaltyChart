@@ -14,7 +14,10 @@ Whisper models even when only app code changed.
 Goals:
 - Push to `master` → deployed, hands-off.
 - Never transfer the AI-model layers on a routine deploy.
-- Zero risk to existing data (SQLite DB in the `saltychart_db` volume).
+- Zero risk to existing data (SQLite DB bind-mounted at
+  `/mnt/user/appdata/saltychart/prisma`; an earlier draft said the
+  `saltychart_db` named volume — rollout discovered that volume has been
+  stale since April 2026, see *Data safety* below).
 
 ## Architecture
 
@@ -82,16 +85,22 @@ Reference copy in repo: `tools/unraid/update_saltychart.sh`.
 ### Compose changes
 
 Images become `ghcr.io/drohack/saltychart-{backend,frontend}:latest`.
-Everything else — external `saltychart_db` volume, `salty-net` network,
-port 8085, `JWT_SECRET` from untracked `.env` — is unchanged. The stale
-`./frontend:/app:ro` dev bind mount is removed.
+Everything else — the DB bind mount, `salty-net` network, port 8085,
+`JWT_SECRET` — is unchanged. The stale `./frontend:/app:ro` dev bind mount
+is removed.
 
 ## Data safety
 
-- The DB lives in the external named volume `saltychart_db`; `compose pull`
-  / `up -d` replace containers, never volumes.
-- Every applied update triggers the existing backup script first.
-- Monthly backup + restore user scripts continue unchanged.
+- The DB is bind-mounted from `/mnt/user/appdata/saltychart/prisma`;
+  `compose pull` / `up -d` replace containers, never mounts.
+- Every applied update triggers the backup script first.
+- **Rollout finding (2026-07-09):** the server's compose had switched from
+  the `saltychart_db` named volume to the bind mount months earlier, but
+  the backup/restore User Scripts still targeted the volume — every backup
+  since ~April 2026 silently archived stale April data. Both scripts were
+  rewritten to target the live DB via the SQLite online-backup API
+  (consistent under concurrent writes); reference copies now live in
+  `tools/unraid/`.
 
 ## Error handling & failure modes
 

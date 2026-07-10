@@ -638,10 +638,12 @@ from the old SvelteKit prototype has been removed).
 Compose file: `docker-compose.yml` (mirrors the production compose on the
 Unraid server at `/mnt/user/appdata/saltychart/docker-compose.yml`).
 
-- `backend` service: `ghcr.io/drohack/saltychart-backend:latest`, SQLite in
-  the external named volume `saltychart_db`, exposes 3000 internally,
+- `backend` service: `ghcr.io/drohack/saltychart-backend:latest`, SQLite
+  bind-mounted from `/mnt/user/appdata/saltychart/prisma` (a legacy
+  `saltychart_db` named volume exists on the server but is stale since
+  April 2026 — never point anything at it), exposes 3000 internally,
   health-checked before frontend startup. `JWT_SECRET` comes from an
-  untracked `.env`.
+  untracked `.env` (hardcoded directly in the server's compose copy).
 - `frontend` service: `ghcr.io/drohack/saltychart-frontend:latest`, nginx
   serving on host port 8085.
 - Local usage: `docker build` the images yourself (see Deployment below) or
@@ -674,9 +676,12 @@ Unraid server at `/mnt/user/appdata/saltychart/docker-compose.yml`).
 - The full pre-deploy suite (`tools/tests/run_all.py`) **cannot run in CI**
   (Playwright against live dev servers + GPU test) — run it locally before
   pushing to master (see *Testing* above).
-- Data safety: the `saltychart_db` volume is never touched by deploys, and
-  every applied update is preceded by a DB backup. Rollback = pin compose to
-  a previous `YYYYMMDD-<sha>` tag (+ `restore_saltychart_db` if needed).
+- Data safety: the DB bind mount (`/mnt/user/appdata/saltychart/prisma`) is
+  never touched by deploys, and every applied update is preceded by a DB
+  backup. Backup/restore User Scripts snapshot the **live** DB via the
+  SQLite online-backup API — reference copies in `tools/unraid/`. Rollback =
+  pin compose to a previous `YYYYMMDD-<sha>` tag (+ `restore_saltychart_db`
+  if needed).
 - Design spec: `docs/superpowers/specs/2026-07-09-cicd-deployment-design.md`.
   README has the user-facing walkthrough incl. offline tar fallback.
 

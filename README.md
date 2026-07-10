@@ -209,8 +209,8 @@ deploying**; there is no manual build/transfer step.
    images, and logs to `/mnt/user/appdata/saltychart/update.log`.
 
 A code change is typically live ~15 minutes after the push (CI ~5 min + poll
-interval). The SQLite DB lives in the external `saltychart_db` volume, which
-deploys never touch.
+interval). The SQLite DB is bind-mounted from
+`/mnt/user/appdata/saltychart/prisma`, which deploys never touch.
 
 ### The base image (why deploys are small)
 
@@ -270,11 +270,19 @@ ssh <user>@<unraid-ip> docker load -i /mnt/user/SHARE/user/drohackfiles/saltycha
 ## Backup and Restore database
 
 On the Unraid server there's some user scripts to backup the database.
+Reference copies live in `tools/unraid/` — if you edit them, update the
+server's User Scripts to match. The live DB is the bind mount at
+`/mnt/user/appdata/saltychart/prisma/data.db` (**not** the legacy
+`saltychart_db` docker volume, which went stale in April 2026 and whose
+backups silently contained April data until this was caught in July).
 
-Backup - every month, save 3:
+Backup - every month, save 3 (also runs before every auto-deploy swap):
    In the Unraid WebUI go to Settings -> User Scripts
-   "backup_saltychart_db" script runs monthly to backup the database to /mnt/user/backup/
+   "backup_saltychart_db" snapshots the live DB via the SQLite online-backup
+   API (through the backend container) to /mnt/user/backup/saltychart/
 
-Restore - run when needed:
-   "restore_saltychart_db" When ran restores the most recent backup
-   Can be run manually for a specific backup: `./restore_saltychart_db/script saltychart_db_2025-07-28_02-00-00.tar.gz`
+Restore - run from a terminal when needed (it prompts for confirmation):
+   "restore_saltychart_db" restores the most recent backup into the live
+   data dir, stopping/starting the backend around the swap. The replaced DB
+   is kept as data.db.pre-restore.
+   For a specific backup: `bash ./restore_saltychart_db/script saltychart_db_2026-07-09_22-53-41.tar.gz`
