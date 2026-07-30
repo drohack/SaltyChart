@@ -75,6 +75,7 @@ import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import plexRouter from './routes/plex';
 import jellyfinRouter from './routes/jellyfin';
+import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -118,6 +119,10 @@ app.use('/api/translate', generalLimiter, translateRouter);
 // own limiters (120/min JSON endpoints, 600/min stream) and JSON parser
 // because the global ones below don't apply to this early mount.
 app.use('/api/plex', plexRouter);
+
+// Same reason as above: /api/jellyfin/stream/* pipes HLS segments, which
+// compression() would buffer. It carries its own limiters and JSON parser.
+app.use('/api/jellyfin', jellyfinRouter);
 
 app.use(compression());
 
@@ -475,13 +480,15 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/users', usersRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
-  // Jellyfin config (admin only). Unlike /api/plex this mounts here — it has
-  // no streaming endpoint, so compression() and the global parsers are fine.
-  app.use('/api/jellyfin', jellyfinRouter);
-  // Note: /api/translate is registered before compression() middleware (see above)
+  // Note: /api/translate and /api/jellyfin are registered before compression()
+  // middleware (see above)
 
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
+    // Warm the AniList→TVDB map after the server is up, never during a
+    // request: it's a ~10MB download and availability lookups must not wait
+    // on it. Failure is fine — matching falls back to titles alone.
+    void ensureAnilistTvdbMap();
   });
 
   // ────────────────────────────────────────────────────────────────────────────

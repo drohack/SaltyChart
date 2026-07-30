@@ -10,6 +10,20 @@ export default ({ mode }) => {
 
   return defineConfig({
     plugins: [svelte()],
+    // jassub (libass) runs libass in a web worker. Vite bundles workers as
+    // `iife` by default, which cannot code-split — and jassub's worker does,
+    // so the build fails outright. ES workers are supported everywhere the
+    // rest of the player already requires.
+    worker: { format: 'es' },
+    // `npm run preview` serves the real build; it needs the same API proxy as
+    // dev, otherwise nothing behind /api works when checking a production
+    // bundle (which is the only way to test built worker/wasm assets).
+    preview: {
+      port: 4173,
+      proxy: {
+        '/api': { target: apiUrl, changeOrigin: true, secure: false },
+      },
+    },
     server: {
       // Listen on all interfaces so the dev server is reachable via the PC's
       // LAN IP (e.g. from a phone) — default is loopback-only.

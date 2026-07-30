@@ -7,7 +7,7 @@ import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
-import { checkPlexAvailability, warmPlexSubtitles, plexConfigured, type PlexAvailability } from '../stores/plex';
+import { checkAvailability, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -105,14 +105,14 @@ $: _lang = $options.titleLanguage;
   const hideAll = () => setHiddenForAll(true);
   const showAll = () => setHiddenForAll(false);
 
-  // Hide everything the Plex server doesn't have, so the wheel only spins on
+  // Hide everything the library doesn't have, so the wheel only spins on
   // shows that can actually be watched. Availability is already prefetched
   // for the whole list, so these lookups come from cache.
-  let hidingNonPlex = false;
+  let hidingNonLibrary = false;
 
-  async function hideNotOnPlex() {
-    if (!$authToken || hidingNonPlex) return;
-    hidingNonPlex = true;
+  async function hideNotInLibrary() {
+    if (!$authToken || hidingNonLibrary) return;
+    hidingNonLibrary = true;
     // The lookups below are awaited, so the season could change underneath us
     // — writing then would hide the wrong season's shows.
     const forSeason = season;
@@ -122,7 +122,7 @@ $: _lang = $options.titleLanguage;
       const checks = await Promise.all(
         visible.map(async (it) => ({
           item: it,
-          info: await checkPlexAvailability(it.id, [
+          info: await checkAvailability(it.id, [
             it.customName,
             it.title?.english,
             it.title?.romaji,
@@ -131,13 +131,18 @@ $: _lang = $options.titleLanguage;
         }))
       );
       if (season !== forSeason || year !== forYear) return;
-      const next = new Map(plexAvailability);
+      const next = new Map(libraryAvailability);
       for (const c of checks) {
         if (!c.info.unknown) next.set(c.item.id, c.info.available);
       }
-      plexAvailability = next;
-      // Never hide on an inconclusive answer — a Plex timeout must not make
+      libraryAvailability = next;
+      // Never hide on an inconclusive answer — a timeout must not make
       // shows disappear from the wheel.
+      //
+      // Title-only (`matchedBy === 'title'`) matches need no guard here: they
+      // report `available: true`, so this only ever *keeps* them. That is the
+      // conservative direction — an unconfirmed match's danger is playing the
+      // wrong series, which the popup warns about, not vanishing from the wheel.
       const missing = checks.filter((c) => !c.info.available && !c.info.unknown).map((c) => c.item);
       if (!missing.length) return;
 
@@ -152,7 +157,7 @@ $: _lang = $options.titleLanguage;
         }).catch(() => {});
       }
     } finally {
-      hidingNonPlex = false;
+      hidingNonLibrary = false;
     }
   }
 
@@ -205,10 +210,10 @@ $: _lang = $options.titleLanguage;
     })();
   }
 
-  // ── Plex availability (never blocks the modal) ──────────────────────
-  let plexInfo: PlexAvailability | null = null;
-  let showPlexPlayer = false;
-  let PlexPlayerModal: any = null;
+  // ── Library availability (never blocks the modal) ───────────────────
+  let watchInfo: MediaAvailability | null = null;
+  let showPlayer = false;
+  let JellyfinPlayerModal: any = null;
 
   $: if (showModal && selected) {
     const id = selected.id;
@@ -218,27 +223,21 @@ $: _lang = $options.titleLanguage;
       selected.title?.romaji,
       selected.title?.native,
     ].filter(Boolean);
-    plexInfo = null;
-    checkPlexAvailability(id, titles)
+    watchInfo = null;
+    checkAvailability(id, titles)
       .then((info) => {
         // Guard against a stale resolve after the user opened a different show.
         if (selected?.id !== id) return;
-        plexInfo = info;
-        // Pull the episode's subtitles out of the file now rather than when
-        // Watch is pressed: the extraction reads the whole episode (~3.5s),
-        // and the seconds spent reading this pop-up cover it, so playback
-        // starts immediately with subtitles instead of waiting for them.
-        if (info.available && info.episodeRatingKey) warmPlexSubtitles(info.episodeRatingKey);
+        watchInfo = info;
+        // No subtitle pre-warm any more: the server hands over the track in
+        // milliseconds instead of reading the whole episode file first.
         // Cached "not available" → re-check live, so a show downloaded a
         // minute ago appears without waiting out the cache TTLs.
         if (!info.available) {
-          checkPlexAvailability(id, titles, true)
+          checkAvailability(id, titles, true)
             .then((freshInfo) => {
               if (selected?.id !== id) return;
-              plexInfo = freshInfo;
-              if (freshInfo.available && freshInfo.episodeRatingKey) {
-                warmPlexSubtitles(freshInfo.episodeRatingKey);
-              }
+              watchInfo = freshInfo;
             })
             .catch(() => {});
         }
@@ -246,18 +245,18 @@ $: _lang = $options.titleLanguage;
       .catch(() => {});
   }
 
-  async function openPlexPlayer() {
-    if (!PlexPlayerModal) {
-      PlexPlayerModal = (await import('../components/PlexPlayerModal.svelte')).default;
+  async function openPlayer() {
+    if (!JellyfinPlayerModal) {
+      JellyfinPlayerModal = (await import('../components/JellyfinPlayerModal.svelte')).default;
     }
-    showPlexPlayer = true;
+    showPlayer = true;
   }
 
   // A plain function so the reactive block that calls it neither reads nor
-  // writes `showPlexPlayer` directly (which would drag extra invalidations
+  // writes `showPlayer` directly (which would drag extra invalidations
   // into that statement).
-  function closePlexPlayer() {
-    if (showPlexPlayer) showPlexPlayer = false;
+  function closePlayer() {
+    if (showPlayer) showPlayer = false;
   }
 
   // Loading state while fetching list & anime
@@ -443,13 +442,13 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     })
     .filter(Boolean);
 
-  // Warm the Plex availability cache for every wheel item as soon as the
-  // list is ready, so the popup's Plex row is there instantly instead of
+  // Warm the availability cache for every wheel item as soon as the
+  // list is ready, so the popup's watch row is there instantly instead of
   // popping in ~1s after open. The store dedups + caches per mediaId, so
   // re-runs of this reactive block are no-ops.
-  // mediaId → is it on Plex (absent = not checked yet). Drives both the
-  // popup row and the "Hide Not on Plex" button's enabled state.
-  let plexAvailability = new Map<number, boolean>();
+  // mediaId → is it in the library (absent = not checked yet). Drives both
+  // the popup row and the "Hide Not in Library" button's enabled state.
+  let libraryAvailability = new Map<number, boolean>();
 
   /**
    * Record one availability answer.
@@ -461,20 +460,20 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
    * re-ran this block — one full recompute of the wheel pipeline per show.
    */
   function recordAvailability(id: number, available: boolean) {
-    if (plexAvailability.get(id) === available) return;
-    plexAvailability = new Map(plexAvailability).set(id, available);
+    if (libraryAvailability.get(id) === available) return;
+    libraryAvailability = new Map(libraryAvailability).set(id, available);
   }
 
   $: if (wheelItems.length) {
     for (const item of wheelItems) {
-      checkPlexAvailability(item.id, [
+      checkAvailability(item.id, [
         item.customName,
         item.title?.english,
         item.title?.romaji,
         item.title?.native,
       ].filter(Boolean))
         .then((info) => {
-          // Only record a definite answer; `unknown` means Plex didn't reply.
+          // Only record a definite answer; `unknown` means the server didn't reply.
           if (!info.unknown) recordAvailability(item.id, info.available);
         })
         .catch(() => {});
@@ -483,8 +482,8 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
 
   // Only enabled while there's actually something to hide, so the button
   // greys out once it has done its job (same feel as Hide All / Show All).
-  $: hasNonPlexVisible = unwatchedDetailed.some(
-    (it) => !it.hidden && plexAvailability.get(it.id) === false
+  $: hasNonLibraryVisible = unwatchedDetailed.some(
+    (it) => !it.hidden && libraryAvailability.get(it.id) === false
   );
 
   // (Watched ranking is handled separately – see watchedRank below)
@@ -871,9 +870,9 @@ const sliceWorker: Worker = new SliceWorker();
 // Global key handler (attached while modal is open) so the Enter key triggers
 // the same action irrespective of which element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
-  // While the Plex player is open it owns the keyboard (Space/Esc/[/]) —
+  // While the player is open it owns the keyboard (Space/Esc/[/]) —
   // Enter here would mark-watched and close the modal underneath it.
-  if (showPlexPlayer) return;
+  if (showPlayer) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     markWatched();
@@ -893,9 +892,9 @@ $: {
   } else {
     window.removeEventListener('keydown', handleModalKey);
     // The player lives outside this dialog, so closing the parent has to tear
-    // it down explicitly — a stuck `showPlexPlayer` would make handleModalKey
+    // it down explicitly — a stuck `showPlayer` would make handleModalKey
     // swallow Enter for every future popup.
-    closePlexPlayer();
+    closePlayer();
   }
 }
 
@@ -1381,16 +1380,16 @@ $: {
               >
                 Show All
               </button>
-              {#if $plexConfigured}
+              {#if $mediaConfigured}
                 <button
                   type="button"
                   class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
-                  on:click={hideNotOnPlex}
-                  disabled={!hasNonPlexVisible || hidingNonPlex}
-                  title="Hide every unwatched show the Plex server doesn't have"
+                  on:click={hideNotInLibrary}
+                  disabled={!hasNonLibraryVisible || hidingNonLibrary}
+                  title="Hide every unwatched show the library doesn't have (confirmed matches only)"
                 >
-                  {#if hidingNonPlex}<span class="loading loading-spinner loading-xs"></span>{/if}
-                  Hide Not on Plex
+                  {#if hidingNonLibrary}<span class="loading loading-spinner loading-xs"></span>{/if}
+                  Hide Not in Library
                 </button>
               {/if}
             </div>
@@ -1658,34 +1657,47 @@ $: {
           </div>
         {/if}
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
-        {#if plexInfo?.available}
+        {#if watchInfo?.available}
           <div class="flex flex-col items-center gap-1 mb-4">
-            <button class="btn btn-sm btn-accent" on:click={openPlexPlayer}>
-              ▶ Watch here (via Plex)
-              {#if plexInfo.seasonNumber != null && plexInfo.episodeNumber != null}
-                — S{plexInfo.seasonNumber}E{plexInfo.episodeNumber}
+            <button class="btn btn-sm btn-accent" on:click={openPlayer}>
+              ▶ Watch here
+              {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
+                — S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
               {/if}
             </button>
-            {#if plexInfo.plexTitle}
-              <!-- Everything here is Plex's own metadata for the episode we
+            {#if watchInfo.libraryTitle}
+              <!-- Everything here is the library's own metadata for the episode we
                    resolved, so a wrong match or wrong season is visible
                    before you click play. -->
               <span class="text-xs opacity-60">
-                Plex: {plexInfo.plexTitle}
-                {#if plexInfo.seasonNumber != null && plexInfo.episodeNumber != null}
-                  · S{plexInfo.seasonNumber}E{plexInfo.episodeNumber}
+                Library: {watchInfo.libraryTitle}
+                {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
+                  · S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
                 {/if}
-                {#if plexInfo.episodeTitle}
-                  · {plexInfo.episodeTitle}
+                {#if watchInfo.episodeTitle}
+                  · {watchInfo.episodeTitle}
                 {/if}
               </span>
+              {#if watchInfo.matchedBy === 'title'}
+                <!-- Matched on title alone, with no id to confirm it. That is
+                     how a 2026 entry once resolved to a 2004 series of similar
+                     name, so say so rather than present it as fact. -->
+                <span
+                  class="text-xs text-warning/80"
+                  title="Matched by title only — no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant."
+                >
+                  ⚠ unconfirmed match
+                </span>
+              {/if}
             {/if}
           </div>
-        {:else if $plexConfigured && plexInfo?.unknown}
-          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach Plex — try again shortly</p>
-        {:else if $plexConfigured && plexInfo && !plexInfo.available}
+        {:else if $mediaConfigured && watchInfo?.unknown}
+          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server — try again shortly</p>
+        {:else if $mediaConfigured && watchInfo && !watchInfo.available}
           <p class="text-center text-xs opacity-50 mb-4">
-            Not on Plex{plexInfo.plexTitle ? ` (found "${plexInfo.plexTitle}" but not this season)` : ''}
+            Not in library{watchInfo.libraryTitle
+              ? ` (found "${watchInfo.libraryTitle}" but not this season)`
+              : ''}
           </p>
         {/if}
         <div class="modal-action relative flex justify-center">
@@ -1709,14 +1721,15 @@ $: {
     </dialog>
   {/if}
 
-  <!-- Plex in-page player (lazy-loaded chunk; stacks above the show modal) -->
-  {#if showPlexPlayer && plexInfo?.episodeRatingKey && selected}
+  <!-- In-page player (lazy-loaded chunk; stacks above the show modal) -->
+  {#if showPlayer && watchInfo?.itemId && watchInfo?.mediaSourceId && selected}
     <svelte:component
-      this={PlexPlayerModal}
-      episodeRatingKey={plexInfo.episodeRatingKey}
+      this={JellyfinPlayerModal}
+      itemId={watchInfo.itemId}
+      mediaSourceId={watchInfo.mediaSourceId}
       title={selected.customName || getEnglishTitle(selected)}
-      episodeTitle={plexInfo.episodeTitle ?? ''}
-      on:close={closePlexPlayer}
+      episodeTitle={watchInfo.episodeTitle ?? ''}
+      on:close={closePlayer}
     />
   {/if}
 

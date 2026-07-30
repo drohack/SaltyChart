@@ -9,7 +9,7 @@
   let Admin: any;
 
 import { authToken, userName } from './stores/auth';
-import { isAdmin } from './stores/plex';
+import { isAdmin } from './stores/jellyfin';
 import OptionsModal from './components/OptionsModal.svelte';
 import { options } from './stores/options';
 

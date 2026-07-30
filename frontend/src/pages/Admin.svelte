@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authToken } from '../stores/auth';
-  import { isAdmin } from '../stores/plex';
+  import { isAdmin } from '../stores/jellyfin';
 
   // ── Plex integration config ─────────────────────────────────────────
   let url = '';
