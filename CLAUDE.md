@@ -122,8 +122,9 @@ Suite includes:
 | `test_jellyfin.py` | 10 steps: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
 | `test_player.py` | 9 steps driving the **real player**: pop-up pre-warm fires (and no stream starts early), playback advances, exactly one subtitle menu with a plain-English default, track switching, `[`/`]` stepping 0.10 with the bar hidden, libass canvas covering the video with no silent WebVTT fallback, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Matching helpers via `node --test`: Unicode normalisation guards, season parsing, and the known false positive |
+| `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
-Final line on success: `Pre-deploy: 12/12 passed — ready to build` (11/11 with
+Final line on success: `Pre-deploy: 13/13 passed — ready to build` (12/12 with
 `--skip-burned-in`). On failure:
 `Pre-deploy: FAILED at step X — DO NOT deploy`.
 

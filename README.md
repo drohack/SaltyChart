@@ -95,10 +95,9 @@ chronological order; all features listed are live.
   flash.
 - **Subtitles are rendered with libass**, so signs, songs and karaoke appear
   where the release put them rather than being flattened to plain text at the
-  bottom of the screen — including the episode's own embedded fonts (only the
-  ones the subtitle script actually uses, so a release that bundles a 28 MB
-  font pack doesn't make you wait for it). Playback waits for the subtitle
-  track before starting, so you never miss the opening dialogue. Tracks are
+  bottom of the screen — including every font the episode carries, so the
+  typeface is always the one the release intended. Playback waits for the
+  subtitle track before starting, so you never miss the opening dialogue. Tracks are
   chosen from a menu in the control bar, defaulting to plain English dialogue
   rather than an SDH or signs-only track. For audio-track or quality
   selection, use Jellyfin itself.
@@ -237,7 +236,7 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect: "Pre-deploy: 12/12 passed — ready to build"
+   # Expect: "Pre-deploy: 13/13 passed — ready to build"
    # Skip the GPU test with --skip-burned-in if no CUDA
    ```
 

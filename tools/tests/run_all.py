@@ -106,6 +106,10 @@ def main():
         ("Jellyfin API",     ["py", "-3.13", "-u", str(TESTS / "test_jellyfin.py"),
                               "--backend", args.backend],     None, 180),
         ("title match",      ["npm", "run", "test:unit"],     REPO / "backend",  60),
+        # `vite build` does not type-check .svelte script blocks, so a reference
+        # to a deleted identifier compiles and ships. This is the only check
+        # that catches it.
+        ("svelte-check",     ["py", "-3.13", "-u", str(TESTS / "test_svelte_check.py")], None, 600),
     ]
     # Steps 8-10 (+11): use the browser via Playwright. Run sequentially so they
     # don't fight over the dev server or share stale state.
