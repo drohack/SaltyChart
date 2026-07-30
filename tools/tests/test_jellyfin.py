@@ -20,7 +20,7 @@ from datetime import date
 
 import requests
 
-TOTAL_STEPS = 8
+TOTAL_STEPS = 10
 
 
 def step(n: int, msg: str) -> None:
@@ -205,7 +205,7 @@ def main():
                       json={"playSessionId": psid}, timeout=20)
         step(7, "PASS — proxy works, manifest carries no credential")
 
-    # ───────── 8/8  Subtitles ─────────
+    # ───────── 8/10  Subtitles ─────────
     step(8, "subtitle track fetch")
     if not playable:
         step(8, "SKIP — no playable episode in this season")
@@ -229,6 +229,74 @@ def main():
             if not ok:
                 fail(8, f"subtitle body does not look like {fmt}: {head[:80]!r}")
             step(8, f"PASS — {fmt} track fetched, {len(r.content):,} bytes")
+
+    # ───────── 9/10  Subtitles and fonts are cacheable ─────────
+    #
+    # A rewatch, or reopening the same episode, must not refetch a font pack.
+    # These are immutable for an item+index: replacing the release changes the
+    # item id too.
+    step(9, "subtitles and attachments are cacheable")
+    if not playable:
+        step(9, "SKIP — no playable episode in this season")
+    else:
+        # Indices are the file's own stream numbers — they do NOT start at 0,
+        # so they have to come from the playback info or every request 502s.
+        pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
+                          f"?mediaSourceId={playable['mediaSourceId']}",
+                          headers=auth, timeout=30).json()
+        wanted = [("subtitles", s["index"], {"format": "vtt"})
+                  for s in pb.get("subtitles", [])[:1]]
+        wanted += [("attachments", a["index"], {}) for a in pb.get("attachments", [])[:1]]
+        if not wanted:
+            step(9, "SKIP — episode has no subtitle tracks or attachments")
+        else:
+            cacheable = []
+            for kind, index, extra in wanted:
+                r = requests.get(f"{backend}/api/jellyfin/{kind}", timeout=90, params={
+                    "itemId": playable["itemId"], "mediaSourceId": playable["mediaSourceId"],
+                    "index": index, "token": token, **extra})
+                if r.status_code != 200:
+                    fail(9, f"/{kind} index {index}: {r.status_code} {r.text[:120]}")
+                cc = r.headers.get("Cache-Control", "")
+                if "max-age" not in cc:
+                    fail(9, f"/{kind} has no Cache-Control max-age (got {cc!r})")
+                cacheable.append(f"{kind}[{index}]={cc}")
+            step(9, f"PASS — {', '.join(cacheable)}")
+
+    # ───────── 10/10  WebVTT header is well-formed ─────────
+    #
+    # Jellyfin emits `Region:` *after* the blank line that closes the WebVTT
+    # header. Per spec that blank line ends the header, so a browser parser
+    # reads `Region:` as a cue identifier and then throws on the missing
+    # timestamp — costing a console error and one dropped cue. The proxy lifts
+    # those lines back into the header; this guards that.
+    step(10, "WebVTT header: region definitions sit inside the header")
+    if not playable:
+        step(10, "SKIP — no playable episode in this season")
+    else:
+        pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
+                          f"?mediaSourceId={playable['mediaSourceId']}",
+                          headers=auth, timeout=30).json()
+        text_subs = [s for s in pb.get("subtitles", []) if s.get("isTextSubtitle")]
+        if not text_subs:
+            step(10, "SKIP — no text subtitle tracks on this episode")
+        else:
+            r = requests.get(f"{backend}/api/jellyfin/subtitles", timeout=120, params={
+                "itemId": playable["itemId"], "mediaSourceId": playable["mediaSourceId"],
+                "index": text_subs[0]["index"], "format": "vtt", "token": token})
+            body = r.content.decode("utf-8-sig", "replace").replace("\r\n", "\n")
+            head, _, rest = body.partition("\n\n")
+            if not head.startswith("WEBVTT"):
+                fail(10, f"not WebVTT: {head[:60]!r}")
+            stray = [ln for ln in rest.split("\n\n")[0].split("\n")
+                     if ln.startswith(("Region:", "STYLE", "NOTE:"))]
+            if stray:
+                fail(10, f"header line stranded below the blank line: {stray[0][:70]!r}")
+            cues = body.count(" --> ")
+            if cues < 1:
+                fail(10, "no cues in the converted WebVTT")
+            regions = head.count("Region:")
+            step(10, f"PASS — {cues} cues, {regions} region(s) inside the header")
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed — OK", flush=True)
 

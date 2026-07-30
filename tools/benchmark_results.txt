@@ -939,3 +939,19 @@ client_tv                 FAIL      -      -      ?        ?   0.0    6
 client_web_safari         FAIL      -      -      ?        ?   0.0    6
 ====================================================================================
 Note: a config that errors or returns a fragmented (m3u8/dash) protocol is NOT a safe pick even if fast.
+
+@@@ BENCHMARK SUITE: player_startup @@@
+
+episode: Mebius Dust  (itemId 8d7675c5df8f…)
+
+SERVER STAGES              n     min      med      max   spread    size
+--------------------------------------------------------------------------
+proxy /playback (metadata+subs+fonts list)  4    0.03s    0.03s    3.20s  108.3x     0.0MB
+proxy /subtitles (ass)      4    0.01s    0.01s    0.02s    2.3x     0.0MB
+proxy /attachments (x3)     4    0.03s    0.03s    0.04s    1.4x     0.7MB
+proxy master.m3u8           4    0.01s    0.02s    0.10s    9.3x     0.0MB
+proxy main.m3u8             4    0.01s    0.01s    0.01s    1.2x     0.1MB
+proxy segment 0  <-- the wait  4    1.28s   19.92s   30.01s   23.5x     4.9MB
+proxy segment 1 (steady state)  4    0.06s    1.35s   30.00s  503.3x     3.7MB
+direct master.m3u8          4    0.02s    0.05s    0.08s    3.4x     0.0MB
+direct segment 0            4    1.90s   12.51s   50.55s   26.6x     9.8MB

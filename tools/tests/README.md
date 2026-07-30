@@ -37,11 +37,12 @@ Final line is either `Pre-deploy: N/N passed — ready to build` or
 | `test_season_lookahead.py` | 76-day next-season cutover logic (regression for "X days till" bug) — pure Python, 6 cases | nothing | <1s |
 | `test_api_smoke.py` | 13 happy paths: health, auth, list CRUD (PUT/GET/watched/hidden/rank reorder), anime/AniList, anime cache latency, all 4 public-list endpoints, options round-trip, /api/users (Compare username picker) | backend running | ~10s |
 | `test_api_negative.py` | 10 error paths/auth gates: signup missing-fields/dup, password reset round-trip, missing/malformed JWT, bad season validation, /public-list nonexistent user, /translate/check shape, /check-batch shape, admin endpoints reject 401/403 | backend running | ~5s |
-| `test_jellyfin.py` | `/api/jellyfin` auth + admin gates, `?token=` paths, availability shape incl. `matchedBy`, stream proxy, a manifest credential-leak assertion, and a subtitle fetch; live steps auto-skip when Jellyfin is unconfigured (set on /admin) | backend running | ~5s unconfigured, ~25s live |
+| `test_jellyfin.py` | 10 steps: `/api/jellyfin` auth + admin gates, `?token=` paths, availability shape incl. `matchedBy`, stream proxy, a manifest credential-leak assertion, a subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header; live steps auto-skip when Jellyfin is unconfigured (set on /admin) | backend running | ~5s unconfigured, ~30s live |
 | `backend npm run test:unit` | Title/id matching helpers via `node --test` — the Unicode normalisation guards and the known false positive | nothing | ~1s |
 | `test_frontend_smoke.py` | Home/Login/SignUp/Randomize/Compare pages render with no console errors, auth-gated routes accessible after signup | backend + frontend | ~20s |
 | `test_ui_interactions.py` | 10 user-clickable interactions: login form, search filter, hide 18+, season change, "watched trailer" button, theme dropdown, wheel spin, logout, trailer modal Escape, Compare with 2 users | backend + frontend | ~20s |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube English CC, Whisper overlay, CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
+| `test_player.py` | 9 steps driving the **real Jellyfin player**, which nothing else does: pop-up pre-warm fires and no stream starts early, playback actually advances, exactly one subtitle menu defaulting to plain English, `[`/`]` stepping 0.10 with the control bar hidden, libass canvas covering the video with no silent WebVTT fallback, Escape stopping the transcode. Skips when Jellyfin is unconfigured or nothing in the season is in the library | backend + frontend + Jellyfin | ~60s |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR + sentence-transformers burned-in detection: Eren=yes, Sparks=no | CUDA GPU, backend running | ~60s |
 
 Run any individually with:
@@ -82,8 +83,8 @@ convention. Each line shows overall position so the Claude Code status bar
 makes sense in isolation:
 
 ```
-[parallel 1-7/11] running 7 independent checks concurrently...
-[1/11 pre-deploy] PASS — backend tsc (1.8s)
+[parallel 1-7/12] running 7 independent checks concurrently...
+[1/12 pre-deploy] PASS — backend tsc (1.8s)
 [2/13 API-smoke] POST /api/auth/signup as smoke_test_1781202612885
 [2/13 API-smoke] PASS — got JWT token
 [1/2 EsQudPqDOQQ] step 3/4: frame 2/7 (13.1s): MATCH (fz=86% sem=86%)

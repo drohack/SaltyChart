@@ -116,6 +116,8 @@ def main():
                              "--backend", args.backend, "--frontend", args.frontend], None, 180),
         ("subtitle paths",  ["py", "-3.13", "-u", str(TESTS / "test_subtitle_paths.py"),
                              "--backend", args.backend, "--frontend", args.frontend], None, 120),
+        ("Jellyfin player", ["py", "-3.13", "-u", str(TESTS / "test_player.py"),
+                             "--backend", args.backend, "--frontend", args.frontend], None, 300),
     ]
     if not args.skip_burned_in:
         sequential_checks.append(("burned-in detection",

@@ -582,7 +582,19 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
       res.end(body);
     });
   });
-  upstreamReq.setTimeout(30_000, () => upstreamReq.destroy(new Error('Jellyfin timeout')));
+  // Idle timeout, not a total-duration one — it resets as bytes arrive, so it
+  // only fires when Jellyfin has gone quiet. It must therefore exceed the worst
+  // case for *starting* a stream, which is the slow part: ffmpeg has to spin up
+  // and produce the whole first segment before a single byte is sent.
+  //
+  // Measured with tools/bench_player.py against the real library: a first
+  // segment takes 1.3s at best and 50.5s at worst (cold disk, array
+  // contention). The previous 30s cut those slow starts off mid-flight — the
+  // player then saw a failed segment on a stream that was merely slow, which
+  // presents as a video that never starts or goes black. Every proxied run in
+  // that benchmark stopped at exactly 30.01s, which is what a timeout looks
+  // like rather than what work looks like.
+  upstreamReq.setTimeout(120_000, () => upstreamReq.destroy(new Error('Jellyfin timeout')));
   upstreamReq.on('error', (err) => {
     if (!res.headersSent) {
       res.status(502).json({ error: 'Jellyfin unreachable', code: 'UPSTREAM_ERROR' });
@@ -645,6 +657,33 @@ router.get('/attachments', streamLimiter, async (req, res) => {
  * `/stream/*` proxy because the path is built here from validated parts
  * rather than taken from the caller.
  */
+/**
+ * Jellyfin writes region definitions *after* the blank line that closes the
+ * WebVTT header:
+ *
+ *     WEBVTT
+ *                        <- blank line ends the header
+ *     Region: id:subtitle …
+ *
+ * Per the spec they belong in the header, and the browser's parser follows the
+ * spec: it reads `Region:` as a cue identifier, then throws on the missing
+ * timestamp line. Measured on a real episode, that costs a console
+ * ParsingError and one dropped cue (360 of 361); lifting the definitions into
+ * the header gives 361 and no error.
+ *
+ * It does not make regions work — vtt.js splits the header line on ':' and
+ * ignores it unless there are exactly two parts, so Jellyfin's
+ * `id:subtitle width:80% …` is unparseable to it wherever it sits. That costs
+ * nothing here: Jellyfin repeats the placement on every cue (`line:90%`), and
+ * cue settings are what actually position the text.
+ */
+function liftVttRegions(data: ArrayBuffer | Buffer): string {
+  const text = Buffer.from(data as any).toString('utf8');
+  const m = text.match(/^(﻿?WEBVTT[^\n]*\n)\n((?:(?:Region|STYLE|NOTE):[^\n]*\n)+)/);
+  if (!m) return text;
+  return m[1] + m[2] + text.slice(m[0].length);
+}
+
 async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
   let token: string | undefined;
   const auth = req.headers.authorization;
@@ -674,7 +713,13 @@ async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
         : kind === 'vtt'
         ? 'text/vtt; charset=utf-8'
         : String(headers['content-type'] ?? 'application/octet-stream');
-    res.type(ctype).send(Buffer.from(data));
+    const body = kind === 'vtt' ? Buffer.from(liftVttRegions(data)) : Buffer.from(data);
+    // Subtitles and fonts are immutable for a given item+index — a file only
+    // changes if the release is replaced, which changes the item id too. Let
+    // the browser keep them so a rewatch, or reopening the same episode,
+    // costs nothing.
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.type(ctype).send(body);
   } catch (err: any) {
     console.warn(`[jellyfin] ${kind} fetch failed (${path}):`, err?.message);
     res.status(502).json({ error: `Could not fetch ${kind}`, code: 'UPSTREAM_ERROR' });

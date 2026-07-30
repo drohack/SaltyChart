@@ -8,6 +8,7 @@ import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
 import { checkAvailability, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
+import { loadCastSdk, loadLibass, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -229,8 +230,16 @@ $: _lang = $options.titleLanguage;
         // Guard against a stale resolve after the user opened a different show.
         if (selected?.id !== id) return;
         watchInfo = info;
-        // No subtitle pre-warm any more: the server hands over the track in
-        // milliseconds instead of reading the whole episode file first.
+        // This pop-up stays open while its synopsis is read, so spend that time
+        // on everything the player will want: the video.js chunk, the libass
+        // wasm, the subtitle track and its fonts. Pressing Watch then costs
+        // only the stream start. Deliberately client-side — pre-starting the
+        // stream would have Jellyfin remux a whole episode to disk for a
+        // pop-up nobody plays.
+        if (info.available && info.itemId && info.mediaSourceId) {
+          loadPlayerModal();
+          prewarm(info.itemId, info.mediaSourceId);
+        }
         // Cached "not available" → re-check live, so a show downloaded a
         // minute ago appears without waiting out the cache TTLs.
         if (!info.available) {
@@ -245,11 +254,34 @@ $: _lang = $options.titleLanguage;
       .catch(() => {});
   }
 
-  async function openPlayer() {
-    if (!JellyfinPlayerModal) {
-      JellyfinPlayerModal = (await import('../components/JellyfinPlayerModal.svelte')).default;
+  /** The player chunk carries video.js (~690 KB), so it is fetched early. */
+  let playerModalPromise: Promise<any> | null = null;
+
+  function loadPlayerModal(): Promise<any> {
+    if (!playerModalPromise) {
+      playerModalPromise = import('../components/JellyfinPlayerModal.svelte').then(
+        (m) => m.default
+      );
+      playerModalPromise.catch(() => (playerModalPromise = null));
     }
-    showPlayer = true;
+    return playerModalPromise;
+  }
+
+  let openingPlayer = false;
+
+  async function openPlayer() {
+    if (openingPlayer) return;
+    openingPlayer = true;
+    try {
+      JellyfinPlayerModal ??= await loadPlayerModal();
+      showPlayer = true;
+    } catch (err) {
+      // A failed chunk load must say so rather than leaving a dead button.
+      console.error('[randomize] could not load the player', err);
+      alert('Could not load the player. Check your connection and try again.');
+    } finally {
+      openingPlayer = false;
+    }
   }
 
   // A plain function so the reactive block that calls it neither reads nor
@@ -275,6 +307,40 @@ $: _lang = $options.titleLanguage;
       watchedCollapsed = false;
     }
   });
+
+  // `mediaConfigured` resolves after login rather than at mount, so this waits
+  // for it instead of checking once and giving up.
+  let playerAssetsWarmed = false;
+  $: if ($mediaConfigured && !playerAssetsWarmed) {
+    playerAssetsWarmed = true;
+    warmPlayerAssets();
+  }
+
+  /**
+   * The player's page-level weight: the video.js chunk (~0.66 MB built, 1.6 MB
+   * unminified from the dev server) and libass's wasm worker (~2 MB). Neither
+   * depends on which show is picked, so waiting for a pop-up throws away all
+   * the time someone spends choosing one — and over the web, rather than
+   * localhost, that gap is long enough that pressing Watch looks broken.
+   *
+   * Per-episode data (playback metadata, the subtitle track, its fonts) can't
+   * be fetched this early and is warmed when the pop-up opens instead.
+   *
+   * Only for viewers who can actually play something, on idle so it never
+   * competes with the page's own images, and never on a metered connection —
+   * this is a convenience, not something worth spending someone's data plan on.
+   */
+  function warmPlayerAssets() {
+    const conn = (navigator as any).connection;
+    if (conn?.saveData || /(^|-)2g$/.test(conn?.effectiveType ?? '')) return;
+    const idle = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 1500));
+    idle(() => {
+      loadPlayerModal().catch(() => {});
+      loadVideoJs().catch(() => {});
+      loadLibass().catch(() => {});
+      loadCastSdk().catch(() => {}); // third-party CDN: warm it, never wait on it
+    });
+  }
 
   function showUnwatched() {
     unwatchedCollapsed = false;
@@ -1659,8 +1725,20 @@ $: {
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
         {#if watchInfo?.available}
           <div class="flex flex-col items-center gap-1 mb-4">
-            <button class="btn btn-sm btn-accent" on:click={openPlayer}>
-              ▶ Watch here
+            <!-- The player chunk is ~700 KB (1.6 MB unminified in dev), so on
+                 anything but localhost there is a real gap between the click
+                 and the modal. Without this the button looks broken. -->
+            <button
+              class="btn btn-sm btn-accent"
+              class:btn-disabled={openingPlayer}
+              on:click={openPlayer}
+            >
+              {#if openingPlayer}
+                <span class="loading loading-spinner loading-xs"></span>
+                Opening…
+              {:else}
+                ▶ Watch here (via Jellyfin)
+              {/if}
               {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
                 — S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
               {/if}

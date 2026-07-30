@@ -2,6 +2,21 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { get } from 'svelte/store';
   import { authToken } from '../stores/auth';
+  import {
+    api,
+    defaultSubtitleIndex,
+    fontsFor,
+    fontUrl as buildFontUrl,
+    isAss as isAssTrack,
+    castReady,
+    loadLibass,
+    loadVideoJs,
+    playbackInfo,
+    subtitleText,
+    subtitleUrl as buildSubtitleUrl,
+    type Attachment,
+    type SubStream,
+  } from '../lib/jellyfinPrewarm';
 
   // A thin wrapper around video.js (Apache-2.0). video.js owns the player:
   // control bar, menus, fullscreen, keyboard, error handling. Two things are
@@ -41,37 +56,18 @@
     (_, i) => +(SPEED_MIN + i * 0.1).toFixed(2)
   );
 
-  interface SubStream {
-    index: number;
-    codec: string;
-    language: string;
-    title: string;
-    displayTitle: string;
-    isDefault: boolean;
-    isForced: boolean;
-    isHearingImpaired: boolean;
-    isTextSubtitle: boolean;
-  }
-  interface Attachment {
-    index: number;
-    fileName: string;
-    mimeType: string;
-  }
-
   let subStreams: SubStream[] = [];
   let attachments: Attachment[] = [];
   let playSessionId = '';
   let activeSubIndex: number | null = null;
   let subtitlesLoading = false;
+  /** The video has enough data to play, so any remaining wait really is ours. */
+  let videoReady = false;
   let playbackStarted = false;
   /** Playback waits for subtitles, but never longer than this. */
   const SUBTITLE_WAIT_MS = 20_000;
   let subtitleWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let jassub: any = null;
-
-  function api(path: string): string {
-    return `/api/jellyfin${path}`;
-  }
 
   /** Jellyfin's HLS URL for this episode, served through our proxy. */
   function sourceUrl(): string {
@@ -90,66 +86,13 @@
     return api(`/stream/Videos/${itemId}/master.m3u8?${params.toString()}`);
   }
 
-  function subtitleUrl(index: number, format: 'ass' | 'vtt'): string {
-    const params = new URLSearchParams({
-      itemId,
-      mediaSourceId,
-      index: String(index),
-      format,
-      token: get(authToken) ?? '',
-    });
-    return api(`/subtitles?${params.toString()}`);
-  }
+  const subtitleUrl = (index: number, format: 'ass' | 'vtt') =>
+    buildSubtitleUrl(itemId, mediaSourceId, index, format);
+  const fontUrl = (index: number) => buildFontUrl(itemId, mediaSourceId, index);
 
-  function fontUrl(index: number): string {
-    const params = new URLSearchParams({
-      itemId,
-      mediaSourceId,
-      index: String(index),
-      token: get(authToken) ?? '',
-    });
-    return api(`/attachments?${params.toString()}`);
-  }
-
-  /**
-   * The track to start with.
-   *
-   * A plain English dialogue track wins: SDH interleaves "[door creaks]",
-   * "dubtitle" tracks are written for the dub rather than the Japanese audio,
-   * and signs/songs tracks aren't dialogue at all. The file's own flags break
-   * the tie within that set rather than deciding on their own, because
-   * releases do ship with a signs-only track marked default.
-   *
-   * ASS is preferred over SRT of the same content: libass renders it exactly,
-   * and this library has episodes whose track *names* are useless ('1', '2',
-   * 'final'), so codec and flags are what can be trusted.
-   */
-  function defaultSubtitleIndex(): number | null {
-    const label = (s: SubStream) => `${s.title} ${s.displayTitle}`;
-    const english = subStreams.filter(
-      (s) => /^en/i.test(s.language) || /english/i.test(label(s))
-    );
-    const usable = (english.length ? english : subStreams).filter((s) => !s.isForced);
-    if (!usable.length) return null;
-    const plain = usable.filter(
-      (s) => !s.isHearingImpaired && !/sdh|dubtitle|sign|song/i.test(label(s))
-    );
-    const pool = plain.length ? plain : usable;
-    const ass = pool.filter((s) => /ass|ssa/i.test(s.codec));
-    const preferred = ass.length ? ass : pool;
-    return (preferred.find((s) => s.isDefault) ?? preferred[0]).index;
-  }
-
-  function isAss(index: number): boolean {
-    const s = subStreams.find((x) => x.index === index);
-    return !!s && /ass|ssa/i.test(s.codec);
-  }
-
-  /** Template expressions can't carry TS casts, so the handler lives here. */
-  function onSubtitlePicked(e: Event) {
-    const v = (e.currentTarget as HTMLSelectElement).value;
-    showSubtitle(v === '' ? null : Number(v));
-  }
+  // Track choice and ASS detection live in the prewarm module so the pop-up
+  // warms exactly the track the player will end up showing.
+  const isAss = (index: number) => isAssTrack(subStreams, index);
 
   function trackLabel(s: SubStream): string {
     const name = s.displayTitle || s.title || s.language || 'Unknown';
@@ -168,6 +111,7 @@
   // the same result.
   async function showSubtitle(index: number | null) {
     activeSubIndex = index;
+    subtitleMenu?.update(); // move the tick, whoever asked for the change
     destroyJassub();
     clearVjsTracks();
     if (index == null) return;
@@ -175,52 +119,45 @@
     if (isAss(index)) {
       subtitlesLoading = true;
       try {
-        const res = await fetch(subtitleUrl(index, 'ass'));
-        if (!res.ok) throw new Error(`subtitles ${res.status}`);
-        const subContent = await res.text();
+        // Both of these are usually already resolved — the show pop-up warmed
+        // them while the viewer was reading the synopsis.
+        const subContent = await subtitleText(subtitleUrl(index, 'ass'));
         if (destroyed || !player) return;
-        const [{ default: JASSUB }, workerUrl, wasmUrl, modernWasmUrl] = await Promise.all([
-          import('jassub'),
-          // `dist/worker/worker.js` is jassub's worker entry point.
-          // `dist/wasm/jassub-worker.js` — which its README names, and which
-          // is stale for 2.x — is the emscripten glue and never completes the
-          // handshake, so `ready` hangs and `renderer` stays undefined.
-          // `?worker&url` so Vite rewrites the worker's own imports.
-          import('jassub/dist/worker/worker.js?worker&url'),
-          import('jassub/dist/wasm/jassub-worker.wasm?url'),
-          import('jassub/dist/wasm/jassub-worker-modern.wasm?url'),
-        ]);
+        const { JASSUB, workerUrl, wasmUrl, modernWasmUrl } = await loadLibass();
         if (destroyed || !player) return;
+        const { initial, deferred } = fontsFor(subContent, attachments);
         jassub = new JASSUB({
           video: videoEl,
           subContent,
-          workerUrl: (workerUrl as any).default,
-          wasmUrl: (wasmUrl as any).default,
-          modernWasmUrl: (modernWasmUrl as any).default,
+          workerUrl,
+          wasmUrl,
+          modernWasmUrl,
           // The release's own fonts, straight out of the MKV. Without them
           // libass substitutes and signs render in the wrong typeface.
-          fonts: attachments
-            .filter((a) => /font|otf|ttf/i.test(`${a.mimeType} ${a.fileName}`))
-            .map((a) => fontUrl(a.index)),
+          fonts: initial.map((a) => fontUrl(a.index)),
         });
-        // libass sizes its canvas from the video's `loadedmetadata`, so it has
-        // to be constructed BEFORE that fires — waiting for dimensions first
-        // makes it miss the event and leaves a 300x150 canvas parked below the
-        // player forever. These hooks cover the box changing afterwards.
-        // libass only signals readiness once its worker is up. If that never
-        // happens we must not sit there with no subtitles at all — fall back
-        // to the server-converted WebVTT, which needs no worker.
+        // A safety net that should never fire: libass resolves `ready` once its
+        // worker is up, and if that never happens we must not sit on a blank
+        // screen — the server-converted WebVTT needs no worker. But falling
+        // back is a *silent* downgrade of the whole reason this player exists,
+        // and it once fired for every ASS release because of a bad workerUrl.
+        // `test_player.py` step 8 fails on the warning below so that can't
+        // recur quietly; treat it firing as a bug, not as the net working.
         await Promise.race([
           jassub.ready,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('libass worker never started')), 8000)),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('libass worker never started')), 8000)
+          ),
         ]);
         if (destroyed || !player) return;
-        // libass sizes its canvas from the video's box; these cover the box
-        // changing after it has attached.
+        // jassub keeps its own ResizeObserver on the video, so it self-corrects
+        // as the box changes; these cover the video.js-specific moments that
+        // resize the player without resizing the element it watches.
         resizeJassub();
         player.on('playing', resizeJassub);
         player.on('fullscreenchange', resizeJassub);
         player.on('playerresize', resizeJassub);
+        topUpFonts(deferred);
       } catch (err) {
         // The usual cause is no SharedArrayBuffer: libass needs the page to be
         // cross-origin isolated (COOP/COEP), and those headers would block the
@@ -246,6 +183,27 @@
     addVjsTrack(index);
   }
 
+  /**
+   * Insurance against the font-name heuristic.
+   *
+   * `fontsFor` matches a script's font names against attachment *filenames*,
+   * and a file called `f1.ttf` can hold "Helvetica Neue". When a name found no
+   * file, the leftovers arrive here and are added once rendering is already
+   * under way — so a bad guess costs a moment of substituted type rather than
+   * the wrong typeface for the whole episode. Nothing is queued when every
+   * name matched, which is the common case.
+   */
+  function topUpFonts(deferred: Attachment[]) {
+    if (!deferred.length || !jassub) return;
+    const inst = jassub;
+    Promise.resolve(inst.ready)
+      .then(() => {
+        if (jassub !== inst || destroyed) return;
+        return inst.renderer?.addFonts?.(deferred.map((a) => fontUrl(a.index)));
+      })
+      .catch((err: unknown) => console.warn('[player] font top-up failed', err));
+  }
+
   function addVjsTrack(index: number) {
     const s = subStreams.find((x) => x.index === index);
     if (!player || !s) return;
@@ -269,6 +227,67 @@
     for (let i = (tracks?.length ?? 0) - 1; i >= 0; i--) {
       player.removeRemoteTextTrack(tracks[i]);
     }
+  }
+
+  /**
+   * One subtitle control, in the control bar where it belongs.
+   *
+   * video.js's own captions menu can only ever list text tracks the player
+   * owns, so it is blind to the ASS tracks libass paints — leaving it in place
+   * alongside this one gives two subtitle buttons that disagree. So it is
+   * removed and this menu covers both paths, since showSubtitle already routes
+   * ASS to libass and everything else to a text track. Its caption-styling
+   * dialog is the one thing worth keeping, so it comes along as a last item.
+   */
+  let subtitleMenu: any = null;
+
+  function buildSubtitleMenu(videojs: any) {
+    if (!player || !subStreams.length) return;
+    const MenuButton = videojs.getComponent('MenuButton');
+    const MenuItem = videojs.getComponent('MenuItem');
+
+    class SubtitleMenuButton extends MenuButton {
+      constructor(p: any, options: any) {
+        super(p, options);
+        this.controlText('Subtitles');
+        this.setIcon?.('subtitles');
+        this.addClass('vjs-subtitles-button');
+      }
+      createItems() {
+        const choices: Array<{ label: string; index: number | null }> = [
+          { label: 'Off', index: null },
+          ...subStreams.map((s) => ({ label: trackLabel(s), index: s.index })),
+        ];
+        const items = choices.map((c) => {
+          const item = new MenuItem(this.player_, {
+            label: c.label,
+            selectable: true,
+            multiSelectable: false,
+            selected: activeSubIndex === c.index,
+          });
+          item.handleClick = () => showSubtitle(c.index);
+          return item;
+        });
+        // video.js's caption styling applies to *its* text-track rendering, so
+        // it does nothing at all while libass is painting an ASS track. Offer
+        // it only when it can actually change something, rather than leaving a
+        // dead control under a menu that is mostly ASS on this library.
+        const stylable = activeSubIndex != null && !isAss(activeSubIndex);
+        if (!stylable) return items;
+        const settings = new MenuItem(this.player_, { label: 'Caption settings…' });
+        settings.handleClick = () => player?.textTrackSettings?.open?.();
+        return [...items, settings];
+      }
+    }
+
+    videojs.registerComponent('SaltySubtitlesButton', SubtitleMenuButton);
+    const bar = player.getChild('controlBar');
+    if (!bar) return;
+    // Take the built-in button's place rather than sitting next to it.
+    const native = bar.getChild('subsCapsButton') ?? bar.getChild('subtitlesButton');
+    const at = native ? bar.children().indexOf(native) : bar.children().indexOf(bar.getChild('fullscreenToggle'));
+    if (native) bar.removeChild(native);
+    subtitleMenu = bar.addChild('SaltySubtitlesButton', {}, at >= 0 ? at : undefined);
   }
 
   function destroyJassub() {
@@ -340,17 +359,26 @@
 
   // ── Stall detection ──────────────────────────────────────────────────
   //
-  // Deliberately much smaller than the Plex version, which had to re-request
-  // the playlist at a new offset because Plex only produced segments forward
-  // from where a session started. Jellyfin serves a complete VOD playlist and
-  // repositions its own transcoder when an out-of-range segment is requested,
-  // so seeking is the browser's job. What remains is a safety net: VHS retries
-  // a sole playlist forever, so a genuinely dead stream would spin silently
-  // rather than surface an error.
+  // Seeking itself needs no client-side help: Jellyfin serves a complete VOD
+  // playlist and repositions its own transcoder for an out-of-range segment,
+  // so none of the Plex-era reposition machinery survives here.
+  //
+  // What does survive is recovery. That repositioning races Jellyfin's own
+  // segment cleanup on remux/direct-stream jobs (jellyfin#16608), and a burst
+  // of scrubbing can leave a session serving nothing at any offset —
+  // permanently, since VHS retries a sole playlist forever. Reported from the
+  // field, and not reproducible on demand, which is the argument for healing
+  // rather than only detecting.
   let lastProgressTime = 0;
   let lastProgressAt = Date.now();
   let watchdog: ReturnType<typeof setInterval> | null = null;
   let stalled = false;
+  let everProgressed = false;
+  let recovering = false;
+  let recoveries = 0;
+  /** Enough attempts to survive a wedged session, few enough to never loop. */
+  const MAX_RECOVERIES = 2;
+  const STALL_MS = 10_000;
 
   function startStallWatchdog() {
     if (watchdog || !player) return;
@@ -362,40 +390,84 @@
         lastProgressTime = t;
         lastProgressAt = Date.now();
         stalled = false;
+        everProgressed = true;
+        recoveries = 0; // real progress means the stream is healthy again
       }
     });
     watchdog = setInterval(() => {
-      if (!player || player.paused() || !playbackStarted) return;
-      stalled = Date.now() - lastProgressAt > 20_000;
-    }, 3000);
+      if (!player || player.paused() || !playbackStarted || recovering) return;
+      if (player.seeking?.()) return; // a seek in flight is not a stall
+      // A slow *start* is not a stall. `paused` goes false the moment play() is
+      // called, so without this a first segment that legitimately takes 25s
+      // (measured: up to 50s on a cold disk) would look stalled and get
+      // restarted — throwing away the ffmpeg that was about to deliver, and
+      // doing it again on the restart.
+      if (!everProgressed) return;
+      if (Date.now() - lastProgressAt <= STALL_MS) return;
+      if (recoveries < MAX_RECOVERIES) restartStream();
+      else stalled = true;
+    }, 2000);
   }
 
   /**
-   * Register the Chromecast plugin and load Google's Cast sender SDK.
-   * Returns false (and the player just skips casting) if the SDK can't load.
+   * Rebuild the stream around a fresh session, keeping the viewer's position.
+   *
+   * Jellyfin restarts its ffmpeg wherever an out-of-range segment is asked for,
+   * which is why seeking needs no client-side machinery — but on a
+   * remux/direct-stream job that repositioning races its own segment cleanup
+   * (jellyfin#16608), and a run of quick scrubs can leave the session serving
+   * nothing at any offset. VHS will retry that playlist forever, so the picture
+   * simply stays black until someone closes the modal. Asking for a new
+   * playSessionId costs one round trip and gets the viewer moving again.
+   */
+  async function restartStream() {
+    if (recovering || destroyed || !player) return;
+    recovering = true;
+    recoveries += 1;
+    const resumeAt = player.currentTime?.() ?? 0;
+    console.warn(`[player] no progress for ${STALL_MS / 1000}s — restarting stream at ${resumeAt.toFixed(1)}s`);
+    try {
+      // `fresh` matters: the cached info holds the session we are escaping.
+      const info = await playbackInfo(itemId, mediaSourceId, { fresh: true });
+      if (destroyed || !player) return;
+      if (info) playSessionId = info.playSessionId;
+      player.src({ src: sourceUrl(), type: 'application/x-mpegURL' });
+      player.one('loadedmetadata', () => {
+        if (destroyed || !player) return;
+        player.currentTime(resumeAt);
+        player.play()?.catch?.(() => {});
+      });
+      lastProgressAt = Date.now();
+    } catch (err) {
+      console.warn('[player] stream restart failed', err);
+      stalled = true;
+    } finally {
+      recovering = false;
+    }
+  }
+
+  /**
+   * Offer casting only if it is *already* possible.
+   *
+   * The Cast sender SDK comes from gstatic.com and only initialises in a secure
+   * context — and SaltyChart is served over plain http on the LAN, so the
+   * button usually cannot appear at all. It is warmed on the Randomize page and
+   * merely checked here: nothing about starting playback should ever wait on a
+   * third party's CDN. Measured, awaiting it sat between the Watch click and
+   * the first manifest request.
    */
   async function setupChromecast(videojs: any): Promise<boolean> {
-    // The Cast sender SDK only initialises in a secure context. SaltyChart is
-    // served over plain http on the LAN, so loading it there would delay every
-    // player open for a button that can never appear. This lights up on its
-    // own if the app is ever served over https.
-    if (!window.isSecureContext) return false;
+    if (!window.isSecureContext || !castReady()) return false;
     try {
       const [{ default: chromecast }] = await Promise.all([
         import('@silvermine/videojs-chromecast'),
         import('@silvermine/videojs-chromecast/dist/silvermine-videojs-chromecast.css'),
       ]);
-      chromecast(videojs);
-      if (!(window as any).__castSdkLoading) {
-        (window as any).__castSdkLoading = new Promise<void>((resolve, reject) => {
-          const s = document.createElement('script');
-          s.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
-          s.onload = () => resolve();
-          s.onerror = () => reject(new Error('cast sdk blocked'));
-          document.head.appendChild(s);
-        });
-      }
-      await (window as any).__castSdkLoading;
+      // Plugins are registered on videojs itself, not per player, so doing this
+      // on every open warns "a plugin named chromecast already exists" from the
+      // second episode onwards. Harmless, but it is console noise in a path
+      // where a real warning (the libass fallback) is worth noticing.
+      if (!videojs.getPlugin?.('chromecast')) chromecast(videojs);
       return true;
     } catch {
       return false; // casting simply isn't offered
@@ -403,8 +475,10 @@
   }
 
   onMount(async () => {
-    const videojs = (await import('video.js')).default;
-    await import('video.js/dist/video-js.css');
+    loadLibass(); // deliberately not awaited — see loadLibass
+    // Shared with the Randomize page's idle warm-up, so this is usually
+    // already resolved by the time anyone presses Watch.
+    const videojs = await loadVideoJs();
     if (destroyed) return;
 
     const chromecastReady = await setupChromecast(videojs);
@@ -469,29 +543,28 @@
       if (typeof r === 'number') rate = r;
     });
 
-    // One call for the session id, the subtitle tracks and the embedded fonts.
-    try {
-      const res = await fetch(
-        api(`/playback/${itemId}?mediaSourceId=${encodeURIComponent(mediaSourceId)}`),
-        { headers: { Authorization: `Bearer ${get(authToken)}` } }
-      );
-      if (res.ok) {
-        const info = await res.json();
-        playSessionId = info.playSessionId ?? '';
-        subStreams = info.subtitles ?? [];
-        attachments = info.attachments ?? [];
-      }
-    } catch (err) {
-      console.warn('[player] playback info failed', err);
+    // The session id, subtitle tracks and embedded fonts — normally already
+    // resolved, because the show pop-up asked for them when it opened.
+    const info = await playbackInfo(itemId, mediaSourceId);
+    if (info) {
+      playSessionId = info.playSessionId;
+      subStreams = info.subtitles;
+      attachments = info.attachments;
+    } else {
+      console.warn('[player] playback info failed');
     }
     if (destroyed || !player) return;
 
+    buildSubtitleMenu(videojs);
     player.src({ src: sourceUrl(), type: 'application/x-mpegURL' });
     player.one('loadedmetadata', startStallWatchdog);
+    // Drives the subtitle chip: until this fires, the wait is Jellyfin building
+    // the first segment and video.js's own spinner is the right thing to show.
+    player.on('canplay', () => (videoReady = true));
 
     // Start with subtitles already showing: an anime episode that begins
     // before its subtitles arrive means missing the opening dialogue.
-    const wantIndex = defaultSubtitleIndex();
+    const wantIndex = defaultSubtitleIndex(subStreams);
     if (wantIndex != null) {
       // A pathological fetch must not strand the viewer on a black screen.
       subtitleWaitTimer = setTimeout(startPlayback, SUBTITLE_WAIT_MS);
@@ -546,7 +619,13 @@
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={videoEl} class="video-js vjs-big-play-centered w-full" playsinline></video>
 
-      {#if subtitlesLoading}
+      <!-- Only claim to be waiting on subtitles when that is actually what is
+           holding playback up. Measured on a normal open, subtitles are ready
+           at ~240ms while the video needs ~3.3s, so showing this for the whole
+           wait told the viewer the wrong thing about the slow part — and hid
+           video.js's own loading spinner, which is the honest indicator while
+           Jellyfin builds the first segment. -->
+      {#if subtitlesLoading && videoReady}
         <div
           class="absolute top-3 left-4 z-20 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-white"
         >
@@ -579,25 +658,6 @@
         x{rate.toFixed(2)}
       </div>
     </div>
-
-    <!-- libass paints its own canvas and bypasses video.js's captions menu,
-         so track selection lives here instead. -->
-    {#if subStreams.length}
-      <div class="flex items-center gap-2 text-sm">
-        <label class="opacity-70" for="sub-picker">Subtitles</label>
-        <select
-          id="sub-picker"
-          class="select select-bordered select-xs max-w-xs"
-          value={activeSubIndex}
-          on:change={onSubtitlePicked}
-        >
-          <option value="">Off</option>
-          {#each subStreams as s (s.index)}
-            <option value={s.index}>{trackLabel(s)}</option>
-          {/each}
-        </select>
-      </div>
-    {/if}
 
     <p class="text-xs opacity-50 m-0">
       <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10×

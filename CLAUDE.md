@@ -119,10 +119,11 @@ Suite includes:
 | `test_ui_interactions.py` | 10 button-click flows: login, search filter, hide 18+, season change, add-to-list, theme, wheel spin, logout, modal Escape, Compare with 2 users |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
-| `test_jellyfin.py` | `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch; live steps auto-skip when Jellyfin is unconfigured |
+| `test_jellyfin.py` | 10 steps: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
+| `test_player.py` | 9 steps driving the **real player**: pop-up pre-warm fires (and no stream starts early), playback advances, exactly one subtitle menu with a plain-English default, track switching, `[`/`]` stepping 0.10 with the bar hidden, libass canvas covering the video with no silent WebVTT fallback, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Matching helpers via `node --test`: Unicode normalisation guards, season parsing, and the known false positive |
 
-Final line on success: `Pre-deploy: 11/11 passed — ready to build` (10/10 with
+Final line on success: `Pre-deploy: 12/12 passed — ready to build` (11/11 with
 `--skip-burned-in`). On failure:
 `Pre-deploy: FAILED at step X — DO NOT deploy`.
 
@@ -143,6 +144,9 @@ SaltyChart/
 ├── frontend/         # Svelte 4 + Vite + Tailwind/DaisyUI single-page app
 ├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
 │   │                 #   + bench_pipeline.py (swappable ASR/translate/align stages)
+│   │                 #   + bench_player.py (Jellyfin playback startup timings)
+│   │                 #   + check_match_corpus.py / check_font_corpus.py (real-data
+│   │                 #     diagnostics for library matching and subtitle fonts)
 │   ├── tests/        # Pre-deploy smoke/regression suite (run_all.py)
 │   └── unraid/       # Reference copy of the update_saltychart User Script
 ├── .github/workflows/ # CI: deploy.yml (push→GHCR), build-base.yml (manual)
@@ -247,8 +251,21 @@ account, so progress doesn't sync to anyone's Jellyfin profile.
 - `GET  /api/jellyfin/subtitles` — `{ itemId, mediaSourceId, index, format }`,
   proxying Jellyfin's own conversion. `format=ass` on an ASS source is a
   pass-through of the original (styling, positioning and karaoke intact).
+  `format=vtt` additionally **lifts `Region:` lines into the header**
+  (`liftVttRegions`): Jellyfin emits them *after* the blank line that closes it,
+  and a spec-following parser then reads `Region:` as a cue id and throws —
+  costing a console error and one dropped cue (360 of 361 on a measured
+  episode). Note this does not make regions *work*: vtt.js splits that header
+  line on `:` and ignores it unless there are exactly two parts, so Jellyfin's
+  `id:subtitle width:80% …` is unparseable to it wherever it sits. Costs
+  nothing, because Jellyfin repeats the placement on every cue (`line:90%`).
 - `GET  /api/jellyfin/attachments` — an embedded font, so libass renders signs
-  in the typeface the release intended.
+  in the typeface the release intended. **Indices are the file's own stream
+  numbers and do not start at 0** — they must come from `/playback`, or every
+  request 502s.
+- Both of the above send `Cache-Control: private, max-age=86400`. They are
+  immutable for a given item+index (replacing a release changes the item id),
+  so a rewatch never refetches a font pack.
 - `POST /api/jellyfin/playback/stop` — `{ playSessionId }`; tears the
   transcode down rather than leaving it to time out on a shared box.
 - `GET/PUT /api/jellyfin/config` + `POST /api/jellyfin/config/test` — admin
@@ -318,7 +335,11 @@ cannot see a folder whose tag says one show and whose stored id says another).
 And a library-wide count is misleading: 59 tag/id disagreements across the
 whole library was 7 within the two-year window the app actually queries, of
 which 2 mattered. `tools/check_match_corpus.py` measures the thing that counts
-— how a real season resolves end to end.
+— how a real season resolves end to end. `tools/check_font_corpus.py` is its
+counterpart for subtitle fonts: how a season's ASS scripts resolve against the
+fonts their MKVs carry. Both mirror the shipping logic exactly, fallbacks
+included; a corpus tool that measures a simplified version of the code reports
+on a program you don't ship.
 
 ### Rate limiting
 
@@ -510,6 +531,38 @@ and **`aria2c -x16` was ~20–28× slower** (≈32 s vs 1.2 s). Multi-connection
 pointless on a 0.3–0.6 MB file whose cost is YouTube's extraction handshake, not
 bandwidth. So `download_audio` stays on the plain default client and there's no
 aria2c in the image — the bench exists to prove there's nothing to chase here.
+
+**Player startup** (suite `player_startup`, `tools/bench_player.py`): times every
+stage between pressing Watch and a decoding video, through the SaltyChart proxy
+**and** directly against Jellyfin so the proxy's own cost is separable. Findings
+over 4 cold runs against the real library:
+
+| stage | median | range |
+|---|---|---|
+| `/playback` metadata | 0.03 s | 0.03–3.20 |
+| `/subtitles` (ASS) | 0.01 s | — |
+| fonts (the 3 the script names) | 0.03 s | 0.7 MB |
+| master.m3u8 / main.m3u8 | 0.02 s | — |
+| **first HLS segment** | **19.9 s** | **1.3–30.0 s** |
+| segment 1 (steady state) | 0.06 s | — |
+
+So **everything except the first segment is under 0.25 s**, our proxy adds
+nothing measurable (0.02 s proxied vs 0.05 s direct), and client-side work —
+libass canvas up at 80 ms — is entirely off the critical path. From the click,
+the first stream request leaves the browser at **~65 ms**; that is the whole of
+what the app contributes. Pre-loading more, including a pre-built JASSUB
+instance, cannot help. Two things the bench found that were *not* inherent are
+fixed: a 30 s proxy idle-timeout that aborted slow-but-working streams (Jellyfin
+needs up to 50.5 s for a cold first segment), and an `await` on Google's Cast
+SDK sitting between the click and the manifest.
+
+Two methodology notes, both learned by getting them wrong first: **stop each
+run's encodings before timing the next** (Jellyfin's ffmpeg races ahead writing
+the whole file, so leaving them running turns a startup benchmark into a
+measurement of the load the benchmark itself created — the giveaway was a median
+sitting near the max), and **measure the fonts the app actually sends**, not the
+first N attachments, or the number includes the 23 MB Arial Unicode that
+`fontsFor` deliberately excludes.
 
 Key findings (production still uses large-v3 end-to-end `task=translate`; these
 are not yet promoted):
@@ -784,21 +837,37 @@ Path: `frontend/`
   runtime metadata in ~40ms without waiting on ffmpeg), and the *server*
   repositions its own transcoder when an out-of-range segment is requested.
   So there is no client-side reposition machinery — verified by seeking to
-  400s and back to 30s, both resuming unaided. What remains is a slim
-  no-progress watchdog that surfaces an error after 20s rather than healing:
-  VHS retries a sole playlist forever, so a genuinely dead stream would
-  otherwise spin silently. (The previous Plex integration needed ~115 lines
-  here because Plex only produced segments forward from where a session
-  started; that is gone.)
+  400s and back to 30s, both resuming unaided. (The previous Plex integration
+  needed ~115 lines here because Plex only produced segments forward from where
+  a session started; that is gone.)
+  What remains is **recovery, not repositioning**. That server-side
+  repositioning races Jellyfin's own segment cleanup on remux/direct-stream
+  jobs (jellyfin#16608), and a burst of scrubbing can leave a session serving
+  nothing at any offset — permanently, because VHS retries a sole playlist
+  forever. So after 10s without progress the player rebuilds the stream around
+  a **fresh `playSessionId`** at the viewer's position, at most twice, logging
+  `[player] no progress for 10s — restarting stream at …`. Two details are
+  load-bearing:
+  - It must ask `playbackInfo(..., { fresh: true })`. The cached entry holds
+    the very session being escaped, so a cached restart rebuilds the stream
+    around the dead session.
+  - It only arms **after playback has progressed once**. `paused` goes false
+    the moment `play()` is called, so without that guard a legitimately slow
+    first segment (measured up to 50s on a cold disk) reads as a stall and gets
+    restarted — discarding the ffmpeg that was about to deliver, then doing it
+    again on the retry.
 - Picture-in-picture is deliberately disabled. Chromecast is wired up via
   `@silvermine/videojs-chromecast` (MIT) but **cannot work as deployed**:
   Google's Cast sender SDK only initialises in a secure context (HTTPS or
   localhost), and SaltyChart is served over plain HTTP on the LAN, so
-  `window.chrome.cast` never exists and the button never renders. The player
-  therefore checks `window.isSecureContext` and skips loading the plugin and
-  Google's SDK entirely rather than delaying every player open for a button
-  that can't appear. Serving the app over HTTPS lights it up with no code
-  change.
+  `window.chrome.cast` never exists and the button never renders. Serving the
+  app over HTTPS lights it up with no code change.
+  **The SDK is never waited on.** It is fetched from gstatic.com — the one
+  asset here whose latency is someone else's internet rather than the LAN — and
+  the player used to `await` it before constructing itself, putting a third
+  party between the Watch click and the first byte of video. It is warmed on
+  the Randomize page (`loadCastSdk()`) and the player only offers casting if
+  `castReady()` is already true.
 - **Subtitles are rendered by libass** (`jassub`, lazy-loaded), fed the raw
   `.ass` from `/api/jellyfin/subtitles` plus the file's embedded fonts from
   `/api/jellyfin/attachments`. That preserves positioning, styling and
@@ -806,7 +875,14 @@ Path: `frontend/`
   and, on karaoke-heavy releases, leaves ~95% of cues as literal override
   code on screen. Non-ASS tracks use video.js's own text tracks, and if
   libass fails to start the player falls back to server-converted WebVTT so
-  subtitles never simply vanish.
+  subtitles never simply vanish. (That fallback is a genuine safety net, but a
+  silent one — it fired for *every* ASS release once, because a double-unwrapped
+  `.default` handed jassub `workerUrl: undefined`. `test_player.py` step 8 now
+  fails on the fallback warning, so it can't happen quietly again.)
+  This is the same architecture jellyfin-web uses — and on a newer renderer:
+  `jassub` is maintained, while jellyfin-web still ships SubtitlesOctopus (last
+  published 2022). No browser renders ASS natively, so a client-side renderer
+  is the only way to keep it without forcing a server-side burn-in transcode.
   Three things cost real time and are worth keeping written down:
   - The worker entry is **`jassub/dist/worker/worker.js`**. jassub's own
     README still documents `dist/wasm/jassub-worker.js`, which is the
@@ -820,19 +896,80 @@ Path: `frontend/`
     multi-threading and falls back to single-threaded on its own, so the
     page does not need cross-origin isolation — which matters, because those
     headers would block the YouTube trailer iframes on Home.
+  - **`canvas.width` on the main thread is meaningless.** libass transfers the
+    canvas to its worker, so the attribute keeps whatever it last saw (often
+    300×150) while `resize()` sets the **CSS** box. Measure with
+    `getBoundingClientRect()` against the video's; reading the attribute
+    produces convincing nonsense and cost real time twice.
 - Because libass paints its own canvas it bypasses video.js's captions menu,
-  so the player carries a small subtitle picker. Track selection prefers a
-  plain English dialogue track: labels matching `sdh|dubtitle|sign|song` are
-  set aside, ASS is preferred over SRT of the same content, and the file's
-  own `default` flag breaks the tie *within* that set rather than deciding on
-  its own — releases do ship with a signs-only track marked default, and some
-  name their tracks uselessly (`1`, `2`, `final`), so codec and flags are
-  what can be trusted.
-- **Playback waits for subtitles.** Starting an anime episode before its
+  which can only list text tracks the player owns. So the player **registers
+  its own control-bar `MenuButton` and removes video.js's `subsCapsButton`** —
+  leaving both gives two subtitle menus that disagree, since the built-in one
+  is blind to ASS. The custom menu drives `showSubtitle` for every track type,
+  and carries "Caption settings…" as its last item so video.js's caption
+  styling dialog stays reachable. Track selection prefers a plain English
+  dialogue track: labels matching `sdh|dubtitle|sign|song` are set aside, ASS
+  is preferred over SRT of the same content, and the file's own `default` flag
+  breaks the tie *within* that set rather than deciding on its own — releases
+  do ship with a signs-only track marked default, and some name their tracks
+  uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
+- **Only the fonts the script names are sent to libass.** Releases bundle a
+  whole font pack rather than what they use, and libass ingests everything it is
+  handed before drawing anything. Measured over 18 real releases with
+  `tools/check_font_corpus.py`: **384.8 MB of attachments → 13.9 MB actually
+  sent (96% less)**; a typical episode ships 20–39 fonts and names 1–5.
+  `fontsFor()` in `lib/jellyfinPrewarm.ts` parses `Style:` lines and `\fn`
+  overrides, then matches them against attachment *filenames* — a heuristic in
+  both directions, and both are handled:
+  - **Too loose** drags in neighbours. Matching `Arial` by substring pulls in
+    Arial Unicode MS (23 MB alone), which turned one release's 4 named fonts
+    into 24.4 MB. So matching is tiered — exact, then prefix (keeping
+    `Arial` → `arialbd`), and only then substring — which brought that release
+    to 0.7 MB without costing any other release a font.
+  - **Too strict** misses one: `f1.ttf` may hold "Helvetica Neue". 6 of 41
+    named fonts across the corpus matched nothing. When that happens the
+    unattributed leftovers are added *after* rendering starts via
+    `renderer.addFonts()`, so a bad guess costs a moment of substituted type
+    rather than the wrong typeface all episode; if *nothing* matched, the whole
+    pack is sent as before.
+
+  jellyfin-web passes every attachment; this is one place we do better.
+- **Player assets are warmed in two stages**, because they divide cleanly by
+  what they depend on (all in `lib/jellyfinPrewarm.ts`):
+  - *Nothing show-specific* — the video.js chunk (0.66 MB built, **1.6 MB
+    unminified from the dev server**) and libass's wasm worker (~2 MB). Warmed
+    on **landing on `/random`**, on `requestIdleCallback` so it never competes
+    with the page's own images, gated on Jellyfin being configured and skipped
+    on `saveData`/2G. Not warmed app-wide: someone browsing trailers on Home
+    should not pay 2.7 MB for a player they never open. **`loadVideoJs()` must
+    be shared** — the component's own `import('video.js')` inside `onMount`
+    would not be covered by preloading its chunk, since the bulk is the
+    dependency, not the component.
+  - *Per episode* — playback metadata, the chosen subtitle track and its fonts,
+    warmed by `prewarm()` when the **show pop-up opens** (the earliest point an
+    itemId exists), cached by itemId so repeated wheel spins reuse them.
+  Together, pressing Watch costs only the stream start.
+- **The Watch button shows an "Opening…" spinner while the chunk loads.**
+  Obvious on localhost that it isn't needed, and wrong everywhere else: over a
+  LAN or the web there is a real gap between the click and the modal, and with
+  no feedback the button reads as broken. Test on something other than
+  localhost before judging player latency. Results are cached by itemId, so repeated wheel spins
+  reuse them. **It deliberately never touches the HLS manifest** — Jellyfin's
+  transcode throttling is deprecated and off by default and its ffmpeg writes
+  segments until the file is done regardless of the playhead, so a pre-started
+  stream would remux a whole ~1 GB episode to disk for a pop-up nobody plays.
+  With that split, a Watch click is ~2.4s, of which ~1.7s is Jellyfin producing
+  segment 0; the manifest itself answers in ~30ms.
+- **Playback waits for subtitles**, but that is almost never the wait. Measured
+  on a normal open: subtitles are ready at ~240ms while the video needs 3.3s+,
+  because the video is waiting on Jellyfin to build the first HLS segment. So
+  the "Loading subtitles…" chip is shown **only once the video can play** —
+  i.e. only when subtitles genuinely are the thing holding playback. Otherwise
+  video.js's own loading spinner is left visible, which is the honest indicator
+  for a stream that has not arrived yet. Starting an anime episode before its
   subtitles arrive means missing the opening dialogue, so `autoplay` is off
-  and playback begins once the track is registered (the video loads and
-  buffers throughout, so it starts instantly then). A "Loading subtitles…"
-  chip with a **Play anyway** button covers the wait, a 20s cap starts
+  and playback begins once the track is registered. The chip carries a
+  **Play anyway** button, a 20s cap starts
   playback regardless, and a file with no subtitles doesn't wait at all.
 - While the player is open `handleModalKey` is suppressed so Enter can't
   mark-watched underneath. Caveat: playback runs under the server account
