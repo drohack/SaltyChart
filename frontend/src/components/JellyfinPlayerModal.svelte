@@ -349,7 +349,14 @@
       clearTimeout(subtitleWaitTimer);
       subtitleWaitTimer = null;
     }
-    player.play()?.catch?.(() => {});
+    // A rejected play() is the one case where the viewer really does have to
+    // click — browsers refuse programmatic playback when the user gesture that
+    // opened the modal is too far in the past. That is precisely when the big
+    // play button should reappear; see the style block.
+    player.play()?.catch?.((err: unknown) => {
+      console.warn('[player] autoplay was blocked, offering the play button', err);
+      player?.addClass('sc-autoplay-blocked');
+    });
   }
 
   // ── Stall detection ──────────────────────────────────────────────────
@@ -374,11 +381,28 @@
   /** Enough attempts to survive a wedged session, few enough to never loop. */
   const MAX_RECOVERIES = 2;
   const STALL_MS = 10_000;
+  /**
+   * A dead *picture* is caught separately from a dead stream, and needs longer.
+   *
+   * Reported from the field: pause, seek a few minutes ahead, resume — audio
+   * keeps playing and the picture stays black. `currentTime` advances happily
+   * throughout, so a watchdog that only reads the clock sees a perfectly
+   * healthy stream and never fires. What actually stops is frame decoding.
+   */
+  const VIDEO_STALL_MS = 8_000;
+  let lastFrames = 0;
+  let lastFrameAt = Date.now();
+
+  function decodedFrames(): number {
+    return videoEl?.getVideoPlaybackQuality?.()?.totalVideoFrames ?? 0;
+  }
 
   function startStallWatchdog() {
     if (watchdog || !player) return;
     lastProgressTime = player.currentTime() ?? 0;
     lastProgressAt = Date.now();
+    lastFrames = decodedFrames();
+    lastFrameAt = Date.now();
     player.on('timeupdate', () => {
       const t = player?.currentTime?.() ?? 0;
       if (Math.abs(t - lastProgressTime) > 0.25) {
@@ -386,7 +410,11 @@
         lastProgressAt = Date.now();
         stalled = false;
         everProgressed = true;
-        recoveries = 0; // real progress means the stream is healthy again
+        // Deliberately NOT resetting `recoveries` here. A moving clock is not
+        // proof of health — in the picture-stall failure the audio keeps the
+        // clock moving while nothing decodes, so resetting on `timeupdate`
+        // defeats the retry cap and restarts forever. Decoded frames are the
+        // honest health signal; see below.
       }
     });
     watchdog = setInterval(() => {
@@ -398,9 +426,28 @@
       // restarted — throwing away the ffmpeg that was about to deliver, and
       // doing it again on the restart.
       if (!everProgressed) return;
-      if (Date.now() - lastProgressAt <= STALL_MS) return;
-      if (recoveries < MAX_RECOVERIES) restartStream();
-      else stalled = true;
+
+      // 1. The clock has stopped: nothing is arriving at all.
+      if (Date.now() - lastProgressAt > STALL_MS) {
+        if (recoveries < MAX_RECOVERIES) restartStream('no progress');
+        else stalled = true;
+        return;
+      }
+
+      // 2. The clock is fine but the picture is not. Only meaningful once
+      //    frames have actually been decoded, so audio-only sources and the
+      //    pre-roll are never mistaken for a black screen.
+      const frames = decodedFrames();
+      if (frames > lastFrames) {
+        lastFrames = frames;
+        lastFrameAt = Date.now();
+        recoveries = 0; // frames decoding is the one unambiguous sign of health
+        return;
+      }
+      if (lastFrames > 0 && Date.now() - lastFrameAt > VIDEO_STALL_MS) {
+        if (recoveries < MAX_RECOVERIES) restartStream('picture stopped while audio continued');
+        else stalled = true;
+      }
     }, 2000);
   }
 
@@ -415,12 +462,12 @@
    * simply stays black until someone closes the modal. Asking for a new
    * playSessionId costs one round trip and gets the viewer moving again.
    */
-  async function restartStream() {
+  async function restartStream(reason = 'no progress') {
     if (recovering || destroyed || !player) return;
     recovering = true;
     recoveries += 1;
     const resumeAt = player.currentTime?.() ?? 0;
-    console.warn(`[player] no progress for ${STALL_MS / 1000}s — restarting stream at ${resumeAt.toFixed(1)}s`);
+    console.warn(`[player] ${reason} — restarting stream at ${resumeAt.toFixed(1)}s`);
     try {
       // `fresh` matters: the cached info holds the session we are escaping.
       const info = await playbackInfo(itemId, mediaSourceId, { fresh: true });
@@ -433,6 +480,13 @@
         player.play()?.catch?.(() => {});
       });
       lastProgressAt = Date.now();
+      // Re-baseline against what the element reports *now*, not zero. A fresh
+      // source resets the counter to 0 and climbs, which reads as recovery; a
+      // session that is still wedged keeps reporting its old total, which
+      // correctly reads as no progress. Zeroing it made any stuck non-zero
+      // count look like a recovery and let the retry cap reset forever.
+      lastFrames = decodedFrames();
+      lastFrameAt = Date.now();
     } catch (err) {
       console.warn('[player] stream restart failed', err);
       stalled = true;
@@ -661,6 +715,24 @@
 </dialog>
 
 <style>
+  /*
+   * No big play button while we are starting playback ourselves.
+   *
+   * `autoplay` is off because playback waits for subtitles, so video.js sits in
+   * its not-yet-started state for however long Jellyfin takes to build the
+   * first segment (1-30s) and puts a large play button over it — offering the
+   * viewer an action that is already under way. The loading spinner is the
+   * honest indicator during that wait.
+   *
+   * It comes back if play() is rejected, which is the only time clicking is
+   * actually required of the viewer.
+   */
+  :global(.video-js .vjs-big-play-button) {
+    display: none;
+  }
+  :global(.video-js.sc-autoplay-blocked .vjs-big-play-button) {
+    display: block;
+  }
   /* The default skin hides these; they're the most useful readouts there are. */
   :global(.video-js .vjs-control-bar .vjs-current-time),
   :global(.video-js .vjs-control-bar .vjs-time-divider),

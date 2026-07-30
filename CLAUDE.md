@@ -841,10 +841,21 @@ Path: `frontend/`
   repositioning races Jellyfin's own segment cleanup on remux/direct-stream
   jobs (jellyfin#16608), and a burst of scrubbing can leave a session serving
   nothing at any offset — permanently, because VHS retries a sole playlist
-  forever. So after 10s without progress the player rebuilds the stream around
-  a **fresh `playSessionId`** at the viewer's position, at most twice, logging
-  `[player] no progress for 10s — restarting stream at …`. Two details are
-  load-bearing:
+  forever. So the player rebuilds the stream around a **fresh `playSessionId`**
+  at the viewer's position, at most twice, logging
+  `[player] <reason> — restarting stream at …`.
+  **Two different failures, and they need two different detectors:**
+  - *The clock stops* — nothing arrives at all. 10s without `currentTime`
+    moving.
+  - *The picture stops while audio keeps going.* Reported from the field
+    (pause → seek a few minutes → resume): the video goes black but
+    `currentTime` advances normally, so a clock-watching watchdog sees a
+    healthy stream and never fires. Decoded frames are what actually stop, so
+    this is caught with `getVideoPlaybackQuality().totalVideoFrames` standing
+    still for 8s. Only armed once frames have been decoded at least once, so
+    audio-only sources and the pre-roll can't trip it.
+
+  Four details are load-bearing, three of them learned by getting them wrong:
   - It must ask `playbackInfo(..., { fresh: true })`. The cached entry holds
     the very session being escaped, so a cached restart rebuilds the stream
     around the dead session.
@@ -853,6 +864,18 @@ Path: `frontend/`
     first segment (measured up to 50s on a cold disk) reads as a stall and gets
     restarted — discarding the ffmpeg that was about to deliver, then doing it
     again on the retry.
+  - **`recoveries` resets on decoded frames, never on `timeupdate`.** In the
+    picture-stall case the moving clock *is* the symptom, so resetting the
+    retry counter there defeats the cap and restarts forever.
+  - **After a restart, re-baseline the frame count to what the element reports
+    now, not to zero.** A fresh source reports 0 and climbs; a still-wedged one
+    keeps reporting its old total. Zeroing made any stuck non-zero count look
+    like a recovery and reset the cap again.
+
+  Simulating the signature (pinning the frame counter while the clock runs) is
+  how both of those were found — the real failure is intermittent and was not
+  reproducible on demand, and an uncapped restart loop is worse than the black
+  screen it was meant to fix.
 - Picture-in-picture is deliberately disabled. Chromecast is wired up via
   `@silvermine/videojs-chromecast` (MIT) but **cannot work as deployed**:
   Google's Cast sender SDK only initialises in a secure context (HTTPS or
@@ -969,6 +992,14 @@ Path: `frontend/`
   and playback begins once the track is registered. The chip carries a
   **Play anyway** button, a 20s cap starts
   playback regardless, and a file with no subtitles doesn't wait at all.
+- **video.js's big play button is hidden**, because `autoplay: false` leaves the
+  player in its not-yet-started state for the 1–30s Jellyfin spends building the
+  first segment, putting a large play button over a video that is already being
+  started for the viewer. It reappears (via a `sc-autoplay-blocked` class) only
+  if `player.play()` is *rejected* — browsers refuse programmatic playback when
+  the gesture that opened the modal is too far in the past, and that is the one
+  case where clicking is genuinely required. That rejection used to be swallowed
+  silently.
 - While the player is open `handleModalKey` is suppressed so Enter can't
   mark-watched underneath. Caveat: playback runs under the server account
   (the admin's API key), so progress doesn't sync to viewers' Jellyfin
