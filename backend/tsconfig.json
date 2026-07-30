@@ -13,5 +13,8 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  // Tests are excluded from the build so they don't land in dist/. They are
+  // still type-checked when run: `npm run test:unit` goes through ts-node,
+  // which compiles rather than strips.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

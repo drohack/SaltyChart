@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
+    "test:unit": "node --require ts-node/register --test src/lib/*.test.ts",
     "generate": "prisma generate",
     "start": "node dist/index.js"
   },
