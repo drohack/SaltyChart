@@ -896,6 +896,18 @@ Path: `frontend/`
     multi-threading and falls back to single-threaded on its own, so the
     page does not need cross-origin isolation — which matters, because those
     headers would block the YouTube trailer iframes on Home.
+  - **`defaultFont` must be set, or a missing font renders nothing.** Scripts
+    routinely name a font their own MKV doesn't attach (*The Elusive Samurai*
+    asks for "Arial Unicode MS" and ships only plain Arial). jassub registers
+    its bundled fallback into `availableFonts` by itself but never nominates it
+    as the substitute family, so libass had no face to fall back to and drew
+    **empty frames** — worker healthy, canvas correctly sized, `ready` resolved,
+    no error anywhere, and the FPS debug counter happily reporting renders.
+    Pass both `availableFonts: { 'liberation sans': url }` **and**
+    `defaultFont: 'liberation sans'`. Pass the URL explicitly too: jassub
+    resolves its own copy via `new URL('./default.woff2', import.meta.url)`,
+    which under Vite points into `node_modules/.vite/deps/` where the file
+    isn't.
   - **`canvas.width` on the main thread is meaningless.** libass transfers the
     canvas to its worker, so the attribute keeps whatever it last saw (often
     300×150) while `resize()` sets the **CSS** box. Measure with
@@ -915,12 +927,17 @@ Path: `frontend/`
   uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
 - **Only the fonts the script names are sent to libass.** Releases bundle a
   whole font pack rather than what they use, and libass ingests everything it is
-  handed before drawing anything. Measured over 18 real releases with
-  `tools/check_font_corpus.py`: **384.8 MB of attachments → 13.9 MB actually
-  sent (96% less)**; a typical episode ships 20–39 fonts and names 1–5.
+  handed before drawing anything. Measured over real releases with
+  `tools/check_font_corpus.py`: **250.9 MB of attachments → 5.4 MB actually
+  sent (98% less)**; a typical episode ships 20–39 fonts and names 1–5.
   `fontsFor()` in `lib/jellyfinPrewarm.ts` parses `Style:` lines and `\fn`
   overrides, then matches them against attachment *filenames* — a heuristic in
   both directions, and both are handled:
+  - **Jellyfin's `_N` uniquifier is stripped first.** Extracted attachments come
+    out as `Arial_2.ttf`, `arialbd_3.ttf`, and that counter is not part of the
+    typeface — left in, `Arial_2` normalises to `arial2` and matches nothing.
+    One release's single named font found no file at all and fell back to
+    shipping all 23 attachments (6 MB) instead of the 0.3 MB it wanted.
   - **Too loose** drags in neighbours. Matching `Arial` by substring pulls in
     Arial Unicode MS (23 MB alone), which turned one release's 4 named fonts
     into 24.4 MB. So matching is tiered — exact, then prefix (keeping

@@ -119,7 +119,9 @@ def main() -> int:
         # Mirror fontsFor() in frontend/src/lib/jellyfinPrewarm.ts *including its
         # fallbacks*, or the numbers describe a program we don't ship.
         wanted = named_fonts(body)
-        stems = {a["fileName"]: norm(re.sub(r"\.[^.]+$", "", a["fileName"])) for a in fonts}
+        # Strip Jellyfin's _N uniquifier before comparing — see attachmentStem().
+        stems = {a["fileName"]: norm(re.sub(r"_\d+$", "", re.sub(r"\.[^.]+$", "", a["fileName"])))
+                 for a in fonts}
         all_files = set(stems)
         def placed_by(w: str) -> set[str]:
             """Same exact → prefix → loose tiering as fontsFor()."""

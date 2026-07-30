@@ -45,6 +45,7 @@ export interface LibassBundle {
   workerUrl: string;
   wasmUrl: string;
   modernWasmUrl: string;
+  defaultFontUrl: string;
 }
 
 export function api(path: string): string {
@@ -115,6 +116,18 @@ const normFont = (s: string) =>
   s.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /**
+ * An attachment's filename reduced to something comparable with a font name.
+ *
+ * Jellyfin suffixes extracted attachments to keep them unique — `Arial_2.ttf`,
+ * `arialbd_3.ttf` — and that counter is not part of the typeface. Left in, it
+ * normalises to `arial2`, which matches no font any script asks for: one
+ * release's single named font found nothing and fell back to shipping all 23
+ * attachments (6 MB) instead of the two Arial faces it wanted.
+ */
+const attachmentStem = (fileName: string) =>
+  normFont(fileName.replace(/\.[^.]+$/, '').replace(/_\d+$/, ''));
+
+/**
  * Split an MKV's font attachments into what this script needs now, and what is
  * only worth loading as insurance.
  *
@@ -145,7 +158,7 @@ export function fontsFor(
   const wanted = [...named].map(normFont).filter(Boolean);
   if (!wanted.length) return { initial: embedded, deferred: [] };
 
-  const stem = (a: Attachment) => normFont(a.fileName.replace(/\.[^.]+$/, ''));
+  const stem = (a: Attachment) => attachmentStem(a.fileName);
 
   // Prefer the tightest interpretation of a name that finds anything. Exact and
   // prefix keep the weight/style variants a script needs (`Arial` → `arialbd`)
@@ -251,11 +264,20 @@ export function loadLibass(): Promise<LibassBundle> {
       import('jassub/dist/worker/worker.js?worker&url'),
       import('jassub/dist/wasm/jassub-worker.wasm?url'),
       import('jassub/dist/wasm/jassub-worker-modern.wasm?url'),
-    ]).then(([mod, worker, wasm, modernWasm]: any[]) => ({
+      // jassub's own fallback font, resolved explicitly. It registers this
+      // itself as `new URL('./default.woff2', import.meta.url)` — a runtime
+      // URL relative to its own bundle, which under Vite points into
+      // `node_modules/.vite/deps/` where the file does not exist. When the
+      // fallback 404s, a script naming a font its MKV does not carry has no
+      // font at all and libass renders *nothing* — silently, since the worker
+      // starts fine and the canvas is sized correctly.
+      import('jassub/dist/default.woff2?url'),
+    ]).then(([mod, worker, wasm, modernWasm, defaultFont]: any[]) => ({
       JASSUB: mod.default,
       workerUrl: worker.default,
       wasmUrl: wasm.default,
       modernWasmUrl: modernWasm.default,
+      defaultFontUrl: defaultFont.default,
     }));
     // Pre-warming means nothing may be awaiting this yet; keep a failure from
     // surfacing as an unhandled rejection. The await at the use site reports.

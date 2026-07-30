@@ -123,7 +123,7 @@
         // them while the viewer was reading the synopsis.
         const subContent = await subtitleText(subtitleUrl(index, 'ass'));
         if (destroyed || !player) return;
-        const { JASSUB, workerUrl, wasmUrl, modernWasmUrl } = await loadLibass();
+        const { JASSUB, workerUrl, wasmUrl, modernWasmUrl, defaultFontUrl } = await loadLibass();
         if (destroyed || !player) return;
         const { initial, deferred } = fontsFor(subContent, attachments);
         jassub = new JASSUB({
@@ -135,6 +135,21 @@
           // The release's own fonts, straight out of the MKV. Without them
           // libass substitutes and signs render in the wrong typeface.
           fonts: initial.map((a) => fontUrl(a.index)),
+          // The substitute for anything those don't cover, and **both lines are
+          // required**. Scripts routinely name a font their own MKV doesn't
+          // carry — The Elusive Samurai asks for "Arial Unicode MS" and
+          // attaches only plain Arial. jassub registers its bundled fallback in
+          // `availableFonts` on its own, but never nominates it as the default
+          // family, so libass had no face to substitute and drew *nothing*:
+          // empty frames, worker healthy, canvas correctly sized, no error
+          // anywhere. `defaultFont` is what actually makes it substitute.
+          //
+          // The URL is passed explicitly because jassub resolves its own copy
+          // as `new URL('./default.woff2', import.meta.url)` — a runtime URL
+          // relative to its bundle, which under Vite points into
+          // `node_modules/.vite/deps/` where the file isn't.
+          availableFonts: { 'liberation sans': defaultFontUrl },
+          defaultFont: 'liberation sans',
         });
         // A safety net that should never fire: libass resolves `ready` once its
         // worker is up, and if that never happens we must not sit on a blank

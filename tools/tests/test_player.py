@@ -278,7 +278,23 @@ def main():
                 fail(8, "no libass canvas — ASS track did not render")
             if abs(box["cw"] - box["vw"]) > 2 or abs(box["ch"] - box["vh"]) > 2:
                 fail(8, f"libass canvas doesn't cover the video: {box}")
-            step(8, f"PASS — libass canvas {box['cw']}x{box['ch']} over the video")
+            # A correctly sized canvas is NOT proof of rendering: a script that
+            # names a font its MKV doesn't attach drew *empty frames* here —
+            # worker healthy, canvas sized, `ready` resolved, no error anywhere.
+            # What fixed it was libass having a fallback face to substitute, so
+            # guard the asset that provides one. Nothing can read the canvas
+            # itself: it belongs to the worker.
+            font = page.evaluate("""async () => {
+                const r = await fetch('/node_modules/jassub/dist/default.woff2');
+                const b = await r.arrayBuffer();
+                const sig = new TextDecoder().decode(new Uint8Array(b, 0, 4));
+                return { ok: r.ok, bytes: b.byteLength, sig };
+            }""")
+            if not font["ok"] or font["bytes"] < 1000 or font["sig"] != "wOF2":
+                fail(8, f"libass has no fallback font — a script naming an "
+                        f"unattached font will render nothing: {font}")
+            step(8, f"PASS — libass canvas {box['cw']}x{box['ch']} over the video, "
+                    f"fallback font {font['bytes'] // 1024}KB")
 
         step(9, "Escape closes and stops the transcode; the episode reopens")
         stops: list[str] = []
