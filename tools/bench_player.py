@@ -14,6 +14,14 @@ Two halves, because they fail differently:
   client   the browser timeline from the Watch click to a decoding video, so
            libass/wasm/font work is placed against the stream wait.
 
+⚠ This starts REAL playback sessions, and Jellyfin's ffmpeg writes segments
+until the whole file is done regardless of the playhead — its cleanup timers do
+not keep up for remux jobs (jellyfin#16608). Each run therefore leaves most of a
+~1.4 GB episode in the transcode cache; killing the encoder does not delete what
+it already wrote. Nine runs filled the cache on a real server and made Jellyfin
+return empty (HTTP 200, 0-byte) segments, which looks exactly like an app bug.
+Keep `-n` small, and check free space on the transcode volume afterwards.
+
 Usage:
   py -3.13 -u tools/bench_player.py [-n 5] [--no-browser] [--title "Mebius Dust"]
   py -3.13 -u tools/bench_player.py --output tools/benchmark_results.txt

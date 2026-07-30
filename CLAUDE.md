@@ -213,6 +213,34 @@ An **admin API key alone authenticates everything** — no user login, no
 per-viewer Jellyfin accounts. Playback therefore runs under the server
 account, so progress doesn't sync to anyone's Jellyfin profile.
 
+**"Direct stream" still runs ffmpeg and still writes to the transcode cache.**
+This library direct-streams (8/8 sampled episodes: codecs copied, no transcode
+reasons), and it is tempting to read that as "no ffmpeg involved". It is not.
+Browsers cannot play MKV, so every playback is *remuxed* into MPEG-TS segments
+for HLS — cheap on CPU, identical on disk to a real transcode. Three modes,
+and only the first is free:
+
+| mode | ffmpeg | re-encodes video | writes to transcode dir |
+|---|---|---|---|
+| direct play | no | no | no |
+| **direct stream (remux)** ← what we do | **yes** | no | **yes** |
+| transcode | yes | yes | yes |
+
+Two consequences that have both bitten:
+
+- Jellyfin's ffmpeg writes segments **until the whole file is done, regardless
+  of the playhead**, and its cleanup timers do not keep up for remux jobs
+  (jellyfin#16608). An abandoned session therefore leaves most of a ~1.4 GB
+  episode on disk. This is why the pop-up pre-warm never touches the HLS
+  manifest — and why `tools/bench_player.py`, which *does* start real sessions,
+  must not be run casually: nine cold runs filled the transcode cache and made
+  Jellyfin serve empty (HTTP 200, 0-byte) segments, which presents as "video
+  never starts" and is indistinguishable from an app bug until you request a
+  segment directly from Jellyfin and see the same thing.
+- Keeping the subtitles *out* of the video avoids the third row, not the
+  second. Burning them in would force a full re-encode of every stream; it
+  would not change how much lands in the transcode cache.
+
 - `GET  /api/jellyfin/status`   — `{ configured, isAdmin }` probe (JWT
   required). `isAdmin` rides along so the header's Admin link doesn't need to
   probe an admin-only endpoint (which would 403-spam the console for

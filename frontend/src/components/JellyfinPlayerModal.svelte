@@ -172,6 +172,7 @@
         player.on('playing', resizeJassub);
         player.on('fullscreenchange', resizeJassub);
         player.on('playerresize', resizeJassub);
+        player.on('seeked', repaintJassub);
       } catch (err) {
         // The usual cause is no SharedArrayBuffer: libass needs the page to be
         // cross-origin isolated (COOP/COEP), and those headers would block the
@@ -303,6 +304,30 @@
     Promise.resolve(inst.ready)
       .then(() => {
         if (jassub === inst) inst.resize?.();
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * Force libass to redraw after a seek, clearing whatever it last painted.
+   *
+   * jassub renders **only** from `requestVideoFrameCallback` and listens to no
+   * seek events, and it skips redrawing when it decides nothing has changed.
+   * So a seek can leave the previous frame's subtitles on the canvas — and if
+   * that frame contained a full-screen element (releases use opaque rectangles
+   * for transitions and credit backgrounds) the canvas stays opaque over a
+   * video that is playing perfectly well underneath. Reported from the field as
+   * "audio and subtitles fine, no video"; hiding the canvas revealed the
+   * picture intact, which is what identified this.
+   *
+   * `resize(true)` is the force-repaint path.
+   */
+  function repaintJassub() {
+    const inst = jassub;
+    if (!inst) return;
+    Promise.resolve(inst.ready)
+      .then(() => {
+        if (jassub === inst) inst.resize?.(true);
       })
       .catch(() => {});
   }
@@ -671,9 +696,22 @@
       <!-- Only claim to be waiting on subtitles when that is actually what is
            holding playback up. Measured on a normal open, subtitles are ready
            at ~240ms while the video needs ~3.3s, so showing this for the whole
-           wait told the viewer the wrong thing about the slow part — and hid
-           video.js's own loading spinner, which is the honest indicator while
-           Jellyfin builds the first segment. -->
+           wait told the viewer the wrong thing about the slow part. -->
+
+      <!-- Something must be on screen while Jellyfin builds the first segment,
+           which takes 1-30s. video.js's own spinner does NOT cover this: it
+           only appears once the player is waiting or seeking, and before
+           playback has started it stays hidden. Relying on it left a blank
+           box with no feedback at all — worse than the big play button it
+           replaced. Verified by visibility, not by the element existing,
+           which is the mistake that shipped the blank box. -->
+      {#if !playbackStarted && !stalled}
+        <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-white">
+          <span class="loading loading-spinner loading-lg"></span>
+          <span class="text-xs opacity-70">Starting playback…</span>
+        </div>
+      {/if}
+
       {#if subtitlesLoading && videoReady}
         <div
           class="absolute top-3 left-4 z-20 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-white"
