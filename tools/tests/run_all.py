@@ -94,7 +94,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    # Steps 1-6: mutually independent, run in parallel (no shared browser state)
+    # Steps 1-7: mutually independent, run in parallel (no shared browser state)
     parallel_checks: list[tuple[str, list[str], Path | None, int]] = [
         ("backend tsc",      ["npx", "tsc", "--noEmit"],     REPO / "backend",  60),
         ("frontend build",   ["npm", "run", "build"],         REPO / "frontend", 60),
@@ -103,10 +103,11 @@ def main():
                               "--backend", args.backend],     None, 60),
         ("API negative",     ["py", "-3.13", "-u", str(TESTS / "test_api_negative.py"),
                               "--backend", args.backend],     None, 30),
-        ("Plex API",         ["py", "-3.13", "-u", str(TESTS / "test_plex.py"),
+        ("Jellyfin API",     ["py", "-3.13", "-u", str(TESTS / "test_jellyfin.py"),
                               "--backend", args.backend],     None, 180),
+        ("title match",      ["npm", "run", "test:unit"],     REPO / "backend",  60),
     ]
-    # Steps 7-9 (+10): use the browser via Playwright. Run sequentially so they
+    # Steps 8-10 (+11): use the browser via Playwright. Run sequentially so they
     # don't fight over the dev server or share stale state.
     sequential_checks: list[tuple[str, list[str], Path | None, int]] = [
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),

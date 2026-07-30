@@ -75,27 +75,29 @@ chronological order; all features listed are live.
 - The backend now fetches AniList pages in parallel on a cold load, cutting
   multi-page season fetches to a fraction of the previous latency.
 
-**Plex integration (optional)**
-- The site admin points SaltyChart at a Plex server on the new **/admin**
-  page (URL + token, with a Test Connection button that lists the server's
-  libraries). The token stays server-side — browsers never see it.
-- On the Randomize page, the show pop-up gains **▶ Watch here (via Plex)**
-  — an in-page player streaming the right season's first episode through
-  the backend — when the series is found in the Plex library (matched by
-  English *and* Japanese titles, season-aware; the matched Plex title is
-  shown under the button, and a "Not on Plex" note appears otherwise).
+**Jellyfin integration (optional)**
+- The site admin points SaltyChart at a Jellyfin server on the **/admin**
+  page (URL + API key, tested with one click). The key is stored server-side
+  and never sent to browsers. An API key alone is enough — no per-viewer
+  Jellyfin accounts, no logins.
+- On the Randomize page, the show pop-up gains **▶ Watch here** with the
+  season and episode it will start on, playing in-page through the backend —
+  when the series is found in your library (matched by English *and* Japanese
+  titles, season-aware; the matched library title is shown under the button,
+  and a "Not in library" note appears otherwise).
+- Matches confirmed by an AniList→TVDB id chain are shown plainly; ones found
+  only by title similarity are marked **⚠ unconfirmed match**, so a
+  same-name-different-show mix-up is visible before you press play.
 - The in-page player is **video.js**, so it comes with a proper control bar,
-  speed menu, captions menu, fullscreen and the usual hotkeys. The one
-  thing added on top is what Plex can't do: `]` / `[` step playback speed by
-  **±0.10×** (Plex's own player is locked to 0.25× steps), shown as a
-  VLC-style corner flash. The episode's own subtitle tracks are offered in
-  the captions menu (converted to WebVTT on the server, English on by
-  default); for audio-track or quality selection, use Plex itself.
-- **Playback starts with subtitles already on.** Pulling subtitles out of an
-  episode means reading the whole file, so SaltyChart starts that the moment
-  you open a show's pop-up — by the time you press Watch it's usually done,
-  and the video never begins without its subtitles. Extracted subtitles are
-  stored, so an episode only ever pays that cost once.
+  speed menu, fullscreen and the usual hotkeys. The one thing added on top is
+  what the media servers' own players can't do: `]` / `[` step playback speed
+  by **±0.10×** (they're locked to 0.25× steps), shown as a VLC-style corner
+  flash.
+- **Subtitles are rendered with libass**, so signs, songs and karaoke appear
+  where the release put them rather than being flattened to plain text at the
+  bottom of the screen — including the episode's own embedded fonts. Playback
+  waits for the subtitle track before starting, so you never miss the opening
+  dialogue. For audio-track or quality selection, use Jellyfin itself.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed

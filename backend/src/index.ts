@@ -73,7 +73,6 @@ import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
-import plexRouter from './routes/plex';
 import jellyfinRouter from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import prisma from './db';
@@ -114,14 +113,10 @@ const generalLimiter = rateLimit({
 // unthrottled /check-batch loop otherwise lets a client fan out YouTube hits.
 app.use('/api/translate', generalLimiter, translateRouter);
 
-// The Plex router is also registered BEFORE compression(): its /stream/*
+// The Jellyfin router is also registered BEFORE compression(): its /stream/*
 // proxy pipes HLS segments, which compression() would buffer. It carries its
 // own limiters (120/min JSON endpoints, 600/min stream) and JSON parser
 // because the global ones below don't apply to this early mount.
-app.use('/api/plex', plexRouter);
-
-// Same reason as above: /api/jellyfin/stream/* pipes HLS segments, which
-// compression() would buffer. It carries its own limiters and JSON parser.
 app.use('/api/jellyfin', jellyfinRouter);
 
 app.use(compression());
@@ -394,8 +389,9 @@ async function ensureDatabaseSchema() {
     }
 
     // --------------------- AppConfig table ---------------------
-    // Server-wide key/value config (e.g. Plex URL + token, set via the admin
-    // page). Mirrored in schema.prisma like the other runtime-created tables.
+    // Server-wide key/value config (Jellyfin URL + API key set via the admin
+    // page, plus the cached AniList→TVDB map). Mirrored in schema.prisma like
+    // the other runtime-created tables.
     try {
       await prisma.$executeRawUnsafe(`
         CREATE TABLE IF NOT EXISTS "AppConfig" (
@@ -407,26 +403,15 @@ async function ensureDatabaseSchema() {
       console.warn('[DB] Failed to create AppConfig table', err);
     }
 
-    // --------------------- PlexSubtitle table ---------------------
-    // WebVTT pulled out of a Plex part's embedded subtitle streams. Extracting
-    // reads the entire episode file, so this must outlive the process — an
-    // in-memory-only cache made every deploy re-pay that cost per episode.
+    // --------------------- Drop the Plex subtitle cache ---------------------
+    // Held WebVTT extracted from Plex media parts, which existed only because
+    // Plex had no endpoint to serve a subtitle track — Jellyfin does, so the
+    // extraction and its cache are gone. Purely derived data: dropping it
+    // reclaims the space and loses nothing.
     try {
-      await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "PlexSubtitle" (
-          "id"          INTEGER PRIMARY KEY AUTOINCREMENT,
-          "partId"      INTEGER NOT NULL,
-          "streamIndex" INTEGER NOT NULL,
-          "vtt"         TEXT NOT NULL,
-          "createdAt"   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-      await prisma.$executeRawUnsafe(
-        `CREATE UNIQUE INDEX IF NOT EXISTS "PlexSubtitle_partId_streamIndex_key"
-         ON "PlexSubtitle" ("partId", "streamIndex");`
-      );
+      await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "PlexSubtitle";`);
     } catch (err) {
-      console.warn('[DB] Failed to create PlexSubtitle table', err);
+      console.warn('[DB] Failed to drop PlexSubtitle table', err);
     }
 
     // --------------------- Performance indexes ---------------------
