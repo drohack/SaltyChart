@@ -125,7 +125,7 @@
         if (destroyed || !player) return;
         const { JASSUB, workerUrl, wasmUrl, modernWasmUrl, defaultFontUrl } = await loadLibass();
         if (destroyed || !player) return;
-        const { initial, deferred } = fontsFor(subContent, attachments);
+        const fonts = fontsFor(attachments);
         jassub = new JASSUB({
           video: videoEl,
           subContent,
@@ -134,7 +134,7 @@
           modernWasmUrl,
           // The release's own fonts, straight out of the MKV. Without them
           // libass substitutes and signs render in the wrong typeface.
-          fonts: initial.map((a) => fontUrl(a.index)),
+          fonts: fonts.map((a) => fontUrl(a.index)),
           // The substitute for anything those don't cover, and **both lines are
           // required**. Scripts routinely name a font their own MKV doesn't
           // carry — The Elusive Samurai asks for "Arial Unicode MS" and
@@ -172,7 +172,6 @@
         player.on('playing', resizeJassub);
         player.on('fullscreenchange', resizeJassub);
         player.on('playerresize', resizeJassub);
-        topUpFonts(deferred);
       } catch (err) {
         // The usual cause is no SharedArrayBuffer: libass needs the page to be
         // cross-origin isolated (COOP/COEP), and those headers would block the
@@ -198,26 +197,7 @@
     addVjsTrack(index);
   }
 
-  /**
-   * Insurance against the font-name heuristic.
-   *
-   * `fontsFor` matches a script's font names against attachment *filenames*,
-   * and a file called `f1.ttf` can hold "Helvetica Neue". When a name found no
-   * file, the leftovers arrive here and are added once rendering is already
-   * under way — so a bad guess costs a moment of substituted type rather than
-   * the wrong typeface for the whole episode. Nothing is queued when every
-   * name matched, which is the common case.
-   */
-  function topUpFonts(deferred: Attachment[]) {
-    if (!deferred.length || !jassub) return;
-    const inst = jassub;
-    Promise.resolve(inst.ready)
-      .then(() => {
-        if (jassub !== inst || destroyed) return;
-        return inst.renderer?.addFonts?.(deferred.map((a) => fontUrl(a.index)));
-      })
-      .catch((err: unknown) => console.warn('[player] font top-up failed', err));
-  }
+
 
   function addVjsTrack(index: number) {
     const s = subStreams.find((x) => x.index === index);

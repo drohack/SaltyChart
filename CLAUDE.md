@@ -145,8 +145,7 @@ SaltyChart/
 ├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
 │   │                 #   + bench_pipeline.py (swappable ASR/translate/align stages)
 │   │                 #   + bench_player.py (Jellyfin playback startup timings)
-│   │                 #   + check_match_corpus.py / check_font_corpus.py (real-data
-│   │                 #     diagnostics for library matching and subtitle fonts)
+│   │                 #   + check_match_corpus.py (real-data library matching check)
 │   ├── tests/        # Pre-deploy smoke/regression suite (run_all.py)
 │   └── unraid/       # Reference copy of the update_saltychart User Script
 ├── .github/workflows/ # CI: deploy.yml (push→GHCR), build-base.yml (manual)
@@ -335,11 +334,9 @@ cannot see a folder whose tag says one show and whose stored id says another).
 And a library-wide count is misleading: 59 tag/id disagreements across the
 whole library was 7 within the two-year window the app actually queries, of
 which 2 mattered. `tools/check_match_corpus.py` measures the thing that counts
-— how a real season resolves end to end. `tools/check_font_corpus.py` is its
-counterpart for subtitle fonts: how a season's ASS scripts resolve against the
-fonts their MKVs carry. Both mirror the shipping logic exactly, fallbacks
-included; a corpus tool that measures a simplified version of the code reports
-on a program you don't ship.
+— how a real season resolves end to end. Such a tool must mirror the shipping
+logic exactly, fallbacks included; one that measures a simplified version of
+the code reports on a program you don't ship.
 
 ### Rate limiting
 
@@ -925,32 +922,16 @@ Path: `frontend/`
   breaks the tie *within* that set rather than deciding on its own — releases
   do ship with a signs-only track marked default, and some name their tracks
   uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
-- **Only the fonts the script names are sent to libass.** Releases bundle a
-  whole font pack rather than what they use, and libass ingests everything it is
-  handed before drawing anything. Measured over real releases with
-  `tools/check_font_corpus.py`: **250.9 MB of attachments → 5.4 MB actually
-  sent (98% less)**; a typical episode ships 20–39 fonts and names 1–5.
-  `fontsFor()` in `lib/jellyfinPrewarm.ts` parses `Style:` lines and `\fn`
-  overrides, then matches them against attachment *filenames* — a heuristic in
-  both directions, and both are handled:
-  - **Jellyfin's `_N` uniquifier is stripped first.** Extracted attachments come
-    out as `Arial_2.ttf`, `arialbd_3.ttf`, and that counter is not part of the
-    typeface — left in, `Arial_2` normalises to `arial2` and matches nothing.
-    One release's single named font found no file at all and fell back to
-    shipping all 23 attachments (6 MB) instead of the 0.3 MB it wanted.
-  - **Too loose** drags in neighbours. Matching `Arial` by substring pulls in
-    Arial Unicode MS (23 MB alone), which turned one release's 4 named fonts
-    into 24.4 MB. So matching is tiered — exact, then prefix (keeping
-    `Arial` → `arialbd`), and only then substring — which brought that release
-    to 0.7 MB without costing any other release a font.
-  - **Too strict** misses one: `f1.ttf` may hold "Helvetica Neue". 6 of 41
-    named fonts across the corpus matched nothing. When that happens the
-    unattributed leftovers are added *after* rendering starts via
-    `renderer.addFonts()`, so a bad guess costs a moment of substituted type
-    rather than the wrong typeface all episode; if *nothing* matched, the whole
-    pack is sent as before.
-
-  jellyfin-web passes every attachment; this is one place we do better.
+- **Every font the MKV carries is sent to libass**, deliberately. Subsetting
+  to just the fonts a script names was built and then removed: it cut a
+  measured 250.9 MB of attachments to 5.4 MB, but A/B'd on one episode that
+  only moved libass's `ready` from 529ms to 200ms — both invisible behind a
+  video that takes 5–13s. It bought ~2% of a ~1.4 GB episode and paid for it
+  in correctness: filenames need not resemble the family inside them
+  (`f1.ttf` may hold "Helvetica Neue"), so matching was a guess, and it
+  guessed wrong on 5 of 28 named fonts across the corpus. Guessing about
+  typefaces to save 2% of a stream is a bad trade. jellyfin-web sends them
+  all too.
 - **Player assets are warmed in two stages**, because they divide cleanly by
   what they depend on (all in `lib/jellyfinPrewarm.ts`):
   - *Nothing show-specific* — the video.js chunk (0.66 MB built, **1.6 MB

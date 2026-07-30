@@ -112,81 +112,28 @@ export function isAss(subStreams: SubStream[], index: number): boolean {
   return !!s && /ass|ssa/i.test(s.codec);
 }
 
-const normFont = (s: string) =>
-  s.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
 /**
- * An attachment's filename reduced to something comparable with a font name.
+ * Every font the MKV carries.
  *
- * Jellyfin suffixes extracted attachments to keep them unique — `Arial_2.ttf`,
- * `arialbd_3.ttf` — and that counter is not part of the typeface. Left in, it
- * normalises to `arial2`, which matches no font any script asks for: one
- * release's single named font found nothing and fell back to shipping all 23
- * attachments (6 MB) instead of the two Arial faces it wanted.
+ * This deliberately does *not* try to work out which fonts the script actually
+ * uses. That was tried: parse `Style:`/`\fn` names, match them against
+ * attachment filenames, ship only those. It cut a measured 250.9 MB of
+ * attachments to 5.4 MB — and bought nothing anyone could perceive, because
+ * A/B'd on the same episode it moved libass's `ready` from 529ms to 200ms while
+ * the video took 5-13s. Both are invisible.
+ *
+ * What it did cost was correctness. A font's filename need not resemble the
+ * family inside it (`f1.ttf` may hold "Helvetica Neue"; Jellyfin also appends
+ * `_2`/`_3` to keep extracted names unique), so the match is a guess, and it
+ * guessed wrong on 5 of 28 named fonts across the corpus — each one a wrong
+ * typeface on screen until a background top-up landed. Against a ~1.4 GB
+ * episode the whole pack is about 2% more data.
+ *
+ * Guessing about typefaces to save 2% of a stream is a bad trade, so we don't.
+ * This is also what jellyfin-web does.
  */
-const attachmentStem = (fileName: string) =>
-  normFont(fileName.replace(/\.[^.]+$/, '').replace(/_\d+$/, ''));
-
-/**
- * Split an MKV's font attachments into what this script needs now, and what is
- * only worth loading as insurance.
- *
- * Releases bundle a whole font pack rather than just what they use: a measured
- * episode ships 39 attachments totalling 28 MB, of which the script names three
- * — 0.7 MB. libass ingests every font handed to it before drawing anything, and
- * 23.5 MB of that pack was a single Arial Unicode MS, so passing the lot (which
- * is what jellyfin-web does) buys a long blank screen for nothing.
- *
- * Matching is by *filename*, which is a heuristic: a file called `f1.ttf` can
- * contain "Helvetica Neue". So it is deliberately generous both ways — a
- * `Helvetica` style still picks up `Helvetica-Bold.ttf` — and when a named font
- * matches nothing, the unattributed leftovers come back as `deferred` for the
- * caller to load in the background. A wrong guess then costs a moment of
- * substituted type instead of the wrong typeface for the whole episode.
- */
-export function fontsFor(
-  subContent: string,
-  attachments: Attachment[]
-): { initial: Attachment[]; deferred: Attachment[] } {
-  const embedded = attachments.filter((a) =>
-    /font|otf|ttf/i.test(`${a.mimeType} ${a.fileName}`)
-  );
-
-  const named = new Set<string>();
-  for (const [, font] of subContent.matchAll(/^Style:\s*[^,]+,\s*([^,]+),/gm)) named.add(font);
-  for (const [, font] of subContent.matchAll(/\\fn([^\\}]+)/g)) named.add(font);
-  const wanted = [...named].map(normFont).filter(Boolean);
-  if (!wanted.length) return { initial: embedded, deferred: [] };
-
-  const stem = (a: Attachment) => attachmentStem(a.fileName);
-
-  // Prefer the tightest interpretation of a name that finds anything. Exact and
-  // prefix keep the weight/style variants a script needs (`Arial` → `arialbd`)
-  // without a short name dragging in every neighbour: matching `Arial` loosely
-  // pulls in Arial Unicode MS, which is 23 MB on its own and turned one
-  // release's 4 named fonts into 24 MB of up-front loading. Loose matching is
-  // still the last resort, since a font we fail to place is the worse failure.
-  const placedBy = (w: string) => {
-    const exact = embedded.filter((a) => stem(a) === w);
-    if (exact.length) return exact;
-    const prefix = embedded.filter((a) => stem(a).startsWith(w) || w.startsWith(stem(a)));
-    if (prefix.length) return prefix;
-    return embedded.filter((a) => stem(a).includes(w) || w.includes(stem(a)));
-  };
-
-  const initial: Attachment[] = [];
-  const unplaced: string[] = [];
-  for (const w of wanted) {
-    const hits = placedBy(w);
-    if (!hits.length) unplaced.push(w);
-    for (const a of hits) if (!initial.includes(a)) initial.push(a);
-  }
-  if (!initial.length) return { initial: embedded, deferred: [] };
-
-  // Only insure against names we failed to place. When every name found a file
-  // there is nothing missing, so nothing is queued.
-  const deferred = unplaced.length ? embedded.filter((a) => !initial.includes(a)) : [];
-  return { initial, deferred };
+export function fontsFor(attachments: Attachment[]): Attachment[] {
+  return attachments.filter((a) => /font|otf|ttf/i.test(`${a.mimeType} ${a.fileName}`));
 }
 
 /**
@@ -365,9 +312,9 @@ export function prewarm(itemId: string, mediaSourceId: string): void {
       // Pull the fonts into the browser cache so libass's worker gets them
       // from disk rather than the network. Backed by Cache-Control on
       // /api/jellyfin/attachments.
-      const { initial } = fontsFor(body, info.attachments);
+      const fonts = fontsFor(info.attachments);
       await Promise.all(
-        initial.map((a) => fetch(fontUrl(itemId, mediaSourceId, a.index)).catch(() => {}))
+        fonts.map((a) => fetch(fontUrl(itemId, mediaSourceId, a.index)).catch(() => {}))
       );
     } catch {
       /* cold cache is the only cost */
