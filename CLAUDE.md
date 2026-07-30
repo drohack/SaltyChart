@@ -285,13 +285,40 @@ actions refuse to act on them. That matters — fuzzy matching produced a real
 false positive (AniList's 2026 *Mahou Shoujo Lyrical Nanoha EXCEEDS* matching
 the library's 2004 *Magical Girl Lyrical Nanoha*).
 
-**Library hygiene beats matcher cleverness.** Folders named
-`Show (Year) [tvdb-12345]` are identified correctly by both Plex and Jellyfin;
-folders without an id are guessed from the name, and that is where every
-mis-identification in this library came from (0 wrong out of 360 with ids, 2
-wrong out of 475 without). Jellyfin does **not** read Plex's `.plexmatch`
-files, so a folder that only Plex identifies correctly will be wrong in
-Jellyfin. Sonarr's folder format is the durable fix.
+**Jellyfin's matching is controlled by `tvshow.nfo`, not by folder names.**
+The Anime library reads local metadata first — `LocalMetadataReaderOrder:
+['Nfo']`, always on, no UI toggle (the "Metadata savers" checkbox is the
+opposite thing: it makes Jellyfin *write* NFOs, which would fight Sonarr —
+leave it empty). Its remote fetchers are TheMovieDb/OMDb and
+`EnableInternetProviders` is false, so the NFO is effectively the only source
+of truth for identification.
+
+Sonarr → Settings → Metadata → **Kodi (XBMC) / Emby** writes those files, and
+refreshes them on its daily scan, so this stays true for new series without
+anyone doing anything. Radarr does the same for movies. Enabling it and
+running System → Tasks → Refresh Series backfilled 833/836 anime folders;
+Jellyfin's realtime monitor then re-read them on its own and **46 series whose
+stored id disagreed with their NFO dropped to 0**, correcting shows that had
+been matched to entirely the wrong series (`Demon Lord 2099` → *How Not to
+Summon a Demon Lord*, a long `The 100 Girlfriends…` folder → *The Mentalist*)
+and identifying ones it had given up on. No folder renaming, no watched state
+touched in either server.
+
+Folder-name id tags are a red herring here, but the syntax is worth knowing
+because the two servers disagree: **Plex** reads `{tvdb-12345}` (curly, no
+`id`) plus `.plexmatch` files, which is what has kept Plex's matching accurate
+— it has one in 835/836 folders. **Jellyfin** reads `[tvdbid-12345]` (square,
+with `id`) and ignores `.plexmatch` entirely. This library's folders mostly
+carry `[tvdb-12345]`, which matches *neither*, so those tags do nothing on
+either server.
+
+**When measuring any of this, compare ids, not names, and scope to the seasons
+the app shows.** Comparing folder names to titles gives a false all-clear (it
+cannot see a folder whose tag says one show and whose stored id says another).
+And a library-wide count is misleading: 59 tag/id disagreements across the
+whole library was 7 within the two-year window the app actually queries, of
+which 2 mattered. `tools/check_match_corpus.py` measures the thing that counts
+— how a real season resolves end to end.
 
 ### Rate limiting
 
