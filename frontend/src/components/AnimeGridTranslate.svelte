@@ -580,6 +580,26 @@ const dispatch = createEventDispatcher();
       window.addEventListener('message', onMessage);
     }
   }
+
+  // Blur-up cover loading: the tiny `medium` image sits blurred underneath
+  // while the full `large` cover fades in once it finishes downloading. The
+  // placeholder is then removed outright — leaving hundreds of blurred images
+  // live costs a decoded bitmap and a compositing layer each, and merely
+  // hiding them leaves invisible covers in the DOM for anything (tests
+  // included) that looks for a visible cover image. `error` counts as done
+  // too, otherwise a broken cover URL stays at opacity 0 forever, hiding its
+  // own alt text.
+  function fadeInWhenLoaded(img: HTMLImageElement) {
+    const done = () => {
+      img.classList.remove('opacity-0');
+      img.previousElementSibling?.remove();
+    };
+    if (img.complete && img.naturalWidth > 0) done();
+    else {
+      img.addEventListener('load', done, { once: true });
+      img.addEventListener('error', done, { once: true });
+    }
+  }
 </script>
 
 <!-- grid of horizontal cards -->
@@ -631,12 +651,22 @@ const dispatch = createEventDispatcher();
       <!-- Row 1: Cover & YouTube thumbnail (equal width/height) -->
       <div class="flex gap-3 px-3 py-1">
         <!-- Cover image (maintains full image, matches height of trailer) -->
-        <div class="shrink-0 w-32 md:w-40 rounded overflow-hidden flex items-stretch">
+        <div class="relative shrink-0 w-32 md:w-40 rounded overflow-hidden flex items-stretch">
+          <img
+            src={show.coverImage.medium}
+            alt=""
+            aria-hidden="true"
+            class="absolute inset-0 object-contain w-full h-full blur-sm scale-105"
+            loading="lazy"
+            decoding="async"
+          />
           <img
             src={show.coverImage.large}
             alt={show.title.romaji}
-            class="object-contain w-full h-full"
+            class="relative object-contain w-full h-full opacity-0 transition-opacity duration-300"
             loading="lazy"
+            decoding="async"
+            use:fadeInWhenLoaded
           />
         </div>
 

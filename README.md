@@ -65,6 +65,38 @@ SaltyChart is under active development. The list below summarises key
 additions so new contributors are not caught off-guard. Group is rough
 chronological order; all features listed are live.
 
+**Progressive Home loading**
+- The season toolbar and section headers render immediately; each section
+  (current season vs. Leftovers) pops in as soon as its own fetch lands, with
+  shimmer skeleton cards holding the layout in the meantime — no more
+  all-or-nothing spinner on a cold cache.
+- Cover images blur-up: a tiny low-res cover shows instantly and the full
+  quality image fades in when downloaded.
+- The backend now fetches AniList pages in parallel on a cold load, cutting
+  multi-page season fetches to a fraction of the previous latency.
+
+**Plex integration (optional)**
+- The site admin points SaltyChart at a Plex server on the new **/admin**
+  page (URL + token, with a Test Connection button that lists the server's
+  libraries). The token stays server-side — browsers never see it.
+- On the Randomize page, the show pop-up gains **▶ Watch here (via Plex)**
+  — an in-page player streaming the right season's first episode through
+  the backend — when the series is found in the Plex library (matched by
+  English *and* Japanese titles, season-aware; the matched Plex title is
+  shown under the button, and a "Not on Plex" note appears otherwise).
+- The in-page player is **video.js**, so it comes with a proper control bar,
+  speed menu, captions menu, fullscreen and the usual hotkeys. The one
+  thing added on top is what Plex can't do: `]` / `[` step playback speed by
+  **±0.10×** (Plex's own player is locked to 0.25× steps), shown as a
+  VLC-style corner flash. The episode's own subtitle tracks are offered in
+  the captions menu (converted to WebVTT on the server, English on by
+  default); for audio-track or quality selection, use Plex itself.
+- **Playback starts with subtitles already on.** Pulling subtitles out of an
+  episode means reading the whole file, so SaltyChart starts that the moment
+  you open a show's pop-up — by the time you press Watch it's usually done,
+  and the video never begins without its subtitles. Extracted subtitles are
+  stored, so an episode only ever pays that cost once.
+
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
   version (the `YYYYMMDD-<sha>` image tag) in a tooltip on hover — `dev`
@@ -195,7 +227,7 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect: "Pre-deploy: 8/8 passed — ready to build"
+   # Expect: "Pre-deploy: 10/10 passed — ready to build"
    # Skip the GPU test with --skip-burned-in if no CUDA
    ```
 

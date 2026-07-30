@@ -29,6 +29,19 @@ def step(n: int, msg: str) -> None:
     print(f"[{n}/{TOTAL} UI-interact] {msg}", flush=True)
 
 
+def wait_for_grids(page, timeout: int = 30_000) -> None:
+    """
+    Wait until Home has finished loading *every* section.
+
+    Sections load independently, so cards being on screen no longer means the
+    page is done — the Leftovers grid frequently renders while the current
+    season is still a skeleton. Anything that counts or clicks cards has to
+    wait for the skeletons to go away, not just for the first image.
+    """
+    page.wait_for_selector('img[src*="anilist"]', timeout=timeout)
+    page.wait_for_selector(".skeleton", state="detached", timeout=timeout)
+
+
 def signup_and_login(page, frontend: str) -> tuple[str, str]:
     """Sign up a fresh user, return (username, password)."""
     username = f"ui_test_{int(time.time())}"
@@ -68,7 +81,7 @@ def test_login_form(page, frontend: str, username: str, password: str):
 # ─────────────────────────────────────────────────────────────────────────────
 def test_search_filter(page):
     step(2, "step 1/3: navigating Home and counting cards")
-    page.wait_for_selector('img[src*="anilist"]', timeout=10_000)
+    wait_for_grids(page)
     before = page.locator('img[src*="anilist"]').count()
     assert before > 5, f"need more anime to test filter (got {before})"
 
@@ -125,7 +138,7 @@ def test_hide_18plus(page):
 def test_season_change(page, frontend: str):
     step(4, "step 1/3: ensuring on Home and finding active season button")
     page.goto(frontend)
-    page.wait_for_selector('img[src*="anilist"]', timeout=10_000)
+    wait_for_grids(page)
     page.wait_for_timeout(500)  # let toolbar render
 
     # Find the current active season via JS — Playwright's has_text+regex fails on
@@ -185,14 +198,37 @@ def test_watched_trailer_button(page, backend: str):
     step(5, "step 1/3: noting current list size via API")
     token = page.evaluate("localStorage.getItem('token')")
     auth = {"Authorization": f"Bearer {token}"}
+    # Read the season/year the UI is actually displaying — the default season
+    # moves with the calendar (76-day lookahead), so hardcoding e.g. SUMMER
+    # breaks once the app rolls over to the next season.
+    ui_season = page.evaluate("""() => {
+        for (const b of document.querySelectorAll('button')) {
+            const t = b.textContent.trim();
+            if (['Winter','Spring','Summer','Fall'].includes(t) && b.className.includes('btn-primary'))
+                return t.toUpperCase();
+        }
+        return null;
+    }""")
+    ui_year = page.evaluate("""() => {
+        // `every` alone is vacuously true for an empty <select>, which would
+        // pick the wrong control the moment one renders before its options.
+        const sel = [...document.querySelectorAll('select')].find(s =>
+            s.options.length > 0 && [...s.options].every(o => /^\\d{4}$/.test(o.value)));
+        return sel ? Number(sel.value) : null;
+    }""")
+    assert ui_season and ui_year, f"could not read UI season/year ({ui_season}, {ui_year})"
     def get_list_size() -> int:
         r = requests.get(f"{backend}/api/list",
-                         params={"season": "SUMMER", "year": 2026},
+                         params={"season": ui_season, "year": ui_year},
                          headers=auth, timeout=5)
         return len(r.json()) if r.ok else -1
     before_size = get_list_size()
 
     step(5, "step 2/3: clicking first 'watched trailer' button")
+    # Sections load independently now, and Leftovers (the *previous* season)
+    # often lands first. Clicking then would PATCH the wrong season, so wait
+    # for every skeleton to be replaced by real cards before picking a button.
+    wait_for_grids(page)
     btns = page.get_by_role("button", name=re.compile(r"^watched trailer$", re.I))
     count = btns.count()
     assert count > 0, "no 'watched trailer' buttons on Home — page not rendering buttons correctly"
@@ -287,7 +323,7 @@ def test_logout(page, frontend: str):
     # Previous wheel test may have left a result modal open over the header —
     # navigate fresh to ensure logout link is clickable
     page.goto(frontend)
-    page.wait_for_selector('img[src*="anilist"]', timeout=10_000)
+    wait_for_grids(page)
     logout = page.get_by_role("link", name=re.compile(r"^logout$", re.I))
     if logout.count() == 0:
         logout = page.locator('button, a').filter(has_text=re.compile(r"^Logout$", re.I)).first
@@ -314,7 +350,7 @@ def test_logout(page, frontend: str):
 def test_trailer_modal_escape(page, frontend: str):
     step(9, "step 1/3: returning to Home and opening a trailer")
     page.goto(frontend)
-    page.wait_for_selector('img[src*="anilist"]', timeout=10_000)
+    wait_for_grids(page)
     # Click any YouTube thumbnail to open the modal
     trailer = page.locator('button:has(img[src*="ytimg.com"])').first
     trailer.click()

@@ -7,6 +7,7 @@ import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
+import { checkPlexAvailability, warmPlexSubtitles, plexConfigured, type PlexAvailability } from '../stores/plex';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -104,6 +105,57 @@ $: _lang = $options.titleLanguage;
   const hideAll = () => setHiddenForAll(true);
   const showAll = () => setHiddenForAll(false);
 
+  // Hide everything the Plex server doesn't have, so the wheel only spins on
+  // shows that can actually be watched. Availability is already prefetched
+  // for the whole list, so these lookups come from cache.
+  let hidingNonPlex = false;
+
+  async function hideNotOnPlex() {
+    if (!$authToken || hidingNonPlex) return;
+    hidingNonPlex = true;
+    // The lookups below are awaited, so the season could change underneath us
+    // — writing then would hide the wrong season's shows.
+    const forSeason = season;
+    const forYear = year;
+    try {
+      const visible = unwatchedDetailed.filter((it) => !it.hidden);
+      const checks = await Promise.all(
+        visible.map(async (it) => ({
+          item: it,
+          info: await checkPlexAvailability(it.id, [
+            it.customName,
+            it.title?.english,
+            it.title?.romaji,
+            it.title?.native,
+          ].filter(Boolean)).catch(() => ({ available: false, unknown: true })),
+        }))
+      );
+      if (season !== forSeason || year !== forYear) return;
+      const next = new Map(plexAvailability);
+      for (const c of checks) {
+        if (!c.info.unknown) next.set(c.item.id, c.info.available);
+      }
+      plexAvailability = next;
+      // Never hide on an inconclusive answer — a Plex timeout must not make
+      // shows disappear from the wheel.
+      const missing = checks.filter((c) => !c.info.available && !c.info.unknown).map((c) => c.item);
+      if (!missing.length) return;
+
+      watchList = watchList.map((entry) =>
+        missing.some((m) => m.id === entry.mediaId) ? { ...entry, hidden: true } : entry
+      );
+      for (const item of missing) {
+        fetch('/api/list/hidden', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+          body: JSON.stringify({ season: forSeason, year: forYear, mediaId: item.id, hidden: true }),
+        }).catch(() => {});
+      }
+    } finally {
+      hidingNonPlex = false;
+    }
+  }
+
   /**
    * Toggle the `hidden` flag for a single item.
    *
@@ -151,6 +203,61 @@ $: _lang = $options.titleLanguage;
         nicknameList = [];
       }
     })();
+  }
+
+  // ── Plex availability (never blocks the modal) ──────────────────────
+  let plexInfo: PlexAvailability | null = null;
+  let showPlexPlayer = false;
+  let PlexPlayerModal: any = null;
+
+  $: if (showModal && selected) {
+    const id = selected.id;
+    const titles = [
+      selected.customName,
+      selected.title?.english,
+      selected.title?.romaji,
+      selected.title?.native,
+    ].filter(Boolean);
+    plexInfo = null;
+    checkPlexAvailability(id, titles)
+      .then((info) => {
+        // Guard against a stale resolve after the user opened a different show.
+        if (selected?.id !== id) return;
+        plexInfo = info;
+        // Pull the episode's subtitles out of the file now rather than when
+        // Watch is pressed: the extraction reads the whole episode (~3.5s),
+        // and the seconds spent reading this pop-up cover it, so playback
+        // starts immediately with subtitles instead of waiting for them.
+        if (info.available && info.episodeRatingKey) warmPlexSubtitles(info.episodeRatingKey);
+        // Cached "not available" → re-check live, so a show downloaded a
+        // minute ago appears without waiting out the cache TTLs.
+        if (!info.available) {
+          checkPlexAvailability(id, titles, true)
+            .then((freshInfo) => {
+              if (selected?.id !== id) return;
+              plexInfo = freshInfo;
+              if (freshInfo.available && freshInfo.episodeRatingKey) {
+                warmPlexSubtitles(freshInfo.episodeRatingKey);
+              }
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
+
+  async function openPlexPlayer() {
+    if (!PlexPlayerModal) {
+      PlexPlayerModal = (await import('../components/PlexPlayerModal.svelte')).default;
+    }
+    showPlexPlayer = true;
+  }
+
+  // A plain function so the reactive block that calls it neither reads nor
+  // writes `showPlexPlayer` directly (which would drag extra invalidations
+  // into that statement).
+  function closePlexPlayer() {
+    if (showPlexPlayer) showPlexPlayer = false;
   }
 
   // Loading state while fetching list & anime
@@ -235,6 +342,10 @@ $: _lang = $options.titleLanguage;
     const key = `${season}-${year}`;
     if (key !== lastSeasonYearKey) {
       lastSeasonYearKey = key;
+      // The wheel's slices are about to be replaced, so the transitionend
+      // that clears `spinning` never arrives — without this the Spin button
+      // keeps pointer-events-none and can never be clicked again.
+      spinning = false;
       fetchBoth();
     }
   }
@@ -331,6 +442,50 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
       return data ? { ...data, customName: w.customName ?? null } : null;
     })
     .filter(Boolean);
+
+  // Warm the Plex availability cache for every wheel item as soon as the
+  // list is ready, so the popup's Plex row is there instantly instead of
+  // popping in ~1s after open. The store dedups + caches per mediaId, so
+  // re-runs of this reactive block are no-ops.
+  // mediaId → is it on Plex (absent = not checked yet). Drives both the
+  // popup row and the "Hide Not on Plex" button's enabled state.
+  let plexAvailability = new Map<number, boolean>();
+
+  /**
+   * Record one availability answer.
+   *
+   * Deliberately a plain function, not an assignment inside the `$:` block
+   * below: Svelte treats a reactive statement that writes one of its own
+   * dependencies as needing "extra invalidations", so every single response
+   * marked `watchList`/`anime`/`unwatchedEntries`/`wheelItems` dirty and
+   * re-ran this block — one full recompute of the wheel pipeline per show.
+   */
+  function recordAvailability(id: number, available: boolean) {
+    if (plexAvailability.get(id) === available) return;
+    plexAvailability = new Map(plexAvailability).set(id, available);
+  }
+
+  $: if (wheelItems.length) {
+    for (const item of wheelItems) {
+      checkPlexAvailability(item.id, [
+        item.customName,
+        item.title?.english,
+        item.title?.romaji,
+        item.title?.native,
+      ].filter(Boolean))
+        .then((info) => {
+          // Only record a definite answer; `unknown` means Plex didn't reply.
+          if (!info.unknown) recordAvailability(item.id, info.available);
+        })
+        .catch(() => {});
+    }
+  }
+
+  // Only enabled while there's actually something to hide, so the button
+  // greys out once it has done its job (same feel as Hide All / Show All).
+  $: hasNonPlexVisible = unwatchedDetailed.some(
+    (it) => !it.hidden && plexAvailability.get(it.id) === false
+  );
 
   // (Watched ranking is handled separately – see watchedRank below)
 
@@ -636,6 +791,11 @@ const sliceWorker: Worker = new SliceWorker();
   function spin() {
     if (!wheelItems.length || spinning) return;
 
+    // Drop keyboard focus from whatever was clicked (usually this button) —
+    // a still-focused Spin button re-activates on any later Space/Enter
+    // press, which reads as the wheel "spinning by itself".
+    (document.activeElement as HTMLElement | null)?.blur?.();
+
     // Ensure AudioContext is resumed (required after user gesture).
     if (audioCtx?.state === 'suspended') {
       audioCtx.resume();
@@ -711,6 +871,9 @@ const sliceWorker: Worker = new SliceWorker();
 // Global key handler (attached while modal is open) so the Enter key triggers
 // the same action irrespective of which element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
+  // While the Plex player is open it owns the keyboard (Space/Esc/[/]) —
+  // Enter here would mark-watched and close the modal underneath it.
+  if (showPlexPlayer) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     markWatched();
@@ -729,6 +892,10 @@ $: {
     window.addEventListener('keydown', handleModalKey);
   } else {
     window.removeEventListener('keydown', handleModalKey);
+    // The player lives outside this dialog, so closing the parent has to tear
+    // it down explicitly — a stuck `showPlexPlayer` would make handleModalKey
+    // swallow Enter for every future popup.
+    closePlexPlayer();
   }
 }
 
@@ -1076,7 +1243,7 @@ $: {
         <!-- Wheel -->
         <div
           id="wheel-wrapper"
-          class="relative mx-auto overflow-visible"
+          class="relative mx-auto overflow-visible select-none"
           style="
             /* 52 header + 72 selector + 52 extra + 19 buffer → 195px total */
             width: min(95vmin, calc(100dvh - 195px));
@@ -1120,7 +1287,7 @@ $: {
               text-anchor="start"
               alignment-baseline="middle"
               transform={`rotate(180) translate(-${LABEL_R_OUTER},0)`}
-              style="pointer-events:none;stroke:#000;stroke-width:.25;paint-order:stroke;white-space:pre;">
+              style="pointer-events:none;user-select:none;-webkit-user-select:none;stroke:#000;stroke-width:.25;paint-order:stroke;white-space:pre;">
               {shortTitle(item)}
             </text>
           </g>
@@ -1214,6 +1381,18 @@ $: {
               >
                 Show All
               </button>
+              {#if $plexConfigured}
+                <button
+                  type="button"
+                  class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
+                  on:click={hideNotOnPlex}
+                  disabled={!hasNonPlexVisible || hidingNonPlex}
+                  title="Hide every unwatched show the Plex server doesn't have"
+                >
+                  {#if hidingNonPlex}<span class="loading loading-spinner loading-xs"></span>{/if}
+                  Hide Not on Plex
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1479,6 +1658,36 @@ $: {
           </div>
         {/if}
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
+        {#if plexInfo?.available}
+          <div class="flex flex-col items-center gap-1 mb-4">
+            <button class="btn btn-sm btn-accent" on:click={openPlexPlayer}>
+              ▶ Watch here (via Plex)
+              {#if plexInfo.seasonNumber != null && plexInfo.episodeNumber != null}
+                — S{plexInfo.seasonNumber}E{plexInfo.episodeNumber}
+              {/if}
+            </button>
+            {#if plexInfo.plexTitle}
+              <!-- Everything here is Plex's own metadata for the episode we
+                   resolved, so a wrong match or wrong season is visible
+                   before you click play. -->
+              <span class="text-xs opacity-60">
+                Plex: {plexInfo.plexTitle}
+                {#if plexInfo.seasonNumber != null && plexInfo.episodeNumber != null}
+                  · S{plexInfo.seasonNumber}E{plexInfo.episodeNumber}
+                {/if}
+                {#if plexInfo.episodeTitle}
+                  · {plexInfo.episodeTitle}
+                {/if}
+              </span>
+            {/if}
+          </div>
+        {:else if $plexConfigured && plexInfo?.unknown}
+          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach Plex — try again shortly</p>
+        {:else if $plexConfigured && plexInfo && !plexInfo.available}
+          <p class="text-center text-xs opacity-50 mb-4">
+            Not on Plex{plexInfo.plexTitle ? ` (found "${plexInfo.plexTitle}" but not this season)` : ''}
+          </p>
+        {/if}
         <div class="modal-action relative flex justify-center">
           {#if selected.watched || watchList.find(w => w.mediaId === selected.id)?.watched}
             <!-- Watched series: only show unwatch button (same pink color as Hide Series) -->
@@ -1498,6 +1707,17 @@ $: {
         </div>
       </div>
     </dialog>
+  {/if}
+
+  <!-- Plex in-page player (lazy-loaded chunk; stacks above the show modal) -->
+  {#if showPlexPlayer && plexInfo?.episodeRatingKey && selected}
+    <svelte:component
+      this={PlexPlayerModal}
+      episodeRatingKey={plexInfo.episodeRatingKey}
+      title={selected.customName || getEnglishTitle(selected)}
+      episodeTitle={plexInfo.episodeTitle ?? ''}
+      on:close={closePlexPlayer}
+    />
   {/if}
 
   <!-- Image Upload Modal -->

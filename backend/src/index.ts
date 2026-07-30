@@ -73,6 +73,8 @@ import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
+import plexRouter from './routes/plex';
+import jellyfinRouter from './routes/jellyfin';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -110,6 +112,12 @@ const generalLimiter = rateLimit({
 // limiter doesn't buffer responses, so it's safe (and necessary) here — the
 // unthrottled /check-batch loop otherwise lets a client fan out YouTube hits.
 app.use('/api/translate', generalLimiter, translateRouter);
+
+// The Plex router is also registered BEFORE compression(): its /stream/*
+// proxy pipes HLS segments, which compression() would buffer. It carries its
+// own limiters (120/min JSON endpoints, 600/min stream) and JSON parser
+// because the global ones below don't apply to this early mount.
+app.use('/api/plex', plexRouter);
 
 app.use(compression());
 
@@ -380,6 +388,42 @@ async function ensureDatabaseSchema() {
       console.warn('[DB] Failed to add SubtitleCache columns', err);
     }
 
+    // --------------------- AppConfig table ---------------------
+    // Server-wide key/value config (e.g. Plex URL + token, set via the admin
+    // page). Mirrored in schema.prisma like the other runtime-created tables.
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "AppConfig" (
+          "key"   TEXT NOT NULL PRIMARY KEY,
+          "value" TEXT NOT NULL
+        );
+      `);
+    } catch (err) {
+      console.warn('[DB] Failed to create AppConfig table', err);
+    }
+
+    // --------------------- PlexSubtitle table ---------------------
+    // WebVTT pulled out of a Plex part's embedded subtitle streams. Extracting
+    // reads the entire episode file, so this must outlive the process — an
+    // in-memory-only cache made every deploy re-pay that cost per episode.
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "PlexSubtitle" (
+          "id"          INTEGER PRIMARY KEY AUTOINCREMENT,
+          "partId"      INTEGER NOT NULL,
+          "streamIndex" INTEGER NOT NULL,
+          "vtt"         TEXT NOT NULL,
+          "createdAt"   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "PlexSubtitle_partId_streamIndex_key"
+         ON "PlexSubtitle" ("partId", "streamIndex");`
+      );
+    } catch (err) {
+      console.warn('[DB] Failed to create PlexSubtitle table', err);
+    }
+
     // --------------------- Performance indexes ---------------------
     // CREATE INDEX IF NOT EXISTS is idempotent — runs on every startup, only
     // actually builds the index on first boot after deploy. Indexes match the
@@ -431,6 +475,9 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/users', usersRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
+  // Jellyfin config (admin only). Unlike /api/plex this mounts here — it has
+  // no streaming endpoint, so compression() and the global parsers are fine.
+  app.use('/api/jellyfin', jellyfinRouter);
   // Note: /api/translate is registered before compression() middleware (see above)
 
   app.listen(PORT, () => {

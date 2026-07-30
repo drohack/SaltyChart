@@ -94,6 +94,21 @@ py -3.13 -u tools/tests/run_all.py --skip-burned-in
 The backend's `/api/auth/*` rate limiter (20 req/min in prod) is **disabled
 when `NODE_ENV !== 'production'`** so rapid signups during tests don't trip it.
 
+**⚠ AniList rate limit while testing.** AniList allows ~**30 req/min per IP**
+(degraded state), and the whole home network — dev PC, production server,
+every browser's direct `stores/season.ts` call — shares one public IP. A cold
+season fetch is up to ~8 GraphQL requests, so repeatedly wiping `SeasonCache`
+to test cold loads WILL trip the limit; once tripped, cold fetches stall in
+60s+ 429 backoff (looks like "the page never loads") and the penalty can
+linger for a long time. Rules of thumb:
+- Don't wipe `SeasonCache` more than once or twice per hour; pre-warm the
+  displayed season + its leftovers (`curl /api/anime?...`) before `run_all.py`.
+- When a season request suddenly takes minutes, check the backend console for
+  `AniList 429` lines before suspecting the code.
+- Mitigations already in place: cold fetches are coalesced per season,
+  expired cache rows are served stale while refreshing in the background,
+  and 429 retries respect AniList's headers (15/30/45s fallback).
+
 Suite includes:
 | File | Covers |
 |---|---|
@@ -104,8 +119,10 @@ Suite includes:
 | `test_ui_interactions.py` | 10 button-click flows: login, search filter, hide 18+, season change, add-to-list, theme, wheel spin, logout, modal Escape, Compare with 2 users |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
+| `test_plex.py` | `/api/plex` auth/admin gates + validation; availability & stream-proxy steps auto-skip when Plex is unconfigured |
 
-Final line on success: `Pre-deploy: 8/8 passed — ready to build`. On failure:
+Final line on success: `Pre-deploy: 10/10 passed — ready to build` (9/9 with
+`--skip-burned-in`). On failure:
 `Pre-deploy: FAILED at step X — DO NOT deploy`.
 
 ---
@@ -153,12 +170,18 @@ Path: `backend/`
 ### API routes mounted under `/api/*`
 
 - `/api/health`          (health check)
-- `/api/anime`           (AniList GraphQL proxy + cache)
+- `/api/anime`           (AniList GraphQL proxy + cache; page 1 reveals
+  `lastPage`, then pages 2..N are fetched with a concurrency-3 pool — a
+  mid-season cold load is 6–12 pages and sequential round trips dominated
+  its latency. Concurrent cold requests for the same season are coalesced,
+  and an **expired `SeasonCache` row is served stale while a background
+  refresh runs** — only a never-fetched season blocks on AniList)
 - `/api/auth`            (login, signup, password reset, JWT issuance)
 - `/api/list`            (user watchlist CRUD)
 - `/api/public-list`     (public watchlist read-only)
 - `/api/users`           (user management)
 - `/api/options`         (per-user UI preferences)
+- `/api/plex`            (Plex Media Server integration — see below)
 
 Routes inside existing routers:
 
@@ -172,6 +195,54 @@ Routes inside existing routers:
 - `PUT   /api/list` — replace entire list for a season/year in one shot
 - `POST  /api/auth/reset-password` — reset a user's password by username; no auth required (intentionally low-security — no email, small friend-group app)
 
+### Plex integration routes (`/api/plex`)
+
+The admin points SaltyChart at a Plex server (URL + `X-Plex-Token`) on the
+`/admin` page; both are stored in the `AppConfig` DB table. **The token never
+reaches a browser** — availability responses carry only ratingKeys and
+display strings, the stream proxy injects the token server-side, and anything
+logged from the subtitle extractor is run through `redact()` first (ffmpeg
+echoes the source URL, which carries the token). Like `/api/translate`,
+this router mounts **before `compression()`** (the stream proxy pipes HLS
+segments, which compression would buffer), so it carries its own limiter
+instances and JSON parser.
+
+- `GET  /api/plex/status`       — `{ configured, isAdmin }` probe (JWT
+  required). `isAdmin` rides along so the header's Admin link doesn't need to
+  probe an admin-only endpoint (which would 403-spam the console for
+  everyone else); `stores/plex.ts` fetches this once per login.
+- `POST /api/plex/availability` — `{ mediaId, titles[] }` → is the series in
+  the Plex library + the entry's season's first episode (season parsed from
+  "Nth Season"/「第N期」 markers; missing season = unavailable; no marker =
+  first episode overall, skipping season-0 specials). Returns
+  `{ available, showRatingKey, episodeRatingKey, episodeTitle, seasonNumber,
+  episodeNumber, plexTitle }`. Fuzzy title match (Unicode-aware
+  normalization, exact > prefix > contains with length-ratio guards) against
+  each show's `title` **and** `originalTitle` in all `type=show` libraries
+  (list cached 1h). Per-mediaId cache: 1h positives, 10min negatives.
+  `fresh: true` in the body (sent by the popup when the cached verdict is
+  negative) bypasses the negative cache and refreshes the library list on a
+  match-miss, so a just-downloaded show appears immediately.
+  Always 200 — Plex down/unconfigured is `{ available: false, unknown: true }`
+  (never cached). **`unknown` is load-bearing**: it means "couldn't ask", not
+  "not in the library", and every consumer must refuse to hide a show on it,
+  or one slow moment empties the wheel.
+- `GET  /api/plex/stream/*`     — GET-only streaming proxy to the Plex server
+  (JWT via `Authorization` header or `?token=` for Safari-native HLS). Used
+  for the universal-transcode HLS playlist/segments (`directStream=1`, remux
+  not re-encode when codecs allow) and session ping/stop. Forwards `Range`,
+  destroys the upstream transfer when the client disconnects.
+- `POST /api/plex/warm-subtitles` — `{ episodeRatingKey }`; starts the
+  subtitle extraction for that episode in the background and returns
+  immediately (JWT required). The Randomize pop-up fires this the moment the
+  availability lookup says the episode is on Plex, so the ~3.5s full-file read
+  happens while the viewer reads the pop-up instead of after they press Watch.
+  No-op when the part is already cached.
+- `GET/PUT /api/plex/config` + `POST /api/plex/config/test` — admin only
+  (`ADMIN_USER_ID`): read config (URL + `tokenSet`, never the token), save
+  (empty token keeps the stored one), and test a connection (returns server
+  name + library list, or the error, always as 200 `{ ok, ... }`).
+
 ### Rate limiting
 
 A 120 req/min per-IP `generalLimiter` covers all routes. `/api/translate/*`
@@ -180,7 +251,11 @@ applied explicitly on that mount — `app.use('/api/translate', generalLimiter,
 translateRouter)` — rather than relying on the later global `app.use`.
 `/api/auth/*` has a stricter 20 req/min limiter. The 4 unauthenticated
 `/api/list/*` endpoints above additionally sit behind a 60 req/min
-`publicListLimiter`.
+`publicListLimiter`. `/api/plex` also mounts before `compression()` and so
+carries its own limiters: 120 req/min for the JSON endpoints and a separate
+**600 req/min** for `/api/plex/stream/*` (HLS playback is a playlist refresh +
+a segment every few seconds plus seek bursts — it must not eat the general
+budget).
 
 ### Error response shape
 
@@ -502,6 +577,16 @@ Tables / columns:
   watched and ranked in the Randomize page.
 - `WatchList.hidden` — boolean; when true the show is skipped by the
   Randomize wheel.
+- `AppConfig` — server-wide key/value config (`key` TEXT PK, `value` TEXT).
+  Currently holds `plexUrl` / `plexToken`, written by the admin `/admin` page
+  via `PUT /api/plex/config`.
+- `PlexSubtitle` — `partId` + `streamIndex` unique, `vtt` TEXT, `createdAt`.
+  WebVTT extracted from a Plex part's embedded subtitle streams. Extraction
+  reads the **entire** episode file (~3.5s for a 900MB MKV at LAN speed), so
+  the result is persisted, not just held in memory — an in-memory-only cache
+  made every deploy re-pay that cost for every episode. An in-process `Map`
+  sits in front of it as an L1 cache. Measured after a backend restart:
+  3.9s → 6.7ms.
 - `SubtitleCache` — `videoId` unique, `mediaId`, `modelName`,
   `hasEnglishSubs`, `lastEnCheckAt`, `subtitlesDisabled`, `hasBurnedInSubs`,
   `segments` JSON, `createdAt`. Caches check results, translated segments, and
@@ -532,7 +617,7 @@ Path: `frontend/`
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (produces static assets)
 - Preview: `npm run preview`
-- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare
+- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare, Admin (header link + page gated to the admin user via the `isAdmin` flag on `/api/plex/status` — `stores/plex.ts`)
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 - The main anime grid (`AnimeGridTranslate.svelte`) handles trailer subtitles
   via `/api/translate`. If the video has YouTube English CC (checked via a
@@ -561,6 +646,13 @@ Path: `frontend/`
 - Series already in *My List* are no longer 50% opaque; instead they get a
   subtle border highlight so images remain readable.
 - Adult shows display a small "18+" badge.
+- **Progressive loading** (Home): the current-season fetch and the Leftovers
+  fetch each gate only their own sections — the toolbar/headers render
+  immediately, `SkeletonGrid.svelte` shimmer cards hold each section's slot
+  while its fetch is in flight, and one failed fetch shows a per-section
+  error + Retry without blanking the rest. Covers blur-up: the tiny
+  `coverImage.medium` renders blurred underneath while `large` fades in on
+  load (`fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
 
 **Randomize page**
 - Wheel spin plays a *tick* sound, shows confetti, and displays a spinner
@@ -570,11 +662,130 @@ Path: `frontend/`
 - Pop-up shows other users' nickname + rank for the selected show (queried
   via the nickname endpoints) as well as your own.
 - Individual shows can be *hidden* from the wheel via a context-menu (uses
-  the `/api/list/hidden` endpoint and `WatchList.hidden` DB column).
+  the `/api/list/hidden` endpoint and `WatchList.hidden` DB column). The
+  unwatched column also has **Hide All / Show All / Hide Not on Plex** — the
+  last hides every visible unwatched entry the Plex server doesn't have, so
+  the wheel only lands on something watchable (shown only when Plex is
+  configured; uses the prefetched availability cache).
 - "Nicknames from" panel auto-checks users who have any entry for the
   current season/year. Re-runs whenever season or year changes, via
   `GET /api/list/users-with-ratings`. Manual toggles persist only within
   the current season view (they reset on season change).
+- When Plex is configured (see `/api/plex` routes), the show pop-up gains a
+  **▶ Watch here (via Plex) — SxEy** button (`PlexPlayerModal.svelte`, a
+  lazy-loaded video.js chunk — HLS comes from video.js's bundled VHS, there
+  is no separate hls.js — streaming through the backend proxy) plus a
+  "Plex: <matched title>" caption so a bad fuzzy match is visible; when the
+  series (or the entry's specific season) isn't in the library a muted
+  "Not on Plex" note shows instead. **Season-aware**: a "2nd Season" /
+  「第2期」 entry resolves to that season's episode 1 and is honestly
+  unavailable if Plex lacks that season. Availability is prefetched for all
+  wheel items when the list loads, so the button appears instantly.
+- `PlexPlayerModal.svelte` is a **thin wrapper around video.js 8**
+  (Apache-2.0), lazy-loaded in its own chunk — keep it that way. video.js
+  owns the control bar, menus, fullscreen, PiP, hotkeys and error handling.
+  The wrapper adds only: the Plex HLS source URL, the transcode session
+  ping/stop, the JWT on every request (VHS `xhr.onRequest` hook), and the
+  **`]` / `[` keys that step playback speed by 0.10× across 0.2×–4.0×** with
+  a corner flash — Plex's own player is locked to 0.25× steps, which is the
+  entire reason this player exists. `playbackRates` feeds video.js's speed
+  menu the same steps so the two can't disagree. The speed keys deliberately
+  don't count as user activity: `player.reportUserActivity` is wrapped and
+  gated for ~600ms after a speed change — every activity path in video.js
+  funnels through it, so clearing `userActive` afterwards just loses the
+  race. Only applies when the bar was already hidden, so mouse users are
+  unaffected. Subtitles are also pinned at `bottom: 3em` (video.js otherwise
+  drops them to 1em while controls are hidden, so they hop whenever the bar
+  slides in or out).
+- Enabled video.js options: `skipButtons` (±10s), `enableSmoothSeeking`,
+  `experimentalSvgIcons`, `persistTextTrackSettings` (video.js stores the
+  viewer's caption styling in localStorage; SaltyChart only seeds defaults —
+  transparent background, white text, uniform edge — when nothing is stored
+  yet), plus a small `:global` style to un-hide the elapsed/duration
+  readouts the default skin suppresses.
+- **Seeking = repositioning the session, not making a new one.** Plex only
+  produces segments forward from where a session started, so a seek beyond
+  that returns 404s VHS retries forever ("buffering forever"). The fix is to
+  re-request `start.m3u8` with a new `offset` **and the same `session` id** —
+  Plex moves the existing transcoder (verified: session count unchanged
+  across six seeks, one session for the whole playback, stopped once on
+  close). Do *not* mint a session per seek: that churns sessions and leaks
+  one whenever a `/stop` is missed. The player repositions when a seek lands
+  outside the buffered range, and a watchdog does the same after 10s without
+  progress — it deliberately does *not* skip while `seeking()` is true, since
+  that's precisely the stuck case. A seek arriving mid-reposition is stashed
+  in `pendingSeek` and applied once the new source loads. Three guards keep
+  that from eating itself: loading at an offset makes the player emit its own
+  `seeked` at that offset (ignored when it's within 5s of the restart target,
+  or it would restart at the same spot forever), the watchdog skips while a
+  restart is in flight, and the `restarting` flag times out after 30s so a
+  source that never reaches `loadedmetadata` can't latch it and silently
+  swallow every later seek.
+- Picture-in-picture is deliberately disabled. Chromecast is wired up via
+  `@silvermine/videojs-chromecast` (MIT) but **cannot work as deployed**:
+  Google's Cast sender SDK only initialises in a secure context (HTTPS or
+  localhost), and SaltyChart is served over plain HTTP on the LAN, so
+  `window.chrome.cast` never exists and the button never renders. The player
+  therefore checks `window.isSecureContext` and skips loading the plugin and
+  Google's SDK entirely rather than delaying every player open for a button
+  that can't appear. Serving the app over HTTPS lights it up with no code
+  change.
+- **Subtitles** come from the file itself, surfaced through video.js's own
+  captions menu (there is no separate SaltyChart control). Plex's HLS output
+  never carries subtitle renditions — verified across embedded-ASS,
+  embedded-SRT and sidecar-SRT files — and its only offer is to *burn* them,
+  which additionally ignores `subtitleStreamID` (PMS 1.43). So
+  `/api/plex/subtitles` converts them: a sidecar file is fetched from Plex
+  and converted in ~0.1s, while embedded tracks need one ffmpeg pass over
+  the source file (~10-40s, all languages at once, then cached). A library
+  scan of 60 shows found 44 embedded-only, 8 sidecar, 8 with no subtitles.
+  **Playback waits for the English track** — starting an anime episode before
+  its subtitles arrive just means missing the opening dialogue, so `autoplay`
+  is off and `startPlayback()` runs once the track is registered (the video
+  loads and buffers throughout, so it starts instantly then). A "Loading
+  subtitles…" chip with a **Play anyway** button covers the wait, and a 45s
+  cap starts playback regardless; a file with no English track doesn't wait at
+  all. In practice the wait is usually zero — see `warm-subtitles` above.
+  Tracks are registered with video.js only once the fetch lands; attaching
+  them earlier makes the browser eagerly pull every language into the
+  still-running extraction. The player passes every subtitle index it
+  already has from Plex's metadata (`indexes=…`), so the server needs no
+  ffprobe of its own. Extractions are deduplicated per part and capped at
+  **2 concurrent** — each one streams a whole episode file through ffmpeg on
+  the same box that transcodes for Plex.
+- **The extractor's file URL must carry `download=1`.** Without it Plex reads
+  a plain `/library/parts/{id}/file.mkv` request as a second *playback* of
+  that item and reaps the transcode session the player is streaming from:
+  the first segment succeeds, every one after it 404s (the session ping 404s
+  too), and the video buffers forever on the first open of any episode whose
+  subtitles aren't cached yet. A/B verified against a live session — plain
+  URL → next segment 404, `download=1` → 200. Passing a different
+  `X-Plex-Client-Identifier` does *not* help; only `download=1` does.
+- **Plex burns the part's remembered subtitle selection into the video** and
+  ignores `subtitles=none` *and* `subtitleStreamID=0` on the stream URL (PMS
+  1.43 reported `subtitleDecision: burn` with both set). That produced
+  doubled text — Plex's burned-in copy under the player's own WebVTT track.
+  The player therefore calls `POST /api/plex/clear-burn/:partId` before
+  starting a stream, which PUTs `subtitleStreamID=0` onto the part. When
+  debugging "double subtitles", pull a frame straight from the source file
+  (`ffmpeg -ss <t> -i <file> -map 0:v:0 -frames:v 1`) before blaming
+  hardsubs — these library files are *not* hardsubbed; Plex was the source.
+- Track selection prefers a **plain English dialogue track**: labels matching
+  `sdh|dubtitle|sign|song` are set aside (SDH interleaves "[door creaks]",
+  dubtitles are written for the dub rather than the Japanese audio, and
+  signs/songs aren't dialogue). The file's **own flags**, which Plex exposes
+  but hides in the UI, do the rest: `default` breaks the tie *within* the
+  chosen set — not on its own, since releases do flag SDH as default —
+  `forced` excludes signs-only tracks, and `title` is folded into the menu
+  label so several tracks Plex all calls "English" appear as "English",
+  "English (Dubtitle)", "English Forced". If nothing plain exists the flag
+  decides among the rest, then the first English track. Exactly one track is
+  enabled, by object identity — matching on labels switched on every English
+  variant at once, which is what double subtitles looked like.
+- While the player is open `handleModalKey` is suppressed so Enter can't
+  mark-watched underneath. Caveat: playback runs under the server account
+  (the admin's X-Plex-Token), so progress doesn't sync to viewers' Plex
+  profiles.
 
 **Compare page** (redesigned; mobile + desktop share the same card layout)
 - One card per anime with cover thumbnail, canonical title (de-emphasised),
@@ -620,7 +831,8 @@ Path: `backend/prisma/schema.prisma` (a legacy root-level `prisma/` folder
 from the old SvelteKit prototype has been removed).
 
 - Defines `User`, `WatchList` (with `watchedRank`, `hidden` columns),
-  `Settings`, and the two runtime caches `SeasonCache` / `SubtitleCache`.
+  `Settings`, the two runtime caches `SeasonCache` / `SubtitleCache`, and the
+  server-wide `AppConfig` key/value table (Plex URL/token).
   `Settings.nicknameUserSel` and `subtitlePrefs` (JSON, read/written via raw SQL
   in `/api/options`) are now declared on the model too. `SeasonCache` /
   `SubtitleCache` are created & patched only by the raw SQL in `index.ts`; the

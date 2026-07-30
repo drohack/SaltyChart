@@ -87,7 +87,11 @@ def main():
             # ───────── 1/5  Home renders anime grid ─────────
             step(1, "loading / (Home page)")
             page.goto(frontend, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_selector('img[src*="anilist"], img[src*="ytimg"]', timeout=15000)
+            # Skip the blur-up placeholders (aria-hidden): they're covers too,
+            # but they come and go as the full-size images load in.
+            page.wait_for_selector(
+                'img[src*="anilist"]:not([aria-hidden]), img[src*="ytimg"]', timeout=15000
+            )
             anime_count = page.locator('img[src*="anilist"]').count()
             if anime_count < 1:
                 fail(1, f"no anime cards rendered (got {anime_count})")

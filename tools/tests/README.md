@@ -3,7 +3,7 @@
 Pre-deploy smoke + regression tests for SaltyChart. Run these before building
 Docker images to catch site-breaking regressions.
 
-Full suite runs in **~45s** without GPU (steps 1-5 run in parallel; steps 6-8
+Full suite runs in **~45s** without GPU (steps 1-6 run in parallel; steps 7-9
 sequentially share the browser). With the burned-in GPU test added: ~105s.
 
 ## One-shot pre-deploy
@@ -37,6 +37,7 @@ Final line is either `Pre-deploy: N/N passed — ready to build` or
 | `test_season_lookahead.py` | 76-day next-season cutover logic (regression for "X days till" bug) — pure Python, 6 cases | nothing | <1s |
 | `test_api_smoke.py` | 13 happy paths: health, auth, list CRUD (PUT/GET/watched/hidden/rank reorder), anime/AniList, anime cache latency, all 4 public-list endpoints, options round-trip, /api/users (Compare username picker) | backend running | ~10s |
 | `test_api_negative.py` | 10 error paths/auth gates: signup missing-fields/dup, password reset round-trip, missing/malformed JWT, bad season validation, /public-list nonexistent user, /translate/check shape, /check-batch shape, admin endpoints reject 401/403 | backend running | ~5s |
+| `test_plex.py` | `/api/plex` auth + admin gates, status/availability shapes; live availability + stream-proxy steps auto-skip when Plex is unconfigured (set on /admin) | backend running | ~5s unconfigured, ~20s live |
 | `test_frontend_smoke.py` | Home/Login/SignUp/Randomize/Compare pages render with no console errors, auth-gated routes accessible after signup | backend + frontend | ~20s |
 | `test_ui_interactions.py` | 10 user-clickable interactions: login form, search filter, hide 18+, season change, "watched trailer" button, theme dropdown, wheel spin, logout, trailer modal Escape, Compare with 2 users | backend + frontend | ~20s |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube English CC, Whisper overlay, CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
@@ -80,8 +81,8 @@ convention. Each line shows overall position so the Claude Code status bar
 makes sense in isolation:
 
 ```
-[parallel 1-5/8] running 5 independent checks concurrently...
-[1/8 pre-deploy] PASS — backend tsc (1.8s)
+[parallel 1-6/10] running 6 independent checks concurrently...
+[1/10 pre-deploy] PASS — backend tsc (1.8s)
 [2/13 API-smoke] POST /api/auth/signup as smoke_test_1781202612885
 [2/13 API-smoke] PASS — got JWT token
 [1/2 EsQudPqDOQQ] step 3/4: frame 2/7 (13.1s): MATCH (fz=86% sem=86%)

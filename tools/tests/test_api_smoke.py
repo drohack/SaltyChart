@@ -297,8 +297,11 @@ def main():
         fail(13, f"expected non-empty array, got {users!r}")
     if not all(isinstance(u, str) for u in users):
         fail(13, "expected array of strings")
-    # Use prefix filter to find our user (Compare dropdown's real usage)
-    r = requests.get(f"{backend}/api/users", params={"q": username[:11]}, timeout=5)
+    # Use prefix filter to find our user (Compare dropdown's real usage).
+    # Query the full username: /api/users caps results at 20 alphabetically, so
+    # a short shared prefix silently drops the newest test user once a handful
+    # of them exist.
+    r = requests.get(f"{backend}/api/users", params={"q": username}, timeout=5)
     filtered = r.json()
     if username not in filtered:
         fail(13, f"prefix filter didn't include our user (got {len(filtered)} matches)")

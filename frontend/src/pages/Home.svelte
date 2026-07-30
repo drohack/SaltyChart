@@ -3,7 +3,7 @@
 import SeasonSelect from '../components/SeasonSelect.svelte';
 import AnimeGrid from '../components/AnimeGridTranslate.svelte';
 import WatchListSidebar from '../components/WatchListSidebar.svelte';
-import LoadingSpinner from '../components/LoadingSpinner.svelte';
+import SkeletonGrid from '../components/SkeletonGrid.svelte';
 import { authToken, userName } from '../stores/auth';
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
@@ -164,7 +164,14 @@ import { nextSeasonInfo } from '../stores/season';
     return entry?.customName?.toLowerCase().includes(q) ?? false;
   });
 
-  let loading = false;
+  // Per-section loading: the current-season sections and the Leftovers
+  // section each render as soon as their own fetch lands (no all-or-nothing
+  // spinner). Errors are also per-section so one failed fetch doesn't blank
+  // the other.
+  let loadingMain = false;
+  let loadingLeftovers = false;
+  let errorMain = false;
+  let errorLeftovers = false;
   let hideSequels = false;
   let hideInList = false;
 let autoRename = false;
@@ -365,36 +372,77 @@ let autoRename = false;
     return { season: order[idx - 1], year: y };
   }
 
-  async function fetchAnime() {
-    loading = true;
-    try {
-      const prev = prevSeasonYear(season, year);
-      const [curRes, prevRes] = await Promise.all([
-        fetch(`/api/anime?season=${season}&year=${year}`),
-        fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`)
-      ]);
+  // Discard stale responses when the user switches seasons mid-flight.
+  let _mainReqId = 0;
+  let _leftoversReqId = 0;
+  let _mainLanded = false;
 
-      // Only assign on a successful array response. On an API error the body is
-      // { error, code }; assigning that to `anime` makes the reactive
-      // `anime.filter(...)` blocks throw outside this try and blank the page.
-      // Keep the prior data for whichever request failed.
-      if (curRes.ok) {
-        const currentData = await curRes.json();
-        if (Array.isArray(currentData)) anime = currentData;
+  async function fetchMainSeason() {
+    const reqId = ++_mainReqId;
+    loadingMain = true;
+    errorMain = false;
+    _mainLanded = false; // this season's list isn't in yet
+    try {
+      const res = await fetch(`/api/anime?season=${season}&year=${year}`);
+      if (reqId !== _mainReqId) return;
+      // Only assign on a successful array response. On an API error the body
+      // is { error, code }; assigning that to `anime` makes the reactive
+      // `anime.filter(...)` blocks throw and blank the page.
+      const data = res.ok ? await res.json() : null;
+      if (reqId !== _mainReqId) return;
+      if (Array.isArray(data)) {
+        anime = data;
+        _mainLanded = true;
+        // Fire the subtitle prefetch as soon as the main season is in — the
+        // leftovers call re-runs it with both lists when it lands.
+        prefetchSubtitleStatus(anime, prevSeasonAnime);
+      } else {
+        errorMain = true;
       }
-      if (prevRes.ok) {
-        const prevData = await prevRes.json();
-        if (Array.isArray(prevData)) prevSeasonAnime = prevData;
-      }
-      prefetchSubtitleStatus(anime, prevSeasonAnime);
     } catch (e) {
-      console.error(e);
+      if (reqId !== _mainReqId) return;
+      console.error('[Home] main season fetch failed', e);
+      errorMain = true;
     } finally {
-      loading = false;
-      if ($authToken) {
-        fetchList();
+      if (reqId === _mainReqId) {
+        loadingMain = false;
+        if ($authToken) fetchList();
       }
     }
+  }
+
+  async function fetchLeftovers() {
+    const reqId = ++_leftoversReqId;
+    loadingLeftovers = true;
+    errorLeftovers = false;
+    try {
+      const prev = prevSeasonYear(season, year);
+      const res = await fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`);
+      if (reqId !== _leftoversReqId) return;
+      const data = res.ok ? await res.json() : null;
+      if (reqId !== _leftoversReqId) return;
+      if (Array.isArray(data)) {
+        prevSeasonAnime = data;
+        // Only once the main season is in: leftovers often lands first, and
+        // prefetching then would pass the *previous* season's `anime` array.
+        if (_mainLanded) prefetchSubtitleStatus(anime, prevSeasonAnime);
+      } else {
+        errorLeftovers = true;
+      }
+    } catch (e) {
+      if (reqId !== _leftoversReqId) return;
+      console.error('[Home] leftovers fetch failed', e);
+      errorLeftovers = true;
+    } finally {
+      if (reqId === _leftoversReqId) loadingLeftovers = false;
+    }
+  }
+
+  function fetchAnime() {
+    // Two independent fetches — each section renders as soon as its own
+    // data arrives.
+    fetchMainSeason();
+    fetchLeftovers();
   }
 
   async function fetchList(): Promise<void> {
@@ -465,8 +513,14 @@ let autoRename = false;
         </span>
       {/if}
     </div>
-  {#if loading}
-    <LoadingSpinner size="lg" />
+  {#if loadingMain}
+    <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
+    <SkeletonGrid count={6} />
+  {:else if errorMain}
+    <div class="alert alert-error mt-8">
+      <span>Couldn't load {season} {year} — AniList may be busy.</span>
+      <button class="btn btn-sm" on:click={fetchMainSeason}>Retry</button>
+    </div>
   {:else}
   {#if tvAnimeFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
@@ -509,7 +563,17 @@ let autoRename = false;
       />
     {/if}
 
-    {#if leftoversFiltered.length}
+  {/if}
+
+  {#if loadingLeftovers}
+    <h2 class="text-2xl font-bold mt-8 mb-4">Leftovers</h2>
+    <SkeletonGrid count={3} />
+  {:else if errorLeftovers}
+    <div class="alert alert-error mt-8">
+      <span>Couldn't load the Leftovers section.</span>
+      <button class="btn btn-sm" on:click={fetchLeftovers}>Retry</button>
+    </div>
+  {:else if leftoversFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">Leftovers</h2>
       <AnimeGrid
         anime={leftoversFiltered}
@@ -528,6 +592,7 @@ let autoRename = false;
       />
     {/if}
 
+  {#if !loadingMain && !errorMain}
     {#if ovaOnaSpecialFiltered.length}
       <h2 class="text-2xl font-bold mt-8 mb-4">OVA / ONA / Special</h2>
       <AnimeGrid

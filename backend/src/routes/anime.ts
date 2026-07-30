@@ -17,6 +17,108 @@ interface SeasonQuery {
   format?: string;
 }
 
+/** Non-429 AniList failure; carries the upstream HTTP status for passthrough. */
+class UpstreamError extends Error {
+  constructor(public status: number) {
+    super(`AniList responded ${status}`);
+  }
+}
+
+/**
+ * Fetch one AniList page with 429 retry/backoff. Returns the GraphQL `Page`
+ * object ({ pageInfo, media }). Throws UpstreamError on non-200/non-429.
+ */
+async function fetchAniListPage(query: string, baseVariables: Record<string, unknown>, page: number) {
+  let attempts = 0;
+  const maxAttempts = 3;
+  while (true) {
+    const response = await axios.post(
+      'https://graphql.anilist.co',
+      { query, variables: { ...baseVariables, page } },
+      {
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        validateStatus: () => true // handle 429 manually
+      }
+    );
+
+    if (response.status === 200) return response.data?.data?.Page ?? {};
+    if (response.status !== 429) throw new UpstreamError(response.status);
+
+    // received 429, wait then retry
+    attempts++;
+    if (attempts > maxAttempts) throw new Error('AniList rate limit exceeded');
+    // Respect AniList headers when provided
+    const retryAfterHeader = response.headers['retry-after'];
+    const resetHeader = response.headers['x-ratelimit-reset'];
+
+    let waitMs: number;
+    if (retryAfterHeader) {
+      waitMs = Number(retryAfterHeader) * 1000;
+    } else if (resetHeader) {
+      const resetTs = Number(resetHeader) * 1000; // header is seconds
+      waitMs = Math.max(resetTs - Date.now(), 0);
+    } else {
+      // No headers on the 429: escalate within AniList's 1-minute window.
+      // (60s per attempt made a contended cold load feel dead — the page
+      // sat on skeletons for minutes when 15-45s was enough to recover.)
+      waitMs = 15_000 * attempts;
+    }
+    // Floor the wait: a reset timestamp in the past (clock skew, or the
+    // window rolling over mid-burst) yields 0 ms — instant retries just
+    // burn maxAttempts while the limit is still active.
+    waitMs = Math.max(waitMs, 2_000 * attempts);
+
+    console.warn(`AniList 429 received, retrying in ${(waitMs / 1000).toFixed(0)}s…`);
+    await delay(waitMs);
+  }
+}
+
+/**
+ * Fetch every page of a season from AniList. Page 1 tells us lastPage, so
+ * the remaining pages are fetched with a small concurrency pool instead of
+ * one-at-a-time — a mid-season list is 6-12 pages and the sequential round
+ * trips dominated cold-load latency.
+ */
+async function fetchSeasonFromAniList(query: string, baseVariables: Record<string, unknown>): Promise<any[]> {
+  const firstPage = await fetchAniListPage(query, baseVariables, 1);
+  const allMedia: any[] = [...(firstPage.media ?? [])];
+  const lastPage: number = firstPage.pageInfo?.lastPage
+    ?? (firstPage.pageInfo?.hasNextPage ? 2 : 1);
+
+  if (lastPage > 1) {
+    const pageNums = Array.from({ length: lastPage - 1 }, (_, i) => i + 2);
+    const results: any[][] = new Array(pageNums.length);
+    let nextIdx = 0;
+    let lastPageInfo: any = firstPage.pageInfo;
+    const worker = async () => {
+      while (nextIdx < pageNums.length) {
+        const i = nextIdx++;
+        const pageData = await fetchAniListPage(query, baseVariables, pageNums[i]);
+        results[i] = pageData.media ?? [];
+        if (pageNums[i] === lastPage) lastPageInfo = pageData.pageInfo;
+      }
+    };
+    const CONCURRENCY = 3; // gentle on AniList's rate limit (429 backoff still applies per page)
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pageNums.length) }, worker));
+    for (const media of results) allMedia.push(...media);
+
+    // Safety net: if lastPage under-reported (entries added mid-fetch), keep
+    // walking sequentially like the old loop did.
+    let page = lastPage;
+    while (lastPageInfo?.hasNextPage) {
+      page += 1;
+      const pageData = await fetchAniListPage(query, baseVariables, page);
+      allMedia.push(...(pageData.media ?? []));
+      lastPageInfo = pageData.pageInfo;
+    }
+  }
+  return allMedia;
+}
+
+// In-flight cold fetches keyed like the memory cache — concurrent requests
+// for the same season await one shared AniList chain.
+const inflight = new Map<string, Promise<any[]>>();
+
 router.get('/', async (req, res) => {
   const { season, year, format } = req.query as SeasonQuery;
 
@@ -125,107 +227,64 @@ router.get('/', async (req, res) => {
       cacheKeyFormat
     ) as { data: string; updatedEpoch: string | number }[];
 
+    // Cold fetch, coalesced: page reloads while a fetch is stuck in 429
+    // backoff would otherwise each start their own multi-page AniList chain,
+    // deepening the rate-limit penalty.
+    const startColdFetch = (): Promise<any[]> => {
+      let pending = inflight.get(memKey);
+      if (!pending) {
+        pending = (async () => {
+          const allMedia = await fetchSeasonFromAniList(query, {
+            perPage: 50,
+            season: season.toUpperCase(),
+            seasonYear: Number(year),
+            ...(format ? { format: format.toUpperCase() } : {})
+          });
+
+          // Save/replace cache (only the winning fetch writes)
+          await prisma.$executeRawUnsafe(
+            `INSERT OR REPLACE INTO "SeasonCache" (season, year, format, data, updatedAt)
+             VALUES (?, ?, ?, ?, datetime('now'))`,
+            season.toUpperCase(),
+            Number(year),
+            cacheKeyFormat,
+            JSON.stringify(allMedia)
+          );
+          memory.set(memKey, allMedia);
+          return allMedia;
+        })().finally(() => inflight.delete(memKey));
+        inflight.set(memKey, pending);
+      }
+      return pending;
+    };
+
     const ONE_HOUR_SECONDS = 60 * 60; // 1 h
     if (cached.length) {
       const currentEpoch = Math.floor(Date.now() / 1000);
       const ageSeconds = currentEpoch - Number(cached[0].updatedEpoch);
+      const data = JSON.parse(cached[0].data);
       if (ageSeconds < ONE_HOUR_SECONDS) {
         // Serve from DB cache and populate in-memory cache for faster subsequent
         // calls. Seed with the DB row's *remaining* freshness (not a full fresh
         // hour) so the in-memory copy doesn't outlive the DB row's 1h validity.
-        const data = JSON.parse(cached[0].data);
         memory.set(memKey, data, { ttl: Math.max(1, ONE_HOUR_SECONDS - ageSeconds) * 1000 });
         return res.json(data);
       }
+      // Stale-while-revalidate: season data barely changes hour-to-hour, and
+      // a cold AniList fetch can take minutes under rate-limit pressure —
+      // serve the expired copy instantly and refresh in the background.
+      startColdFetch().catch((err) =>
+        console.warn(`[anime] background refresh failed for ${memKey}:`, err?.message ?? err)
+      );
+      return res.json(data);
     }
 
-    // ---------------------- Fetch from AniList ----------------------
-    const allMedia: any[] = [];
-    let page = 1;
-    const perPage = 50;
-    let hasNext = true;
-
-    while (hasNext) {
-      // retry mechanism for 429 rate limits
-      let attempts = 0;
-      let response;
-      const maxAttempts = 3;
-      while (true) {
-        try {
-          response = await axios.post(
-            'https://graphql.anilist.co',
-            {
-              query,
-              variables: {
-                page,
-                perPage,
-                season: season.toUpperCase(),
-                seasonYear: Number(year),
-                ...(format ? { format: format.toUpperCase() } : {})
-              }
-            },
-            {
-              headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json'
-              },
-              validateStatus: () => true // handle 429 manually
-            }
-          );
-
-          if (response.status !== 429) break; // success or other error
-
-          // received 429, wait then retry
-          attempts++;
-          if (attempts > maxAttempts) throw new Error('AniList rate limit exceeded');
-          // Respect AniList headers when provided
-          const retryAfterHeader = response.headers['retry-after'];
-          const resetHeader = response.headers['x-ratelimit-reset'];
-
-          let waitMs: number;
-          if (retryAfterHeader) {
-            waitMs = Number(retryAfterHeader) * 1000;
-          } else if (resetHeader) {
-            const resetTs = Number(resetHeader) * 1000; // header is seconds
-            waitMs = Math.max(resetTs - Date.now(), 0);
-          } else {
-            // Fallback exponential back-off within 1-min window
-            waitMs = 60_000 * attempts;
-          }
-
-          console.warn(`AniList 429 received, retrying in ${(waitMs / 1000).toFixed(0)}s…`);
-          await delay(waitMs);
-        } catch (err: any) {
-          if (err.response?.status !== 429 || attempts >= maxAttempts) {
-            throw err;
-          }
-        }
-      }
-
-      if (response.status !== 200) {
-        return res.status(response.status).json({ error: 'AniList error', code: 'UPSTREAM_ERROR' });
-      }
-
-      const pageData = response.data?.data?.Page;
-      allMedia.push(...(pageData?.media ?? []));
-      hasNext = pageData?.pageInfo?.hasNextPage ?? false;
-      page += 1;
-    }
-
-    // Save/replace cache
-    await prisma.$executeRawUnsafe(
-      `INSERT OR REPLACE INTO "SeasonCache" (season, year, format, data, updatedAt)
-       VALUES (?, ?, ?, ?, datetime('now'))`,
-      season.toUpperCase(),
-      Number(year),
-      cacheKeyFormat,
-      JSON.stringify(allMedia)
-    );
-
-    memory.set(memKey, allMedia);
-
-    res.json(allMedia);
+    // Never-fetched season: nothing to serve until AniList answers.
+    res.json(await startColdFetch());
   } catch (error) {
+    if (error instanceof UpstreamError) {
+      return res.status(error.status).json({ error: 'AniList error', code: 'UPSTREAM_ERROR' });
+    }
     console.error('AniList API error', error);
     res.status(500).json({ error: 'Failed to fetch data from AniList', code: 'SERVER_ERROR' });
   }

@@ -11,6 +11,9 @@ export default ({ mode }) => {
   return defineConfig({
     plugins: [svelte()],
     server: {
+      // Listen on all interfaces so the dev server is reachable via the PC's
+      // LAN IP (e.g. from a phone) — default is loopback-only.
+      host: true,
       port: 5173,
       // Fail fast if 5173 is taken — forces us to clean up stale node processes
       // rather than silently falling through to 5174 and confusing the test suite.

@@ -96,6 +96,30 @@ model SeasonCache {
   @@id([season, year, format])
 }
 
+/// Server-wide key/value config (e.g. Plex URL + token, set via the admin
+/// page). Created & maintained by the raw SQL in ensureDatabaseSchema()
+/// (index.ts); mirrored here (same reason as SeasonCache).
+model AppConfig {
+  key   String @id
+  value String
+}
+
+/// WebVTT extracted from a Plex media part's embedded subtitle streams.
+/// Extraction reads the whole episode file (~3.5s at LAN speed), so the
+/// result is persisted rather than kept only in memory — otherwise every
+/// deploy makes each episode pay that cost again. Created & maintained by
+/// the raw SQL in ensureDatabaseSchema() (index.ts); mirrored here (same
+/// reason as SeasonCache).
+model PlexSubtitle {
+  id          Int      @id @default(autoincrement())
+  partId      Int
+  streamIndex Int
+  vtt         String
+  createdAt   DateTime @default(now())
+
+  @@unique([partId, streamIndex])
+}
+
 /// Per-YouTube-video subtitle cache: check results, translated segments, and
 /// user subtitle preferences. Created & maintained by the raw SQL in
 /// ensureDatabaseSchema() (index.ts); mirrored here (same reason as SeasonCache).

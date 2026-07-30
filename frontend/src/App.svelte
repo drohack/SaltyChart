@@ -6,8 +6,10 @@
   let ResetPassword: any;
   let Randomize: any;
   let Compare: any;
+  let Admin: any;
 
 import { authToken, userName } from './stores/auth';
+import { isAdmin } from './stores/plex';
 import OptionsModal from './components/OptionsModal.svelte';
 import { options } from './stores/options';
 
@@ -71,6 +73,9 @@ $: {
       case '/compare':
         Compare = Compare || (await import('./pages/Compare.svelte')).default;
         return Compare;
+      case '/admin':
+        Admin = Admin || (await import('./pages/Admin.svelte')).default;
+        return Admin;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;
@@ -169,6 +174,15 @@ $: {
       >
         Compare
       </a>
+      {#if $isAdmin}
+        <a
+          href="/admin"
+          class="link pointer-events-auto" class:font-bold={route === '/admin'} class:text-primary={route === '/admin'}
+          on:click|preventDefault={() => goto('/admin')}
+        >
+          Admin
+        </a>
+      {/if}
     {/if}
 </nav>
 </header>
