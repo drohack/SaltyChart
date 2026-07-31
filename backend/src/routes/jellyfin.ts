@@ -30,6 +30,7 @@ import { getLibraryStructureApi } from '@jellyfin/sdk/lib/utils/api/library-stru
 import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api';
 import { getTvShowsApi } from '@jellyfin/sdk/lib/utils/api/tv-shows-api';
 import { getUserApi } from '@jellyfin/sdk/lib/utils/api/user-api';
+import type { BaseItemDto } from '@jellyfin/sdk/lib/generated-client/models/base-item-dto';
 import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-item-kind';
 import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-fields';
 import { MediaStreamType } from '@jellyfin/sdk/lib/generated-client/models/media-stream-type';
@@ -269,13 +270,131 @@ let _library: { series: JfSeries[]; expires: number } | null = null;
 let _libraryInFlight: Promise<JfSeries[]> | null = null;
 /** When a `fresh` re-check last forced a refetch (throttled below). */
 let _lastLibraryRefresh = 0;
+/** The DB-backed copy, so a restart doesn't refetch ~836 series. */
+let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null = null;
 
 /**
- * Every series in the library, cached 1 h.
+ * A file's own width and bitrate, cached.
  *
+ * These describe the media on disk, so they cannot change while the item id
+ * stays the same — replacing a release gives a new id. Bounded because a long
+ * session of wheel spins would otherwise grow it without limit.
+ */
+const sourceDims = new Map<string, { dims: { width: number; bitrate: number }; at: number }>();
+const SOURCE_DIMS_TTL_MS = 30 * 60 * 1000;
+const SOURCE_DIMS_MAX = 200;
+
+function rememberSourceDims(key: string, dims: { width: number; bitrate: number }): void {
+  const now = Date.now();
+  for (const [k, v] of sourceDims) {
+    if (now - v.at > SOURCE_DIMS_TTL_MS) sourceDims.delete(k);
+  }
+  if (sourceDims.size >= SOURCE_DIMS_MAX) {
+    sourceDims.delete(sourceDims.keys().next().value as string);
+  }
+  sourceDims.set(key, { dims, at: now });
+}
+
+const LIBRARY_KEY = 'jellyfinLibrary';
+const LIBRARY_AT_KEY = 'jellyfinLibraryAt';
+const LIBRARY_TTL_MS = 60 * 60 * 1000;
+/** Incremental refreshes cannot see deletions; this is the backstop. */
+const LIBRARY_FULL_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
+/** Clock skew / in-flight writes: re-ask for a few minutes either side. */
+const LIBRARY_OVERLAP_MS = 5 * 60 * 1000;
+
+const SERIES_FIELDS = [ItemFields.ProviderIds, ItemFields.OriginalTitle];
+
+/**
  * `Fields` is mandatory: without it Jellyfin returns `ProviderIds: null` on
  * list endpoints, which reads exactly like "no ids exist" and silently
  * disables the id-confidence tier.
+ */
+function toJfSeries(items: BaseItemDto[]): JfSeries[] {
+  const series: JfSeries[] = [];
+  for (const it of items) {
+    if (!it.Name || !it.Id) continue;
+    const norms = [normalizeTitle(String(it.Name))];
+    if (it.OriginalTitle) {
+      const on = normalizeTitle(String(it.OriginalTitle));
+      if (on && !norms.includes(on)) norms.push(on);
+    }
+    // Jellyfin has shipped both casings of this key across versions, and the
+    // generated type is an index signature, so both stay.
+    const tvdb = it.ProviderIds?.Tvdb ?? it.ProviderIds?.tvdb ?? null;
+    series.push({
+      id: String(it.Id),
+      itemId: String(it.Id),
+      title: String(it.Name),
+      norms,
+      tvdbId: tvdb == null ? null : String(tvdb),
+    });
+  }
+  return series;
+}
+
+/**
+ * The library, persisted across restarts.
+ *
+ * In-memory only, this was refetched in full — ~836 series with ProviderIds —
+ * every time the process restarted. In production that means the first viewer
+ * after every deploy pays for it; in development it fired dozens of times an
+ * hour, which is most of what pegged the Jellyfin server. `AppConfig` already
+ * carries a cache of this shape for the AniList→TVDB map, so this follows it.
+ */
+async function loadPersistedLibrary(): Promise<{ series: JfSeries[]; total: number; at: number } | null> {
+  try {
+    const rows = await prisma.appConfig.findMany({
+      where: { key: { in: [LIBRARY_KEY, LIBRARY_AT_KEY] } },
+    });
+    const raw = rows.find((r) => r.key === LIBRARY_KEY)?.value;
+    const at = Number(rows.find((r) => r.key === LIBRARY_AT_KEY)?.value ?? 0);
+    if (!raw || !at) return null;
+    const parsed = JSON.parse(raw) as { series: JfSeries[]; total: number };
+    if (!Array.isArray(parsed?.series) || !parsed.series.length) return null;
+    return { series: parsed.series, total: parsed.total ?? parsed.series.length, at };
+  } catch {
+    return null; // a corrupt row must not take the integration down
+  }
+}
+
+async function savePersistedLibrary(series: JfSeries[], total: number, at: number): Promise<void> {
+  const value = JSON.stringify({ series, total });
+  try {
+    await prisma.appConfig.upsert({
+      where: { key: LIBRARY_KEY }, update: { value }, create: { key: LIBRARY_KEY, value },
+    });
+    await prisma.appConfig.upsert({
+      where: { key: LIBRARY_AT_KEY },
+      update: { value: String(at) },
+      create: { key: LIBRARY_AT_KEY, value: String(at) },
+    });
+  } catch (err) {
+    console.warn('[jellyfin] could not persist the library cache', err);
+  }
+}
+
+/** Series count only — no items serialised, so it is cheap to ask often. */
+async function countSeries(api: Api): Promise<number | null> {
+  const { data } = await getItemsApi(api).getItems(
+    {
+      includeItemTypes: [BaseItemKind.Series],
+      recursive: true,
+      limit: 0,
+      enableImages: false,
+      enableTotalRecordCount: true,
+    },
+    { timeout: 30_000 }
+  );
+  return typeof data.TotalRecordCount === 'number' ? data.TotalRecordCount : null;
+}
+
+/**
+ * Every series in the library, cached 1 h in memory and indefinitely in the DB.
+ *
+ * A refresh is incremental where it safely can be. Jellyfin does not return
+ * `DateLastSaved` on items, so the watermark is our own fetch time rather than
+ * a max over the results — hence the overlap window.
  */
 async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (!force && _library && _library.expires > Date.now()) return _library.series;
@@ -286,38 +405,72 @@ async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (_libraryInFlight) return _libraryInFlight;
 
   _libraryInFlight = (async () => {
-    const { data } = await getItemsApi(api).getItems(
-      {
-        includeItemTypes: [BaseItemKind.Series],
-        recursive: true,
-        fields: [ItemFields.ProviderIds, ItemFields.OriginalTitle],
-        enableImages: false,
-        enableTotalRecordCount: false,
-      },
-      // A few thousand series is a big response; the instance default is sized
-      // for small metadata calls.
-      { timeout: 60_000 }
-    );
-    const series: JfSeries[] = [];
-    for (const it of data.Items ?? []) {
-      if (!it.Name || !it.Id) continue;
-      const norms = [normalizeTitle(String(it.Name))];
-      if (it.OriginalTitle) {
-        const on = normalizeTitle(String(it.OriginalTitle));
-        if (on && !norms.includes(on)) norms.push(on);
-      }
-      // Jellyfin has shipped both casings of this key across versions, and the
-      // generated type is an index signature, so both stay.
-      const tvdb = it.ProviderIds?.Tvdb ?? it.ProviderIds?.tvdb ?? null;
-      series.push({
-        id: String(it.Id),
-        itemId: String(it.Id),
-        title: String(it.Name),
-        norms,
-        tvdbId: tvdb == null ? null : String(tvdb),
-      });
+    const cached = _libraryPersisted ?? (await loadPersistedLibrary());
+    _libraryPersisted = cached;
+
+    // A warm process restart: the DB copy is still inside its TTL, so there is
+    // nothing to ask Jellyfin at all.
+    if (!force && cached && Date.now() - cached.at < LIBRARY_TTL_MS) {
+      _library = { series: cached.series, expires: cached.at + LIBRARY_TTL_MS };
+      return cached.series;
     }
-    _library = { series, expires: Date.now() + 60 * 60 * 1000 };
+
+    const now = Date.now();
+    let series: JfSeries[] | null = null;
+    let total: number | null = null;
+
+    if (!force && cached && now - cached.at < LIBRARY_FULL_REFRESH_MS) {
+      // Cheap probe first. A changed count means something was added or
+      // removed, and removals are the one thing an incremental fetch cannot
+      // show us — so that case falls through to a full refresh.
+      try {
+        const count = await countSeries(api);
+        if (count != null && count === cached.total) {
+          const { data } = await getItemsApi(api).getItems(
+            {
+              includeItemTypes: [BaseItemKind.Series],
+              recursive: true,
+              fields: SERIES_FIELDS,
+              enableImages: false,
+              enableTotalRecordCount: false,
+              minDateLastSaved: new Date(cached.at - LIBRARY_OVERLAP_MS).toISOString(),
+            },
+            { timeout: 60_000 }
+          );
+          const changed = toJfSeries(data.Items ?? []);
+          const merged = new Map(cached.series.map((s) => [s.id, s]));
+          for (const s of changed) merged.set(s.id, s);
+          series = [...merged.values()];
+          total = count;
+          if (changed.length) {
+            console.log(`[jellyfin] library: ${changed.length} series changed since last sync`);
+          }
+        }
+      } catch (err) {
+        console.warn('[jellyfin] incremental library refresh failed, falling back to full', err);
+      }
+    }
+
+    if (!series) {
+      const { data } = await getItemsApi(api).getItems(
+        {
+          includeItemTypes: [BaseItemKind.Series],
+          recursive: true,
+          fields: SERIES_FIELDS,
+          enableImages: false,
+          enableTotalRecordCount: true,
+        },
+        // A few thousand series is a big response; the instance default is sized
+        // for small metadata calls.
+        { timeout: 60_000 }
+      );
+      series = toJfSeries(data.Items ?? []);
+      total = typeof data.TotalRecordCount === 'number' ? data.TotalRecordCount : series.length;
+    }
+
+    _library = { series, expires: now + LIBRARY_TTL_MS };
+    _libraryPersisted = { series, total: total ?? series.length, at: now };
+    await savePersistedLibrary(series, total ?? series.length, now);
     return series;
   })();
 
@@ -335,8 +488,14 @@ async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
  * episode overall, skipping season 0 (specials) when numbered seasons exist.
  */
 async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number | null) {
+  // Deliberately WITHOUT MediaSources. Asking for it here makes Jellyfin
+  // enumerate the media sources of *every* episode — real disk work — to obtain
+  // exactly one id, and the Randomize page runs this for every show on the
+  // wheel. A 50-show list did that 50 times over on every cold load, which is
+  // most of what pegged the server. Everything the choice below needs
+  // (ParentIndexNumber, IndexNumber, Name, Id) is a default field.
   const { data } = await getTvShowsApi(api).getEpisodes(
-    { seriesId, fields: [ItemFields.MediaSources], enableImages: false },
+    { seriesId, enableImages: false },
     { timeout: 30_000 }
   );
   const eps = data.Items ?? [];
@@ -355,9 +514,27 @@ async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number 
       (a.IndexNumber ?? 0) - (b.IndexNumber ?? 0)
   );
   const ep = pool[0];
+  // Now — and only now — ask for the one episode's media sources. Measured on
+  // this library, 8 of 8 sampled episodes report a source id equal to their
+  // item id, so this call almost always confirms what the fallback would have
+  // guessed. It stays because "almost" is doing real work: an item with merged
+  // versions has distinct source ids, and picking the wrong one breaks
+  // playback. One file probe per matched show, where asking the episode list
+  // for MediaSources was one per episode.
+  let mediaSourceId = String(ep.Id);
+  try {
+    const { data: one } = await getItemsApi(api).getItems(
+      { ids: [String(ep.Id)], fields: [ItemFields.MediaSources] },
+      { timeout: 30_000 }
+    );
+    const src = one.Items?.[0]?.MediaSources?.[0]?.Id;
+    if (src) mediaSourceId = String(src);
+  } catch {
+    /* fall back to the item id, as the previous code did on an empty list */
+  }
   return {
     itemId: String(ep.Id),
-    mediaSourceId: String(ep.MediaSources?.[0]?.Id ?? ep.Id),
+    mediaSourceId,
     title: String(ep.Name ?? ''),
     seasonNumber: ep.ParentIndexNumber ?? null,
     episodeNumber: ep.IndexNumber ?? null,
@@ -547,19 +724,38 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
   try {
     const api = await jellyfinApi(cfg);
-    // A first pass with no profile just to read the source's own dimensions,
-    // so `auto` can mean "the file's own quality" rather than a guess.
-    const probe = await getMediaInfoApi(api).getPostedPlaybackInfo({
-      itemId,
-      ...(typeof req.query.mediaSourceId === 'string'
-        ? { mediaSourceId: req.query.mediaSourceId }
-        : {}),
-    });
-    const probeSrc = probe.data.MediaSources?.[0];
-    const probeVideo = (probeSrc?.MediaStreams ?? []).find((s) => s.Type === MediaStreamType.Video);
+    // The source's own dimensions, for `auto`. Two things make this cheaper
+    // than it was:
+    //
+    //   * an explicit tier (1080p/720p/480p) doesn't need them at all — the
+    //     numbers come from QUALITY — yet this used to probe anyway and throw
+    //     the answer away, once per quality switch;
+    //   * they cannot change for a given file, so the answer is cached rather
+    //     than re-asked. Opening one pop-up makes two /playback calls (one to
+    //     learn the tracks, one for the chosen track), which was four upstream
+    //     PlaybackInfo requests where two will do.
+    const dimsKey = `${itemId}:${req.query.mediaSourceId ?? ''}`;
+    let dims = sourceDims.get(dimsKey)?.dims;
+    if (!dims && QUALITY[quality] == null) {
+      const probe = await getMediaInfoApi(api).getPostedPlaybackInfo({
+        itemId,
+        ...(typeof req.query.mediaSourceId === 'string'
+          ? { mediaSourceId: req.query.mediaSourceId }
+          : {}),
+      });
+      const probeSrc = probe.data.MediaSources?.[0];
+      const probeVideo = (probeSrc?.MediaStreams ?? []).find(
+        (s) => s.Type === MediaStreamType.Video
+      );
+      dims = {
+        width: Number(probeVideo?.Width) || 0,
+        bitrate: Number(probeVideo?.BitRate) || Number(probeSrc?.Bitrate) || 0,
+      };
+      rememberSourceDims(dimsKey, dims);
+    }
     const tier = QUALITY[quality] ?? {
-      width: Number(probeVideo?.Width) || 1920,
-      bitrate: Number(probeVideo?.BitRate) || Number(probeSrc?.Bitrate) || 8_000_000,
+      width: dims?.width || 1920,
+      bitrate: dims?.bitrate || 8_000_000,
     };
 
     const userId = await jellyfinUserId(cfg);
@@ -644,8 +840,8 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
       transcodingUrl,
       quality,
       // So "Auto" in the quality menu can show what it actually resolved to.
-      sourceWidth: Number(probeVideo?.Width) || null,
-      sourceBitrate: Number(probeVideo?.BitRate) || null,
+      sourceWidth: dims?.width || null,
+      sourceBitrate: dims?.bitrate || null,
     });
   } catch (err: any) {
     console.warn(`[jellyfin] playback info failed for ${itemId}:`, err?.message);

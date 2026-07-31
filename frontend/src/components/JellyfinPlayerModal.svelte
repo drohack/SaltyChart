@@ -455,13 +455,6 @@
         if (info.transcodingUrl) transcodingUrl = info.transcodingUrl;
       }
       player.src({ src: sourceUrl(), type: 'application/x-mpegURL' });
-      // The session we just walked away from still has an ffmpeg attached, and
-      // Jellyfin's writes it to the transcode cache until the whole episode is
-      // done regardless of where anyone is watching (jellyfin#16608). Closing
-      // the modal only ever stopped the *current* session, so before this every
-      // quality or subtitle change left one behind to remux a ~1 GB episode for
-      // nobody. Fired after the new src so a slow stop can't delay playback.
-      if (abandoned && abandoned !== playSessionId) stopSession(abandoned);
       player.one('loadedmetadata', () => {
         if (destroyed || !player) return;
         player.currentTime(resumeAt);
@@ -504,6 +497,18 @@
       stalled = true;
     } finally {
       recovering = false;
+      // The session we walked away from still has an ffmpeg attached, and
+      // Jellyfin's writes to the transcode cache until the whole episode is
+      // done regardless of where anyone is watching (jellyfin#16608). Closing
+      // the modal only ever stopped the *current* session, so before this every
+      // quality or subtitle change left one behind re-encoding a ~1 GB episode
+      // for nobody.
+      //
+      // In `finally`, not after `player.src()`: a throw from there skipped it
+      // and stranded the encode on exactly the path — a failing rebuild — where
+      // an orphan is most likely. It is fire-and-forget, so this cannot delay
+      // playback wherever it sits.
+      if (abandoned && abandoned !== playSessionId) stopSession(abandoned);
     }
   }
 
@@ -536,6 +541,11 @@
   }
 
   onMount(async () => {
+    // Registered before anything can fail. If this waited until after the
+    // stream started, a throw in between would leave the tab able to close on
+    // a live encode with nothing listening to stop it. Harmless to have armed
+    // early — it no-ops while there is no session yet.
+    window.addEventListener('pagehide', onPageHide);
     // Shared with the Randomize page's idle warm-up, so this is usually
     // already resolved by the time anyone presses Watch.
     const videojs = await loadVideoJs();
@@ -642,8 +652,26 @@
     window.addEventListener('keydown', handleKey, { capture: true });
   });
 
+  /**
+   * Closing the tab must stop the transcode too.
+   *
+   * `onDestroy` does not run when the page is closed, reloaded or navigated
+   * away from — and closing the tab is how most people actually stop watching.
+   * Every one of those left an encode running, and Jellyfin's ffmpeg keeps
+   * writing until the whole episode is done regardless of where the viewer got
+   * to (jellyfin#16608), so the cost is a full episode re-encoded for nobody.
+   *
+   * `pagehide` rather than `beforeunload`: it fires on mobile and on bfcache
+   * navigations, where `beforeunload` frequently does not. The stop request
+   * already sets `keepalive`, which is what lets it survive the page going away.
+   */
+  function onPageHide() {
+    stopSession(playSessionId);
+  }
+
   onDestroy(() => {
     destroyed = true;
+    window.removeEventListener('pagehide', onPageHide);
     if (watchdog) clearInterval(watchdog);
     if (flashTimer) clearTimeout(flashTimer);
     window.removeEventListener('keydown', handleKey, { capture: true });
