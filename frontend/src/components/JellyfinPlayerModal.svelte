@@ -477,8 +477,12 @@
         const settle = () => {
           if (!player) return;
           if (Math.abs((player.currentTime?.() ?? 0) - resumeAt) < 5) {
-            player.removeClass?.('sc-rebuilding');
             player.off?.('timeupdate', settle);
+            // Not immediately: the clock is restored a repaint before the bar
+            // is, so releasing the pin the moment the times agree hands back to
+            // a bar that still paints at zero for a frame or two — the very
+            // flash this exists to prevent.
+            setTimeout(() => player?.removeClass?.('sc-rebuilding'), 400);
           }
         };
         player.on('timeupdate', settle);

@@ -65,6 +65,19 @@ const rankOptions = [
     suggestTimer = setTimeout(fetchSuggestions, 250);
   }
 
+  /**
+   * Re-query as the user types.
+   *
+   * Driven off the bound `filterText` rather than an event, because the event
+   * route failed silently in both directions: this was `bind:searchText` with
+   * `on:search`, and svelte-select 5 has neither — it exposes `filterText` and
+   * dispatches `filter`/`input`. So the box never sent what was typed, the
+   * suggestion list stayed as the unfiltered top slice from `/api/users`, and
+   * anyone outside it simply could not be picked. A reactive statement on a
+   * bound prop cannot rot the way a mistyped event name does.
+   */
+  $: otherInput, queueSuggest();
+
 // ------------------------------------------------------------------
 // Reactive: fetch lists whenever any of the input parameters change, but
 // avoid redundant duplicate calls that happen during component mount when
@@ -629,13 +642,12 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           class="w-full input input-bordered text-gray-700"
           dropdownClass="w-full"
           items={suggestions}
-          bind:searchText={otherInput}
+          bind:filterText={otherInput}
           bind:value={selectedOther}
           placeholder="username"
           noOptionsMessage="No users found"
           searchable={true}
           inputAttributes={{ 'data-bwignore': true }}
-          on:search={() => queueSuggest()}
           on:change={() => {/* fetch triggered reactively */}}
         />
       </div>
@@ -734,7 +746,16 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     <!-- Card layout (shared by mobile and desktop; width matches Home's anime grid) -->
     <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto flex flex-col gap-2 px-2">
       {#each rows as row (row.id)}
-        <div class="bg-base-200 rounded p-3 flex gap-3">
+        <!-- Test hooks. The pre-deploy suite used to assert Compare worked by
+             looking for the word "Compare" in the body text, which passes on a
+             page that rendered no data at all. These let it check the numbers. -->
+        <div
+          class="bg-base-200 rounded p-3 flex gap-3"
+          data-compare-row={row.id}
+          data-rank-a={row.rankA ?? ''}
+          data-rank-b={row.rankB ?? ''}
+          data-diff={row.diff ?? ''}
+        >
           {#if row.cover}
             <img src={row.cover} alt={row.title} class="flex-shrink-0 rounded object-cover" style="width:48px;height:66px;" />
           {:else}
