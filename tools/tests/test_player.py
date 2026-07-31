@@ -35,6 +35,16 @@ import requests
 from playwright.sync_api import sync_playwright
 
 TOTAL = 10
+# Rendered geometry of the played section, as a fraction of the seek bar.
+# Never `style.width`: that is the inline value video.js writes, which a CSS
+# `!important` rule overrides without erasing — reading it reports the bar as
+# empty when it is visibly full.
+BAR_FRACTION = """() => {
+    const holder = document.querySelector('.vjs-progress-holder');
+    const play = document.querySelector('.vjs-play-progress');
+    const w = holder ? holder.getBoundingClientRect().width : 0;
+    return (w && play) ? play.getBoundingClientRect().width / w : 0;
+}"""
 USERNAME = "player_test_fixture"
 PASSWORD = "player_pw_123"
 
@@ -386,6 +396,38 @@ def main():
             };
             tick();
         }""")
+        # Pause first. `play()` rejects with AbortError when a pause or a new
+        # load interrupts it, which is routine during a rebuild — and treating
+        # that as an autoplay block is what put a big play button over a video
+        # that was already restarting. Without pausing here the rejection may
+        # never happen and the assertion below tests nothing, which is exactly
+        # what the mutation audit caught.
+        page.evaluate("() => document.querySelector('.video-js').player.pause()")
+        page.wait_for_timeout(600)
+        # Where the played bar sits before the rebuild, measured as rendered
+        # geometry — `style.width` is the inline value video.js writes, which a
+        # CSS `!important` rule overrides without erasing.
+        bar_before = page.evaluate(BAR_FRACTION)
+        # Track the lowest the bar goes for the rest of the switch. Sampled per
+        # animation frame because the collapse is transient — a 250ms poll
+        # missed it entirely when this was first investigated.
+        page.evaluate("""() => {
+            window.__barMin = 1;
+            const tick = () => {
+                const holder = document.querySelector('.vjs-progress-holder');
+                const play = document.querySelector('.vjs-play-progress');
+                const v = document.querySelector('video');
+                const w = holder?.getBoundingClientRect().width || 0;
+                // Only meaningful while the bar is on screen and the viewer is
+                // genuinely mid-episode; a hidden control bar has zero width.
+                if (w > 0 && play && v && v.currentTime > 5) {
+                    const f = play.getBoundingClientRect().width / w;
+                    if (f < window.__barMin) window.__barMin = f;
+                }
+                if (!window.__barStop) requestAnimationFrame(tick);
+            };
+            tick();
+        }""")
         page.mouse.move(700, 450)
         page.mouse.move(700, 860)
         page.wait_for_timeout(400)
@@ -426,8 +468,19 @@ def main():
         if not stops_mid:
             fail(9, "the abandoned session was never stopped — its ffmpeg keeps "
                     "writing the whole episode to Jellyfin's transcode cache")
+        # The played section must stay where the viewer is while the stream is
+        # rebuilt. `player.src()` resets the tech's clock to 0 and the bar
+        # repaints from that before we can seek back, so without pinning it the
+        # bar empties for seconds while the time readout stays correct — which
+        # reads as "you lost your place" mid-switch.
+        bar_min = page.evaluate("() => window.__barMin")
+        if bar_before > 0.02 and (bar_min is None or bar_min < bar_before * 0.5):
+            fail(9, f"the seek bar collapsed during the rebuild: it was at "
+                    f"{bar_before * 100:.1f}% and fell to {(bar_min or 0) * 100:.1f}%, "
+                    f"so a viewer mid-episode appears to have lost their place")
         step(9, f"PASS — 480p in one restart, {playing['w']}px and decoding "
-                f"({playing['frames']} frames), old session stopped, no play-button flash")
+                f"({playing['frames']} frames), old session stopped, no play-button "
+                f"flash, seek bar held at {(bar_min or 0) * 100:.0f}%")
 
         step(10, "Escape closes and stops the transcode; the episode reopens")
         stops: list[str] = []

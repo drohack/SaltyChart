@@ -94,6 +94,37 @@ py -3.13 -u tools/tests/run_all.py --skip-burned-in
 The backend's `/api/auth/*` rate limiter (20 req/min in prod) is **disabled
 when `NODE_ENV !== 'production'`** so rapid signups during tests don't trip it.
 
+### Is the suite load-bearing? `tools/tests/mutation_audit.py`
+
+A passing suite says nothing about what it would *catch*. This breaks one
+invariant at a time and checks that the test guarding it actually fails:
+
+```bash
+py -3.13 -u tools/tests/mutation_audit.py           # every mutation
+py -3.13 -u tools/tests/mutation_audit.py --only 3  # one, while iterating
+py -3.13 -u tools/tests/mutation_audit.py --list    # the table
+```
+
+**Not** part of `run_all.py` — it edits tracked source and is slow. It refuses
+to start on a dirty tree (it reverts with `git checkout --`, which would
+otherwise eat uncommitted work) and restores everything in a `finally`.
+
+Two things it established:
+
+- **Red is not the same as covered.** Its first version counted any failing test
+  as a catch and reported 10/10 — while four mutations were failing at an
+  unrelated step and one had no assertion guarding it at all. Every row now
+  declares the substring its failure output must contain; a red run that doesn't
+  name the invariant is reported as `WRONG REASON` and counted as a hole.
+- **Two real holes existed.** The Jellyfin API key stopped being stripped from
+  the URL handed to browsers (`test_jellyfin` passed 10/10), and the
+  AniList→TVDB match tier was disabled so every match silently fell back to
+  fuzzy titles (10/10 again). Both are failure classes that have already
+  happened in this repo.
+
+**Add a row whenever you add a test.** A test nobody has watched fail is a test
+nobody should trust.
+
 **⚠ AniList rate limit while testing.** AniList allows ~**30 req/min per IP**
 (degraded state), and the whole home network — dev PC, production server,
 every browser's direct `stores/season.ts` call — shares one public IP. A cold
@@ -114,17 +145,18 @@ Suite includes:
 |---|---|
 | `test_season_lookahead.py` | 76-day next-season cutover logic (regression for the "X days till" bug) |
 | `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
-| `test_api_negative.py` | 10 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates |
+| `test_api_negative.py` | 11 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates, and a **correctly signed JWT carrying no `id`** — which used to hang the request forever instead of returning 401, so the short timeout *is* the assertion |
 | `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
-| `test_ui_interactions.py` | 10 button-click flows: login, search filter, hide 18+, season change, add-to-list, theme, wheel spin, logout, modal Escape, Compare with 2 users |
+| `test_ui_interactions.py` | 14 flows. Nine are button-click smoke (login, search, hide 18+, season, add-to-list, theme, wheel, logout, modal Escape). The rest assert things nothing verified before: **Compare** selects a second user and checks every rank and diff against deliberately different seeded orders — it used to look for the word "Compare" in the body text, which passes on a page with no rows; **/admin** loads with its playback-account picker populated and no API key anywhere in the DOM; **`unknown` never hides a show** — availability is route-intercepted to `{unknown:true}` and the Hide-Not-in-Library control must refuse to act; **share-as-image** produces a real JPEG with more than one colour (an all-blank render is the realistic silent failure); **progressive loading** fails *only* the leftovers fetch and asserts Retry appears while the main grid still renders. Seeds from live season data — the old hardcoded mediaIds had aged out of the season entirely, so every seeded list joined against nothing |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
-| `test_jellyfin.py` | 10 steps: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
-| `test_player.py` | 10 steps driving the **real player**: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
+| `test_jellyfin.py` | 10 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
+| `test_player.py` | 10 steps driving the **real player**. Step 9 pauses before switching quality — without that `play()` never rejects and the play-button-flash assertion silently tests nothing, which the mutation audit caught. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced |
+| `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
-Final line on success: `Pre-deploy: 13/13 passed — ready to build` (12/12 with
+Final line on success: `Pre-deploy: 14/14 passed — ready to build` (13/13 with
 `--skip-burned-in`). On failure:
 `Pre-deploy: FAILED at step X — DO NOT deploy`.
 

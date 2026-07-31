@@ -162,7 +162,36 @@ def main():
                 fail(6, f"available=true but missing {key}: {body}")
         if body.get("matchedBy") not in ("id", "title"):
             fail(6, f"available=true but matchedBy is {body.get('matchedBy')!r}: {body}")
-    step(6, "PASS — availability responses well-formed")
+
+    # The id tier has to be shown to still fire. Accepting `matchedBy in
+    # ("id", "title")` above is satisfied by a build where the AniList->TVDB
+    # chain is completely dead and every match fell back to fuzzy titles — a
+    # regression that is invisible here, degrades silently, and has already
+    # produced a real false positive (2026 "Nanoha EXCEEDS" -> 2004 "Nanoha").
+    # Measured against this library a season resolves ~35 of 52 by id, so a
+    # floor of one is far below the noise while still catching a total loss.
+    tiers = {"id": 0, "title": 0, "missing": 0}
+    for s in requests.get(f"{backend}/api/anime?season={season}&year={year}&format=TV",
+                          timeout=120).json()[:20]:
+        t = [x for x in (s.get("title") or {}).values() if x]
+        if not t:
+            continue
+        av = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
+                           json={"mediaId": s["id"], "titles": t[:10]}, timeout=90).json()
+        if av.get("unknown"):
+            continue
+        tiers[av["matchedBy"] if av.get("available") else "missing"] += 1
+    matched = tiers["id"] + tiers["title"]
+    if not matched:
+        step(6, f"PASS — availability well-formed (nothing from {season} {year} "
+                f"is in the library, so the match tiers can't be checked)")
+    else:
+        if not tiers["id"]:
+            fail(6, f"{matched} of the sampled series matched, but NONE by id — the "
+                    f"AniList->TVDB tier is dead and everything is falling back to "
+                    f"fuzzy titles: {tiers}")
+        step(6, f"PASS — availability well-formed; match tiers {tiers['id']} by id, "
+                f"{tiers['title']} by title, {tiers['missing']} missing")
 
     # ───────── 7/8  Stream proxy + no credential in the manifest ─────────
     step(7, "stream proxy reaches Jellyfin, and manifests carry no API key")
@@ -186,6 +215,16 @@ def main():
                           f"?mediaSourceId={playable['mediaSourceId']}", headers=auth, timeout=30)
         if pb.status_code != 200 or not pb.json().get("playSessionId"):
             fail(7, f"/playback did not return a session: {pb.status_code} {pb.text[:200]}")
+        # Jellyfin writes `ApiKey=<the key>` into the TranscodingUrl it returns,
+        # and this response goes straight to a browser. The manifest guard below
+        # does not cover it: that inspects response *bodies*, so a leak here
+        # surfaced only as "video never advanced" from a completely different
+        # test. Assert the strip directly, where the diagnostic is the truth.
+        turl = pb.json().get("transcodingUrl") or ""
+        for leak in ("api_key", "apikey", "x-emby-token"):
+            if leak in turl.lower():
+                fail(7, f"/playback returned a transcodingUrl containing a credential "
+                        f"({leak}) — it would be handed to every viewer")
         psid = pb.json()["playSessionId"]
         q = (f"mediaSourceId={playable['mediaSourceId']}&playSessionId={psid}"
              f"&videoCodec=h264&audioCodec=aac&container=ts&deviceId=saltychart"

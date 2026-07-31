@@ -16,13 +16,93 @@ Usage:
 """
 import argparse
 import re
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 10
+TOTAL = 14
+# `stores/season.ts` restores the last selection from this key (1h TTL). The
+# pages open on the *look-ahead* season otherwise, which is not the one these
+# tests seed — and a list whose ids aren't in the displayed season renders
+# nothing at all, since entries are joined against that season's metadata.
+SEASON_KEY = "season-year"
+SEEDED_SEASON, SEEDED_YEAR = "SUMMER", 2026
+
+
+def season_ids(backend: str, n: int = 3) -> list[int]:
+    """Real mediaIds from the seeded season.
+
+    These used to be hardcoded (158036/158037/158038). AniList season contents
+    change, and by now not one of those three is in Summer 2026 — so every
+    seeded list joined against zero shows and the pages rendered empty, which
+    the older assertions were loose enough to pass anyway.
+    """
+    r = requests.get(f"{backend}/api/anime",
+                     params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}, timeout=120)
+    r.raise_for_status()
+    ids = [a["id"] for a in r.json()[:n]]
+    assert len(ids) == n, f"{SEEDED_SEASON} {SEEDED_YEAR} returned only {len(ids)} shows"
+    return ids
+
+
+def seed_list(backend: str, token: str, ids: list[int]) -> None:
+    r = requests.put(f"{backend}/api/list", timeout=15,
+                     headers={"Authorization": f"Bearer {token}"},
+                     json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                           "items": [{"mediaId": m} for m in ids]})
+    assert r.status_code == 200, f"seeding failed: {r.status_code} {r.text[:120]}"
+
+
+def pin_season(page) -> None:
+    page.evaluate(
+        "([k, s, y]) => localStorage.setItem(k, JSON.stringify("
+        "{ season: s, year: y, saved: Date.now() }))",
+        [SEASON_KEY, SEEDED_SEASON, SEEDED_YEAR])
+
+
+UNKNOWN_BODY = '{"available": false, "unknown": true}'
+COUNT_COLOURS = """async (src) => {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = Math.min(img.naturalWidth, 200);
+    c.height = Math.min(img.naturalHeight, 200);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    const seen = new Set();
+    for (let i = 0; i < d.length; i += 4)
+        seen.add(`${d[i] >> 4},${d[i + 1] >> 4},${d[i + 2] >> 4}`);
+    return seen.size;
+}"""
+REPO = Path(__file__).resolve().parents[2]
+
+
+def admin_token() -> str:
+    """A JWT for ADMIN_USER_ID, signed with the backend's own secret.
+
+    /admin is gated on the user id, and the fixture users this suite creates are
+    never that user — so without minting one, the admin UI cannot be reached at
+    all. Signed through node so the suite gains no dependency and signs exactly
+    the way the app does. Reading local config for a test is established
+    practice here: tools/bench_player.py reads the Jellyfin key from the DB.
+    """
+    script = ("require('dotenv').config();"
+              "const jwt=require('jsonwebtoken');"
+              "const id=parseInt(process.env.ADMIN_USER_ID||'1',10);"
+              "console.log(jwt.sign({id}, process.env.JWT_SECRET||'dev-secret',"
+              "{expiresIn:'10m'}));")
+    try:
+        r = subprocess.run(["node", "-e", script], cwd=REPO / "backend",
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def step(n: int, msg: str) -> None:
@@ -377,52 +457,261 @@ def test_trailer_modal_escape(page, frontend: str):
 # 10/10  Compare page with 2 users — table renders with diff
 # ─────────────────────────────────────────────────────────────────────────────
 def test_compare_two_users(page, backend: str, frontend: str):
-    step(10, "step 1/4: creating user B via API + populating list")
-    user_b = f"ui_test_B_{int(time.time())}"
-    r = requests.post(f"{backend}/api/auth/signup",
-                      json={"username": user_b, "password": "pw"}, timeout=5)
-    assert r.status_code == 200, f"user B signup failed: {r.status_code}"
-    token_b = r.json()["token"]
-    # Give user B an overlapping list (3 items, different order)
-    requests.put(f"{backend}/api/list",
-                 json={"season": "SUMMER", "year": 2026,
-                       "items": [
-                           {"mediaId": 158038, "customName": "User B's Three"},
-                           {"mediaId": 158036, "customName": "User B's Eren"},
-                           {"mediaId": 158037, "customName": "User B's Two"},
-                       ]},
-                 headers={"Authorization": f"Bearer {token_b}"}, timeout=10)
+    """Compare must show the right numbers, not merely render.
 
-    step(10, "step 2/4: signing user A back in and navigating to /compare")
-    # User A is the original ui_test_<ts> user; we still have their creds
-    # The page was logged out by test 8 — re-login via API + set localStorage
+    This used to assert `any(s in body_text for s in ("Compare", "compare",
+    "2nd user", "vs"))`, which passes on a page that rendered no rows at all —
+    and it never even selected a second user. Both lists are seeded here with
+    deliberately different orders so every rank and diff on screen is known in
+    advance, and the page is read through `data-compare-row` hooks rather than
+    by scraping text.
+    """
+    ts = int(time.time())
+    user_a, user_b = f"ui_cmp_A_{ts}", f"ui_cmp_B_{ts}"
+    step(10, f"step 1/5: seeding {user_a} and {user_b} with known, differing orders")
+    tokens = {}
+    for name in (user_a, user_b):
+        r = requests.post(f"{backend}/api/auth/signup",
+                          json={"username": name, "password": "pw"}, timeout=10)
+        assert r.status_code == 200, f"{name} signup failed: {r.status_code} {r.text[:120]}"
+        tokens[name] = r.json()["token"]
+
+    # rank == position in the list (idx + 1); diff == |rankA - rankB|.
+    x, y, z = season_ids(backend, 3)
+    ORDER_A, ORDER_B = [x, y, z], [z, x, y]
+    EXPECTED = {x: (1, 2, 1), y: (2, 3, 1), z: (3, 1, 2)}
+    for name, order in ((user_a, ORDER_A), (user_b, ORDER_B)):
+        seed_list(backend, tokens[name], order)
+
+    step(10, "step 2/5: signing in as user A and opening /compare")
     page.goto(frontend)
-    page.wait_for_timeout(500)
-
-    step(10, f"step 3/4: picking user B ({user_b}) from dropdown")
-    # Set auth state directly — bypassing the login form (already covered)
-    # We need user A's token; sign them back in via API
-    user_a = page.evaluate("localStorage.getItem('username')") or ""
-    # If logout cleared name too, we need to re-acquire. Use a fresh session:
-    # easier path — sign user B in as the active session, view from their angle.
-    page.evaluate(f"""() => {{
-      localStorage.setItem('token', '{token_b}');
-      localStorage.setItem('username', '{user_b}');
-    }}""")
+    page.evaluate("([t, u]) => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', u); }", [tokens[user_a], user_a])
+    pin_season(page)
     page.goto(f"{frontend}/compare")
-    page.wait_for_timeout(2_000)
+    page.wait_for_timeout(2500)
+    assert "/login" not in page.url, "Compare redirected to /login despite a valid token"
 
-    step(10, "step 4/4: verifying Compare page loaded and has data")
-    # Just confirm the page rendered without redirecting back to login
-    if "/login" in page.url:
-        # Not logged in — accept this as a soft pass since logout test just ran
-        step(10, "PASS — Compare page accessible after re-auth (page rendered)")
+    step(10, f"step 3/5: picking {user_b} as the second user")
+    # svelte-select puts the id on the input itself and only commits a
+    # *highlighted* option, so typing alone leaves `selectedOther` unset and
+    # every rankB renders blank.
+    box = page.locator("#otherUser").first
+    box.wait_for(timeout=15_000)
+    box.click()
+    box.type(user_b, delay=40)
+    # The suggestion list is fetched from /api/users on a debounce, so the
+    # option is not there the instant typing stops.
+    option = page.get_by_text(user_b, exact=True).last
+    for _ in range(10):
+        page.wait_for_timeout(800)
+        if option.count():
+            break
+    if option.count():
+        option.click()
+    else:
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+    page.wait_for_timeout(2000)
+
+    step(10, "step 4/5: confirming the second user was actually selected")
+    picked = page.evaluate(
+        "() => [...document.querySelectorAll('[data-rank-b]')]"
+        ".some(e => e.getAttribute('data-rank-b'))")
+    # This is an assertion, not a skip. The picker searches the backend as you
+    # type, so a freshly created user IS findable — that was broken once
+    # (`bind:searchText` + `on:search`, neither of which svelte-select 5 has),
+    # which capped the picker at whatever `/api/users` returns unfiltered and
+    # made anyone outside that slice unselectable. Skipping here would hide
+    # exactly that regression coming back.
+    assert picked, (f"{user_b} was never offered by the picker — the search box is "
+                    f"not querying the backend, so users outside the unfiltered "
+                    f"/api/users slice cannot be compared with")
+    try:
+        page.wait_for_function("() => document.querySelectorAll('[data-compare-row]').length > 0",
+                               timeout=20_000)
+    except Exception:
+        raise AssertionError(f"no comparison rows rendered after picking {user_b}")
+
+    step(10, "step 5/5: verifying the ranks and diffs on screen")
+    rows = page.evaluate("""() => [...document.querySelectorAll('[data-compare-row]')].map(e => ({
+        id: +e.getAttribute('data-compare-row'),
+        a: e.getAttribute('data-rank-a'),
+        b: e.getAttribute('data-rank-b'),
+        d: e.getAttribute('data-diff'),
+    }))""")
+    seen = {r["id"]: r for r in rows}
+    missing = [m for m in EXPECTED if m not in seen]
+    assert not missing, f"seeded shows absent from Compare: {missing} (rendered: {list(seen)})"
+    for media_id, (want_a, want_b, want_d) in EXPECTED.items():
+        got = seen[media_id]
+        assert (got["a"], got["b"], got["d"]) == (str(want_a), str(want_b), str(want_d)), (
+            f"media {media_id}: expected rankA={want_a} rankB={want_b} diff={want_d}, "
+            f"got rankA={got['a']} rankB={got['b']} diff={got['d']}")
+    step(10, f"PASS — {len(EXPECTED)} shared rows, ranks and diffs all match the seeded orders")
+
+def test_admin_page(page, backend: str, frontend: str):
+    """The admin page and its playback-account picker.
+
+    Never loaded by any test before this. The Jellyfin config UI was covered
+    only at the API level, so the picker could render empty -- or leak the API
+    key into the DOM -- and every check would still have passed.
+    """
+    step(11, "step 1/3: minting an admin token")
+    tok = admin_token()
+    if not tok:
+        step(11, "SKIP -- could not sign an admin token (node or backend/.env missing)")
         return
-    # Check for any table-like structure or "no comparison" message
-    body_text = page.evaluate("document.body.textContent || ''")
-    has_compare_ui = any(s in body_text for s in ("Compare", "compare", "2nd user", "vs"))
-    assert has_compare_ui, f"Compare UI not visible: {body_text[:200]}"
-    step(10, "PASS — Compare page loaded with comparison UI")
+
+    step(11, "step 2/3: loading /admin as the admin user")
+    page.goto(frontend)
+    page.evaluate("t => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', 'admin_probe'); }", tok)
+    page.goto(f"{frontend}/admin")
+    page.wait_for_selector("#jf-url", timeout=20_000)
+    body = page.evaluate("document.body.textContent || ''")
+    assert "only available to the site admin" not in body, \
+        "admin page refused a token for ADMIN_USER_ID"
+
+    step(11, "step 3/3: picker populated, and no API key anywhere in the DOM")
+    opts = page.eval_on_selector_all("#jf-user option",
+                                     "els => els.map(e => e.textContent.trim())")
+    assert opts, "no playback-account picker rendered"
+    # The key is stored server-side and must never reach a browser; a Jellyfin
+    # API key is 32 hex characters.
+    leak = re.search(r"\b[0-9a-f]{32}\b", page.content())
+    assert not leak, f"a 32-hex string resembling the API key is in the DOM: {leak.group()[:8]}..."
+    if len(opts) == 1:
+        step(11, f"PASS -- picker present with only the default option "
+                 f"(Jellyfin may be unconfigured), no key in the DOM")
+    else:
+        step(11, f"PASS -- {len(opts)} accounts offered, no key in the DOM")
+
+
+def test_unknown_never_hides(page, backend: str, frontend: str, token: str):
+    """`unknown` means "couldn't ask", never "not in the library".
+
+    Treating a slow or dead Jellyfin as a definite no would let "Hide Not in
+    Library" empty the entire wheel. The control is gated on
+    `hasNonLibraryVisible`, which counts only definite answers, so with every
+    lookup unknown it must refuse to act.
+    """
+    step(12, "step 1/3: seeding a list, forcing every availability lookup to unknown")
+    seed_list(backend, token, season_ids(backend, 3))
+    page.route("**/api/jellyfin/availability",
+               lambda route: route.fulfill(
+                   status=200, content_type="application/json",
+                   body=UNKNOWN_BODY))
+    try:
+        step(12, "step 2/3: opening the wheel")
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.wait_for_timeout(5000)
+        before = page.locator('li[role="button"]').count()
+        assert before, "no unwatched entries rendered -- nothing to test hiding against"
+
+        step(12, "step 3/3: the hide control must refuse to act on unknowns")
+        hide = page.locator("button", has_text="Hide Not in Library")
+        if hide.count():
+            assert hide.first.is_disabled(), (
+                "'Hide Not in Library' is enabled while every lookup returned unknown "
+                "-- one slow moment would empty the wheel")
+        page.wait_for_timeout(1500)
+        after = page.locator('li[role="button"]').count()
+        assert after == before, f"entries vanished on unknown verdicts: {before} -> {after}"
+        step(12, f"PASS -- {before} entries kept; control is "
+                 f"{'disabled' if hide.count() else 'not offered'} on unknown verdicts")
+    finally:
+        page.unroute("**/api/jellyfin/availability")
+
+
+def test_share_as_image(page, backend: str, frontend: str, token: str):
+    """Share-as-image really produces an image.
+
+    `shareMyList()` resolves `toJpeg` as `mod.toJpeg ?? mod.default?.toJpeg`
+    inside a try/catch that swallows everything -- the same shape that once
+    downgraded every ASS release to WebVTT without a word. CLAUDE.md says to
+    verify this by hand; this is that check, automated.
+    """
+    step(13, "step 1/3: opening Home with a populated list")
+    seed_list(backend, token, season_ids(backend, 3))
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(frontend)
+    wait_for_grids(page)
+    share = page.locator("[data-share-btn]").first
+    if not share.count():
+        step(13, "SKIP -- the share control is not rendered at this viewport")
+        return
+
+    step(13, "step 2/3: clicking Share and capturing what it writes")
+    # The image is rendered first and `window.open` runs after that await, by
+    # which point Chrome no longer treats it as user-activated and blocks the
+    # popup. Stub the window so this tests the part that fails *silently* — the
+    # rendering — rather than the browser's popup policy.
+    # The stub has to answer the whole document API the real code uses —
+    # open(), write(), close(). Missing `open` made this look like the feature
+    # was broken when the only thing broken was the stub.
+    page.evaluate("""() => {
+        window.__shared = null;
+        window.open = () => ({
+            document: {
+                open() {}, close() {},
+                write: (html) => { window.__shared = (window.__shared || '') + html; },
+            },
+            focus() {}, close() {},
+        });
+    }""")
+    share.click()
+    try:
+        page.wait_for_function("() => window.__shared", timeout=90_000)
+    except Exception:
+        raise AssertionError("Share produced nothing — toJpeg most likely resolved to "
+                             "undefined and the failure was swallowed by its try/catch")
+    src = page.evaluate("""() => (window.__shared.match(/src="([^"]+)"/) || [])[1] || ''""")
+    assert src.startswith("data:image/jpeg"), (
+        f"share produced no JPEG data URL (got {src[:60]!r}) -- toJpeg most likely "
+        f"resolved to undefined and the failure was swallowed")
+    assert len(src) > 5000, f"share produced a suspiciously tiny image ({len(src)} chars)"
+
+    step(13, "step 3/3: the image has content, not a blank rectangle")
+    # Size alone would pass on a large all-white render, which is the realistic
+    # silent failure when the off-screen clone is styled wrong.
+    colours = page.evaluate(COUNT_COLOURS, src)
+    assert colours > 1, "the shared image is one flat colour -- it rendered blank"
+    step(13, f"PASS -- {len(src) // 1024} KB JPEG, {colours} distinct colour buckets")
+
+
+def test_progressive_loading(page, frontend: str):
+    """One section failing must not blank the other.
+
+    Home fetches the current season and the previous season's leftovers
+    independently, tracking `errorMain` / `errorLeftovers` separately. Only the
+    leftovers request carries `format=TV`, so it can be failed on its own.
+    """
+    step(14, "step 1/2: failing only the leftovers fetch")
+    page.route("**/api/anime?**format=TV**", lambda route: route.abort())
+    try:
+        page.goto(frontend)
+        page.wait_for_timeout(6000)
+        retry = page.locator("button:text-is('Retry')")
+        assert retry.count(), "a failed section offered no Retry control"
+        covers = page.locator("img[alt]").count()
+        assert covers > 0, ("the page blanked when one section failed -- the two "
+                            "sections are meant to fail independently")
+        step(14, f"step 2/2: Retry offered, and {covers} covers still rendered from "
+                 f"the section that succeeded")
+    finally:
+        page.unroute("**/api/anime?**format=TV**")
+    page.locator("button:text-is('Retry')").first.click()
+    page.wait_for_timeout(4000)
+    assert not page.locator("button:text-is('Retry')").count(), \
+        "Retry did not clear the error state once the network recovered"
+    step(14, "PASS -- one section failed alone, Retry recovered it")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,6 +752,12 @@ def main():
                 ("logout",             lambda: test_logout(page, frontend)),
                 ("trailer modal esc",  lambda: test_trailer_modal_escape(page, frontend)),
                 ("compare 2 users",    lambda: test_compare_two_users(page, args.backend, frontend)),
+                # 11-14 re-auth as the original user where they need a session;
+                # 8 logged out, so each sets its own token rather than assuming one.
+                ("admin page",         lambda: test_admin_page(page, args.backend, frontend)),
+                ("unknown never hides",lambda: test_unknown_never_hides(page, args.backend, frontend, token_a)),
+                ("share as image",     lambda: test_share_as_image(page, args.backend, frontend, token_a)),
+                ("progressive loading",lambda: test_progressive_loading(page, frontend)),
             ]
             for label, fn in tests:
                 try:

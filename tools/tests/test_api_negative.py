@@ -9,12 +9,37 @@ Usage:
   py -3.13 -u tools/tests/test_api_negative.py [--backend http://localhost:3000]
 """
 import argparse
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 10
+TOTAL_STEPS = 11
+REPO = Path(__file__).resolve().parents[2]
+
+
+def sign_token(payload: str) -> str:
+    """Sign a JWT with the backend's own secret, using the backend's own library.
+
+    Only a token signed with the real secret reaches the code path step 11
+    guards; a forged or unsigned one is rejected earlier, by a branch that was
+    never broken. Signed through node rather than a Python JWT package so the
+    suite gains no dependency and signs exactly the way the app does.
+    """
+    script = (
+        "require('dotenv').config();"
+        "const jwt=require('jsonwebtoken');"
+        f"console.log(jwt.sign({payload}, process.env.JWT_SECRET||'dev-secret',"
+        "{expiresIn:'5m'}));"
+    )
+    try:
+        r = subprocess.run(["node", "-e", script], cwd=REPO / "backend",
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def step(n: int, msg: str) -> None:
@@ -183,6 +208,30 @@ def main():
         if r.status_code != 403:
             fail(10, f"{method} {path} as non-admin: expected 403, got {r.status_code} {r.text[:150]}")
     step(10, f"PASS — 4 admin endpoints all reject 401/403 correctly")
+
+    # ───────── 11  A signed token that carries no user id ─────────
+    #
+    # This one hung rather than failing. The app signs `{ id }`; a token signed
+    # with the right secret but a different claim shape reached
+    # `findUnique({ where: { id: undefined } })`, which Prisma rejects — inside
+    # an async middleware with no catch, so Express never answered and the
+    # connection stayed open until the client gave up. The short timeout IS the
+    # assertion: without it this would hang the suite instead of failing it.
+    step(11, "a correctly signed JWT with no `id` claim -> 401, not a hang")
+    bad = sign_token("{userId:1}")
+    if not bad:
+        step(11, "SKIP — could not sign a token (node or backend/.env unavailable)")
+    else:
+        try:
+            r = requests.get(f"{backend}/api/options",
+                             headers={"Authorization": f"Bearer {bad}"}, timeout=8)
+        except requests.Timeout:
+            fail(11, "request hung — a signed token with no `id` must 401, not stall the "
+                     "connection (Prisma rejecting inside async middleware, uncaught)")
+        if r.status_code != 401:
+            fail(11, f"expected 401 for a token with no id claim, got "
+                     f"{r.status_code} {r.text[:150]}")
+        step(11, f"PASS — 401 in {r.elapsed.total_seconds() * 1000:.0f}ms")
 
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 

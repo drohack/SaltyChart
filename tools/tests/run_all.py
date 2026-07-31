@@ -94,7 +94,8 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    # Steps 1-7: mutually independent, run in parallel (no shared browser state)
+    # The independent checks: no browser, no shared state, so they run in
+    # parallel. The rate-limit check boots its own backend on a spare port.
     parallel_checks: list[tuple[str, list[str], Path | None, int]] = [
         ("backend tsc",      ["npx", "tsc", "--noEmit"],     REPO / "backend",  60),
         ("frontend build",   ["npm", "run", "build"],         REPO / "frontend", 60),
@@ -110,9 +111,13 @@ def main():
         # to a deleted identifier compiles and ships. This is the only check
         # that catches it.
         ("svelte-check",     ["py", "-3.13", "-u", str(TESTS / "test_svelte_check.py")], None, 600),
+        # Every limiter carries `skip: () => _isDev`, so none of them is ever
+        # consulted by the rest of this suite. This one boots its own
+        # production-mode backend on a spare port to prove they actually limit.
+        ("rate limits",      ["py", "-3.13", "-u", str(TESTS / "test_rate_limits.py")], None, 180),
     ]
-    # Steps 8-10 (+11): use the browser via Playwright. Run sequentially so they
-    # don't fight over the dev server or share stale state.
+    # The browser checks. Run sequentially so they don't fight over the dev
+    # server or share stale state.
     sequential_checks: list[tuple[str, list[str], Path | None, int]] = [
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),
                              "--frontend", args.frontend],     None, 120),
