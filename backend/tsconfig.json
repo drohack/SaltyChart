@@ -1,10 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "NodeNext",
+    // Classic Node resolution, NOT NodeNext. `@jellyfin/sdk` declares
+    // `"type": "module"` but its shipped .d.ts files use extensionless relative
+    // imports (`from '../models'`), which ESM resolution cannot follow. Under
+    // NodeNext every nested SDK type silently degrades to `any` — and
+    // `skipLibCheck` hides the diagnostics, so it looks like it worked.
+    // Measured: with NodeNext, `SubtitleProfiles: [{ Method: 'nonsense' }]`
+    // compiles clean; with Node10 it errors, which is the entire point of
+    // depending on the SDK. Emit is CommonJS either way.
+    "module": "CommonJS",
     "rootDir": "src",
     "outDir": "dist",
-    "moduleResolution": "NodeNext",
+    "moduleResolution": "Node10",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,

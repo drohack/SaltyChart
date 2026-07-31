@@ -120,8 +120,8 @@ Suite includes:
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_jellyfin.py` | 10 steps: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
-| `test_player.py` | 9 steps driving the **real player**: pop-up pre-warm fires (and no stream starts early), playback advances, exactly one subtitle menu with a plain-English default, track switching, `[`/`]` stepping 0.10 with the bar hidden, libass canvas covering the video with no silent WebVTT fallback, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
-| `backend npm run test:unit` | Matching helpers via `node --test`: Unicode normalisation guards, season parsing, and the known false positive |
+| `test_player.py` | 10 steps driving the **real player**: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
+| `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
 Final line on success: `Pre-deploy: 13/13 passed — ready to build` (12/12 with
@@ -141,6 +141,8 @@ and share custom rankings.
 ```text
 SaltyChart/
 ├── backend/          # Express + TypeScript REST API
+│   ├── src/lib/      # Pure, unit-tested helpers: animeMatch, anilistTvdbMap,
+│   │                 #   jellyfinApi (the @jellyfin/sdk client + DeviceProfile)
 │   └── prisma/       # Prisma schema + SQLite datasource (nested prisma/data.db)
 ├── frontend/         # Svelte 4 + Vite + Tailwind/DaisyUI single-page app
 ├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
@@ -202,6 +204,40 @@ Routes inside existing routers:
 
 ### Jellyfin integration routes (`/api/jellyfin`)
 
+Requests go out through the **official `@jellyfin/sdk`** (MPL-2.0, zero deps,
+peer dep axios). `backend/src/lib/jellyfinApi.ts` owns the client: one memoized
+`Api`, one auth header, one `DEVICE_ID`, and the typed `deviceProfile()`. The
+route file keeps the caching, matching and proxying; only the wire calls moved.
+
+Why it was worth doing: the two costliest bugs in this integration were both
+*guessed fields*. A `DeviceProfile` missing `videoBitRate` silently returned a
+**416x234** stream, and `SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]`
+— the field the whole burn-in architecture turns on — was found by poking at the
+API. Both are generated types in the SDK; `Method` is a four-value
+`SubtitleDeliveryMethod` enum. A snapshot test asserts the typed profile is
+byte-identical to the hand-written one, so adopting it changed nothing on the
+wire.
+
+Two packaging traps, both load-bearing and neither obvious:
+
+- **The backend must use `module: CommonJS` + `moduleResolution: Node10`, not
+  `NodeNext`.** The SDK declares `"type": "module"` but its shipped `.d.ts`
+  files use extensionless relative imports (`from '../models'`), which ESM
+  resolution cannot follow. Under `NodeNext` every nested SDK type degrades to
+  `any` and `skipLibCheck` hides the diagnostics — measured:
+  `SubtitleProfiles: [{ Method: 'nonsense' }]` compiled clean. Under `Node10` it
+  errors, which is the entire point of the dependency. Emit is CommonJS either
+  way.
+- **Importing it is `require()` of an ESM package**, which needs **Node >= 20.19**
+  — hence the `engines` floor in `backend/package.json`. Verified by loading the
+  compiled output on 20.19.2 and 22.16; the production base image is 20.20.2.
+
+**`/stream/*` is deliberately NOT on the SDK.** It replays a URL Jellyfin itself
+chose (`TranscodingUrl`) with the parameters Jellyfin baked in; a typed accessor
+would mean re-deriving them, which is the 416x234 mistake again. It stays a raw
+`http`/`https` proxy for the streaming reasons below too. (`subtitleProxy` stays
+on plain axios for the same reason — it is a byte pipe, not a JSON API.)
+
 The admin points SaltyChart at a Jellyfin server (URL + API key) on the
 `/admin` page; both are stored in the `AppConfig` DB table. **The API key
 never reaches a browser** — availability responses carry only ids and display
@@ -210,9 +246,23 @@ strings, and the stream proxy injects the key server-side. Like
 proxy pipes HLS segments, which compression would buffer), so it carries its
 own limiter instances and JSON parser.
 
-An **admin API key alone authenticates everything** — no user login, no
-per-viewer Jellyfin accounts. Playback therefore runs under the server
-account, so progress doesn't sync to anyone's Jellyfin profile.
+An **API key authenticates every request** — no user login, no per-viewer
+Jellyfin accounts. But an API key does not *identify* a viewer, and Jellyfin
+needs one to apply policy against: PlaybackInfo silently drops the
+`TranscodingUrl` from an otherwise valid response when no user id is sent, which
+reads exactly like the DeviceProfile was rejected. So a **playback account** is
+picked on `/admin` (`jellyfinUserId` in AppConfig) and falls back to an
+administrator when unset.
+
+Use a **dedicated account** — this deployment has one named `SaltyChart`. It
+needs library access and no bitrate or parental-rating limit; it does *not* need
+to be an administrator (verified: the full player suite passes under a non-admin
+account). It keeps playback off a real person's profile and stops a later
+tightening of someone's policy quietly degrading playback for everyone. Nothing
+is written to that account's watch history either way — Jellyfin only records
+progress when a client reports it to `/Sessions/Playing`, and this proxy never
+does, verified against episodes played repeatedly all day that stayed at
+`playCount=0, lastPlayed=never`.
 
 **"Direct stream" still runs ffmpeg and still writes to the transcode cache.**
 This library direct-streams (8/8 sampled episodes: codecs copied, no transcode
@@ -287,8 +337,9 @@ Two consequences that have both bitten:
   line on `:` and ignores it unless there are exactly two parts, so Jellyfin's
   `id:subtitle width:80% …` is unparseable to it wherever it sits. Costs
   nothing, because Jellyfin repeats the placement on every cue (`line:90%`).
-- `GET  /api/jellyfin/attachments` — an embedded font, so libass renders signs
-  in the typeface the release intended. **Indices are the file's own stream
+- `GET  /api/jellyfin/attachments` — an embedded font. No longer on the playback
+  path (Jellyfin burns subtitles in server-side using the episode's own fonts);
+  kept and tested because it is the only way to inspect what a release ships. **Indices are the file's own stream
   numbers and do not start at 0** — they must come from `/playback`, or every
   request 502s.
 - Both of the above send `Cache-Control: private, max-age=86400`. They are
@@ -297,11 +348,15 @@ Two consequences that have both bitten:
 - `POST /api/jellyfin/playback/stop` — `{ playSessionId }`; tears the
   transcode down rather than leaving it to time out on a shared box.
 - `GET/PUT /api/jellyfin/config` + `POST /api/jellyfin/config/test` — admin
-  only (`ADMIN_USER_ID`): read config (URL + `apiKeySet`, never the key), save
-  (empty key keeps the stored one), and test a connection (returns server name,
-  version + library list, or the error, always as 200 `{ ok, ... }`). The test
-  hits authenticated `/System/Info`, not `/System/Info/Public`, so a green
-  result proves the key works rather than only that the server is reachable.
+  only (`ADMIN_USER_ID`): read config (URL, `apiKeySet`, `userId` — never the
+  key), save (an empty key keeps the stored one; an empty `userId` is a real
+  choice and *is* written, meaning "fall back to an administrator"), and test a
+  connection (returns server name, version, library list and the resolved
+  `playbackAccount`, or the error, always as 200 `{ ok, ... }`). The test hits
+  authenticated `/System/Info`, not `/System/Info/Public`, so a green result
+  proves the key works rather than only that the server is reachable.
+- `GET /api/jellyfin/users` — admin only; ids and names for the playback-account
+  picker on `/admin`. Nothing about credentials, and never exposed to viewers.
 
 ### Matching AniList entries to the library
 
@@ -560,24 +615,33 @@ aria2c in the image — the bench exists to prove there's nothing to chase here.
 
 **Player startup** (suite `player_startup`, `tools/bench_player.py`): times every
 stage between pressing Watch and a decoding video, through the SaltyChart proxy
-**and** directly against Jellyfin so the proxy's own cost is separable. Findings
-over 4 cold runs against the real library:
+**and** directly against Jellyfin so the proxy's own cost is separable. It plays
+what `/api/jellyfin/playback` names (`transcodingUrl`) and *follows the
+manifests* rather than hand-building segment URLs — an earlier version assembled
+`?videoCodec=h264&…` itself and ended up benchmarking a stream shape the app no
+longer requests. HLS URIs are relative to their own playlist, so they are
+resolved against it; joining them to the proxy root gives a 404 that reads as an
+empty playlist. Sessions are torn down by `playSessionId` through the app's own
+stop endpoint — killing by `deviceId` would take out every SaltyChart encode on
+the server, including a real viewer's. Findings over 4 cold runs against the
+real library (taken before burn-in; the subtitle and font rows it used to
+measure are gone with the client-side renderer):
 
 | stage | median | range |
 |---|---|---|
 | `/playback` metadata | 0.03 s | 0.03–3.20 |
-| `/subtitles` (ASS) | 0.01 s | — |
-| fonts (the 3 the script names) | 0.03 s | 0.7 MB |
 | master.m3u8 / main.m3u8 | 0.02 s | — |
 | **first HLS segment** | **19.9 s** | **1.3–30.0 s** |
 | segment 1 (steady state) | 0.06 s | — |
 
 So **everything except the first segment is under 0.25 s**, our proxy adds
-nothing measurable (0.02 s proxied vs 0.05 s direct), and client-side work —
-libass canvas up at 80 ms — is entirely off the critical path. From the click,
-the first stream request leaves the browser at **~65 ms**; that is the whole of
-what the app contributes. Pre-loading more, including a pre-built JASSUB
-instance, cannot help. Two things the bench found that were *not* inherent are
+nothing measurable (0.02 s proxied vs 0.05 s direct), and client-side work is
+entirely off the critical path. From the click, the first stream request leaves
+the browser at **~65 ms**; that is the whole of what the app contributes.
+Pre-loading more cannot help. (Taken while subtitles were still rendered in the
+browser, which is why the conclusion is worth keeping: even carrying a wasm
+renderer, a subtitle fetch and its fonts, the client was never the bottleneck —
+those rows sat at 0.01–0.08 s against a 19.9 s first segment.) Two things the bench found that were *not* inherent are
 fixed: a 30 s proxy idle-timeout that aborted slow-but-working streams (Jellyfin
 needs up to 50.5 s for a cold first segment), and an `await` on Google's Cast
 SDK sitting between the click and the manifest.
@@ -917,87 +981,90 @@ Path: `frontend/`
   party between the Watch click and the first byte of video. It is warmed on
   the Randomize page (`loadCastSdk()`) and the player only offers casting if
   `castReady()` is already true.
-- **Subtitles are rendered by libass** (`jassub`, lazy-loaded), fed the raw
-  `.ass` from `/api/jellyfin/subtitles` plus the file's embedded fonts from
-  `/api/jellyfin/attachments`. That preserves positioning, styling and
-  karaoke — WebVTT structurally cannot: converting ASS drops all positioning
-  and, on karaoke-heavy releases, leaves ~95% of cues as literal override
-  code on screen. Non-ASS tracks use video.js's own text tracks, and if
-  libass fails to start the player falls back to server-converted WebVTT so
-  subtitles never simply vanish. (That fallback is a genuine safety net, but a
-  silent one — it fired for *every* ASS release once, because a double-unwrapped
-  `.default` handed jassub `workerUrl: undefined`. `test_player.py` step 8 now
-  fails on the fallback warning, so it can't happen quietly again.)
-  This is the same architecture jellyfin-web uses — and on a newer renderer:
-  `jassub` is maintained, while jellyfin-web still ships SubtitlesOctopus (last
-  published 2022). No browser renders ASS natively, so a client-side renderer
-  is the only way to keep it without forcing a server-side burn-in transcode.
-  Three things cost real time and are worth keeping written down:
-  - The worker entry is **`jassub/dist/worker/worker.js`**. jassub's own
-    README still documents `dist/wasm/jassub-worker.js`, which is the
-    emscripten glue — point `workerUrl` at that and the worker loads but
-    never completes its handshake, so `ready` hangs forever and `renderer`
-    stays undefined. The visible symptom is a 300×150 canvas parked below
-    the video, which looks like a layout bug and is not one.
-  - Vite needs **`worker: { format: 'es' }`**; it bundles workers as `iife`
-    by default, which cannot code-split, and the build fails outright.
-  - **COOP/COEP are not required.** jassub uses SharedArrayBuffer only for
-    multi-threading and falls back to single-threaded on its own, so the
-    page does not need cross-origin isolation — which matters, because those
-    headers would block the YouTube trailer iframes on Home.
-  - **`defaultFont` must be set, or a missing font renders nothing.** Scripts
-    routinely name a font their own MKV doesn't attach (*The Elusive Samurai*
-    asks for "Arial Unicode MS" and ships only plain Arial). jassub registers
-    its bundled fallback into `availableFonts` by itself but never nominates it
-    as the substitute family, so libass had no face to fall back to and drew
-    **empty frames** — worker healthy, canvas correctly sized, `ready` resolved,
-    no error anywhere, and the FPS debug counter happily reporting renders.
-    Pass both `availableFonts: { 'liberation sans': url }` **and**
-    `defaultFont: 'liberation sans'`. Pass the URL explicitly too: jassub
-    resolves its own copy via `new URL('./default.woff2', import.meta.url)`,
-    which under Vite points into `node_modules/.vite/deps/` where the file
-    isn't.
-  - **`canvas.width` on the main thread is meaningless.** libass transfers the
-    canvas to its worker, so the attribute keeps whatever it last saw (often
-    300×150) while `resize()` sets the **CSS** box. Measure with
-    `getBoundingClientRect()` against the video's; reading the attribute
-    produces convincing nonsense and cost real time twice.
-- Because libass paints its own canvas it bypasses video.js's captions menu,
-  which can only list text tracks the player owns. So the player **registers
-  its own control-bar `MenuButton` and removes video.js's `subsCapsButton`** —
-  leaving both gives two subtitle menus that disagree, since the built-in one
-  is blind to ASS. The custom menu drives `showSubtitle` for every track type,
-  and carries "Caption settings…" as its last item so video.js's caption
-  styling dialog stays reachable. Track selection prefers a plain English
-  dialogue track: labels matching `sdh|dubtitle|sign|song` are set aside, ASS
-  is preferred over SRT of the same content, and the file's own `default` flag
-  breaks the tie *within* that set rather than deciding on its own — releases
-  do ship with a signs-only track marked default, and some name their tracks
-  uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
-- **Every font the MKV carries is sent to libass**, deliberately. Subsetting
-  to just the fonts a script names was built and then removed: it cut a
-  measured 250.9 MB of attachments to 5.4 MB, but A/B'd on one episode that
-  only moved libass's `ready` from 529ms to 200ms — both invisible behind a
-  video that takes 5–13s. It bought ~2% of a ~1.4 GB episode and paid for it
-  in correctness: filenames need not resemble the family inside them
-  (`f1.ttf` may hold "Helvetica Neue"), so matching was a guess, and it
-  guessed wrong on 5 of 28 named fonts across the corpus. Guessing about
-  typefaces to save 2% of a stream is a bad trade. jellyfin-web sends them
-  all too.
+- **Subtitles are burned into the video by Jellyfin**, not rendered in the
+  browser. The stream request carries `SubtitleProfiles: [{ Format: 'ass',
+  Method: 'Encode' }]` plus the chosen `SubtitleStreamIndex`, and Jellyfin
+  composites them **on the GPU**: `-hwaccel vaapi` → `subtitles=…:fontsdir=…`
+  → `hwupload=derive_device=qsv` → `overlay_qsv` → `h264_qsv`. It renders with
+  **libass and the episode's own extracted fonts**, so positioning, styling and
+  karaoke survive exactly as they would client-side.
+
+  This replaced a client-side libass renderer (`jassub`), and the reason was
+  reliability rather than bandwidth. Every failure that path had was **silent**:
+  a canvas that painted itself opaque over a healthy video (audio and subtitles
+  fine, picture gone, no error logged anywhere, not reproducible on demand), a
+  double-unwrapped `.default` that downgraded every ASS release to WebVTT, and a
+  missing fallback font that drew empty frames while reporting success.
+  Burned-in subtitles are pixels in the video, so none of those failure modes
+  exist — and for the first time a test can *see* them, which is what
+  `test_player.py` step 8 does by comparing the same frames with subtitles on
+  and off.
+
+  Measured on the live server (i5-10400, UHD 630, QSV enabled), 8 cold sessions
+  across 4 episodes:
+
+  | | remux (previous) | burn-in |
+  |---|---|---|
+  | first segment | 1.16 s | 1.58 s |
+  | bytes per 6 s | 4.6–10.4 MB | 1.1–3.3 MB |
+  | client-side code | jassub, 2 MB wasm, fonts, canvas | none |
+
+  0.43 s per episode to delete the entire class of failure. What it costs: one
+  generation of re-encode, and a **stream restart** whenever the track or the
+  quality changes (~1.1 s to the first segment at the new tier). Every Jellyfin
+  client behaves that way.
+
+  `/api/jellyfin/subtitles` and `/attachments` still exist and are still tested,
+  but nothing in the player calls them any more.
+- **Two control-bar menus, both of which restart the stream.** The subtitles are
+  inside the picture and the tier is baked into what Jellyfin encodes, so
+  neither can be switched client-side — both call `restartStream()`, which
+  resumes at `currentTime` around a **fresh** `playSessionId`.
+  - *Subtitles* — the player registers its own `MenuButton` and removes
+    video.js's `subsCapsButton`; the built-in one can only list text tracks the
+    player owns, and there are none. Track selection prefers a plain English
+    dialogue track: labels matching `sdh|dubtitle|sign|song` are set aside, ASS
+    is preferred over SRT of the same content, and the file's own `default` flag
+    breaks the tie *within* that set rather than deciding on its own — releases
+    do ship with a signs-only track marked default, and some name their tracks
+    uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
+    **"Off" must be sent as Jellyfin's `subtitleStreamIndex=-1`**; omitting the
+    parameter makes Jellyfin pick a default track, which with burn-in puts
+    subtitles back on screen for a viewer who just turned them off.
+  - *Quality* — `auto` (the source's own width and bitrate, read from a probe
+    PlaybackInfo call), 1080p, 720p and 480p. Jellyfin never encodes above the
+    source, so `auto` is an honest ceiling rather than a number we invented.
+
+  A rebuild also **stops the session it abandons** (`stopSession`). Closing the
+  modal only ever stopped the *current* one, so before that every track or
+  quality change left an ffmpeg behind — and Jellyfin's writes segments until
+  the whole episode is done regardless of the playhead (jellyfin#16608), so an
+  orphan remuxes a ~1 GB episode for nobody. Note this cannot be checked via
+  `/Sessions`: that lists only sessions a client has *reported*, and this proxy
+  never reports (which is what keeps playback out of watch history), so it shows
+  zero transcodes even mid-playback.
+
+  Two bugs made this a no-op and are worth not repeating: `restartStream()`
+  fetched playback info **without** the current quality or track and never
+  reassigned `transcodingUrl`, so it replayed the very URL it was changing; and
+  the picture-stall watchdog fired 9 s into the deliberate rebuild — frames
+  genuinely stop while a new ffmpeg spins up — and restarted on top of it, so
+  the two raced. Hence `RESTART_GRACE_MS`: `recovering` is cleared when
+  `player.src()` is called, not when frames resume, so it cannot cover that gap.
 - **Player assets are warmed in two stages**, because they divide cleanly by
   what they depend on (all in `lib/jellyfinPrewarm.ts`):
   - *Nothing show-specific* — the video.js chunk (0.66 MB built, **1.6 MB
-    unminified from the dev server**) and libass's wasm worker (~2 MB). Warmed
-    on **landing on `/random`**, on `requestIdleCallback` so it never competes
-    with the page's own images, gated on Jellyfin being configured and skipped
-    on `saveData`/2G. Not warmed app-wide: someone browsing trailers on Home
-    should not pay 2.7 MB for a player they never open. **`loadVideoJs()` must
-    be shared** — the component's own `import('video.js')` inside `onMount`
-    would not be covered by preloading its chunk, since the bulk is the
-    dependency, not the component.
-  - *Per episode* — playback metadata, the chosen subtitle track and its fonts,
-    warmed by `prewarm()` when the **show pop-up opens** (the earliest point an
-    itemId exists), cached by itemId so repeated wheel spins reuse them.
+    unminified from the dev server**). Warmed on **landing on `/random`**, on
+    `requestIdleCallback` so it never competes with the page's own images, gated
+    on Jellyfin being configured and skipped on `saveData`/2G. Not warmed
+    app-wide: someone browsing trailers on Home should not pay for a player they
+    never open. **`loadVideoJs()` must be shared** — the component's own
+    `import('video.js')` inside `onMount` would not be covered by preloading its
+    chunk, since the bulk is the dependency, not the component.
+  - *Per episode* — the episode's PlaybackInfo, warmed by `prewarm()` when the
+    **show pop-up opens** (the earliest point an itemId exists) and cached by
+    itemId, quality and track so repeated wheel spins reuse it. Burn-in leaves
+    nothing else to warm: no wasm, no fonts, no subtitle body.
   Together, pressing Watch costs only the stream start.
 - **The Watch button shows an "Opening…" spinner while the chunk loads.**
   Obvious on localhost that it isn't needed, and wrong everywhere else: over a
@@ -1010,29 +1077,30 @@ Path: `frontend/`
   stream would remux a whole ~1 GB episode to disk for a pop-up nobody plays.
   With that split, a Watch click is ~2.4s, of which ~1.7s is Jellyfin producing
   segment 0; the manifest itself answers in ~30ms.
-- **Playback waits for subtitles**, but that is almost never the wait. Measured
-  on a normal open: subtitles are ready at ~240ms while the video needs 3.3s+,
-  because the video is waiting on Jellyfin to build the first HLS segment. So
-  the "Loading subtitles…" chip is shown **only once the video can play** —
-  i.e. only when subtitles genuinely are the thing holding playback. Otherwise
-  video.js's own loading spinner is left visible, which is the honest indicator
-  for a stream that has not arrived yet. Starting an anime episode before its
-  subtitles arrive means missing the opening dialogue, so `autoplay` is off
-  and playback begins once the track is registered. The chip carries a
-  **Play anyway** button, a 20s cap starts
-  playback regardless, and a file with no subtitles doesn't wait at all.
+- **Nothing waits on subtitles any more.** They arrive inside the picture, so
+  playback starts as soon as the stream does — the "Loading subtitles…" chip,
+  its Play-anyway button and its 20s cap are all gone, and video.js's own
+  loading spinner is left to say what it always honestly said: the stream has
+  not arrived yet. The only remaining app-owned wait is a small "Switching
+  to…" indicator during a track or quality change, which genuinely is a rebuild.
 - **video.js's big play button is hidden**, because `autoplay: false` leaves the
   player in its not-yet-started state for the 1–30s Jellyfin spends building the
   first segment, putting a large play button over a video that is already being
   started for the viewer. It reappears (via a `sc-autoplay-blocked` class) only
-  if `player.play()` is *rejected* — browsers refuse programmatic playback when
-  the gesture that opened the modal is too far in the past, and that is the one
-  case where clicking is genuinely required. That rejection used to be swallowed
-  silently.
+  if `player.play()` rejects with **`NotAllowedError`** — the browser refusing
+  programmatic playback because the gesture that opened the modal is too old,
+  which is the one case where clicking is genuinely required. **`AbortError` is
+  not that**: `play()` rejects with it whenever a `pause()` or a new `load()`
+  interrupts it, which happens on every deliberate rebuild, and treating it as a
+  block put a play button over a video that was already restarting. The `display:
+  none` also carries `!important`, because `player.src()` clears
+  `vjs-has-started` and video.js's own skin then shows the button at equal
+  specificity — leaving it to stylesheet load order.
 - While the player is open `handleModalKey` is suppressed so Enter can't
-  mark-watched underneath. Caveat: playback runs under the server account
-  (the admin's API key), so progress doesn't sync to viewers' Jellyfin
-  profiles.
+  mark-watched underneath. Caveat: playback runs under the configured Jellyfin
+  playback account rather than the viewer's, so progress doesn't sync to
+  anyone's Jellyfin profile — see the account note in *Jellyfin integration
+  routes* above.
 
 **Compare page** (redesigned; mobile + desktop share the same card layout)
 - One card per anime with cover thumbnail, canonical title (de-emphasised),

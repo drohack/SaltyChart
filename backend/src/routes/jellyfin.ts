@@ -14,6 +14,25 @@ import {
   type MatchableSeries,
 } from '../lib/animeMatch';
 import { ensureAnilistTvdbMap, tvdbIdForAnilist } from '../lib/anilistTvdbMap';
+import {
+  DEVICE_ID,
+  deviceProfile,
+  jellyfinApi,
+  jellyfinAuthHeader,
+  jellyfinAxios,
+  type JellyfinConfig,
+} from '../lib/jellyfinApi';
+import type { Api } from '@jellyfin/sdk/lib/api';
+import { getItemsApi } from '@jellyfin/sdk/lib/utils/api/items-api';
+import { getHlsSegmentApi } from '@jellyfin/sdk/lib/utils/api/hls-segment-api';
+import { getMediaInfoApi } from '@jellyfin/sdk/lib/utils/api/media-info-api';
+import { getLibraryStructureApi } from '@jellyfin/sdk/lib/utils/api/library-structure-api';
+import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api';
+import { getTvShowsApi } from '@jellyfin/sdk/lib/utils/api/tv-shows-api';
+import { getUserApi } from '@jellyfin/sdk/lib/utils/api/user-api';
+import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-item-kind';
+import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-fields';
+import { MediaStreamType } from '@jellyfin/sdk/lib/generated-client/models/media-stream-type';
 
 // ---------------------------------------------------------------------------
 // /api/jellyfin — Jellyfin server configuration.
@@ -64,11 +83,6 @@ function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
   return next();
 }
 
-export interface JellyfinConfig {
-  url: string; // no trailing slash
-  apiKey: string;
-}
-
 // undefined = not loaded yet; null = not configured
 let _configCache: JellyfinConfig | null | undefined;
 
@@ -83,41 +97,62 @@ export async function getJellyfinConfig(): Promise<JellyfinConfig | null> {
   return _configCache;
 }
 
-/**
- * Jellyfin accepts the API key as an Authorization header; keeping it out of
- * the URL means it can't leak through logs or error messages the way a query
- * parameter does.
- */
-export function jellyfinAxios(cfg: JellyfinConfig): AxiosInstance {
-  return axios.create({
-    baseURL: cfg.url,
-    timeout: 8000,
-    headers: {
-      Authorization: `MediaBrowser Token="${cfg.apiKey}", Client="SaltyChart", Device="Web", DeviceId="saltychart", Version="1.0"`,
-      Accept: 'application/json',
-    },
-  });
-}
+// The client itself (axios instance, auth header, device id, the SDK `Api`)
+// lives in ../lib/jellyfinApi so the header has exactly one definition — the
+// raw proxy below sends it too, and the two must not be able to drift.
+export { jellyfinAxios, type JellyfinConfig };
 
 // Admin: read config — the URL only; the key is never sent back.
 router.get('/config', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
   const rows = await prisma.appConfig.findMany({
-    where: { key: { in: ['jellyfinUrl', 'jellyfinApiKey'] } },
+    where: { key: { in: ['jellyfinUrl', 'jellyfinApiKey', 'jellyfinUserId'] } },
   });
   res.json({
     url: rows.find((r) => r.key === 'jellyfinUrl')?.value ?? '',
     apiKeySet: !!rows.find((r) => r.key === 'jellyfinApiKey')?.value,
+    userId: rows.find((r) => r.key === 'jellyfinUserId')?.value ?? '',
   });
+});
+
+/**
+ * Admin: the accounts on the Jellyfin server, for the playback-account picker.
+ *
+ * Only ids and names — an account list is not something a viewer needs, and the
+ * response says nothing about credentials.
+ */
+router.get('/users', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
+  const cfg = await getJellyfinConfig();
+  if (!cfg) return res.json({ users: [] });
+  try {
+    const { data } = await getUserApi(await jellyfinApi(cfg)).getUsers();
+    // `UserDto.Id` is optional in the schema even though the server always
+    // sends one, so the coerce-and-filter stays.
+    const users = data.map((u) => ({
+      id: String(u.Id ?? ''),
+      name: String(u.Name ?? ''),
+      isAdministrator: !!u.Policy?.IsAdministrator,
+    }));
+    res.json({ users: users.filter((u) => u.id) });
+  } catch {
+    // The picker is a convenience; a server that can't be reached is already
+    // reported by the Test button.
+    res.json({ users: [] });
+  }
 });
 
 // Admin: save config. An empty/absent key keeps the stored one so the admin
 // can edit the URL without re-pasting the key.
 router.put('/config', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
-  const { url, apiKey } = req.body ?? {};
-  if (typeof url !== 'string' || (apiKey !== undefined && typeof apiKey !== 'string')) {
-    return res
-      .status(400)
-      .json({ error: 'Expected { url: string, apiKey?: string }', code: 'BAD_REQUEST' });
+  const { url, apiKey, userId } = req.body ?? {};
+  if (
+    typeof url !== 'string' ||
+    (apiKey !== undefined && typeof apiKey !== 'string') ||
+    (userId !== undefined && typeof userId !== 'string')
+  ) {
+    return res.status(400).json({
+      error: 'Expected { url: string, apiKey?: string, userId?: string }',
+      code: 'BAD_REQUEST',
+    });
   }
   const cleanUrl = url.trim().replace(/\/+$/, '');
   if (cleanUrl && !/^https?:\/\//i.test(cleanUrl)) {
@@ -136,6 +171,16 @@ router.put('/config', jellyfinLimiter, requireAuth, requireAdmin, async (req, re
       update: { value: apiKey.trim() },
       create: { key: 'jellyfinApiKey', value: apiKey.trim() },
     });
+  }
+  // Unlike the key, an empty user id is a meaningful choice: it means "fall
+  // back to an administrator", so it is written rather than ignored.
+  if (typeof userId === 'string') {
+    await prisma.appConfig.upsert({
+      where: { key: 'jellyfinUserId' },
+      update: { value: userId.trim() },
+      create: { key: 'jellyfinUserId', value: userId.trim() },
+    });
+    cachedUserId = null;
   }
   _configCache = undefined;
   res.json({ ok: true });
@@ -163,24 +208,41 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
   }
 
   try {
-    const ax = jellyfinAxios({ url: testUrl, apiKey: testKey });
+    const api = await jellyfinApi({ url: testUrl, apiKey: testKey });
     // /System/Info needs authentication, so a 200 here proves the key works —
     // unlike /System/Info/Public, which any unauthenticated caller can read.
-    const info = await ax.get('/System/Info');
+    const info = await getSystemApi(api).getSystemInfo();
     const serverName = info.data?.ServerName;
     if (!serverName) {
       return res.json({ ok: false, error: 'Reached the server but it did not look like Jellyfin.' });
     }
-    const folders = await ax.get('/Library/VirtualFolders');
-    const libraries = (folders.data ?? []).map((f: any) => ({
+    const folders = await getLibraryStructureApi(api).getVirtualFolders();
+    const libraries = (folders.data ?? []).map((f) => ({
       title: String(f.Name ?? ''),
       type: String(f.CollectionType ?? ''),
     }));
+    // Which account playback will actually run as. Worth reporting: a wrong or
+    // deleted id doesn't fail loudly — PlaybackInfo just returns no
+    // TranscodingUrl, which looks like the profile was rejected.
+    let playbackAccount = '';
+    try {
+      const resolved = await jellyfinUserId({ url: testUrl, apiKey: testKey });
+      const { data } = await getUserApi(api).getUsers();
+      const match = data.find((u) => String(u.Id ?? '') === resolved);
+      playbackAccount = match
+        ? `${match.Name}${match.Policy?.IsAdministrator ? ' (administrator)' : ''}`
+        : resolved
+          ? 'unknown account — the configured id is not on this server'
+          : '';
+    } catch {
+      /* reported as blank rather than failing the whole test */
+    }
     res.json({
       ok: true,
       serverName: String(serverName),
       version: String(info.data?.Version ?? ''),
       libraries,
+      playbackAccount,
     });
   } catch (err: any) {
     const status = err?.response?.status;
@@ -215,7 +277,7 @@ let _lastLibraryRefresh = 0;
  * list endpoints, which reads exactly like "no ids exist" and silently
  * disables the id-confidence tier.
  */
-async function getSeriesLibrary(ax: AxiosInstance, force = false): Promise<JfSeries[]> {
+async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (!force && _library && _library.expires > Date.now()) return _library.series;
   // Coalesce: the Randomize page asks about every show at once, and without
   // this each request pulled the whole library separately — dozens of
@@ -224,26 +286,28 @@ async function getSeriesLibrary(ax: AxiosInstance, force = false): Promise<JfSer
   if (_libraryInFlight) return _libraryInFlight;
 
   _libraryInFlight = (async () => {
-    // A few thousand series is a big response; the default timeout is sized
-    // for small metadata calls.
-    const { data } = await ax.get('/Items', {
-      timeout: 60_000,
-      params: {
-        includeItemTypes: 'Series',
-        recursive: 'true',
-        fields: 'ProviderIds,OriginalTitle',
-        enableImages: 'false',
-        enableTotalRecordCount: 'false',
+    const { data } = await getItemsApi(api).getItems(
+      {
+        includeItemTypes: [BaseItemKind.Series],
+        recursive: true,
+        fields: [ItemFields.ProviderIds, ItemFields.OriginalTitle],
+        enableImages: false,
+        enableTotalRecordCount: false,
       },
-    });
+      // A few thousand series is a big response; the instance default is sized
+      // for small metadata calls.
+      { timeout: 60_000 }
+    );
     const series: JfSeries[] = [];
-    for (const it of data?.Items ?? []) {
-      if (!it?.Name || !it?.Id) continue;
+    for (const it of data.Items ?? []) {
+      if (!it.Name || !it.Id) continue;
       const norms = [normalizeTitle(String(it.Name))];
       if (it.OriginalTitle) {
         const on = normalizeTitle(String(it.OriginalTitle));
         if (on && !norms.includes(on)) norms.push(on);
       }
+      // Jellyfin has shipped both casings of this key across versions, and the
+      // generated type is an index signature, so both stay.
       const tvdb = it.ProviderIds?.Tvdb ?? it.ProviderIds?.tvdb ?? null;
       series.push({
         id: String(it.Id),
@@ -270,12 +334,12 @@ async function getSeriesLibrary(ax: AxiosInstance, force = false): Promise<JfSer
  * offering S1E1 for a season-3 entry would be wrong. Without a marker: first
  * episode overall, skipping season 0 (specials) when numbered seasons exist.
  */
-async function getFirstEpisode(ax: AxiosInstance, seriesId: string, seasonNumber: number | null) {
-  const { data } = await ax.get(`/Shows/${seriesId}/Episodes`, {
-    timeout: 30_000,
-    params: { fields: 'MediaSources', enableImages: 'false' },
-  });
-  const eps: any[] = data?.Items ?? [];
+async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number | null) {
+  const { data } = await getTvShowsApi(api).getEpisodes(
+    { seriesId, fields: [ItemFields.MediaSources], enableImages: false },
+    { timeout: 30_000 }
+  );
+  const eps = data.Items ?? [];
   if (!eps.length) return null;
   let pool: any[];
   if (seasonNumber != null) {
@@ -348,21 +412,21 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
   if (!cfg) return res.json({ available: false, configured: false, unknown: true });
 
   try {
-    const ax = jellyfinAxios(cfg);
+    const api = await jellyfinApi(cfg);
     // AniList id → TVDB id, when the community map knows this entry. Absent
     // is normal (coverage tracks how long a season has aired) and simply
     // means the match falls back to titles.
     await ensureAnilistTvdbMap();
     const entry = { tvdbId: tvdbIdForAnilist(mediaId), titles };
 
-    let library = await getSeriesLibrary(ax);
+    let library = await getSeriesLibrary(api);
     let hit = matchSeries(entry, library);
     if (!hit && fresh === true && Date.now() - _lastLibraryRefresh > 30_000) {
       // A fresh re-check should notice a just-added show, but only one
       // refetch per 30s: every negative result asking for its own refetch
       // turned into a stampede that reported everything as missing.
       _lastLibraryRefresh = Date.now();
-      library = await getSeriesLibrary(ax, true);
+      library = await getSeriesLibrary(api, true);
       hit = matchSeries(entry, library);
     }
     if (!hit) {
@@ -374,7 +438,7 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
     // Respect the entry's season: a "3rd Season" entry must resolve to S3E01,
     // and be honestly unavailable when the library lacks season 3.
     const seasonNumber = detectSeasonNumber(titles);
-    const episode = await getFirstEpisode(ax, hit.series.id, seasonNumber);
+    const episode = await getFirstEpisode(api, hit.series.id, seasonNumber);
     if (!episode) {
       const data = { available: false, libraryTitle: hit.series.title, matchedBy: hit.confidence };
       availabilityCache.set(mediaId, { data, expires: Date.now() + 10 * 60 * 1000 });
@@ -416,25 +480,114 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
  * id, which media source to stream, and the subtitle tracks with the flags
  * the track picker sorts on.
  */
+/**
+ * Quality tiers the player offers. `auto` is resolved per item from the
+ * source's own bitrate, because Jellyfin will not encode above it anyway.
+ */
+const QUALITY: Record<string, { width: number; bitrate: number } | null> = {
+  auto: null,
+  '1080p': { width: 1920, bitrate: 8_000_000 },
+  '720p': { width: 1280, bitrate: 4_000_000 },
+  '480p': { width: 854, bitrate: 1_500_000 },
+};
+
+
+/**
+ * The Jellyfin account playback runs as.
+ *
+ * **PlaybackInfo silently ignores a DeviceProfile without a user id** — it
+ * returns a perfectly valid response with no `TranscodingUrl`, which reads
+ * exactly like "the profile was rejected". An API key authenticates the request
+ * but does not identify a viewer, and Jellyfin needs a viewer to apply policy
+ * against.
+ *
+ * Configure a **dedicated SaltyChart account** (`jellyfinUserId` in AppConfig,
+ * set from /admin). It needs library access and no bitrate or parental-rating
+ * limit; it does not need to be an administrator. A dedicated account keeps
+ * playback off a real person's account and means tightening someone's policy
+ * later can't silently degrade playback for everyone.
+ *
+ * Nothing is written to that account's watch history either way: Jellyfin only
+ * records progress when a client reports it via `/Sessions/Playing`, and this
+ * proxy never does — verified against episodes played repeatedly during
+ * testing, which stayed at `playCount=0, lastPlayed=never`.
+ *
+ * Falls back to an administrator when unset, so the integration keeps working
+ * before anyone visits /admin.
+ */
+let cachedUserId: { id: string; at: number } | null = null;
+
+async function jellyfinUserId(cfg: JellyfinConfig): Promise<string | null> {
+  const row = await prisma.appConfig.findUnique({ where: { key: 'jellyfinUserId' } });
+  const configured = (row?.value ?? '').trim();
+  if (configured) return configured;
+  if (cachedUserId && Date.now() - cachedUserId.at < 3_600_000) return cachedUserId.id;
+  try {
+    const { data } = await getUserApi(await jellyfinApi(cfg)).getUsers();
+    const admin = data.find((u) => u.Policy?.IsAdministrator) ?? data[0];
+    if (!admin?.Id) return null;
+    cachedUserId = { id: String(admin.Id), at: Date.now() };
+    return cachedUserId.id;
+  } catch {
+    return null;
+  }
+}
+
 router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) => {
   const itemId = String(req.params.itemId);
   if (!/^[a-f0-9-]{8,}$/i.test(itemId)) {
     return res.status(400).json({ error: 'Bad item id', code: 'BAD_REQUEST' });
   }
+  const quality = String(req.query.quality ?? 'auto');
+  if (!(quality in QUALITY)) {
+    return res.status(400).json({ error: 'Unknown quality', code: 'BAD_REQUEST' });
+  }
+  const subtitleIndex = Number(req.query.subtitleIndex);
   const cfg = await getJellyfinConfig();
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
   try {
-    const ax = jellyfinAxios(cfg);
-    const { data } = await ax.post(`/Items/${itemId}/PlaybackInfo`, {}, {
-      params: typeof req.query.mediaSourceId === 'string'
+    const api = await jellyfinApi(cfg);
+    // A first pass with no profile just to read the source's own dimensions,
+    // so `auto` can mean "the file's own quality" rather than a guess.
+    const probe = await getMediaInfoApi(api).getPostedPlaybackInfo({
+      itemId,
+      ...(typeof req.query.mediaSourceId === 'string'
         ? { mediaSourceId: req.query.mediaSourceId }
-        : undefined,
+        : {}),
     });
-    const src = data?.MediaSources?.[0];
+    const probeSrc = probe.data.MediaSources?.[0];
+    const probeVideo = (probeSrc?.MediaStreams ?? []).find((s) => s.Type === MediaStreamType.Video);
+    const tier = QUALITY[quality] ?? {
+      width: Number(probeVideo?.Width) || 1920,
+      bitrate: Number(probeVideo?.BitRate) || Number(probeSrc?.Bitrate) || 8_000_000,
+    };
+
+    const userId = await jellyfinUserId(cfg);
+    // The profile goes in the body; everything else stays a query parameter.
+    // `userId` in particular must NOT move into the DTO — PlaybackInfo without
+    // it returns a valid response with no TranscodingUrl at all, which reads
+    // exactly like the profile was rejected.
+    const { data } = await getMediaInfoApi(api).getPostedPlaybackInfo({
+      itemId,
+      ...(typeof req.query.mediaSourceId === 'string'
+        ? { mediaSourceId: req.query.mediaSourceId }
+        : {}),
+      // -1 is Jellyfin's "no subtitles", and it has to be sent: omitting
+      // the parameter makes Jellyfin choose a default track, which with
+      // burn-in puts subtitles on screen for a viewer who turned them off.
+      ...(Number.isInteger(subtitleIndex) && subtitleIndex >= -1
+        ? { subtitleStreamIndex: subtitleIndex }
+        : {}),
+      ...(userId ? { userId } : {}),
+      maxStreamingBitrate: tier.bitrate,
+      autoOpenLiveStream: true,
+      playbackInfoDto: { DeviceProfile: deviceProfile(tier.width, tier.bitrate) },
+    });
+    const src = data.MediaSources?.[0];
     if (!src) return res.status(404).json({ error: 'No media source', code: 'UPSTREAM_ERROR' });
     const subtitles = (src.MediaStreams ?? [])
-      .filter((s: any) => s?.Type === 'Subtitle' && Number.isInteger(s?.Index))
-      .map((s: any) => ({
+      .filter((s) => s.Type === MediaStreamType.Subtitle && Number.isInteger(s.Index))
+      .map((s) => ({
         index: s.Index,
         codec: String(s.Codec ?? ''),
         language: String(s.Language ?? ''),
@@ -450,20 +603,49 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
         isTextSubtitle: !!s.IsTextSubtitleStream,
       }));
     const attachments = (src.MediaAttachments ?? [])
-      .filter((a: any) => Number.isInteger(a?.Index))
-      .map((a: any) => ({
+      .filter((a) => Number.isInteger(a.Index))
+      .map((a) => ({
         index: a.Index,
         fileName: String(a.FileName ?? ''),
         mimeType: String(a.MimeType ?? ''),
       }));
+    // Jellyfin names the URL it wants us to play, given the profile we sent.
+    // Building one by hand is what produced 416x234 and a day of guessing at
+    // query parameters; this is the server's own answer. It is relative
+    // ("/videos/…"), so the frontend prefixes the proxy mount.
+    //
+    // **It embeds the API key.** Jellyfin writes `ApiKey=<the key>` into the
+    // URL, and handing that to a browser would publish the credential to every
+    // viewer — the exact thing the manifest guard below exists to prevent, and
+    // which it caught when this was first wired up. Strip it here; the proxy
+    // injects the key server-side on every hop anyway.
+    const rawUrl: string | null = src.TranscodingUrl ?? null;
+    let transcodingUrl: string | null = null;
+    if (rawUrl) {
+      const [path, query = ''] = rawUrl.split('?');
+      const params = new URLSearchParams(query);
+      for (const k of [...params.keys()]) {
+        if (/^(api_?key|x-emby-token)$/i.test(k)) params.delete(k);
+      }
+      transcodingUrl = `${path}?${params.toString()}`;
+    }
+    if (!transcodingUrl) {
+      // Only happens if Jellyfin thinks direct play applies — it cannot here,
+      // since DirectPlayProfiles is empty and browsers can't demux MKV.
+      console.warn(`[jellyfin] no TranscodingUrl for ${itemId} (quality=${quality})`);
+    }
+
     res.json({
       playSessionId: String(data.PlaySessionId ?? ''),
       mediaSourceId: String(src.Id),
       runTimeTicks: src.RunTimeTicks ?? null,
       subtitles,
-      // Fonts referenced by ASS tracks; without them libass substitutes and
-      // signs render in the wrong typeface.
       attachments,
+      transcodingUrl,
+      quality,
+      // So "Auto" in the quality menu can show what it actually resolved to.
+      sourceWidth: Number(probeVideo?.Width) || null,
+      sourceBitrate: Number(probeVideo?.BitRate) || null,
     });
   } catch (err: any) {
     console.warn(`[jellyfin] playback info failed for ${itemId}:`, err?.message);
@@ -539,7 +721,7 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
   const { upstream, cfg } = prep;
 
   const headers: Record<string, string> = {
-    Authorization: `MediaBrowser Token="${cfg.apiKey}", Client="SaltyChart", Device="Web", DeviceId="saltychart", Version="1.0"`,
+    Authorization: jellyfinAuthHeader(cfg.apiKey),
   };
   for (const h of ['range', 'accept', 'accept-language'] as const) {
     const v = req.headers[h];
@@ -741,9 +923,11 @@ router.post('/playback/stop', jellyfinLimiter, requireAuth, async (req, res) => 
   const cfg = await getJellyfinConfig();
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
   try {
-    const ax = jellyfinAxios(cfg);
-    await ax.delete('/Videos/ActiveEncodings', {
-      params: { deviceId: 'saltychart', playSessionId },
+    // Must be the same device id the stream was started under, or Jellyfin
+    // matches nothing and the encode quietly survives.
+    await getHlsSegmentApi(await jellyfinApi(cfg)).stopEncodingProcess({
+      deviceId: DEVICE_ID,
+      playSessionId,
     });
     res.json({ ok: true });
   } catch (err: any) {

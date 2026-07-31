@@ -7,11 +7,16 @@ regressions reached a browser with a green build and 10/10 passing:
   * a deleted `let preparing` left a bare `preparing = false`, which Vite
     happily compiles as a global assignment — every playback threw before
     `player.src()`;
-  * `loadLibass()` unwrapped each import's `.default`, and so did the call
-    site, so jassub got `workerUrl: undefined`. Its worker never started, an
-    8 s timeout fired, and every ASS release silently fell back to WebVTT —
-    losing the exact fidelity the integration exists for. Nothing failed
-    loudly; it just quietly stopped doing its job.
+  * the client-side subtitle renderer got `workerUrl: undefined` from a
+    double-unwrapped `.default`, so every ASS release silently fell back to
+    WebVTT — losing the exact fidelity the integration existed for. Nothing
+    failed loudly; it just quietly stopped doing its job.
+
+That renderer is gone: Jellyfin burns subtitles into the video now, which
+means they are pixels and can finally be *seen* by a test rather than
+inferred from a canvas nothing could read. Step 8 compares the same frames
+with subtitles on and off; step 9 covers the stream restart that a quality
+or track change costs.
 
 So this drives the real thing: pop-up → Watch → playing, and asserts the
 parts that can regress silently.
@@ -29,7 +34,7 @@ from datetime import date
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 9
+TOTAL = 10
 USERNAME = "player_test_fixture"
 PASSWORD = "player_pw_123"
 
@@ -170,6 +175,11 @@ def main():
         # ── 4  Pre-warm happened while the pop-up sat open ──
         step(4, "pop-up pre-warmed the player before Watch was pressed")
         page.wait_for_timeout(2500)
+        # With subtitles burned in there is nothing client-side left to warm —
+        # no wasm, no fonts, no subtitle body. What the pop-up buys is the
+        # PlaybackInfo round trip, and the assertion is now also that the
+        # deleted stack has stayed deleted: a stray jassub or /attachments
+        # request means the old path crept back in.
         warmed = page.evaluate("""() => {
             const names = performance.getEntriesByType('resource').map(e => e.name);
             const n = re => names.filter(x => re.test(x)).length;
@@ -180,12 +190,13 @@ def main():
                      seen: names.filter(x => /jellyfin\\/(playback|subtitles|attachments)/.test(x))
                                 .map(x => x.replace(/.*\\/api\\/jellyfin\\//, '').replace(/\\?.*/, '')) };
         }""")
-        if not warmed["playback"] or not warmed["libass"]:
-            fail(4, f"nothing pre-warmed before the click — playback={warmed['playback']} "
-                    f"libass={warmed['libass']} subtitles={warmed['subtitles']} "
-                    f"seen={warmed['seen']}")
-        step(4, f"PASS — pre-warmed playback+{warmed['subtitles']} subtitle"
-                f"+{warmed['attachments']} font requests, no stream started")
+        if not warmed["playback"]:
+            fail(4, f"PlaybackInfo was not pre-warmed before the click — seen={warmed['seen']}")
+        if warmed["libass"] or warmed["attachments"]:
+            fail(4, f"client-side subtitle rendering is back: jassub={warmed['libass']} "
+                    f"attachments={warmed['attachments']} — subtitles are burned in server-side")
+        step(4, f"PASS — pre-warmed {warmed['playback']} PlaybackInfo call(s), "
+                f"no libass/fonts, no stream started")
 
         # Pre-starting the stream is deliberately NOT done: Jellyfin's ffmpeg
         # writes segments until the file is done regardless of the playhead,
@@ -256,56 +267,178 @@ def main():
             fail(7, "changing speed woke the control bar")
         step(7, f"PASS — {rates['before']:.2f} → {rates['up']:.2f} → {rates['down']:.2f}, bar stayed hidden")
 
-        step(8, "ASS renders through libass, not the WebVTT fallback")
-        if not target["hasAss"]:
-            step(8, "SKIP — this release has no ASS track (text-only)")
-        else:
-            fallback = [w for w in warnings if "libass unavailable" in w]
-            if fallback:
-                fail(8, f"silently fell back to WebVTT: {fallback[0][:160]}")
-            # canvas.width is meaningless here — libass transfers the canvas to
-            # its worker, so the main thread keeps a stale attribute. The CSS
-            # box is what resize() actually sets.
-            box = page.evaluate("""() => {
-                const c = document.querySelector('canvas.JASSUB');
-                const v = document.querySelector('video');
-                if (!c) return null;
-                const cr = c.getBoundingClientRect(), vr = v.getBoundingClientRect();
-                return { cw: Math.round(cr.width), ch: Math.round(cr.height),
-                         vw: Math.round(vr.width), vh: Math.round(vr.height) };
-            }""")
-            if not box:
-                fail(8, "no libass canvas — ASS track did not render")
-            if abs(box["cw"] - box["vw"]) > 2 or abs(box["ch"] - box["vh"]) > 2:
-                fail(8, f"libass canvas doesn't cover the video: {box}")
-            # A correctly sized canvas is NOT proof of rendering: a script that
-            # names a font its MKV doesn't attach drew *empty frames* here —
-            # worker healthy, canvas sized, `ready` resolved, no error anywhere.
-            # What fixed it was libass having a fallback face to substitute, so
-            # guard the asset that provides one. Nothing can read the canvas
-            # itself: it belongs to the worker.
-            font = page.evaluate("""async () => {
-                const r = await fetch('/node_modules/jassub/dist/default.woff2');
-                const b = await r.arrayBuffer();
-                const sig = new TextDecoder().decode(new Uint8Array(b, 0, 4));
-                return { ok: r.ok, bytes: b.byteLength, sig };
-            }""")
-            if not font["ok"] or font["bytes"] < 1000 or font["sig"] != "wOF2":
-                fail(8, f"libass has no fallback font — a script naming an "
-                        f"unattached font will render nothing: {font}")
-            step(8, f"PASS — libass canvas {box['cw']}x{box['ch']} over the video, "
-                    f"fallback font {font['bytes'] // 1024}KB")
+        step(8, "subtitles are burned into the picture, and Off removes them")
+        # This is the check that could not exist before. libass painted into a
+        # canvas it transferred to a worker, so nothing could read the pixels —
+        # which is exactly how a renderer that drew *empty frames* passed a
+        # "canvas is correctly sized" assertion. Burned-in subtitles are part of
+        # the video, so the same frame can simply be compared with them on and
+        # off. MSE blobs are same-origin, so the canvas is readable.
+        grab = """async (times) => {
+            const v = document.querySelector('video');
+            const c = document.createElement('canvas');
+            const W = 320, H = 180, TOP = Math.floor(H * 0.62);   // subtitle band
+            c.width = W; c.height = H;
+            const ctx = c.getContext('2d', { willReadFrequently: true });
+            const out = [];
+            for (const t of times) {
+                v.pause();
+                await new Promise(r => {
+                    const h = () => { v.removeEventListener('seeked', h); r(); };
+                    v.addEventListener('seeked', h);
+                    v.currentTime = t;
+                });
+                // A seek resolves before the new frame is painted; give the
+                // decoder a moment or every sample is the previous picture.
+                await new Promise(r => setTimeout(r, 1200));
+                ctx.drawImage(v, 0, 0, W, H);
+                out.push(Array.from(ctx.getImageData(0, TOP, W, H - TOP).data));
+            }
+            return out;
+        }"""
+        # Spread the samples across the episode rather than clustering them
+        # early: nothing guarantees dialogue at any particular second, and the
+        # first run drew two of five samples from silent stretches.
+        duration = page.evaluate("() => document.querySelector('video').duration") or 1400
+        span = min(duration * 0.85, 1400)
+        SAMPLE_TIMES = [round(60 + i * (span - 60) / 11) for i in range(12)]
+        with_subs = page.evaluate(grab, SAMPLE_TIMES)
 
-        step(9, "Escape closes and stops the transcode; the episode reopens")
+        # Turn subtitles off through the menu, which restarts the stream.
+        page.mouse.move(700, 450)
+        page.mouse.move(700, 860)
+        page.wait_for_timeout(400)
+        page.click(".vjs-subtitles-button")
+        page.wait_for_timeout(400)
+        items = page.query_selector_all(".vjs-subtitles-button .vjs-menu-item")
+        off = next((i for i in items
+                    if i.inner_text().strip().lower().startswith("off")), None)
+        if off is None:
+            fail(8, "the subtitle menu has no Off entry")
+        off.click()
+        try:
+            page.wait_for_function(
+                "() => { const v = document.querySelector('video');"
+                " return v && v.readyState >= 2 && v.videoWidth > 0; }", timeout=60_000)
+        except Exception:
+            fail(8, "the stream never came back after turning subtitles off")
+        page.wait_for_timeout(3000)
+        without = page.evaluate(grab, SAMPLE_TIMES)
+
+        def band_delta(a: list[int], b: list[int]) -> float:
+            """Share of pixels that changed materially between two frames."""
+            n = min(len(a), len(b)) // 4
+            changed = sum(
+                1 for i in range(n)
+                if abs(a[4 * i] - b[4 * i]) + abs(a[4 * i + 1] - b[4 * i + 1])
+                + abs(a[4 * i + 2] - b[4 * i + 2]) > 90
+            )
+            return changed / n if n else 0.0
+
+        deltas = [band_delta(x, y) for x, y in zip(with_subs, without)]
+        report = ", ".join(f"{t}s:{d * 100:.1f}%" for t, d in zip(SAMPLE_TIMES, deltas))
+        # Measured on this library rather than guessed: a band holding a line of
+        # dialogue moves 1-4% of its pixels, and a band with no subtitle moves
+        # 0.0% — the two encodes agree exactly where nothing was drawn. So the
+        # threshold sits well above the noise floor, and the requirement is two
+        # independent hits so one bright scene change cannot carry the test.
+        HIT = 0.01
+        hits = sum(d >= HIT for d in deltas)
+        if hits < 2:
+            fail(8, f"only {hits} of {len(deltas)} sampled frames changed when "
+                    f"subtitles were turned off — they are not being burned in: {report}")
+        step(8, f"PASS — subtitle band changed on {hits}/{len(deltas)} sampled "
+                f"frames ({report})")
+
+        step(9, "the quality menu switches the stream to a smaller picture")
+        # The burned-in path costs a stream restart per change, so this is also
+        # the regression test for the two bugs that made it a no-op: a restart
+        # that re-requested the *old* quality, and a stall watchdog that fired
+        # during the deliberate rebuild and restarted on top of it.
+        restarts: list[str] = []
+        page.on("console", lambda m: restarts.append(m.text)
+                if "restarting stream" in m.text else None)
+        # A rebuild abandons a session whose ffmpeg would otherwise keep writing
+        # the whole episode to the transcode cache, so the old one must be told
+        # to stop. Closing the modal only ever stopped the current session.
+        stops_mid: list[str] = []
+        page.on("request", lambda r: stops_mid.append(r.url)
+                if "playback/stop" in r.url else None)
+        # `player.src()` clears `vjs-has-started`, which is video.js's cue to put
+        # its big play button back over a video that is already being restarted
+        # for the viewer. Sampled across the whole switch rather than checked
+        # once, because it is a transient flash.
+        page.evaluate("""() => {
+            window.__bigPlayHits = [];
+            const tick = () => {
+                const root = document.querySelector('.video-js');
+                const b = root?.querySelector('.vjs-big-play-button');
+                if (b) {
+                    const s = getComputedStyle(b);
+                    if (s.display !== 'none' && s.visibility !== 'hidden' && +s.opacity > 0.01
+                        && window.__bigPlayHits.length < 4) {
+                        window.__bigPlayHits.push({ t: Math.round(performance.now()),
+                            display: s.display, visibility: s.visibility, opacity: s.opacity,
+                            root: root.className, btn: b.className });
+                    }
+                }
+                if (!window.__bigPlayStop) requestAnimationFrame(tick);
+            };
+            tick();
+        }""")
+        page.mouse.move(700, 450)
+        page.mouse.move(700, 860)
+        page.wait_for_timeout(400)
+        page.click(".vjs-quality-button")
+        page.wait_for_timeout(400)
+        tiers = page.query_selector_all(".vjs-quality-button .vjs-menu-item")
+        labels = [" ".join(t.inner_text().split()) for t in tiers]
+        pick = next((t for t, l in zip(tiers, labels) if "480" in l), None)
+        if pick is None:
+            fail(9, f"no 480p entry in the quality menu: {labels}")
+        pick.click()
+        try:
+            page.wait_for_function(
+                "() => document.querySelector('video')?.videoWidth === 854", timeout=60_000)
+        except Exception:
+            got = page.evaluate("() => document.querySelector('video')?.videoWidth")
+            fail(9, f"selecting 480p left the picture at {got}px — the restart did "
+                    f"not carry the new quality")
+        # A quality change is one restart. Two means the watchdog joined in, and
+        # the second rebuild races the first — which is how the tier silently
+        # reverted while the menu showed the new one.
+        page.wait_for_timeout(12_000)
+        if len(restarts) != 1:
+            fail(9, f"expected exactly 1 restart for a quality change, saw "
+                    f"{len(restarts)}: {restarts}")
+        playing = page.evaluate("""() => { const v = document.querySelector('video');
+            window.__bigPlayStop = true;
+            return { playing: !v.paused, w: v.videoWidth,
+                     frames: v.getVideoPlaybackQuality().totalVideoFrames,
+                     bigPlayHits: window.__bigPlayHits }; }""")
+        if not playing["playing"] or playing["frames"] < 30:
+            fail(9, f"playback did not resume after the quality change: {playing}")
+        if playing["bigPlayHits"]:
+            fail(9, "video.js's big play button flashed over the video during the "
+                    "switch — it must only appear when play() is actually rejected: "
+                    + "; ".join(f"display={h['display']} opacity={h['opacity']} "
+                                f"root=[{h['root']}]" for h in playing["bigPlayHits"][:2]))
+        if not stops_mid:
+            fail(9, "the abandoned session was never stopped — its ffmpeg keeps "
+                    "writing the whole episode to Jellyfin's transcode cache")
+        step(9, f"PASS — 480p in one restart, {playing['w']}px and decoding "
+                f"({playing['frames']} frames), old session stopped, no play-button flash")
+
+        step(10, "Escape closes and stops the transcode; the episode reopens")
         stops: list[str] = []
         page.on("request", lambda r: stops.append(r.url)
                 if "playback/stop" in r.url else None)
         page.keyboard.press("Escape")
         page.wait_for_timeout(2000)
         if page.locator("video").count():
-            fail(9, "the player is still open after Escape")
+            fail(10, "the player is still open after Escape")
         if not stops:
-            fail(9, "closing did not tell Jellyfin to stop the transcode")
+            fail(10, "closing did not tell Jellyfin to stop the transcode")
 
         # Reopening the SAME episode reuses a cached playbackInfo — including
         # the playSessionId we just told Jellyfin to tear down. It works, but
@@ -321,10 +454,10 @@ def main():
                 " return v && v.currentTime > 0.2 && v.readyState >= 3; }",
                 timeout=60_000)
         except Exception:
-            fail(9, "reopening the same episode did not play (stale playSessionId?)")
+            fail(10, "reopening the same episode did not play (stale playSessionId?)")
         page.keyboard.press("Escape")
         page.wait_for_timeout(1500)
-        step(9, "PASS — closed, transcode stopped, and the same episode reopens")
+        step(10, "PASS — closed, transcode stopped, and the same episode reopens")
 
         browser.close()
 

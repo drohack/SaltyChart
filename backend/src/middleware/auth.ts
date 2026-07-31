@@ -25,6 +25,14 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
   }
 
+  // A correctly signed token still need not carry an id, and Prisma rejects on
+  // `{ id: undefined }` rather than returning null — inside an async middleware
+  // with no catch that means Express never answers and the request hangs
+  // forever instead of returning 401.
+  if (typeof payload?.id !== 'number') {
+    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+  }
+
   // Verify the user still exists
   const user = await prisma.user.findUnique({ where: { id: payload.id } });
   if (!user) {

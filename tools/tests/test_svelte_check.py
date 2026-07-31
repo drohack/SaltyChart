@@ -44,12 +44,18 @@ def main() -> int:
     try:
         r = subprocess.run(
             ["npx", "svelte-check", "--threshold", "error", "--output", "human"],
-            cwd=FRONTEND, capture_output=True, text=True, timeout=600, shell=True)
+            cwd=FRONTEND, capture_output=True, text=True, timeout=600, shell=True,
+            # svelte-check echoes source lines, and this codebase's comments are
+            # UTF-8. Without this, Python decodes them with the Windows ANSI
+            # codepage, one un-mappable byte kills the reader thread, and stdout
+            # arrives as None — which fails the gate for a reason that has
+            # nothing to do with types.
+            encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         print("[1/1 svelte-check] FAIL — timed out after 600s", flush=True)
         return 1
 
-    out = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
+    out = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
     m = re.search(r"svelte-check found (\d+) error", out)
     if not m:
         print(f"[1/1 svelte-check] FAIL — could not parse output:\n{out[-600:]}", flush=True)

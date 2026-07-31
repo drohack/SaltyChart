@@ -9,6 +9,9 @@
   let jfUrl = '';
   let jfKey = '';
   let jfKeySet = false;
+  /** Which Jellyfin account playback runs as; '' falls back to an administrator. */
+  let jfUserId = '';
+  let jfUsers: { id: string; name: string; isAdministrator: boolean }[] = [];
   let jfSaving = false;
   let jfTesting = false;
   let jfSaveMsg = '';
@@ -20,6 +23,7 @@
         serverName?: string;
         version?: string;
         libraries?: { title: string; type: string }[];
+        playbackAccount?: string;
       }
     | null = null;
 
@@ -32,7 +36,10 @@
         const data = await res.json();
         jfUrl = data.url ?? '';
         jfKeySet = !!data.apiKeySet;
+        jfUserId = data.userId ?? '';
       }
+      const list = await fetch('/api/jellyfin/users', { headers: auth });
+      if (list.ok) jfUsers = (await list.json()).users ?? [];
     } catch {}
   }
 
@@ -63,7 +70,7 @@
       const res = await fetch('/api/jellyfin/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-        body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined }),
+        body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined, userId: jfUserId }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -97,9 +104,9 @@
         <h2 class="card-title">Jellyfin</h2>
         <p class="text-sm opacity-70">
           Where SaltyChart streams episodes from, and where it looks up
-          whether a show is in your library. Subtitle tracks and the file's
-          embedded fonts come from here too. The API key is stored server-side
-          and never sent to browsers.
+          whether a show is in your library. It also burns the episode's
+          subtitles into the video, so they arrive already rendered. The API key
+          is stored server-side and never sent to browsers.
         </p>
 
         <div class="form-control">
@@ -133,6 +140,28 @@
           </div>
         </div>
 
+        <div class="form-control">
+          <label class="label" for="jf-user">
+            <span class="label-text">Playback account</span>
+          </label>
+          <select id="jf-user" class="select select-bordered w-full" bind:value={jfUserId}>
+            <option value="">Any administrator (default)</option>
+            {#each jfUsers as u}
+              <option value={u.id}>{u.name}{u.isAdministrator ? ' — administrator' : ''}</option>
+            {/each}
+          </select>
+          <div class="label">
+            <span class="label-text-alt opacity-60">
+              Jellyfin applies its policy per account, so streaming needs one.
+              A dedicated account keeps playback off a real person's profile and
+              stops a later policy change quietly degrading it for everyone. It
+              needs library access and no bitrate or rating limit; it does not
+              need to be an administrator. Nothing is written to its watch
+              history either way — SaltyChart never reports progress.
+            </span>
+          </div>
+        </div>
+
         <div class="card-actions items-center gap-2">
           <button class="btn btn-outline btn-sm" on:click={jfTestConnection} disabled={jfTesting}>
             {#if jfTesting}<span class="loading loading-spinner loading-xs"></span>{/if}
@@ -159,6 +188,11 @@
                     <li>{lib.title} <span class="opacity-60">({lib.type})</span></li>
                   {/each}
                 </ul>
+                {#if jfTestResult.playbackAccount}
+                  <p class="text-sm mt-2">
+                    Playing as <span class="font-semibold">{jfTestResult.playbackAccount}</span>
+                  </p>
+                {/if}
               </div>
             </div>
           {:else}

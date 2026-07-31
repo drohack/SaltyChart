@@ -8,7 +8,7 @@ import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
 import { checkAvailability, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
-import { loadCastSdk, loadLibass, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
+import { loadCastSdk, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -231,11 +231,11 @@ $: _lang = $options.titleLanguage;
         if (selected?.id !== id) return;
         watchInfo = info;
         // This pop-up stays open while its synopsis is read, so spend that time
-        // on everything the player will want: the video.js chunk, the libass
-        // wasm, the subtitle track and its fonts. Pressing Watch then costs
-        // only the stream start. Deliberately client-side — pre-starting the
-        // stream would have Jellyfin remux a whole episode to disk for a
-        // pop-up nobody plays.
+        // on what the player will want: the video.js chunk and the episode's
+        // PlaybackInfo. Pressing Watch then costs only the stream start.
+        // Deliberately client-side — pre-starting the stream would have
+        // Jellyfin transcode a whole episode to disk for a pop-up nobody
+        // plays.
         if (info.available && info.itemId && info.mediaSourceId) {
           loadPlayerModal();
           prewarm(info.itemId, info.mediaSourceId);
@@ -318,13 +318,13 @@ $: _lang = $options.titleLanguage;
 
   /**
    * The player's page-level weight: the video.js chunk (~0.66 MB built, 1.6 MB
-   * unminified from the dev server) and libass's wasm worker (~2 MB). Neither
-   * depends on which show is picked, so waiting for a pop-up throws away all
-   * the time someone spends choosing one — and over the web, rather than
-   * localhost, that gap is long enough that pressing Watch looks broken.
+   * unminified from the dev server). It doesn't depend on which show is picked,
+   * so waiting for a pop-up throws away all the time someone spends choosing
+   * one — and over the web, rather than localhost, that gap is long enough that
+   * pressing Watch looks broken.
    *
-   * Per-episode data (playback metadata, the subtitle track, its fonts) can't
-   * be fetched this early and is warmed when the pop-up opens instead.
+   * Per-episode data (the episode's PlaybackInfo) can't be fetched this early
+   * and is warmed when the pop-up opens instead.
    *
    * Only for viewers who can actually play something, on idle so it never
    * competes with the page's own images, and never on a metered connection —
@@ -337,7 +337,7 @@ $: _lang = $options.titleLanguage;
     idle(() => {
       loadPlayerModal().catch(() => {});
       loadVideoJs().catch(() => {});
-      loadLibass().catch(() => {});
+
       loadCastSdk().catch(() => {}); // third-party CDN: warm it, never wait on it
     });
   }

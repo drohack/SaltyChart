@@ -5,16 +5,10 @@
   import {
     api,
     defaultSubtitleIndex,
-    fontsFor,
-    fontUrl as buildFontUrl,
     isAss as isAssTrack,
     castReady,
-    loadLibass,
     loadVideoJs,
     playbackInfo,
-    subtitleText,
-    subtitleUrl as buildSubtitleUrl,
-    type Attachment,
     type SubStream,
   } from '../lib/jellyfinPrewarm';
 
@@ -23,9 +17,13 @@
   // added on top:
   //   1. 0.10x speed stepping on [ and ] — the reason this exists at all,
   //      since Plex's and Jellyfin's own players are locked to coarser steps.
-  //   2. ASS subtitle rendering via libass (jassub), because anime releases
-  //      put signs, songs and karaoke in ASS and WebVTT cannot represent any
-  //      of it — positioning, transforms and drawings are simply lost.
+  //   2. quality selection, because Jellyfin's own client has no equivalent
+  //      when the stream is coming through a proxy.
+  //
+  // Subtitles are NOT rendered here. Jellyfin burns them into the video with
+  // libass and the episode's own fonts, composited on the GPU. That deleted a
+  // wasm worker, per-episode font downloads, and a canvas that could paint
+  // itself opaque over a healthy video with no error reported anywhere.
 
   /** Jellyfin ItemId of the episode. */
   export let itemId: string;
@@ -57,38 +55,31 @@
   );
 
   let subStreams: SubStream[] = [];
-  let attachments: Attachment[] = [];
   let playSessionId = '';
   let activeSubIndex: number | null = null;
-  let subtitlesLoading = false;
   /** The video has enough data to play, so any remaining wait really is ours. */
   let videoReady = false;
   let playbackStarted = false;
-  /** Playback waits for subtitles, but never longer than this. */
-  const SUBTITLE_WAIT_MS = 20_000;
-  let subtitleWaitTimer: ReturnType<typeof setTimeout> | null = null;
-  let jassub: any = null;
+  /** Quality tier; 'auto' means the source's own bitrate. */
+  export let quality = 'auto';
+  let sourceWidth: number | null = null;
+  let sourceBitrate: number | null = null;
+  let switching = '';
 
-  /** Jellyfin's HLS URL for this episode, served through our proxy. */
+  /**
+   * The stream URL Jellyfin told us to use, routed through our proxy.
+   *
+   * Not assembled here any more. Hand-built query parameters meant guessing at
+   * a contract Jellyfin already defines, and it has no "assume everything is
+   * supported" fallback — an under-specified request came back as 416x234. The
+   * backend sends a DeviceProfile and returns the server's own TranscodingUrl;
+   * this only prefixes the proxy mount so the API key stays server-side.
+   */
+  let transcodingUrl = '';
+
   function sourceUrl(): string {
-    const params = new URLSearchParams({
-      mediaSourceId,
-      playSessionId,
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      container: 'ts',
-      deviceId: 'saltychart',
-      maxStreamingBitrate: '120000000',
-      // NOT subtitleMethod=Hls — Jellyfin embeds the caller's own API key in
-      // subtitle rendition URIs, which would publish it to every viewer. The
-      // proxy rejects such a manifest anyway; this keeps us from asking.
-    });
-    return api(`/stream/Videos/${itemId}/master.m3u8?${params.toString()}`);
+    return api(`/stream${transcodingUrl.replace(/^\/+/, '/')}`);
   }
-
-  const subtitleUrl = (index: number, format: 'ass' | 'vtt') =>
-    buildSubtitleUrl(itemId, mediaSourceId, index, format);
-  const fontUrl = (index: number) => buildFontUrl(itemId, mediaSourceId, index);
 
   // Track choice and ASS detection live in the prewarm module so the pop-up
   // warms exactly the track the player will end up showing.
@@ -104,136 +95,36 @@
     return extra.length ? `${name} (${extra.join(', ')})` : name;
   }
 
-  // ── Subtitle rendering ───────────────────────────────────────────────
+  // -- Subtitle selection -----------------------------------------------
   //
-  // ASS goes through libass so signs land where the release put them; plain
-  // text formats use video.js's own text tracks, which is less machinery for
-  // the same result.
+  // Burned into the picture by Jellyfin, so there is nothing to render and
+  // nothing that can fail to render. Changing track means a different stream,
+  // which is why this restarts instead of swapping a track.
   async function showSubtitle(index: number | null) {
+    if (index === activeSubIndex) return;
     activeSubIndex = index;
-    subtitleMenu?.update(); // move the tick, whoever asked for the change
-    destroyJassub();
-    clearVjsTracks();
-    if (index == null) return;
-
-    if (isAss(index)) {
-      subtitlesLoading = true;
-      try {
-        // Both of these are usually already resolved — the show pop-up warmed
-        // them while the viewer was reading the synopsis.
-        const subContent = await subtitleText(subtitleUrl(index, 'ass'));
-        if (destroyed || !player) return;
-        const { JASSUB, workerUrl, wasmUrl, modernWasmUrl, defaultFontUrl } = await loadLibass();
-        if (destroyed || !player) return;
-        const fonts = fontsFor(attachments);
-        jassub = new JASSUB({
-          video: videoEl,
-          subContent,
-          workerUrl,
-          wasmUrl,
-          modernWasmUrl,
-          // The release's own fonts, straight out of the MKV. Without them
-          // libass substitutes and signs render in the wrong typeface.
-          fonts: fonts.map((a) => fontUrl(a.index)),
-          // The substitute for anything those don't cover, and **both lines are
-          // required**. Scripts routinely name a font their own MKV doesn't
-          // carry — The Elusive Samurai asks for "Arial Unicode MS" and
-          // attaches only plain Arial. jassub registers its bundled fallback in
-          // `availableFonts` on its own, but never nominates it as the default
-          // family, so libass had no face to substitute and drew *nothing*:
-          // empty frames, worker healthy, canvas correctly sized, no error
-          // anywhere. `defaultFont` is what actually makes it substitute.
-          //
-          // The URL is passed explicitly because jassub resolves its own copy
-          // as `new URL('./default.woff2', import.meta.url)` — a runtime URL
-          // relative to its bundle, which under Vite points into
-          // `node_modules/.vite/deps/` where the file isn't.
-          availableFonts: { 'liberation sans': defaultFontUrl },
-          defaultFont: 'liberation sans',
-        });
-        // A safety net that should never fire: libass resolves `ready` once its
-        // worker is up, and if that never happens we must not sit on a blank
-        // screen — the server-converted WebVTT needs no worker. But falling
-        // back is a *silent* downgrade of the whole reason this player exists,
-        // and it once fired for every ASS release because of a bad workerUrl.
-        // `test_player.py` step 8 fails on the warning below so that can't
-        // recur quietly; treat it firing as a bug, not as the net working.
-        await Promise.race([
-          jassub.ready,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('libass worker never started')), 8000)
-          ),
-        ]);
-        if (destroyed || !player) return;
-        // jassub keeps its own ResizeObserver on the video, so it self-corrects
-        // as the box changes; these cover the video.js-specific moments that
-        // resize the player without resizing the element it watches.
-        resizeJassub();
-        player.on('playing', resizeJassub);
-        player.on('fullscreenchange', resizeJassub);
-        player.on('playerresize', resizeJassub);
-        player.on('seeked', repaintJassub);
-      } catch (err) {
-        // The usual cause is no SharedArrayBuffer: libass needs the page to be
-        // cross-origin isolated (COOP/COEP), and those headers would block the
-        // YouTube trailer iframes on Home. Server-converted WebVTT loses ASS
-        // positioning and karaoke, but it is subtitles, and it always works.
-        console.warn('[player] libass unavailable, using WebVTT instead:', err);
-        destroyJassub();
-        addVjsTrack(index);
-      } finally {
-        subtitlesLoading = false;
-      }
-      return;
-    }
-
-    subtitlesLoading = true;
-    try {
-      // Warm it so playback doesn't start before the cues exist.
-      await fetch(subtitleUrl(index, 'vtt')).catch(() => {});
-    } finally {
-      subtitlesLoading = false;
-    }
-    if (destroyed || !player) return;
-    addVjsTrack(index);
+    subtitleMenu?.update();
+    switching = index == null ? 'Turning subtitles off' : 'Changing subtitles';
+    await restartStream('subtitle track changed');
+    switching = '';
   }
 
-
-
-  function addVjsTrack(index: number) {
-    const s = subStreams.find((x) => x.index === index);
-    if (!player || !s) return;
-    const el = player.addRemoteTextTrack(
-      {
-        src: subtitleUrl(index, 'vtt'),
-        kind: 'subtitles',
-        label: trackLabel(s),
-        srclang: s.language || 'und',
-      },
-      false
-    );
-    // Enable by object identity: matching on labels switched on every English
-    // variant at once, which renders as doubled subtitles.
-    if (el?.track) el.track.mode = 'showing';
-  }
-
-  function clearVjsTracks() {
-    if (!player) return;
-    const tracks = player.remoteTextTracks?.();
-    for (let i = (tracks?.length ?? 0) - 1; i >= 0; i--) {
-      player.removeRemoteTextTrack(tracks[i]);
-    }
+  async function changeQuality(next: string) {
+    if (next === quality) return;
+    quality = next;
+    qualityMenu?.update();
+    switching = `Switching to ${next === 'auto' ? 'source quality' : next}`;
+    await restartStream('quality changed');
+    switching = '';
   }
 
   /**
    * One subtitle control, in the control bar where it belongs.
    *
    * video.js's own captions menu can only ever list text tracks the player
-   * owns, so it is blind to the ASS tracks libass paints — leaving it in place
-   * alongside this one gives two subtitle buttons that disagree. So it is
-   * removed and this menu covers both paths, since showSubtitle already routes
-   * ASS to libass and everything else to a text track. Its caption-styling
-   * dialog is the one thing worth keeping, so it comes along as a last item.
+   * owns, and with subtitles burned into the picture there are none. Leaving
+   * it in place would offer a menu that silently does nothing, so it is removed
+   * and this one drives the stream instead.
    */
   let subtitleMenu: any = null;
 
@@ -264,15 +155,10 @@
           item.handleClick = () => showSubtitle(c.index);
           return item;
         });
-        // video.js's caption styling applies to *its* text-track rendering, so
-        // it does nothing at all while libass is painting an ASS track. Offer
-        // it only when it can actually change something, rather than leaving a
-        // dead control under a menu that is mostly ASS on this library.
-        const stylable = activeSubIndex != null && !isAss(activeSubIndex);
-        if (!stylable) return items;
-        const settings = new MenuItem(this.player_, { label: 'Caption settings…' });
-        settings.handleClick = () => player?.textTrackSettings?.open?.();
-        return [...items, settings];
+        // No "Caption settings" item: video.js styles its own text tracks,
+        // and burned-in subtitles are pixels in the video. Offering it would be
+        // a control that silently does nothing.
+        return items;
       }
     }
 
@@ -286,50 +172,54 @@
     subtitleMenu = bar.addChild('SaltySubtitlesButton', {}, at >= 0 ? at : undefined);
   }
 
-  function destroyJassub() {
-    try {
-      jassub?.destroy?.();
-    } catch {}
-    jassub = null;
+  /**
+   * Quality picker. Same shape as the subtitle menu, and for the same reason:
+   * the tier is baked into the stream Jellyfin produces, so changing it means
+   * asking for a different stream.
+   *
+   * "Auto" is the source's own bitrate. Jellyfin will not encode above it, so
+   * that is the honest ceiling rather than a number we invented.
+   */
+  let qualityMenu: any = null;
+  const QUALITY_TIERS = ['auto', '1080p', '720p', '480p'];
+
+  function qualityLabel(tier: string): string {
+    if (tier !== 'auto') return tier;
+    const mbps = sourceBitrate ? (sourceBitrate / 1e6).toFixed(1) : null;
+    return mbps ? `Auto (source, ${mbps} Mbps)` : 'Auto (source)';
   }
 
-  /**
-   * video.js fires `playerresize` while libass's worker is still starting, and
-   * resize() reaches into the renderer, so it must wait on jassub's own `ready`
-   * promise or it throws on every early resize event.
-   */
-  function resizeJassub() {
-    const inst = jassub;
-    if (!inst) return;
-    Promise.resolve(inst.ready)
-      .then(() => {
-        if (jassub === inst) inst.resize?.();
-      })
-      .catch(() => {});
-  }
+  function buildQualityMenu(videojs: any) {
+    if (!player) return;
+    const MenuButton = videojs.getComponent('MenuButton');
+    const MenuItem = videojs.getComponent('MenuItem');
 
-  /**
-   * Force libass to redraw after a seek, clearing whatever it last painted.
-   *
-   * jassub renders **only** from `requestVideoFrameCallback` and listens to no
-   * seek events, and it skips redrawing when it decides nothing has changed.
-   * So a seek can leave the previous frame's subtitles on the canvas — and if
-   * that frame contained a full-screen element (releases use opaque rectangles
-   * for transitions and credit backgrounds) the canvas stays opaque over a
-   * video that is playing perfectly well underneath. Reported from the field as
-   * "audio and subtitles fine, no video"; hiding the canvas revealed the
-   * picture intact, which is what identified this.
-   *
-   * `resize(true)` is the force-repaint path.
-   */
-  function repaintJassub() {
-    const inst = jassub;
-    if (!inst) return;
-    Promise.resolve(inst.ready)
-      .then(() => {
-        if (jassub === inst) inst.resize?.(true);
-      })
-      .catch(() => {});
+    class QualityMenuButton extends MenuButton {
+      constructor(p: any, options: any) {
+        super(p, options);
+        this.controlText('Quality');
+        this.setIcon?.('cog');
+        this.addClass('vjs-quality-button');
+      }
+      createItems() {
+        return QUALITY_TIERS.map((tier) => {
+          const item = new MenuItem(this.player_, {
+            label: qualityLabel(tier),
+            selectable: true,
+            multiSelectable: false,
+            selected: quality === tier,
+          });
+          item.handleClick = () => changeQuality(tier);
+          return item;
+        });
+      }
+    }
+
+    videojs.registerComponent('SaltyQualityButton', QualityMenuButton);
+    const bar = player.getChild('controlBar');
+    if (!bar) return;
+    const at = bar.children().indexOf(bar.getChild('fullscreenToggle'));
+    qualityMenu = bar.addChild('SaltyQualityButton', {}, at >= 0 ? at : undefined);
   }
 
   // ── Speed control (the reason this component exists) ──────────────────
@@ -366,22 +256,29 @@
     e.preventDefault();
   }
 
+  /**
+   * Offer the play button only when the browser truly refused.
+   *
+   * `play()` rejects for two very different reasons and only one of them means
+   * the viewer has to do something:
+   *   - `NotAllowedError` — autoplay policy. The gesture that opened the modal
+   *     is too old, nothing will start without a click, so show the button.
+   *   - `AbortError` — the play was interrupted by a `pause()` or a new
+   *     `load()`. That happens on every deliberate stream rebuild, and playback
+   *     resumes on its own. Treating it as a block put a big play button over a
+   *     video that was already restarting — the jarring flash mid-switch.
+   */
+  function offerPlayButtonIfBlocked(err: unknown) {
+    if ((err as DOMException | undefined)?.name !== 'NotAllowedError') return;
+    console.warn('[player] autoplay was blocked, offering the play button', err);
+    player?.addClass('sc-autoplay-blocked');
+  }
+
   /** Begin playback — once only, whoever gets here first. */
   function startPlayback() {
     if (playbackStarted || !player) return;
     playbackStarted = true;
-    if (subtitleWaitTimer) {
-      clearTimeout(subtitleWaitTimer);
-      subtitleWaitTimer = null;
-    }
-    // A rejected play() is the one case where the viewer really does have to
-    // click — browsers refuse programmatic playback when the user gesture that
-    // opened the modal is too far in the past. That is precisely when the big
-    // play button should reappear; see the style block.
-    player.play()?.catch?.((err: unknown) => {
-      console.warn('[player] autoplay was blocked, offering the play button', err);
-      player?.addClass('sc-autoplay-blocked');
-    });
+    player.play()?.catch?.(offerPlayButtonIfBlocked);
   }
 
   // ── Stall detection ──────────────────────────────────────────────────
@@ -415,6 +312,18 @@
    * healthy stream and never fires. What actually stops is frame decoding.
    */
   const VIDEO_STALL_MS = 8_000;
+  /**
+   * How long a deliberate restart is allowed to produce no frames.
+   *
+   * A quality or subtitle change tears the stream down and asks Jellyfin for a
+   * new one, which means a fresh ffmpeg and a fresh buffer — frames genuinely
+   * stop for several seconds. `recovering` does not cover it, because that is
+   * cleared as soon as `player.src()` is called rather than when frames resume.
+   * Without this the stall detector fired 9s into an intentional switch and
+   * restarted on top of it, so the two raced and the new tier never took.
+   */
+  const RESTART_GRACE_MS = 25_000;
+  let restartedAt = 0;
   let lastFrames = 0;
   let lastFrameAt = Date.now();
 
@@ -451,6 +360,7 @@
       // restarted — throwing away the ffmpeg that was about to deliver, and
       // doing it again on the restart.
       if (!everProgressed) return;
+      if (Date.now() - restartedAt < RESTART_GRACE_MS) return;
 
       // 1. The clock has stopped: nothing is arriving at all.
       if (Date.now() - lastProgressAt > STALL_MS) {
@@ -487,22 +397,95 @@
    * simply stays black until someone closes the modal. Asking for a new
    * playSessionId costs one round trip and gets the viewer moving again.
    */
+  /**
+   * Tell Jellyfin to tear a transcode down.
+   *
+   * Needed on two paths, and it is the same call for both: closing the modal,
+   * and abandoning a session mid-playback to rebuild the stream. Nothing else
+   * stops these — Jellyfin only reclaims a session on its own idle timeout, and
+   * its ffmpeg keeps writing to the transcode cache in the meantime.
+   *
+   * `keepalive` so a stop issued as the page goes away still gets sent.
+   */
+  function stopSession(id: string) {
+    if (!id) return;
+    fetch(api('/playback/stop'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${get(authToken)}` },
+      body: JSON.stringify({ playSessionId: id }),
+      keepalive: true,
+    }).catch(() => {});
+  }
+
   async function restartStream(reason = 'no progress') {
     if (recovering || destroyed || !player) return;
     recovering = true;
+    restartedAt = Date.now();
     recoveries += 1;
     const resumeAt = player.currentTime?.() ?? 0;
+    const abandoned = playSessionId;
     console.warn(`[player] ${reason} — restarting stream at ${resumeAt.toFixed(1)}s`);
+    // Hold the seek bar where the viewer actually is.
+    //
+    // `player.src()` resets the tech's clock to 0, and the seek bar repaints
+    // from that before `loadedmetadata` lets us seek back — so the played
+    // section empties for 1.5-5s while the time readout stays correct. Nothing
+    // is wrong, but an empty bar reads as "you lost your place" in the middle
+    // of a deliberate track change. Pinned via a CSS variable because video.js
+    // owns the inline width and would overwrite anything set here directly.
+    const total = player.duration?.() ?? 0;
+    if (Number.isFinite(total) && total > 0) {
+      player.el()?.style?.setProperty('--sc-resume', `${(resumeAt / total) * 100}%`);
+      player.addClass?.('sc-rebuilding');
+    }
     try {
-      // `fresh` matters: the cached info holds the session we are escaping.
-      const info = await playbackInfo(itemId, mediaSourceId, { fresh: true });
+      // The current quality and track are what makes this a *different* stream,
+      // so they have to be asked for — a restart that omits them replays the
+      // URL it was trying to change, which is exactly how the quality menu came
+      // to select a tier and change nothing.
+      // `fresh` matters too: the cached info holds the session we are escaping.
+      const info = await playbackInfo(itemId, mediaSourceId, {
+        fresh: true,
+        quality,
+        subtitleIndex: activeSubIndex,
+      });
       if (destroyed || !player) return;
-      if (info) playSessionId = info.playSessionId;
+      if (info) {
+        playSessionId = info.playSessionId;
+        if (info.transcodingUrl) transcodingUrl = info.transcodingUrl;
+      }
       player.src({ src: sourceUrl(), type: 'application/x-mpegURL' });
+      // The session we just walked away from still has an ffmpeg attached, and
+      // Jellyfin's writes it to the transcode cache until the whole episode is
+      // done regardless of where anyone is watching (jellyfin#16608). Closing
+      // the modal only ever stopped the *current* session, so before this every
+      // quality or subtitle change left one behind to remux a ~1 GB episode for
+      // nobody. Fired after the new src so a slow stop can't delay playback.
+      if (abandoned && abandoned !== playSessionId) stopSession(abandoned);
       player.one('loadedmetadata', () => {
         if (destroyed || !player) return;
         player.currentTime(resumeAt);
-        player.play()?.catch?.(() => {});
+        // A rebuild can genuinely be refused too (a long switch can outlive the
+        // opening gesture), so the same check applies — but an interrupted play
+        // during the rebuild must not count.
+        player.removeClass?.('sc-autoplay-blocked');
+        player.play()?.catch?.(offerPlayButtonIfBlocked);
+        // Release the pinned seek bar only once the clock has actually caught
+        // up, so it never hands back to a bar that would repaint at 0. Capped,
+        // because a stream that never resumes must not leave it pinned forever
+        // — a frozen bar on a dead stream would be a worse lie than an empty one.
+        const settle = () => {
+          if (!player) return;
+          if (Math.abs((player.currentTime?.() ?? 0) - resumeAt) < 5) {
+            player.removeClass?.('sc-rebuilding');
+            player.off?.('timeupdate', settle);
+          }
+        };
+        player.on('timeupdate', settle);
+        setTimeout(() => {
+          player?.removeClass?.('sc-rebuilding');
+          player?.off?.('timeupdate', settle);
+        }, 20_000);
       });
       lastProgressAt = Date.now();
       // Re-baseline against what the element reports *now*, not zero. A fresh
@@ -540,7 +523,7 @@
       // Plugins are registered on videojs itself, not per player, so doing this
       // on every open warns "a plugin named chromecast already exists" from the
       // second episode onwards. Harmless, but it is console noise in a path
-      // where a real warning (the libass fallback) is worth noticing.
+      // where a real warning (a stream restart) is worth noticing.
       if (!videojs.getPlugin?.('chromecast')) chromecast(videojs);
       return true;
     } catch {
@@ -549,7 +532,6 @@
   }
 
   onMount(async () => {
-    loadLibass(); // deliberately not awaited — see loadLibass
     // Shared with the Randomize page's idle warm-up, so this is usually
     // already resolved by the time anyone presses Watch.
     const videojs = await loadVideoJs();
@@ -619,33 +601,39 @@
 
     // The session id, subtitle tracks and embedded fonts — normally already
     // resolved, because the show pop-up asked for them when it opened.
-    const info = await playbackInfo(itemId, mediaSourceId);
-    if (info) {
-      playSessionId = info.playSessionId;
-      subStreams = info.subtitles;
-      attachments = info.attachments;
-    } else {
+    // The first call tells us which tracks exist; the chosen one then has to
+    // be baked into the stream, so the request we actually play is the second.
+    const probe = await playbackInfo(itemId, mediaSourceId, { quality });
+    if (!probe) {
       console.warn('[player] playback info failed');
+      return;
     }
+    subStreams = probe.subtitles;
+    sourceWidth = probe.sourceWidth;
+    sourceBitrate = probe.sourceBitrate;
+    activeSubIndex = defaultSubtitleIndex(subStreams);
+
+    const info =
+      activeSubIndex == null
+        ? probe
+        : (await playbackInfo(itemId, mediaSourceId, {
+            quality,
+            subtitleIndex: activeSubIndex,
+          })) ?? probe;
     if (destroyed || !player) return;
+    playSessionId = info.playSessionId;
+    transcodingUrl = info.transcodingUrl;
 
     buildSubtitleMenu(videojs);
+    buildQualityMenu(videojs);
     player.src({ src: sourceUrl(), type: 'application/x-mpegURL' });
     player.one('loadedmetadata', startStallWatchdog);
-    // Drives the subtitle chip: until this fires, the wait is Jellyfin building
-    // the first segment and video.js's own spinner is the right thing to show.
     player.on('canplay', () => (videoReady = true));
 
-    // Start with subtitles already showing: an anime episode that begins
-    // before its subtitles arrive means missing the opening dialogue.
-    const wantIndex = defaultSubtitleIndex(subStreams);
-    if (wantIndex != null) {
-      // A pathological fetch must not strand the viewer on a black screen.
-      subtitleWaitTimer = setTimeout(startPlayback, SUBTITLE_WAIT_MS);
-      showSubtitle(wantIndex).finally(startPlayback);
-    } else {
-      startPlayback();
-    }
+    // Nothing to wait for: the subtitles are already in the picture. The old
+    // gate existed because libass had to be ready before the first frame, or
+    // the opening dialogue was missed.
+    startPlayback();
 
     window.addEventListener('keydown', handleKey, { capture: true });
   });
@@ -654,9 +642,7 @@
     destroyed = true;
     if (watchdog) clearInterval(watchdog);
     if (flashTimer) clearTimeout(flashTimer);
-    if (subtitleWaitTimer) clearTimeout(subtitleWaitTimer);
     window.removeEventListener('keydown', handleKey, { capture: true });
-    destroyJassub();
     // Hand the flash back to Svelte before video.js destroys its subtree,
     // otherwise Svelte's own cleanup can't find the node.
     if (flashEl && flashHome && flashEl.parentElement !== flashHome) flashHome.appendChild(flashEl);
@@ -664,14 +650,7 @@
     player = null;
     // Let Jellyfin tear the transcode down rather than waiting for it to time
     // out on a box that is also serving everyone else.
-    if (playSessionId) {
-      fetch(api('/playback/stop'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${get(authToken)}` },
-        body: JSON.stringify({ playSessionId }),
-        keepalive: true,
-      }).catch(() => {});
-    }
+    stopSession(playSessionId);
   });
 </script>
 
@@ -693,18 +672,6 @@
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={videoEl} class="video-js vjs-big-play-centered w-full" playsinline></video>
 
-      <!-- Only claim to be waiting on subtitles when that is actually what is
-           holding playback up. Measured on a normal open, subtitles are ready
-           at ~240ms while the video needs ~3.3s, so showing this for the whole
-           wait told the viewer the wrong thing about the slow part. -->
-
-      <!-- Something must be on screen while Jellyfin builds the first segment,
-           which takes 1-30s. video.js's own spinner does NOT cover this: it
-           only appears once the player is waiting or seeking, and before
-           playback has started it stays hidden. Relying on it left a blank
-           box with no feedback at all — worse than the big play button it
-           replaced. Verified by visibility, not by the element existing,
-           which is the mistake that shipped the blank box. -->
       {#if !playbackStarted && !stalled}
         <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-white">
           <span class="loading loading-spinner loading-lg"></span>
@@ -712,17 +679,12 @@
         </div>
       {/if}
 
-      {#if subtitlesLoading && videoReady}
-        <div
-          class="absolute top-3 left-4 z-20 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-white"
-        >
+      <!-- Switching quality or subtitle track rebuilds the stream, which
+           takes a moment; say which, so it doesn't look like a stall. -->
+      {#if switching}
+        <div class="absolute top-3 left-4 z-20 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-white">
           <span class="loading loading-spinner loading-xs"></span>
-          <span class="text-xs">Loading subtitles…</span>
-          {#if !playbackStarted}
-            <button class="btn btn-xs btn-ghost text-white" on:click={startPlayback}
-              >Play anyway</button
-            >
-          {/if}
+          <span class="text-xs">{switching}…</span>
         </div>
       {/if}
 
@@ -764,12 +726,29 @@
    *
    * It comes back if play() is rejected, which is the only time clicking is
    * actually required of the viewer.
+   *
+   * `!important` is deliberate. `player.src()` clears `vjs-has-started`, so
+   * video.js's own skin puts the button back mid-switch — and which stylesheet
+   * wins then depends on the order video.js's CSS and this component's chunk
+   * happen to load in, which is not something to leave to chance for a control
+   * that must not appear.
    */
   :global(.video-js .vjs-big-play-button) {
-    display: none;
+    display: none !important;
   }
   :global(.video-js.sc-autoplay-blocked .vjs-big-play-button) {
-    display: block;
+    display: block !important;
+  }
+  /*
+   * Hold the played section where the viewer is while the stream is rebuilt.
+   *
+   * A track or quality change swaps `player.src()`, which resets the tech's
+   * clock to 0 and empties the bar for 1.5-5s before we can seek back — the
+   * time readout stays right, so the bar alone claims the position was lost.
+   * `!important` because video.js writes this width inline on every update.
+   */
+  :global(.video-js.sc-rebuilding .vjs-play-progress) {
+    width: var(--sc-resume, 0%) !important;
   }
   /* The default skin hides these; they're the most useful readouts there are. */
   :global(.video-js .vjs-control-bar .vjs-current-time),

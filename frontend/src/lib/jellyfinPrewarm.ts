@@ -3,9 +3,10 @@
  * presses Watch.
  *
  * The show pop-up sits open for several seconds while someone reads the
- * synopsis, and by then the episode's ItemId is already known. So the subtitle
- * text, its fonts and the ~2 MB libass wasm are all started there and cached
- * here; pressing Watch then costs only the stream start.
+ * synopsis, and by then the episode's ItemId is already known, so the
+ * PlaybackInfo round trip happens there and is cached here; pressing Watch then
+ * costs only the stream start. Subtitles are burned into the video server-side,
+ * so there is nothing else to fetch — no wasm, no fonts, no subtitle body.
  *
  * Deliberately **client-side only**. Nothing here touches the HLS manifest:
  * Jellyfin's transcode throttling is deprecated and disabled by default, and
@@ -28,54 +29,17 @@ export interface SubStream {
   isTextSubtitle: boolean;
 }
 
-export interface Attachment {
-  index: number;
-  fileName: string;
-  mimeType: string;
-}
-
 export interface PlaybackInfo {
   playSessionId: string;
   subtitles: SubStream[];
-  attachments: Attachment[];
-}
-
-export interface LibassBundle {
-  JASSUB: any;
-  workerUrl: string;
-  wasmUrl: string;
-  modernWasmUrl: string;
-  defaultFontUrl: string;
+  /** The stream URL Jellyfin chose for the profile we sent. */
+  transcodingUrl: string;
+  sourceWidth: number | null;
+  sourceBitrate: number | null;
 }
 
 export function api(path: string): string {
   return `/api/jellyfin${path}`;
-}
-
-export function subtitleUrl(
-  itemId: string,
-  mediaSourceId: string,
-  index: number,
-  format: 'ass' | 'vtt'
-): string {
-  const params = new URLSearchParams({
-    itemId,
-    mediaSourceId,
-    index: String(index),
-    format,
-    token: get(authToken) ?? '',
-  });
-  return api(`/subtitles?${params.toString()}`);
-}
-
-export function fontUrl(itemId: string, mediaSourceId: string, index: number): string {
-  const params = new URLSearchParams({
-    itemId,
-    mediaSourceId,
-    index: String(index),
-    token: get(authToken) ?? '',
-  });
-  return api(`/attachments?${params.toString()}`);
 }
 
 /**
@@ -87,9 +51,10 @@ export function fontUrl(itemId: string, mediaSourceId: string, index: number): s
  * the tie within that set rather than deciding on their own, because releases
  * do ship with a signs-only track marked default.
  *
- * ASS is preferred over SRT of the same content: libass renders it exactly,
- * and this library has episodes whose track *names* are useless ('1', '2',
- * 'final'), so codec and flags are what can be trusted.
+ * ASS is preferred over SRT of the same content: Jellyfin renders it with
+ * libass, positioning and karaoke intact, and this library has episodes whose
+ * track *names* are useless ('1', '2', 'final'), so codec and flags are what
+ * can be trusted.
  */
 export function defaultSubtitleIndex(subStreams: SubStream[]): number | null {
   const label = (s: SubStream) => `${s.title} ${s.displayTitle}`;
@@ -112,29 +77,6 @@ export function isAss(subStreams: SubStream[], index: number): boolean {
   return !!s && /ass|ssa/i.test(s.codec);
 }
 
-/**
- * Every font the MKV carries.
- *
- * This deliberately does *not* try to work out which fonts the script actually
- * uses. That was tried: parse `Style:`/`\fn` names, match them against
- * attachment filenames, ship only those. It cut a measured 250.9 MB of
- * attachments to 5.4 MB — and bought nothing anyone could perceive, because
- * A/B'd on the same episode it moved libass's `ready` from 529ms to 200ms while
- * the video took 5-13s. Both are invisible.
- *
- * What it did cost was correctness. A font's filename need not resemble the
- * family inside it (`f1.ttf` may hold "Helvetica Neue"; Jellyfin also appends
- * `_2`/`_3` to keep extracted names unique), so the match is a guess, and it
- * guessed wrong on 5 of 28 named fonts across the corpus — each one a wrong
- * typeface on screen until a background top-up landed. Against a ~1.4 GB
- * episode the whole pack is about 2% more data.
- *
- * Guessing about typefaces to save 2% of a stream is a bad trade, so we don't.
- * This is also what jellyfin-web does.
- */
-export function fontsFor(attachments: Attachment[]): Attachment[] {
-  return attachments.filter((a) => /font|otf|ttf/i.test(`${a.mimeType} ${a.fileName}`));
-}
 
 /**
  * video.js, loaded once per session.
@@ -191,47 +133,6 @@ export function castReady(): boolean {
   return !!(window as any).chrome?.cast;
 }
 
-/**
- * libass, loaded once per session.
- *
- * ~2 MB of wasm that none of the per-episode choices depend on, so it is
- * started as early as anything knows a player might open.
- */
-let libassPromise: Promise<LibassBundle> | null = null;
-
-export function loadLibass(): Promise<LibassBundle> {
-  if (!libassPromise) {
-    libassPromise = Promise.all([
-      import('jassub'),
-      // `dist/worker/worker.js` is jassub's worker entry point.
-      // `dist/wasm/jassub-worker.js` — which its README names, and which is
-      // stale for 2.x — is the emscripten glue and never completes the
-      // handshake, so `ready` hangs and `renderer` stays undefined.
-      // `?worker&url` so Vite rewrites the worker's own imports.
-      import('jassub/dist/worker/worker.js?worker&url'),
-      import('jassub/dist/wasm/jassub-worker.wasm?url'),
-      import('jassub/dist/wasm/jassub-worker-modern.wasm?url'),
-      // jassub's own fallback font, resolved explicitly. It registers this
-      // itself as `new URL('./default.woff2', import.meta.url)` — a runtime
-      // URL relative to its own bundle, which under Vite points into
-      // `node_modules/.vite/deps/` where the file does not exist. When the
-      // fallback 404s, a script naming a font its MKV does not carry has no
-      // font at all and libass renders *nothing* — silently, since the worker
-      // starts fine and the canvas is sized correctly.
-      import('jassub/dist/default.woff2?url'),
-    ]).then(([mod, worker, wasm, modernWasm, defaultFont]: any[]) => ({
-      JASSUB: mod.default,
-      workerUrl: worker.default,
-      wasmUrl: wasm.default,
-      modernWasmUrl: modernWasm.default,
-      defaultFontUrl: defaultFont.default,
-    }));
-    // Pre-warming means nothing may be awaiting this yet; keep a failure from
-    // surfacing as an unhandled rejection. The await at the use site reports.
-    libassPromise.catch(() => {});
-  }
-  return libassPromise;
-}
 
 /**
  * Bounded so a long session of wheel spins can't grow these without limit.
@@ -249,10 +150,9 @@ function remember<T>(cache: Map<string, T>, key: string, make: () => T): T {
 }
 
 const playbackCache = new Map<string, Promise<PlaybackInfo | null>>();
-const subtitleCache = new Map<string, Promise<string>>();
 
 /**
- * The session id, subtitle tracks and font attachments — one call, cached.
+ * The session id and subtitle tracks — one call, cached.
  *
  * `fresh` is not optional politeness: a cached response carries the
  * `playSessionId` of a session that may since have been stopped or wedged, so
@@ -262,34 +162,42 @@ const subtitleCache = new Map<string, Promise<string>>();
 export function playbackInfo(
   itemId: string,
   mediaSourceId: string,
-  opts: { fresh?: boolean } = {}
+  opts: { fresh?: boolean; quality?: string; subtitleIndex?: number | null } = {}
 ): Promise<PlaybackInfo | null> {
-  if (opts.fresh) playbackCache.delete(`${itemId}:${mediaSourceId}`);
-  return remember(playbackCache, `${itemId}:${mediaSourceId}`, async () => {
+  // Quality and subtitle track are part of the identity: each combination is a
+  // different stream from Jellyfin, so they cannot share a cache entry.
+  const quality = opts.quality ?? 'auto';
+  // Three states, not two. Omitting the key means "you choose" (the opening
+  // probe, before the tracks are even known); `null` means the viewer turned
+  // subtitles off, and that has to be sent as Jellyfin's -1 — leaving it out
+  // lets Jellyfin pick a default track, which with burn-in puts subtitles on
+  // screen for someone who just asked for none.
+  const stated = 'subtitleIndex' in opts;
+  const sub = opts.subtitleIndex ?? -1;
+  const key = `${itemId}:${mediaSourceId}:${quality}:${stated ? sub : 'default'}`;
+  if (opts.fresh) playbackCache.delete(key);
+  return remember(playbackCache, key, async () => {
     try {
-      const res = await fetch(
-        api(`/playback/${itemId}?mediaSourceId=${encodeURIComponent(mediaSourceId)}`),
-        { headers: { Authorization: `Bearer ${get(authToken)}` } }
-      );
+      const params = new URLSearchParams({
+        mediaSourceId,
+        quality,
+        ...(stated ? { subtitleIndex: String(sub) } : {}),
+      });
+      const res = await fetch(api(`/playback/${itemId}?${params}`), {
+        headers: { Authorization: `Bearer ${get(authToken)}` },
+      });
       if (!res.ok) return null;
       const info = await res.json();
       return {
         playSessionId: info.playSessionId ?? '',
         subtitles: info.subtitles ?? [],
-        attachments: info.attachments ?? [],
+        transcodingUrl: info.transcodingUrl ?? '',
+        sourceWidth: info.sourceWidth ?? null,
+        sourceBitrate: info.sourceBitrate ?? null,
       };
     } catch {
       return null;
     }
-  });
-}
-
-/** Subtitle body, cached by URL (which carries the token, so it self-expires). */
-export function subtitleText(url: string): Promise<string> {
-  return remember(subtitleCache, url, async () => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`subtitles ${res.status}`);
-    return res.text();
   });
 }
 
@@ -299,23 +207,20 @@ export function subtitleText(url: string): Promise<string> {
  * Fire-and-forget: a failure here must be invisible, because the player still
  * does all of this itself and will simply find a cold cache.
  */
-export function prewarm(itemId: string, mediaSourceId: string): void {
-  loadLibass();
+export function prewarm(itemId: string, mediaSourceId: string, quality = 'auto'): void {
   void (async () => {
     try {
-      const info = await playbackInfo(itemId, mediaSourceId);
+      // With subtitles burned in there is nothing else to fetch: no wasm, no
+      // fonts, no subtitle body. All this buys is the PlaybackInfo round trip
+      // and Jellyfin's stream URL, so pressing Watch is one less request.
+      const info = await playbackInfo(itemId, mediaSourceId, { quality });
       if (!info) return;
       const index = defaultSubtitleIndex(info.subtitles);
-      if (index == null || !isAss(info.subtitles, index)) return;
-
-      const body = await subtitleText(subtitleUrl(itemId, mediaSourceId, index, 'ass'));
-      // Pull the fonts into the browser cache so libass's worker gets them
-      // from disk rather than the network. Backed by Cache-Control on
-      // /api/jellyfin/attachments.
-      const fonts = fontsFor(info.attachments);
-      await Promise.all(
-        fonts.map((a) => fetch(fontUrl(itemId, mediaSourceId, a.index)).catch(() => {}))
-      );
+      // Warm the exact stream the player will ask for, not a different one:
+      // the cache is keyed by quality *and* track.
+      if (index != null) {
+        await playbackInfo(itemId, mediaSourceId, { quality, subtitleIndex: index });
+      }
     } catch {
       /* cold cache is the only cost */
     }

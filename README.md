@@ -78,8 +78,14 @@ chronological order; all features listed are live.
 **Jellyfin integration (optional)**
 - The site admin points SaltyChart at a Jellyfin server on the **/admin**
   page (URL + API key, tested with one click). The key is stored server-side
-  and never sent to browsers. An API key alone is enough — no per-viewer
-  Jellyfin accounts, no logins.
+  and never sent to browsers. Viewers never need a Jellyfin account or login.
+- The same page picks a **playback account** — Jellyfin applies its policy per
+  account, so streaming needs one. Use a dedicated account (library access, no
+  bitrate or rating limit; it needn't be an administrator) rather than a real
+  person's: it keeps playback off their profile, and tightening their policy
+  later can't quietly degrade playback for everyone. Nothing is written to its
+  watch history either way — SaltyChart never reports progress. If left unset,
+  an administrator is used.
 - On the Randomize page, the show pop-up gains **▶ Watch here** with the
   season and episode it will start on, playing in-page through the backend —
   when the series is found in your library (matched by English *and* Japanese
@@ -93,18 +99,22 @@ chronological order; all features listed are live.
   what the media servers' own players can't do: `]` / `[` step playback speed
   by **±0.10×** (they're locked to 0.25× steps), shown as a VLC-style corner
   flash.
-- **Subtitles are rendered with libass**, so signs, songs and karaoke appear
-  where the release put them rather than being flattened to plain text at the
-  bottom of the screen — including every font the episode carries, so the
-  typeface is always the one the release intended. Playback waits for the
-  subtitle track before starting, so you never miss the opening dialogue. Tracks are
-  chosen from a menu in the control bar, defaulting to plain English dialogue
-  rather than an SDH or signs-only track. For audio-track or quality
-  selection, use Jellyfin itself.
+- **Subtitles are drawn into the video by Jellyfin**, using libass and the
+  episode's own fonts, so signs, songs and karaoke appear where the release put
+  them rather than being flattened to plain text at the bottom of the screen.
+  They are part of the picture, so they can't fail to appear on their own, and
+  playback no longer has to wait for them. Tracks are chosen from a menu in the
+  control bar, defaulting to plain English dialogue rather than an SDH or
+  signs-only track.
+- **A quality menu** sits next to it: *Auto* (the file's own quality), 1080p,
+  720p or 480p — for when the connection can't keep up. Changing either the
+  track or the quality restarts the stream where you left off, which takes a
+  second or so; that's how every Jellyfin client works, because the choice is
+  baked into what the server sends.
 - The player loads itself ahead of time: the video code is fetched quietly when
-  you open the Randomize page, and a show's subtitles and fonts when you open
-  its pop-up — so pressing **Watch** only has to start the stream. Skipped
-  entirely on metered or 2G connections.
+  you open the Randomize page, and a show's playback details when you open its
+  pop-up — so pressing **Watch** only has to start the stream. Skipped entirely
+  on metered or 2G connections.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
