@@ -7,6 +7,13 @@ library, so this can never gate a deploy — but it is how the id-vs-title
 confidence numbers were measured, and it is the fastest way to spot a matcher
 regression against real data.
 
+⚠ Not free, and not to be run in a loop. Every entry is a real
+`/api/jellyfin/availability` call, and each match makes Jellyfin resolve the
+series and list its episodes — a full season is ~52 of those. Run repeatedly
+alongside the rest of the suite, this was a measurable share of the API load
+that drove the Jellyfin server process to ~800% CPU. Once per matcher change is
+the intended cadence, the same rule `bench_player.py` carries.
+
 Usage:
   py -3.13 -u tools/check_match_corpus.py SUMMER 2026 [--backend http://localhost:3000]
 """

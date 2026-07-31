@@ -832,7 +832,19 @@ Tables / columns:
 - `AppConfig` — server-wide key/value config (`key` TEXT PK, `value` TEXT).
   Holds `jellyfinUrl` / `jellyfinApiKey`, written by the admin `/admin` page
   via `PUT /api/jellyfin/config`, plus `anilistTvdbMap` / `anilistTvdbMapAt`
-  (the cached AniList→TVDB id map, refreshed weekly at boot).
+  (the cached AniList→TVDB id map, refreshed weekly at boot) and
+  `jellyfinLibrary` / `jellyfinLibraryAt` (the ~836-series match corpus).
+  The library cache is persisted because it used to be in-memory only: every
+  restart refetched all of it with `ProviderIds,OriginalTitle`, so each deploy
+  made the first viewer pay for it, and a development session with frequent
+  reloads ran it dozens of times an hour — most of what drove the Jellyfin
+  server process to ~800% CPU. Refresh is incremental where it safely can be:
+  a `TotalRecordCount` probe (`limit: 0`, so no items are serialised) detects
+  additions and removals, and when the count is unchanged only items matching
+  `minDateLastSaved` are refetched and merged. Jellyfin does not return
+  `DateLastSaved` on items, so the watermark is our own fetch time with a few
+  minutes of overlap. A full refresh runs weekly regardless, because an
+  incremental fetch can never reveal a deletion.
 - `SubtitleCache` — `videoId` unique, `mediaId`, `modelName`,
   `hasEnglishSubs`, `lastEnCheckAt`, `subtitlesDisabled`, `hasBurnedInSubs`,
   `segments` JSON, `createdAt`. Caches check results, translated segments, and

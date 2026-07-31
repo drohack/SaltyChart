@@ -17,6 +17,13 @@ Deliberately NOT part of run_all.py: it edits tracked source and is slow. It is
 a periodic audit, not a deploy gate. Add a row here whenever you add a test —
 a test nobody has watched fail is a test nobody should trust.
 
+Two things about the table are load-bearing, not cosmetic. Rows are **sorted by
+the file they edit**, because every switch back to a backend file restarts
+ts-node-dev; and the player rows run a **single step** rather than the whole
+player test,
+because each step that switches stream costs a real transcode. Running this
+without either of those pushed the Jellyfin server process to ~800% CPU.
+
 Usage:
   py -3.13 -u tools/tests/mutation_audit.py                # every mutation
   py -3.13 -u tools/tests/mutation_audit.py --only 3       # one, while iterating
@@ -49,6 +56,10 @@ class Mutation:
     test: list[str]           # argv, run from REPO
     expect: str               # substring the FAILING output must contain
     guards: str               # what breaks in production if this goes unnoticed
+    # Some invariants are enforced in more than one place, and breaking a single
+    # site leaves the others still holding the line — the mutation then reads as
+    # 'survived' when it was simply too narrow to change any behaviour.
+    also: list[tuple[str, str]] = field(default_factory=list)
     settle: float = 6.0       # ts-node-dev / vite need a moment to reload
     env: dict = field(default_factory=dict)
 
@@ -58,7 +69,15 @@ PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 
 PY = ["py", "-3.13", "-u"]
 T_JELLYFIN = PY + [str(TESTS / "test_jellyfin.py")]
-T_PLAYER = PY + [str(TESTS / "test_player.py")]
+def player(*steps: int) -> list[str]:
+    """The player test, limited to the steps guarding one invariant.
+
+    A full run starts four real transcodes; a targeted one starts two. Across
+    five player mutations that is the bulk of the audit's encode load, and none
+    of those mutations touches the steps being skipped.
+    """
+    return PY + [str(TESTS / "test_player.py"),
+                 "--only-steps", ",".join(str(s) for s in steps)]
 T_NEGATIVE = PY + [str(TESTS / "test_api_negative.py")]
 T_UI = PY + [str(TESTS / "test_ui_interactions.py")]
 T_UNIT = ["npm", "run", "test:unit"]
@@ -90,7 +109,7 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_JF,
         find="      ...(Number.isInteger(subtitleIndex) && subtitleIndex >= -1",
         replace="      ...(Number.isInteger(subtitleIndex) && subtitleIndex >= 0",
-        test=T_PLAYER,
+        test=player(8),
         expect="they are not being burned in",
         guards="Jellyfin picks a default track and burns it in, so subtitles stay "
                "on screen for a viewer who just turned them off",
@@ -103,7 +122,7 @@ MUTATIONS: list[Mutation] = [
         subtitleIndex: activeSubIndex,""",
         replace="""        fresh: true,
         subtitleIndex: activeSubIndex,""",
-        test=T_PLAYER,
+        test=player(9),
         expect="the restart did not carry the new quality",
         guards="the quality menu selects a tier and changes nothing",
     ),
@@ -112,7 +131,7 @@ MUTATIONS: list[Mutation] = [
         path=PLAYER,
         find="      if (abandoned && abandoned !== playSessionId) stopSession(abandoned);",
         replace="      /* mutation: orphan the old session */",
-        test=T_PLAYER,
+        test=player(9),
         expect="the abandoned session was never stopped",
         guards="every track or quality change leaves an ffmpeg writing a ~1 GB "
                "episode to the transcode cache for nobody",
@@ -122,7 +141,7 @@ MUTATIONS: list[Mutation] = [
         path=PLAYER,
         find="    if ((err as DOMException | undefined)?.name !== 'NotAllowedError') return;",
         replace="    if (false) return;",
-        test=T_PLAYER,
+        test=player(9),
         expect="big play button flashed",
         guards="a big play button flashes over a video that is already restarting",
     ),
@@ -131,7 +150,7 @@ MUTATIONS: list[Mutation] = [
         path=PLAYER,
         find="      player.addClass?.('sc-rebuilding');",
         replace="      /* mutation: no freeze */",
-        test=T_PLAYER,
+        test=player(9),
         expect="seek bar collapsed",
         guards="the played section collapses to zero mid-switch, so a viewer 10 "
                "minutes in appears to have lost their place",
@@ -154,8 +173,15 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/Randomize.svelte",
         find="        if (!c.info.unknown) next.set(c.item.id, c.info.available);",
         replace="        next.set(c.item.id, c.info.available); /* mutation */",
+        # Guarded in two places: the bulk prefetch and the per-item recheck.
+        # Breaking only the first leaves the second still filtering, so the
+        # button stays correctly disabled and the mutation proves nothing.
+        also=[("          if (!info.unknown) recordAvailability(item.id, info.available);",
+               "          recordAvailability(item.id, info.available); /* mutation */")],
         test=T_UI,
-        expect="unknown verdicts",
+        # The failure text, not the pass text — 'unknown verdicts' appears only
+        # in the PASS line, so matching it reported a real catch as a hole.
+        expect="is enabled while every lookup returned unknown",
         guards="one slow moment from Jellyfin empties the whole wheel, because "
                "'couldn't ask' gets recorded as 'not in the library'",
     ),
@@ -203,6 +229,14 @@ MUTATIONS: list[Mutation] = [
 ]
 
 
+# Grouped by the file each row edits, so the audit stops bouncing between the
+# backend and frontend dev servers — every switch back to a backend file costs a
+# ts-node-dev restart. Enforced by sorting rather than by hand-ordering the list
+# above, so adding a row in the wrong place cannot quietly undo it. Sorting by
+# path also puts all `backend/` rows first, which is where the restarts are.
+MUTATIONS.sort(key=lambda m: m.path)
+
+
 def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True)
 
@@ -217,7 +251,12 @@ def apply(m: Mutation) -> bool:
     src = f.read_text(encoding="utf-8")
     if m.find not in src:
         return False
-    f.write_text(src.replace(m.find, m.replace, 1), encoding="utf-8", newline="")
+    src = src.replace(m.find, m.replace, 1)
+    for find, replace in m.also:
+        if find not in src:
+            return False
+        src = src.replace(find, replace, 1)
+    f.write_text(src, encoding="utf-8", newline="")
     return True
 
 
@@ -250,8 +289,16 @@ def main() -> int:
 
     # A mutation is reverted with `git checkout --`, which would also throw away
     # uncommitted work in the same file. Refuse rather than risk it.
+    chosen = [MUTATIONS[args.only - 1]] if args.only else MUTATIONS
+    if args.only and not (1 <= args.only <= len(MUTATIONS)):
+        say(f"--only must be 1..{len(MUTATIONS)}")
+        return 2
+
+    # Only the files this run will actually revert. Checking every row's target
+    # blocked `--only 9` because some unrelated file had edits in it, which is a
+    # guard being unhelpful rather than safe.
     dirty = dirty_paths()
-    targets = {m.path for m in MUTATIONS}
+    targets = {m.path for m in chosen}
     clash = sorted(targets & set(dirty))
     if clash:
         say("Refusing to run: these files have uncommitted changes and would be "
@@ -259,11 +306,6 @@ def main() -> int:
         for c in clash:
             say(f"   {c}")
         say("\nCommit or stash them first.")
-        return 2
-
-    chosen = [MUTATIONS[args.only - 1]] if args.only else MUTATIONS
-    if args.only and not (1 <= args.only <= len(MUTATIONS)):
-        say(f"--only must be 1..{len(MUTATIONS)}")
         return 2
 
     say(f"Mutation audit — {len(chosen)} mutation(s), each must be CAUGHT by its test")
@@ -310,8 +352,14 @@ def main() -> int:
                             if m.expect.lower() in l.lower()), "").strip()
                 say(f"      caught in {took:.0f}s — {hit[:150]}\n")
     finally:
-        # Belt and braces: restore everything, including on Ctrl-C.
-        for m in MUTATIONS:
+        # Belt and braces: restore what this run touched, including on Ctrl-C.
+        #
+        # `chosen`, NOT `MUTATIONS`. This looped over every row once, so a
+        # `--only 1` run ran `git checkout --` across all thirteen target files
+        # and destroyed uncommitted work in two of them that the run never even
+        # touched. The dirty-tree check above is scoped to `chosen`; if this is
+        # ever widened again, that guard silently stops covering it.
+        for m in chosen:
             restore(m)
 
     total = len(chosen) - len(skipped)

@@ -32,6 +32,7 @@ Usage:
   py -3.13 -u tools/bench_player.py --output tools/benchmark_results.txt
 """
 import argparse
+import atexit
 import json
 import re
 import sqlite3
@@ -185,6 +186,11 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
             headers=auth, timeout=60))
         pb = pb_res.json()
         psid = pb.get("playSessionId", "")
+        # Registered the moment the session exists, not only at the end of the
+        # loop. This script starts real encodes, and an exception between here
+        # and the teardown below would leave ffmpeg writing out the rest of a
+        # ~1.4 GB episode — which is how the transcode cache filled once before.
+        atexit.register(stop_session, backend, auth, psid)
         turl = pb.get("transcodingUrl") or ""
         if not turl:
             log("  no transcodingUrl — Jellyfin refused the profile; skipping this run")
@@ -222,6 +228,7 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
                            headers=auth, timeout=60).json()
         psid2, turl2 = pb2.get("playSessionId", ""), pb2.get("transcodingUrl") or ""
         if turl2:
+            atexit.register(stop_session, backend, auth, psid2)
             dmaster, _ = t.timed("direct master.m3u8", lambda: requests.get(
                 f"{url}{turl2}", headers=jf_headers, timeout=120))
             dmain_uri = follow(turl2, dmaster.text)

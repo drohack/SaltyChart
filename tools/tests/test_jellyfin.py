@@ -15,6 +15,7 @@ CLAUDE.md convention:
   [k/8 Jellyfin] step name — detail
 """
 import argparse
+import atexit
 import sys
 from datetime import date
 
@@ -170,9 +171,15 @@ def main():
     # produced a real false positive (2026 "Nanoha EXCEEDS" -> 2004 "Nanoha").
     # Measured against this library a season resolves ~35 of 52 by id, so a
     # floor of one is far below the noise while still catching a total loss.
+    #
+    # Eight, not twenty: each lookup makes Jellyfin resolve a series and its
+    # episode list, and this test runs on every suite pass and every mutation
+    # audit row. Twenty was a meaningful share of the load that pegged the
+    # server, and buys nothing — ~15 of 20 matched by id, so the floor of one is
+    # never close either way.
     tiers = {"id": 0, "title": 0, "missing": 0}
     for s in requests.get(f"{backend}/api/anime?season={season}&year={year}&format=TV",
-                          timeout=120).json()[:20]:
+                          timeout=120).json()[:8]:
         t = [x for x in (s.get("title") or {}).values() if x]
         if not t:
             continue
@@ -226,6 +233,13 @@ def main():
                 fail(7, f"/playback returned a transcodingUrl containing a credential "
                         f"({leak}) — it would be handed to every viewer")
         psid = pb.json()["playSessionId"]
+        # Registered before the stream is started, not after the assertions.
+        # `fail()` exits via SystemExit, so on any failure below the stop call at
+        # the end of this step never ran and the encode was left going — which
+        # is precisely what happens on every mutation-audit row.
+        atexit.register(lambda: requests.post(
+            f"{backend}/api/jellyfin/playback/stop", headers=auth,
+            json={"playSessionId": psid}, timeout=10))
         q = (f"mediaSourceId={playable['mediaSourceId']}&playSessionId={psid}"
              f"&videoCodec=h264&audioCodec=aac&container=ts&deviceId=saltychart"
              f"&maxStreamingBitrate=120000000")
