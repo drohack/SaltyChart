@@ -12,7 +12,12 @@ Two halves, because they fail differently:
            proxy AND directly against Jellyfin, so the proxy's own cost is
            separated from the media server's.
   client   the browser timeline from the Watch click to a decoding video, so
-           libass/wasm/font work is placed against the stream wait.
+           the app's own work is placed against the stream wait.
+
+The stream shape is not invented here: it comes from the `transcodingUrl`
+that `/api/jellyfin/playback` returns, and the manifests are followed the way a
+player follows them. An earlier version hand-built `?videoCodec=h264&…`, which
+by the end was measuring a stream the app no longer requests.
 
 ⚠ This starts REAL playback sessions, and Jellyfin's ffmpeg writes segments
 until the whole file is done regardless of the playhead — its cleanup timers do
@@ -124,27 +129,7 @@ def pick_episode(backend: str, auth: dict, want: str | None) -> dict | None:
     return None
 
 
-def fonts_the_script_names(ass: str, attachments: list[dict]) -> list[dict]:
-    """Mirror of fontsFor() in frontend/src/lib/jellyfinPrewarm.ts."""
-    norm = lambda s: re.sub(r"[^a-z0-9]", "", s.strip().lstrip("@").lower())
-    embedded = [a for a in attachments
-                if re.search(r"font|otf|ttf", f"{a.get('mimeType')} {a.get('fileName')}", re.I)]
-    names = set(re.findall(r"^Style:\s*[^,]+,\s*([^,]+),", ass, re.M))
-    names |= set(re.findall(r"\\fn([^\\}]+)", ass))
-    wanted = [w for w in (norm(x) for x in names) if w]
-    if not wanted:
-        return embedded
-    stem = lambda a: norm(re.sub(r"\.[^.]+$", "", a["fileName"]))
-    out: list[dict] = []
-    for w in wanted:
-        hits = [a for a in embedded if stem(a) == w] \
-            or [a for a in embedded if stem(a).startswith(w) or w.startswith(stem(a))] \
-            or [a for a in embedded if w in stem(a) or stem(a) in w]
-        out += [a for a in hits if a not in out]
-    return out or embedded
-
-
-def stop_encodings(url: str, headers: dict, device: str) -> None:
+def stop_session(backend: str, auth: dict, play_session_id: str) -> None:
     """
     Kill this run's ffmpeg before timing the next one.
 
@@ -152,14 +137,36 @@ def stop_encodings(url: str, headers: dict, device: str) -> None:
     playhead, so leaving five of them running turns a startup benchmark into a
     measurement of the load the benchmark itself created — which is exactly what
     the first version of this script did.
+
+    Torn down by playSessionId through the app's own endpoint, the way the
+    player does it. Killing by deviceId would take out every SaltyChart encode
+    on the server, including a real viewer's — the app and this bench now share
+    one device id.
     """
+    if not play_session_id:
+        return
     try:
-        req = urllib.request.Request(
-            f"{url}/Videos/ActiveEncodings?deviceId={urllib.parse.quote(device)}",
-            headers=headers, method="DELETE")
-        urllib.request.urlopen(req, timeout=20).read()
+        requests.post(f"{backend}/api/jellyfin/playback/stop", headers=auth,
+                      json={"playSessionId": play_session_id}, timeout=30)
     except Exception:
         pass
+
+
+def follow(playlist_path: str, text: str) -> str | None:
+    """
+    The next thing a player fetches: the first non-comment URI in an HLS
+    playlist, resolved against the playlist's own location.
+
+    The resolution is the point. Jellyfin writes these as bare relative URIs
+    ("main.m3u8?…", "hls1/main/0.ts?…"), so joining them to the proxy root
+    instead of to the playlist's directory produces a 404 that looks like an
+    empty playlist.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return urllib.parse.urljoin(playlist_path, line)
+    return None
 
 
 def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Timer:
@@ -167,76 +174,67 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
     url, key = jellyfin_config()
     jf_headers = {"Authorization": f'MediaBrowser Token="{key}"'}
     iid, msid = ep["itemId"], ep["mediaSourceId"]
-    q = (f"mediaSourceId={urllib.parse.quote(msid)}&videoCodec=h264&audioCodec=aac"
-         f"&container=ts&maxStreamingBitrate=120000000")
 
     for i in range(1, n + 1):
-        # A new deviceId each run forces a cold session, which is what a viewer
-        # pressing Watch actually gets.
-        dev = f"bench{int(time.time()*1000)}"
-        log(f"[run {i}/{n}] step 1/5: metadata")
-        t.timed("proxy /playback (metadata+subs+fonts list)", lambda: requests.get(
+        log(f"[run {i}/{n}] step 1/4: metadata")
+        # Every /playback call opens a fresh session, which is what a viewer
+        # pressing Watch gets. The response also names the stream to play, so
+        # nothing below is hand-assembled.
+        pb_res, _ = t.timed("proxy /playback (metadata)", lambda: requests.get(
             f"{backend}/api/jellyfin/playback/{iid}?mediaSourceId={urllib.parse.quote(msid)}",
             headers=auth, timeout=60))
-        pb = requests.get(f"{backend}/api/jellyfin/playback/{iid}"
-                          f"?mediaSourceId={urllib.parse.quote(msid)}",
-                          headers=auth, timeout=60).json()
+        pb = pb_res.json()
+        psid = pb.get("playSessionId", "")
+        turl = pb.get("transcodingUrl") or ""
+        if not turl:
+            log("  no transcodingUrl — Jellyfin refused the profile; skipping this run")
+            continue
 
-        log(f"[run {i}/{n}] step 2/5: subtitle track")
-        subs = pb.get("subtitles", [])
-        ass = next((s for s in subs if "ass" in (s.get("codec") or "").lower()), None)
-        chosen = ass or (subs[0] if subs else None)
-        ass_body = ""
-        if chosen:
-            fmt = "ass" if ass else "vtt"
-            r, _ = t.timed(f"proxy /subtitles ({fmt})", lambda: requests.get(
-                f"{backend}/api/jellyfin/subtitles", timeout=120,
-                params={"itemId": iid, "mediaSourceId": msid, "index": chosen["index"],
-                        "format": fmt, "token": token}))
-            ass_body = r.content.decode("utf-8", "replace")
+        log(f"[run {i}/{n}] step 2/4: HLS through the SaltyChart proxy")
+        prox = f"{backend}/api/jellyfin/stream"
+        sep = "&" if "?" in turl else "?"
+        tok_q = lambda u: f"{prox}{u}{'&' if '?' in u else '?'}token={token}"
+        master_res, _ = t.timed("proxy master.m3u8",
+                                lambda: requests.get(tok_q(turl), timeout=120))
+        main_uri = follow(turl, master_res.text)
+        if not main_uri:
+            log("  master playlist named no rendition; skipping this run")
+            stop_session(backend, auth, psid)
+            continue
+        main_res, _ = t.timed("proxy main.m3u8",
+                              lambda: requests.get(tok_q(main_uri), timeout=120))
+        seg0 = follow(main_uri, main_res.text)
+        if seg0:
+            t.timed("proxy segment 0  <-- the wait",
+                    lambda: requests.get(tok_q(seg0), timeout=180))
+            seg1 = seg0.replace("/0.ts", "/1.ts", 1)
+            if seg1 != seg0:
+                t.timed("proxy segment 1 (steady state)",
+                        lambda: requests.get(tok_q(seg1), timeout=180))
+        else:
+            log("  rendition playlist named no segment; the wait was not measured")
 
-        log(f"[run {i}/{n}] step 3/5: fonts the script needs")
-        # The fonts the app would actually send — not the first N attachments,
-        # which would include the 23 MB Arial Unicode MS that fontsFor excludes
-        # and so would measure a payload the player never requests.
-        fonts = fonts_the_script_names(ass_body if ass else "", pb.get("attachments", []))
-        f0 = time.perf_counter()
-        fbytes = 0
-        for a in fonts:
-            r = requests.get(f"{backend}/api/jellyfin/attachments", timeout=90,
-                             params={"itemId": iid, "mediaSourceId": msid,
-                                     "index": a["index"], "token": token})
-            fbytes += len(r.content)
-        if fonts:
-            t.record(f"proxy /attachments (x{len(fonts)})", time.perf_counter() - f0, fbytes)
+        log(f"[run {i}/{n}] step 3/4: the same stream straight from Jellyfin")
+        # Same URL, no proxy — so the proxy's own cost is separable. A second
+        # session, torn down alongside the first.
+        pb2 = requests.get(f"{backend}/api/jellyfin/playback/{iid}"
+                           f"?mediaSourceId={urllib.parse.quote(msid)}",
+                           headers=auth, timeout=60).json()
+        psid2, turl2 = pb2.get("playSessionId", ""), pb2.get("transcodingUrl") or ""
+        if turl2:
+            dmaster, _ = t.timed("direct master.m3u8", lambda: requests.get(
+                f"{url}{turl2}", headers=jf_headers, timeout=120))
+            dmain_uri = follow(turl2, dmaster.text)
+            if dmain_uri:
+                dmain = requests.get(f"{url}{dmain_uri}", headers=jf_headers, timeout=120)
+                dseg = follow(dmain_uri, dmain.text)
+                if dseg:
+                    t.timed("direct segment 0", lambda: requests.get(
+                        f"{url}{dseg}", headers=jf_headers, timeout=180))
 
-        log(f"[run {i}/{n}] step 4/5: HLS through the SaltyChart proxy")
-        base = f"{backend}/api/jellyfin/stream/Videos/{iid}"
-        t.timed("proxy master.m3u8", lambda: requests.get(
-            f"{base}/master.m3u8?{q}&deviceId={dev}&token={token}", timeout=120))
-        t.timed("proxy main.m3u8", lambda: requests.get(
-            f"{base}/main.m3u8?{q}&deviceId={dev}&token={token}", timeout=120))
-        t.timed("proxy segment 0  <-- the wait", lambda: requests.get(
-            f"{base}/hls1/main/0.ts?{q}&deviceId={dev}&token={token}"
-            f"&runtimeTicks=0&actualSegmentLengthTicks=30000000", timeout=180))
-        t.timed("proxy segment 1 (steady state)", lambda: requests.get(
-            f"{base}/hls1/main/1.ts?{q}&deviceId={dev}&token={token}"
-            f"&runtimeTicks=30000000&actualSegmentLengthTicks=30000000", timeout=180))
-
-        log(f"[run {i}/{n}] step 5/5: same HLS directly from Jellyfin (isolates proxy cost)")
-        dev2 = dev + "d"
-        jbase = f"{url}/Videos/{iid}"
-        t.timed("direct master.m3u8", lambda: requests.get(
-            f"{jbase}/master.m3u8?{q}&deviceId={dev2}", headers=jf_headers, timeout=120))
-        t.timed("direct segment 0", lambda: requests.get(
-            f"{jbase}/hls1/main/0.ts?{q}&deviceId={dev2}"
-            f"&runtimeTicks=0&actualSegmentLengthTicks=30000000",
-            headers=jf_headers, timeout=180))
-
-        # Tear both sessions down and let the disk settle, so the next run
-        # measures a quiet server rather than this one's leftovers.
-        stop_encodings(url, jf_headers, dev)
-        stop_encodings(url, jf_headers, dev2)
+        log(f"[run {i}/{n}] step 4/4: tearing this run's encodings down")
+        stop_session(backend, auth, psid)
+        stop_session(backend, auth, psid2)
         if i < n:
             log(f"[run {i}/{n}] stopped this run's encodings, settling 8s")
             time.sleep(8)
@@ -244,7 +242,12 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
 
 
 def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> list[dict]:
-    """Browser timeline: Watch click -> decoding video, with libass placed against it."""
+    """Browser timeline: Watch click -> decoding video.
+
+    Subtitles are burned into the picture server-side, so there is no renderer,
+    wasm or font fetch left to place against the stream wait — what remains is
+    the player chunk and the stream itself.
+    """
     from playwright.sync_api import sync_playwright
 
     season, year = season_year()
@@ -289,8 +292,6 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
                 for (let i = 0; i < 1200; i++) {
                   const v = document.querySelector('video');
                   if (v && !m.videoEl) m.videoEl = performance.now() - t0;
-                  if (!m.libassCanvas && document.querySelector('canvas.JASSUB'))
-                    m.libassCanvas = performance.now() - t0;
                   if (v && !m.metadata && v.readyState >= 1) m.metadata = performance.now() - t0;
                   if (v && !m.canPlay && v.readyState >= 3) m.canPlay = performance.now() - t0;
                   if (v && v.currentTime > 0.2 && v.readyState >= 3) {
@@ -312,8 +313,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
                 continue
             runs.append(marks)
             log(f"[client {i}/{n}] playing at {round(marks.get('playing') or 0)}ms "
-                f"(libass {round(marks.get('libassCanvas') or 0)}ms, "
-                f"segment0 {marks.get('firstSegmentMs')}ms)")
+                f"(segment0 {marks.get('firstSegmentMs')}ms)")
             page.wait_for_timeout(2500)
         browser.close()
     return runs
@@ -335,7 +335,6 @@ def render(t: Timer, client: list[dict], ep: dict) -> str:
         add("CLIENT TIMELINE (ms from the Watch click)")
         add("-" * 74)
         for k, label in [("videoEl", "player element created"),
-                         ("libassCanvas", "libass canvas up"),
                          ("metadata", "video metadata"),
                          ("canPlay", "enough data to play"),
                          ("playing", "actually decoding")]:
@@ -399,9 +398,15 @@ def main() -> int:
     body = render(t, client, ep)
     print("\n" + body, flush=True)
     write_suite(Path(args.output), body)
+    # The headline number is the only stage that ever really varies. If it was
+    # never measured, say so rather than dying on a missing key — a benchmark
+    # that crashes at the finish line loses the run it just spent minutes on.
     seg = t.stats("proxy segment 0  <-- the wait")
-    log(f"\nDone: segment 0 median {seg['med']:.1f}s ({seg['min']:.1f}-{seg['max']:.1f}s, "
-        f"{seg['spread']:.1f}x spread) — written to {args.output}")
+    if seg:
+        log(f"\nDone: segment 0 median {seg['med']:.1f}s ({seg['min']:.1f}-{seg['max']:.1f}s, "
+            f"{seg['spread']:.1f}x spread) — written to {args.output}")
+    else:
+        log(f"\nDone: segment 0 was never measured — written to {args.output}")
     return 0
 
 
