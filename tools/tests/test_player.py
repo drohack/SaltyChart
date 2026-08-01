@@ -298,17 +298,11 @@ def main():
                               " return { t: v.currentTime, rs: v.readyState, w: v.videoWidth }; }")
         step(5, f"PASS — playing at {state['t']:.1f}s, {state['w']}px wide")
 
-        # Segment requests are how we know a *new* stream actually started;
-        # `readyState` alone recovers while the old buffer is still playing.
-        #
-        # Installed here, not inside a want() block. It used to sit at the tail
-        # of step 7, so `--only-steps 8` left `segments` undefined and step 8
-        # died on UnboundLocalError before asserting anything — the same shape
-        # of bug as step 5 being nested under want(4). Anything later steps
-        # depend on has to be established on the unconditional path.
-        segments: list[str] = []
-        page.on("request", lambda r: segments.append(r.url)
-                if "/hls1/" in r.url else None)
+        # (A segment-request listener used to live here, as step 8's way of
+        # telling a genuinely new stream from a recovered old one. It could not
+        # do that — playback fetches segments continuously, so its "two new
+        # segments" threshold was met within seconds regardless. Step 8 now
+        # reloads the page instead, which needs no such signal.)
 
         if want(6):
          step(6, "exactly one subtitle menu, defaulting to a plain English track")
@@ -399,7 +393,48 @@ def main():
          SAMPLE_TIMES = [round(60 + i * (span - 60) / 11) for i in range(12)]
          with_subs = page.evaluate(grab, SAMPLE_TIMES)
 
-         # Turn subtitles off through the menu, which restarts the stream.
+         # Start the second pass from a genuinely empty buffer.
+         #
+         # Both passes seek to the same twelve timestamps, and the first pass
+         # therefore leaves the browser holding *subtitled* segments around every
+         # one of them. Restarting the stream in place does not evict those, so
+         # the second pass could read pass one's frames straight back: every band
+         # compared byte-identical to itself and the step reported "they are not
+         # being burned in" against perfectly healthy code (verified by hand —
+         # toggling subtitles in a browser works fine).
+         #
+         # Waiting for "two new segments" did not save it either. Playback fetches
+         # segments continuously — 142 had arrived by this point in one run — so
+         # that threshold is met within seconds whether or not anything restarted.
+         #
+         # Whether the stale ranges survived was up to the browser's eviction
+         # policy, which is why this failed intermittently for weeks rather than
+         # outright. A reload drops the MediaSource entirely, and the new session
+         # carries a different playSessionId, so every segment URL is new and the
+         # HTTP cache cannot serve the old ones either. It costs one extra stream
+         # start; determinism here is worth more than the ~40s.
+         page.keyboard.press("Escape")
+         page.wait_for_timeout(1500)
+         page.reload()
+         page.wait_for_timeout(2000)
+         _season_btn = page.locator(f"button:text-is('{season.capitalize()}')")
+         if _season_btn.count():
+             _season_btn.first.click()
+             page.wait_for_timeout(2500)
+         _item = page.locator("li", has_text=target["title"][:24]).first
+         try:
+             _item.wait_for(timeout=20_000)
+             _item.click()
+             _watch = page.locator("button", has_text="Watch here (via Jellyfin)").first
+             _watch.wait_for(timeout=30_000)
+             _watch.click()
+             page.wait_for_function(
+                 "() => { const v = document.querySelector('video');"
+                 " return v && v.currentTime > 0.2 && v.videoWidth > 0; }", timeout=60_000)
+         except Exception:
+             fail(8, "could not reopen the player for the subtitles-off pass")
+
+         # Now turn subtitles off, on a player that has never rendered them.
          page.mouse.move(700, 450)
          page.mouse.move(700, 860)
          page.wait_for_timeout(400)
@@ -410,7 +445,6 @@ def main():
                      if i.inner_text().strip().lower().startswith("off")), None)
          if off is None:
              fail(8, "the subtitle menu has no Off entry")
-         seg_before = len(segments)
          off.click()
          try:
              page.wait_for_function(
@@ -418,19 +452,7 @@ def main():
                  " return v && v.readyState >= 2 && v.videoWidth > 0; }", timeout=60_000)
          except Exception:
              fail(8, "the stream never came back after turning subtitles off")
-         # Wait for the *new* stream, not merely a playable element. `readyState`
-         # goes back above 2 while the old buffer is still being served, so
-         # sampling here compares the subtitled stream against itself and reports
-         # "not being burned in" — a false failure that got worse under load and
-         # masked every assertion after it.
-         deadline = time.time() + 90
-         while len(segments) < seg_before + 2 and time.time() < deadline:
-             page.wait_for_timeout(500)
-         if len(segments) < seg_before + 2:
-             fail(8, f"no new stream segments arrived after turning subtitles off "
-                     f"({len(segments) - seg_before} in 90s) — the switch never took "
-                     f"effect, so comparing frames would compare the stream to itself")
-         page.wait_for_timeout(3000)
+         page.wait_for_timeout(4000)
          without = page.evaluate(grab, SAMPLE_TIMES)
 
          def band_delta(a: list[int], b: list[int]) -> float:
