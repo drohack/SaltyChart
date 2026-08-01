@@ -183,8 +183,15 @@ def main():
         t = [x for x in (s.get("title") or {}).values() if x]
         if not t:
             continue
+        # `fresh` is mandatory here, not a nicety. This step exists to prove the
+        # AniList->TVDB id tier still fires, and the availability cache now
+        # survives a restart — so without it the sample reads back a previous
+        # run's `matchedBy` values and passes happily against a build where the
+        # tier is entirely dead. A mutation audit caught exactly that: disabling
+        # the tier changed nothing, because nothing re-resolved.
         av = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
-                           json={"mediaId": s["id"], "titles": t[:10]}, timeout=90).json()
+                           json={"mediaId": s["id"], "titles": t[:10], "fresh": True},
+                           timeout=90).json()
         if av.get("unknown"):
             continue
         tiers[av["matchedBy"] if av.get("available") else "missing"] += 1

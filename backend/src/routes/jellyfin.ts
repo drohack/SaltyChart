@@ -680,11 +680,22 @@ async function resolveAvailability(
   titles: string[],
   fresh = false
 ): Promise<any> {
-  // `fresh: true` (sent when a popup opens on a previously-negative result)
-  // bypasses the negative cache so a just-downloaded show appears immediately
-  // instead of after the 10-minute negative TTL.
+  // `fresh: true` means "re-resolve this; don't hand me a cached answer".
+  //
+  // The pop-up sends it when a show reads as unavailable, so a just-downloaded
+  // series appears without waiting out the 10-minute negative TTL. It used to
+  // bypass *only* negatives, which matched that one caller but made the flag
+  // mean something narrower than its name — and left no way to force a real
+  // resolution at all. That mattered once the cache started surviving restarts:
+  // `test_jellyfin` proves the AniList->TVDB id tier is alive by checking that
+  // some series matched by `id`, and with every answer served from cache it was
+  // reading a recording rather than exercising the matcher. A mutation that
+  // disabled the tier outright went unnoticed.
+  //
+  // Widening it costs nothing in production: the only caller sends it for
+  // negatives, which behaved this way already.
   const cached = availabilityCache.get(mediaId);
-  if (cached && cached.expires > Date.now() && !(fresh && !cached.data.available)) {
+  if (cached && cached.expires > Date.now() && !fresh) {
     return cached.data;
   }
 
