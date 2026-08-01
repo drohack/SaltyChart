@@ -62,8 +62,23 @@ class Mutation:
     # site leaves the others still holding the line — the mutation then reads as
     # 'survived' when it was simply too narrow to change any behaviour.
     also: list[tuple[str, str]] = field(default_factory=list)
+    # Same idea as `also`, but for sites in *other* files: (path, find, replace).
+    # Needed because a guard can legitimately live at more than one layer — the
+    # "never act on an `unknown` availability verdict" rule is enforced both
+    # where server data enters the store and again in the page that consumes it.
+    # Breaking either alone changes no behaviour, because the other still holds,
+    # so the mutation reads as 'survived' while proving nothing. The answer is to
+    # let the audit express the invariant, not to thin out a safety guard so a
+    # single-file mutation can reach it.
+    extra: list[tuple[str, str, str]] = field(default_factory=list)
     settle: float = 6.0       # ts-node-dev / vite need a moment to reload
     env: dict = field(default_factory=dict)
+
+    @property
+    def paths(self) -> list[str]:
+        """Every file this mutation edits, so all of them get reverted."""
+        seen = [self.path] + [p for p, _, _ in self.extra]
+        return list(dict.fromkeys(seen))
 
 
 BACKEND_JF = "backend/src/routes/jellyfin.ts"
@@ -184,19 +199,32 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         name="an `unknown` availability verdict is treated as a definite 'no'",
-        path="frontend/src/pages/Randomize.svelte",
-        find="          if (!info.unknown) recordAvailability(mediaId, info.available);",
-        replace="          recordAvailability(mediaId, info.available); /* mutation */",
-        # Guarded in two places: the wheel prefetch, which drives the button's
-        # enabled state, and the bulk hide, which decides what actually gets
-        # hidden. Breaking only one leaves the other holding the line, so the
-        # mutation reads as 'survived' when it was simply too narrow.
-        #
-        # `?.available === false` is the load-bearing half of the second: an
-        # entry the server couldn't answer is absent from the map, and `=== false`
-        # refuses to act on absent where `!== true` would hide it.
-        also=[("      const missing = visible.filter((it) => results.get(it.id)?.available === false);",
-               "      const missing = visible.filter((it) => results.get(it.id)?.available !== true); /* mutation */")],
+        # The guard moved when availability was batched. It is now in the store,
+        # which drops `unknown` before any page sees it — so the old row, which
+        # broke the filter in Randomize, mutated a site that can no longer
+        # receive an `unknown` and survived while proving nothing. Break it
+        # where the data actually arrives.
+        path="frontend/src/stores/jellyfin.ts",
+        find="""        if (!info?.unknown) {
+          _availabilityCache.set(mediaId, info);
+          out.set(mediaId, info);
+        }""",
+        replace="""        _availabilityCache.set(mediaId, info); /* mutation */
+        out.set(mediaId, info);""",
+        # The single-show path keeps its own copy of the rule, and it feeds the
+        # same client cache — leaving it intact lets a pop-up refill the cache
+        # with a definite answer and mask the mutation.
+        also=[("      if (!data.unknown) _availabilityCache.set(mediaId, data);",
+               "      _availabilityCache.set(mediaId, data); /* mutation */")],
+        # And the page checks again on the way in. That second guard is real
+        # defence in depth, not redundancy to be deleted — but it does mean the
+        # store guard alone is unreachable: an `unknown` that gets past the
+        # store is filtered here instead, so the wheel behaves correctly and the
+        # mutation survives having changed nothing. Both layers have to go for
+        # the invariant to be exercised at all.
+        extra=[("frontend/src/pages/Randomize.svelte",
+                "          if (!info.unknown) recordAvailability(mediaId, info.available);",
+                "          recordAvailability(mediaId, info.available); /* mutation */")],
         test=T_UI,
         # The failure text, not the pass text — 'unknown verdicts' appears only
         # in the PASS line, so matching it reported a real catch as a hole.
@@ -261,13 +289,39 @@ def git(*args: str) -> subprocess.CompletedProcess:
 
 
 def dirty_paths() -> list[str]:
-    out = git("status", "--porcelain").stdout.strip()
-    return [l[3:] for l in out.splitlines() if l.strip()]
+    """Repo-relative paths with uncommitted changes.
+
+    Do NOT strip the output. Porcelain lines are `XY PATH`, and an unstaged
+    modification is `" M path"` — a leading space. Stripping the whole blob
+    removes it from the *first* line only, so `l[3:]` then eats a character of
+    that path: `backend/...` became `ackend/...`, matched nothing, and the
+    dirty-tree guard silently stopped protecting whichever file sorted first.
+    That is not hypothetical — it reverted uncommitted work in
+    `backend/src/routes/jellyfin.ts` on the run that found this.
+    """
+    out = git("status", "--porcelain").stdout
+    paths = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        # Renames read `R  old -> new`; the new name is the one on disk.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip('"'))
+    return paths
 
 
 def apply(m: Mutation) -> bool:
-    f = REPO / m.path
-    src = f.read_text(encoding="utf-8")
+    """Edit every site this mutation names. All-or-nothing.
+
+    Nothing is written until every anchor has been located, because a partial
+    application is the worst outcome available: the code is broken in one place,
+    intact in another, and the run reports on a state nobody described.
+    """
+    edits: dict[str, str] = {}
+
+    src = (REPO / m.path).read_text(encoding="utf-8")
     if m.find not in src:
         return False
     src = src.replace(m.find, m.replace, 1)
@@ -275,21 +329,17 @@ def apply(m: Mutation) -> bool:
         if find not in src:
             return False
         src = src.replace(find, replace, 1)
-    f.write_text(src, encoding="utf-8", newline="")
+    edits[m.path] = src
+
+    for path, find, replace in m.extra:
+        text = edits.get(path) or (REPO / path).read_text(encoding="utf-8")
+        if find not in text:
+            return False
+        edits[path] = text.replace(find, replace, 1)
+
+    for path, text in edits.items():
+        (REPO / path).write_text(text, encoding="utf-8", newline="")
     return True
-
-
-def _backend_pid() -> str | None:
-    """PID listening on :3000, or None. Used to tell a real restart from a nap."""
-    try:
-        out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
-                             capture_output=True, text=True, timeout=15).stdout
-    except Exception:
-        return None
-    for line in out.splitlines():
-        if ":3000" in line and "LISTENING" in line:
-            return line.split()[-1]
-    return None
 
 
 def _healthy() -> bool:
@@ -301,50 +351,70 @@ def _healthy() -> bool:
         return False
 
 
-def wait_for_backend(prev_pid: str | None, timeout: float = 90.0) -> None:
+#: Time for ts-node-dev's watcher to notice a write. Measured at ~0.5 s; this
+#: is generous because the audit is running tests at the same time.
+WATCHER_GRACE_S = 2.0
+#: Consecutive healthy polls required before calling it settled.
+STABLE_POLLS = 3
+
+
+def wait_for_backend(timeout: float = 90.0) -> None:
     """Block until ts-node-dev has finished reloading and is serving again.
 
-    A fixed sleep is a guess, and it was wrong in both directions. Editing a
-    backend source file restarts the process, and so does reverting it — so the
-    *next* row would apply its mutation and start testing while the previous
-    row's revert was still restarting. Rows 6-10 failed that way: the test
-    exited against a half-booted server and reported no FAIL line at all, which
-    the audit then had to call a coverage hole because it could not prove
-    otherwise.
+    A fixed sleep is a guess, and it was wrong in both directions: editing a
+    backend file restarts the process and so does reverting it, so a row could
+    start testing while the previous row's revert was still booting. Rows then
+    failed with no FAIL line at all and were counted as coverage holes.
 
-    Waiting on a genuinely new PID and a 200 from /api/health removes the guess.
+    Watching for a *new PID* was the obvious fix and it is wrong. Measured: on
+    apply the PID changes within 0.5 s, but on a revert that lands while the
+    first restart is still in flight, ts-node-dev folds both writes into one
+    cycle and the PID never changes again. Waiting for a second change then
+    burns the whole timeout and proceeds anyway — which is how an audit run
+    reported 7/14 with `test_jellyfin` exiting in one second against a backend
+    that was not up.
+
+    So this asks the question that actually matters — "is it serving?" — rather
+    than a proxy for it. The grace period matters as much as the polling: without
+    it we sample the *old* process, get a 200 immediately, and conclude all is
+    well before the restart has even begun.
     """
+    time.sleep(WATCHER_GRACE_S)
     deadline = time.time() + timeout
+    healthy_in_a_row = 0
     while time.time() < deadline:
-        pid = _backend_pid()
-        if pid and pid != prev_pid and _healthy():
+        healthy_in_a_row = healthy_in_a_row + 1 if _healthy() else 0
+        if healthy_in_a_row >= STABLE_POLLS:
             return
         time.sleep(0.5)
-    # Don't abort the run: a backend that never came back is itself a finding,
-    # and the test about to run will report it far more usefully than a crash here.
-    print("      (warning: backend did not come back within "
-          f"{timeout:.0f}s — the next result may be unreliable)", flush=True)
+    # Don't abort: a backend that never came back is itself a finding, and the
+    # test about to run reports it far more usefully than a crash here would.
+    print(f"      (warning: backend did not come back within {timeout:.0f}s "
+          f"— the next result may be unreliable)", flush=True)
 
 
-def settle_after_edit(m: Mutation, prev_pid: str | None) -> None:
+def settle_after_edit(m: Mutation) -> None:
     """Wait for whichever dev server the edited file belongs to."""
     if not m.settle:
         return
-    if m.path.startswith("backend/"):
-        wait_for_backend(prev_pid)
+    if any(p.startswith("backend/") for p in m.paths):
+        wait_for_backend()
     else:
-        # Vite HMR keeps the same process, so there is no PID to watch; its
-        # reload is also far quicker than a ts-node-dev restart.
+        # Vite HMR keeps the same process and reloads far quicker than a
+        # ts-node-dev restart, so a short sleep is honest here.
         time.sleep(m.settle)
 
 
-def restore(m: Mutation) -> None:
-    prev = _backend_pid() if m.path.startswith("backend/") else None
-    git("checkout", "--", m.path)
-    # The revert restarts the backend just as the mutation did. Waiting here is
-    # what stops one row's cleanup bleeding into the next row's test.
-    if m.path.startswith("backend/") and m.settle:
-        wait_for_backend(prev)
+def restore(m: Mutation, wait: bool = True) -> None:
+    """Put every file this mutation touched back. `wait` is False for cleanup.
+
+    Mid-run the wait is load-bearing — it stops one row's revert bleeding into
+    the next row's test. In the final sweep nothing runs afterwards, so waiting
+    there only adds a settle per file to the end of every audit.
+    """
+    git("checkout", "--", *m.paths)
+    if wait and m.settle and any(p.startswith("backend/") for p in m.paths):
+        wait_for_backend()
 
 
 def run_test(m: Mutation) -> tuple[bool, str]:
@@ -381,7 +451,7 @@ def main() -> int:
     # blocked `--only 9` because some unrelated file had edits in it, which is a
     # guard being unhelpful rather than safe.
     dirty = dirty_paths()
-    targets = {m.path for m in chosen}
+    targets = {p for m in chosen for p in m.paths}
     clash = sorted(targets & set(dirty))
     if clash:
         say("Refusing to run: these files have uncommitted changes and would be "
@@ -416,13 +486,12 @@ def main() -> int:
         for i, m in enumerate(chosen, 1):
             n = args.only or i
             say(f"[{n}/{len(MUTATIONS)}] {m.name}")
-            pid_before = _backend_pid() if m.path.startswith("backend/") else None
             if not apply(m):
                 say("      SKIP — anchor text not found; the code moved, update this row\n")
                 skipped.append(m.name)
                 continue
             try:
-                settle_after_edit(m, pid_before)
+                settle_after_edit(m)
                 t0 = time.time()
                 passed, out = run_test(m)
             finally:
@@ -440,10 +509,20 @@ def main() -> int:
                 # would have traced back. If no assertion names this invariant,
                 # it is still a hole, however red the run looks.
                 why = next((l for l in out.splitlines() if "FAIL" in l), "").strip()
+                # Distinguish "the test asserted something else" from "the test
+                # never got to assert at all". Both used to print
+                # `(no FAIL line)`, which reads like a coverage hole and hides a
+                # broken harness — five player rows were reported as holes for a
+                # week because `--only-steps` skipped a step they depended on and
+                # the run died on an UnboundLocalError.
+                if not why and "Traceback (most recent call last)" in out:
+                    crash = next((l.strip() for l in reversed(out.splitlines())
+                                  if l.strip() and not l.startswith((" ", "\t"))), "")
+                    why = f"CRASHED before asserting — {crash[:100]}"
                 say(f"      WRONG REASON in {took:.0f}s — red, but not because of "
                     f"this invariant")
                 say(f"      expected to see: {m.expect!r}")
-                say(f"      actually failed: {why[:120] or '(no FAIL line)'}")
+                say(f"      actually failed: {why[:140] or '(no FAIL line)'}")
                 say(f"      still unguarded: {m.guards}\n")
                 survived.append(f"{m.name}  [red for an unrelated reason]")
             else:
@@ -459,7 +538,9 @@ def main() -> int:
         # touched. The dirty-tree check above is scoped to `chosen`; if this is
         # ever widened again, that guard silently stops covering it.
         for m in chosen:
-            restore(m)
+            # No wait: nothing runs after this sweep, and waiting here added a
+            # full settle per backend file to the end of every audit.
+            restore(m, wait=False)
 
     total = len(chosen) - len(skipped)
     say(f"Done: {total - len(survived)}/{total} caught"

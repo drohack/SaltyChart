@@ -275,18 +275,40 @@ def main():
                           ".filter(e => /jellyfin\\/stream/.test(e.name)).length"):
              fail(4, "the stream was started before Watch was pressed")
 
-         step(5, "press Watch and wait for real playback")
-         watch.click()
-         try:
-             page.wait_for_function(
-                 "() => { const v = document.querySelector('video');"
-                 " return v && v.currentTime > 0.2 && v.readyState >= 3 && v.videoWidth > 0; }",
-                 timeout=60_000)
-         except Exception:
-             fail(5, "video never advanced (currentTime/readyState/videoWidth)")
-         state = page.evaluate("() => { const v = document.querySelector('video');"
-                               " return { t: v.currentTime, rs: v.readyState, w: v.videoWidth }; }")
-         step(5, f"PASS — playing at {state['t']:.1f}s, {state['w']}px wide")
+        # ── 5  Playback actually starts ──
+        #
+        # NOT gated by want(): this opens the player, and every step after it
+        # operates on the player it creates. It used to sit inside the want(4)
+        # block, so `--only-steps 9` skipped it and step 9 then dereferenced a
+        # `.video-js` that did not exist — the run died on
+        # `Cannot read properties of null (reading 'player')` before reaching a
+        # single assertion. The mutation audit reads that as "no FAIL line" and
+        # reports a coverage hole, so all five player rows were auditing
+        # nothing while looking like real failures.
+        step(5, "press Watch and wait for real playback")
+        watch.click()
+        try:
+            page.wait_for_function(
+                "() => { const v = document.querySelector('video');"
+                " return v && v.currentTime > 0.2 && v.readyState >= 3 && v.videoWidth > 0; }",
+                timeout=60_000)
+        except Exception:
+            fail(5, "video never advanced (currentTime/readyState/videoWidth)")
+        state = page.evaluate("() => { const v = document.querySelector('video');"
+                              " return { t: v.currentTime, rs: v.readyState, w: v.videoWidth }; }")
+        step(5, f"PASS — playing at {state['t']:.1f}s, {state['w']}px wide")
+
+        # Segment requests are how we know a *new* stream actually started;
+        # `readyState` alone recovers while the old buffer is still playing.
+        #
+        # Installed here, not inside a want() block. It used to sit at the tail
+        # of step 7, so `--only-steps 8` left `segments` undefined and step 8
+        # died on UnboundLocalError before asserting anything — the same shape
+        # of bug as step 5 being nested under want(4). Anything later steps
+        # depend on has to be established on the unconditional path.
+        segments: list[str] = []
+        page.on("request", lambda r: segments.append(r.url)
+                if "/hls1/" in r.url else None)
 
         if want(6):
          step(6, "exactly one subtitle menu, defaulting to a plain English track")
@@ -338,12 +360,6 @@ def main():
          if rates["active"]:
              fail(7, "changing speed woke the control bar")
          step(7, f"PASS — {rates['before']:.2f} → {rates['up']:.2f} → {rates['down']:.2f}, bar stayed hidden")
-
-         # Segment requests are how we know a *new* stream actually started;
-         # `readyState` alone recovers while the old buffer is still playing.
-         segments: list[str] = []
-         page.on("request", lambda r: segments.append(r.url)
-                 if "/hls1/" in r.url else None)
 
         if want(8):
          step(8, "subtitles are burned into the picture, and Off removes them")
@@ -479,12 +495,14 @@ def main():
              };
              tick();
          }""")
-         # Pause first. `play()` rejects with AbortError when a pause or a new
-         # load interrupts it, which is routine during a rebuild — and treating
-         # that as an autoplay block is what put a big play button over a video
-         # that was already restarting. Without pausing here the rejection may
-         # never happen and the assertion below tests nothing, which is exactly
-         # what the mutation audit caught.
+         # Pausing here is about the seek bar, not the play button: it holds the
+         # playhead still so `bar_before` is a stable reading to compare against.
+         #
+         # It used to be described as what provoked the AbortError too. It isn't
+         # — `play()` runs inside `one('loadedmetadata')` after a `currentTime()`
+         # seek, so a pause this far upstream interrupts nothing. The rejection
+         # is stubbed in explicitly below; relying on it happening by itself left
+         # the play-button assertion passing against a build with no guard at all.
          # Seek well in first, so the played bar is wide enough for a collapse
          # to be measurable. Step 8 used to leave the playhead deep in the
          # episode; now that steps can run in isolation this cannot rely on
@@ -517,6 +535,33 @@ def main():
                  if (!window.__barStop) requestAnimationFrame(tick);
              };
              tick();
+         }""")
+         # Force the exact condition the guard exists for: the next play()
+         # rejects with AbortError while playback carries on regardless.
+         #
+         # That is what an interrupted play *is* — the promise rejects, the video
+         # resumes on its own — and the invariant is that it must not put a big
+         # play button over a video that is already restarting. Waiting for it to
+         # happen by itself does not work: `play()` is called inside
+         # `one('loadedmetadata')` after a `currentTime()` seek, so nothing
+         # interrupts it and the rejection never comes. The assertion below then
+         # passes against a build with the guard removed entirely, which is
+         # precisely what the mutation audit reported.
+         #
+         # The real play() is still called, so the rest of step 9 — decoding
+         # frames, the resumed clock, the pinned bar — is unaffected.
+         page.evaluate("""() => {
+             const proto = HTMLMediaElement.prototype;
+             const real = proto.play;
+             let fired = false;
+             proto.play = function () {
+                 const p = real.apply(this, arguments);
+                 if (fired) return p;
+                 fired = true;
+                 p?.catch?.(() => {});  // don't leave an unhandled rejection behind
+                 return Promise.reject(
+                     new DOMException('The play() request was interrupted', 'AbortError'));
+             };
          }""")
          page.mouse.move(700, 450)
          page.mouse.move(700, 860)
