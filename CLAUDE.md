@@ -107,23 +107,48 @@ py -3.13 -u tools/tests/mutation_audit.py --list    # the table
 
 **Not** part of `run_all.py` — it edits tracked source and is slow. It refuses
 to start on a dirty tree (it reverts with `git checkout --`, which would
-otherwise eat uncommitted work) and restores everything in a `finally`.
+otherwise eat uncommitted work) and restores everything in a `finally`. A row
+may edit several files (`extra`), because a guard can legitimately live at more
+than one layer; all of them are reverted.
 
-Two things it established:
+What it established, each the hard way:
 
 - **Red is not the same as covered.** Its first version counted any failing test
   as a catch and reported 10/10 — while four mutations were failing at an
   unrelated step and one had no assertion guarding it at all. Every row now
   declares the substring its failure output must contain; a red run that doesn't
-  name the invariant is reported as `WRONG REASON` and counted as a hole.
+  name the invariant is `WRONG REASON` and counted as a hole.
+- **Red for the right *words* is still not enough.** Row 7 once "caught" its
+  mutation with `only 0 of 12 sampled frames changed` — which is exactly what
+  the *unmutated* build produced, because step 8 was broken. A row is only
+  meaningful if the test is also known to **pass on clean code**; verify both
+  directions when adding or repairing one.
 - **Two real holes existed.** The Jellyfin API key stopped being stripped from
   the URL handed to browsers (`test_jellyfin` passed 10/10), and the
   AniList→TVDB match tier was disabled so every match silently fell back to
   fuzzy titles (10/10 again). Both are failure classes that have already
   happened in this repo.
+- **Six of fourteen rows once audited nothing.** `--only-steps` was added to cut
+  transcode cost and quietly hollowed out what it was optimising: steps other
+  steps depend on sat inside `want()` blocks, so selecting a later step skipped
+  its setup and the run died before asserting. Anything a later step needs must
+  be on the unconditional path. A crash is now reported as `CRASHED before
+  asserting — <exception>` rather than the ambiguous `(no FAIL line)`, which is
+  the difference between "unguarded invariant" and "broken harness".
+- **The dirty-tree guard was itself broken for a while.** `dirty_paths()`
+  stripped the whole `git status --porcelain` output, which removes the leading
+  space from the *first* line only — so `l[3:]` ate a character of that path and
+  it matched nothing. Whichever file sorted first was silently unprotected, and
+  it reverted uncommitted work in `jellyfin.ts`. Don't strip porcelain output.
+- **Settling is health, not a sleep or a PID.** Editing a backend file restarts
+  ts-node-dev and so does reverting it. A fixed sleep raced it; watching for a
+  new PID was worse, because a revert landing mid-restart is folded into the
+  same cycle and the PID never changes again. It now waits for consecutive
+  healthy `/api/health` replies after a grace period.
 
 **Add a row whenever you add a test.** A test nobody has watched fail is a test
-nobody should trust.
+nobody should trust — and one that has only been watched to fail, never to pass,
+is barely better.
 
 **⚠ AniList rate limit while testing.** Requests are **anonymous, so the limit
 is per IP** — AniList documents 90 req/min but has been **degraded to 30** for a
@@ -206,7 +231,7 @@ Suite includes:
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_jellyfin.py` | 10 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
-| `test_player.py` | 10 steps driving the **real player**. Step 9 pauses before switching quality — without that `play()` never rejects and the play-button-flash assertion silently tests nothing, which the mutation audit caught. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
+| `test_player.py` | 10 steps driving the **real player**. Steps 1,2,3,5 always run — they open the player, and every later step operates on what they create; nesting any of them inside a `want()` block makes `--only-steps` skip setup and the run dies before asserting. Step 8 **reloads the page** before sampling with subtitles off: both passes seek to the same twelve timestamps, so the first leaves the browser holding subtitled segments at each, and restarting in place doesn't evict them — the comparison then reads its own frames back, byte-identical, and reports "not being burned in" against healthy code. Step 9 **stubs `play()` to reject once with `AbortError`** while the real play proceeds; that is the condition the guard exists for, and waiting for it to happen naturally does not work, because `play()` runs inside `one('loadedmetadata')` after a `currentTime()` seek so nothing interrupts it. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
