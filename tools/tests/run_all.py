@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+import warm_cache
+
 REPO = Path(__file__).resolve().parents[2]
 TESTS = REPO / "tools" / "tests"
 
@@ -93,6 +95,23 @@ def main():
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    # Warm the season cache first. Several checks below read `/api/anime`, and
+    # a cold key is 8-12 AniList requests against a 30/min per-IP limit — start
+    # cold and the run can trip the limiter before its first assertion.
+    warmed, warm_failed = warm_cache.warm(args.backend)
+    if warm_failed:
+        # Refuse rather than run. A missing season doesn't make the suite fail —
+        # it makes it pass vacuously, because every fixture joins against an
+        # empty list and every assertion is trivially satisfied. A green run
+        # that proved nothing is worse than no run.
+        print(f"\nPre-deploy: FAILED before step 1 — {warm_failed} season key(s) "
+              f"could not be fetched, so the suite would test against missing "
+              f"data. DO NOT deploy.", flush=True)
+        # sys.exit, not `return`: __main__ calls main() without inspecting its
+        # return value, so returning a code here would print "FAILED" and then
+        # exit 0 — the one outcome worse than failing.
+        sys.exit(1)
 
     # The independent checks: no browser, no shared state, so they run in
     # parallel. The rate-limit check boots its own backend on a spare port.

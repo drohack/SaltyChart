@@ -125,20 +125,75 @@ Two things it established:
 **Add a row whenever you add a test.** A test nobody has watched fail is a test
 nobody should trust.
 
-**⚠ AniList rate limit while testing.** AniList allows ~**30 req/min per IP**
-(degraded state), and the whole home network — dev PC, production server,
-every browser's direct `stores/season.ts` call — shares one public IP. A cold
-season fetch is up to ~8 GraphQL requests, so repeatedly wiping `SeasonCache`
-to test cold loads WILL trip the limit; once tripped, cold fetches stall in
-60s+ 429 backoff (looks like "the page never loads") and the penalty can
-linger for a long time. Rules of thumb:
-- Don't wipe `SeasonCache` more than once or twice per hour; pre-warm the
-  displayed season + its leftovers (`curl /api/anime?...`) before `run_all.py`.
+**⚠ AniList rate limit while testing.** Requests are **anonymous, so the limit
+is per IP** — AniList documents 90 req/min but has been **degraded to 30** for a
+long time, and the whole home network shares one public IP. There is no API key
+to raise it; only an OAuth token would give a per-user budget, and nothing here
+has one. Three facts from their docs that the code now depends on:
+
+- `X-RateLimit-Limit` / `X-RateLimit-Remaining` come back on **every** response,
+  not just 429s. That is the real budget, and it is what pacing decisions read.
+- `Retry-After` (seconds) and `X-RateLimit-Reset` (Unix seconds) come back **on
+  a 429**.
+- Exceeding the limit earns a **one-minute timeout**. There is also a separate,
+  undocumented **burst limiter**.
+
+**The bug that cost the most was retrying too soon, not asking too often.** The
+backoff used to wait `15s * attempt` when a 429 carried no headers, so all three
+attempts landed *inside* the 60 s lockout: the request spent 90 s failing and
+returned an error anyway. A cold season load was measured hanging over three
+minutes on a window that showed 13 of 30 requests still available.
+
+Load is amplified by restarts, because the LRU and the in-flight coalescing map
+die with the process — that part is fine, since losing them costs a SQLite read.
+What mattered is that a *stale* row re-triggers its refresh on the first request
+after every restart, and the mutation audit restarts the backend ~26 times an
+hour.
+
+Rules of thumb:
+- **Warm before a run, and *wait* for it.** `tools/tests/warm_cache.py` fetches
+  the previous, current and next season in both format variants; `run_all.py`
+  and `mutation_audit.py` both call it before their first test. Warming once
+  carries a whole run, because nothing re-fetches on a restart any more.
+  It **retries rather than shrugging** — honouring `Retry-After`, up to
+  `PER_KEY_BUDGET_S` (8 min) per key — and if a key still can't be fetched,
+  **both runners refuse to start**. That is deliberate: a missing season doesn't
+  make the suite fail, it makes it *pass vacuously*, because every fixture joins
+  against an empty list and every assertion is trivially satisfied. That has
+  already happened here once, when hardcoded fixture mediaIds aged out of the
+  season and every seeded list silently matched nothing.
+- Don't wipe `SeasonCache` more than once or twice per hour.
 - When a season request suddenly takes minutes, check the backend console for
-  `AniList 429` lines before suspecting the code.
-- Mitigations already in place: cold fetches are coalesced per season,
-  expired cache rows are served stale while refreshing in the background,
-  and 429 retries respect AniList's headers (15/30/45s fallback).
+  `AniList 429` lines before suspecting the code — each one names the wait and
+  which header produced it. `curl -i` the endpoint and read `X-RateLimit-Remaining`
+  rather than guessing.
+- Remember `format=TV` is a **separate cache key** from no-format, so Home's
+  leftovers call and its main call are two independent fetches per season.
+- Controls in place, all of which survive a restart because restarts are what
+  generate the load:
+  - **Backoff that matches the lockout** (`lib/anilistRateLimit.ts`, unit
+    tested): `Retry-After` first, `X-RateLimit-Reset` second with a floor so a
+    past timestamp can't cause an instant retry, otherwise a flat 60 s. Attempts
+    are capped at **2** — waits are a full window each now, so attempts multiply
+    directly into how long a request hangs. Raising that cap without redoing the
+    arithmetic re-creates the original bug.
+  - **Budget-aware background refresh** — `AppConfig.anilistRateLimit` holds the
+    last observed `remaining`; below a floor of 8, optional refreshes stand down.
+    A stale row is already being served, so standing down costs a viewer nothing.
+  - **Per-key failure cooldown** — `AppConfig.anilistBackoff` maps a season key
+    to the time it may next be asked about. Without it a failed refresh re-fired
+    on the very next request and on every restart, which is what turned one 429
+    into a storm. A blocking fetch inside a cooldown returns `503 UPSTREAM_ERROR`
+    immediately instead of holding the connection open.
+  - Cold fetches coalesced per season; expired rows served stale while
+    refreshing in the background.
+- The TTL stays a flat hour on purpose. Pinning a finished season for days on
+  the grounds that it "cannot change" is a guess about AniList's data that is
+  not ours to make — entries do get added and corrected after a season ends.
+- `stores/season.ts` exports `getCurrentSeasonFromAPI()`, which calls
+  `graphql.anilist.co` **directly from the browser** — invisible to every
+  control above, because the backend never sees it. It currently has no callers.
+  Don't wire it up; route it through `/api/anime` if the need returns.
 
 Suite includes:
 | File | Covers |
@@ -152,13 +207,16 @@ Suite includes:
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_jellyfin.py` | 10 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
 | `test_player.py` | 10 steps driving the **real player**. Step 9 pauses before switching quality — without that `play()` never rejects and the play-button-flash assertion silently tests nothing, which the mutation audit caught. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
-| `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced |
+| `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
 Final line on success: `Pre-deploy: 14/14 passed — ready to build` (13/13 with
 `--skip-burned-in`). On failure:
-`Pre-deploy: FAILED at step X — DO NOT deploy`.
+`Pre-deploy: FAILED at step X — DO NOT deploy`. A run that can't warm the season
+cache stops before step 1 with
+`Pre-deploy: FAILED before step 1 — … the suite would test against missing data`,
+and exits non-zero.
 
 ---
 
@@ -328,6 +386,15 @@ Two consequences that have both bitten:
   required). `isAdmin` rides along so the header's Admin link doesn't need to
   probe an admin-only endpoint (which would 403-spam the console for
   everyone else); `stores/jellyfin.ts` fetches this once per login.
+- `POST /api/jellyfin/availability/batch` — `{ items: [{ mediaId, titles[] }] }`
+  (max 100, mirroring `/api/translate/check-batch`) → `{ [mediaId]: <the same
+  shape as below> }`. Randomize asks about every wheel item, and one request per
+  show meant ~50 POSTs per page load — 40% of this router's own 120/min budget,
+  repeated on every full page load because the browser-side cache doesn't
+  outlive one, and on a cold backend 50 separate library lookups. Shares
+  `resolveAvailability()` with the single route so the matching rules have one
+  definition. Per-entry `unknown` is preserved: one show failing to resolve
+  neither contaminates the others nor gets cached.
 - `POST /api/jellyfin/availability` — `{ mediaId, titles[] }` → is the series
   in the library + the entry's season's first episode (season parsed from
   "Nth Season"/「第N期」 markers; missing season = unavailable; no marker =
@@ -832,8 +899,14 @@ Tables / columns:
 - `AppConfig` — server-wide key/value config (`key` TEXT PK, `value` TEXT).
   Holds `jellyfinUrl` / `jellyfinApiKey`, written by the admin `/admin` page
   via `PUT /api/jellyfin/config`, plus `anilistTvdbMap` / `anilistTvdbMapAt`
-  (the cached AniList→TVDB id map, refreshed weekly at boot) and
-  `jellyfinLibrary` / `jellyfinLibraryAt` (the ~836-series match corpus).
+  (the cached AniList→TVDB id map, refreshed weekly at boot),
+  `jellyfinLibrary` / `jellyfinLibraryAt` (the ~836-series match corpus), and
+  `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
+  per-season cooldowns after a 429), and `jellyfinAvailability` /
+  `jellyfinSourceDims` (the two per-item caches). Everything in this table that
+  caches an upstream answer is persisted for the same reason as the library:
+  the load it guards against is *caused* by restarts, so an in-memory-only copy
+  is empty exactly when it is needed most.
   The library cache is persisted because it used to be in-memory only: every
   restart refetched all of it with `ProviderIds,OriginalTitle`, so each deploy
   made the first viewer pay for it, and a development session with frequent
@@ -944,8 +1017,13 @@ Path: `frontend/`
   the entry's specific season) isn't in the library a muted "Not in library"
   note shows instead. **Season-aware**: a "2nd Season" / 「第2期」 entry
   resolves to that season's episode 1 and is honestly unavailable if the
-  library lacks that season. Availability is prefetched for all wheel items
-  when the list loads, so the button appears instantly.
+  library lacks that season. Availability is prefetched for **all wheel items
+  in a single `/availability/batch` request** when the list loads, so the button
+  appears instantly. "Hide Not in Library" uses the same one-request path. Both
+  go through `checkAvailabilityMany()` in `stores/jellyfin.ts`, which fills the
+  same client cache the pop-up's single-show lookup reads, and which **omits any
+  entry it couldn't get a definite answer for** — so an unanswered show is simply
+  absent, and the `?.available === false` test refuses to act on it.
 - `JellyfinPlayerModal.svelte` is a **thin wrapper around video.js 8**
   (Apache-2.0), lazy-loaded in its own chunk — keep it that way. video.js
   owns the control bar, menus, fullscreen, hotkeys and error handling.
@@ -1298,8 +1376,12 @@ cd frontend && npm run build
 - Frontend routing is file-based in `src/pages`; lazy-loading requires
   updating the switch in `App.svelte`.
 - Cache season data in `SeasonCache` table (SQLite) and in-memory LRU
-  (`routes/anime.ts`).
-- Respect rate limits for the AniList API (handled via retry/backoff logic).
+  (`routes/anime.ts`), on a flat 1 h TTL.
+- Respect rate limits for the AniList API — retry/backoff, global pacing, and
+  season-aware TTLs. **Anything added to reduce AniList load must survive a
+  process restart**, because restarts are what generate the load in the first
+  place; an in-memory counter is zero on every fresh process. Never call
+  AniList from the browser, where no backend throttle can see it.
 
 ## Troubleshooting
 

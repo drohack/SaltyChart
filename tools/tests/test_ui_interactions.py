@@ -15,6 +15,7 @@ Usage:
   py -3.13 -u tools/tests/test_ui_interactions.py [--frontend http://localhost:5173]
 """
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -65,6 +66,27 @@ def pin_season(page) -> None:
 
 
 UNKNOWN_BODY = '{"available": false, "unknown": true}'
+
+# Availability is asked two ways — one show at a time for the pop-up, and a
+# whole page at once for the wheel — so a pattern that only matches the single
+# route lets the batch call through to the real server. That would not fail
+# loudly: the wheel would get genuine answers, most shows would be available,
+# and the "unknown never hides" test would pass while testing nothing.
+AVAILABILITY_ROUTE = "**/api/jellyfin/availability**"
+
+
+def unknown_availability(route) -> None:
+    """Answer either availability route with `unknown`, in that route's shape."""
+    if route.request.url.rstrip("/").endswith("/batch"):
+        try:
+            items = (route.request.post_data_json or {}).get("items", [])
+        except Exception:
+            items = []
+        body = json.dumps({str(it["mediaId"]): {"available": False, "unknown": True}
+                           for it in items})
+    else:
+        body = UNKNOWN_BODY
+    route.fulfill(status=200, content_type="application/json", body=body)
 COUNT_COLOURS = """async (src) => {
     const img = new Image();
     img.src = src;
@@ -598,10 +620,7 @@ def test_unknown_never_hides(page, backend: str, frontend: str, token: str):
     """
     step(12, "step 1/3: seeding a list, forcing every availability lookup to unknown")
     seed_list(backend, token, season_ids(backend, 3))
-    page.route("**/api/jellyfin/availability",
-               lambda route: route.fulfill(
-                   status=200, content_type="application/json",
-                   body=UNKNOWN_BODY))
+    page.route(AVAILABILITY_ROUTE, unknown_availability)
     try:
         step(12, "step 2/3: opening the wheel")
         page.goto(frontend)
@@ -624,7 +643,7 @@ def test_unknown_never_hides(page, backend: str, frontend: str, token: str):
         step(12, f"PASS -- {before} entries kept; control is "
                  f"{'disabled' if hide.count() else 'not offered'} on unknown verdicts")
     finally:
-        page.unroute("**/api/jellyfin/availability")
+        page.unroute(AVAILABILITY_ROUTE)
 
 
 def test_share_as_image(page, backend: str, frontend: str, token: str):

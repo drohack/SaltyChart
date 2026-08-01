@@ -38,6 +38,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import warm_cache
+
 REPO = Path(__file__).resolve().parents[2]
 TESTS = REPO / "tools" / "tests"
 
@@ -156,6 +158,18 @@ MUTATIONS: list[Mutation] = [
                "minutes in appears to have lost their place",
     ),
     Mutation(
+        name="the 429 backoff drops back inside AniList's lockout",
+        path="backend/src/lib/anilistRateLimit.ts",
+        find="    waitMs = DEFAULT_LOCKOUT_MS;",
+        replace="    waitMs = 15_000 * attempt; /* mutation */",
+        test=T_UNIT,
+        expect="documented one-minute lockout",
+        guards="every retry lands inside AniList's 60s timeout, so all attempts "
+               "are spent failing and a cold season load hangs for minutes and "
+               "then errors anyway — the exact bug this replaced",
+        settle=0.0,  # a pure helper; no dev server involved
+    ),
+    Mutation(
         name="the JWT `id` guard is removed",
         path="backend/src/middleware/auth.ts",
         find="""  if (typeof payload?.id !== 'number') {
@@ -171,13 +185,18 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="an `unknown` availability verdict is treated as a definite 'no'",
         path="frontend/src/pages/Randomize.svelte",
-        find="        if (!c.info.unknown) next.set(c.item.id, c.info.available);",
-        replace="        next.set(c.item.id, c.info.available); /* mutation */",
-        # Guarded in two places: the bulk prefetch and the per-item recheck.
-        # Breaking only the first leaves the second still filtering, so the
-        # button stays correctly disabled and the mutation proves nothing.
-        also=[("          if (!info.unknown) recordAvailability(item.id, info.available);",
-               "          recordAvailability(item.id, info.available); /* mutation */")],
+        find="          if (!info.unknown) recordAvailability(mediaId, info.available);",
+        replace="          recordAvailability(mediaId, info.available); /* mutation */",
+        # Guarded in two places: the wheel prefetch, which drives the button's
+        # enabled state, and the bulk hide, which decides what actually gets
+        # hidden. Breaking only one leaves the other holding the line, so the
+        # mutation reads as 'survived' when it was simply too narrow.
+        #
+        # `?.available === false` is the load-bearing half of the second: an
+        # entry the server couldn't answer is absent from the map, and `=== false`
+        # refuses to act on absent where `!== true` would hide it.
+        also=[("      const missing = visible.filter((it) => results.get(it.id)?.available === false);",
+               "      const missing = visible.filter((it) => results.get(it.id)?.available !== true); /* mutation */")],
         test=T_UI,
         # The failure text, not the pass text — 'unknown verdicts' appears only
         # in the PASS line, so matching it reported a real catch as a hole.
@@ -260,8 +279,72 @@ def apply(m: Mutation) -> bool:
     return True
 
 
+def _backend_pid() -> str | None:
+    """PID listening on :3000, or None. Used to tell a real restart from a nap."""
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                             capture_output=True, text=True, timeout=15).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if ":3000" in line and "LISTENING" in line:
+            return line.split()[-1]
+    return None
+
+
+def _healthy() -> bool:
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://localhost:3000/api/health", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def wait_for_backend(prev_pid: str | None, timeout: float = 90.0) -> None:
+    """Block until ts-node-dev has finished reloading and is serving again.
+
+    A fixed sleep is a guess, and it was wrong in both directions. Editing a
+    backend source file restarts the process, and so does reverting it — so the
+    *next* row would apply its mutation and start testing while the previous
+    row's revert was still restarting. Rows 6-10 failed that way: the test
+    exited against a half-booted server and reported no FAIL line at all, which
+    the audit then had to call a coverage hole because it could not prove
+    otherwise.
+
+    Waiting on a genuinely new PID and a 200 from /api/health removes the guess.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pid = _backend_pid()
+        if pid and pid != prev_pid and _healthy():
+            return
+        time.sleep(0.5)
+    # Don't abort the run: a backend that never came back is itself a finding,
+    # and the test about to run will report it far more usefully than a crash here.
+    print("      (warning: backend did not come back within "
+          f"{timeout:.0f}s — the next result may be unreliable)", flush=True)
+
+
+def settle_after_edit(m: Mutation, prev_pid: str | None) -> None:
+    """Wait for whichever dev server the edited file belongs to."""
+    if not m.settle:
+        return
+    if m.path.startswith("backend/"):
+        wait_for_backend(prev_pid)
+    else:
+        # Vite HMR keeps the same process, so there is no PID to watch; its
+        # reload is also far quicker than a ts-node-dev restart.
+        time.sleep(m.settle)
+
+
 def restore(m: Mutation) -> None:
+    prev = _backend_pid() if m.path.startswith("backend/") else None
     git("checkout", "--", m.path)
+    # The revert restarts the backend just as the mutation did. Waiting here is
+    # what stops one row's cleanup bleeding into the next row's test.
+    if m.path.startswith("backend/") and m.settle:
+        wait_for_backend(prev)
 
 
 def run_test(m: Mutation) -> tuple[bool, str]:
@@ -312,18 +395,34 @@ def main() -> int:
     say("Servers must be running, same as the suite this audits.\n")
 
     survived: list[str] = []
+    # Warm before touching anything. The audit restarts the backend twice per
+    # row, and a stale season key would re-fetch on the first request after each
+    # restart — dozens of cold AniList fetches across a run, which is what kept
+    # tripping the 30/min limit and made rows fail for reasons unrelated to the
+    # invariant they were testing.
+    _, warm_failed = warm_cache.warm()
+    if warm_failed:
+        # An audit against a missing season is worse than no audit: every row
+        # would go red for the wrong reason, and rows that genuinely aren't
+        # guarded would be indistinguishable from rows whose test never got to
+        # run. That is precisely the "red is not the same as covered" mistake
+        # this tool exists to detect, so it must not commit it itself.
+        say(f"Refusing to run: {warm_failed} season key(s) could not be fetched, "
+            f"so every row would fail for a reason unrelated to its invariant.")
+        return 1
+
     skipped: list[str] = []
     try:
         for i, m in enumerate(chosen, 1):
             n = args.only or i
             say(f"[{n}/{len(MUTATIONS)}] {m.name}")
+            pid_before = _backend_pid() if m.path.startswith("backend/") else None
             if not apply(m):
                 say("      SKIP — anchor text not found; the code moved, update this row\n")
                 skipped.append(m.name)
                 continue
             try:
-                if m.settle:
-                    time.sleep(m.settle)  # let ts-node-dev / vite pick the edit up
+                settle_after_edit(m, pid_before)
                 t0 = time.time()
                 passed, out = run_test(m)
             finally:
