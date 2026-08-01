@@ -4,12 +4,111 @@ import { setTimeout as delay } from 'timers/promises';
 import prisma from '../db';
 import { LRUCache } from 'lru-cache';
 import { isValidSeason, isValidYear } from '../lib/validateSeason';
+import { backoffFor, readBudget, MAX_ATTEMPTS, DEFAULT_LOCKOUT_MS } from '../lib/anilistRateLimit';
 
 const router = Router();
 // In-memory cache to avoid hitting SQLite (and AniList) for hot requests.
 // 20 keys ≈ two years of data including format variants; each payload is a
 // couple of hundred kilobytes at most → memory footprint is negligible.
 const memory = new LRUCache<string, any[]>({ max: 20, ttl: 1000 * 60 * 60 });
+
+/**
+ * What AniList last told us about our budget, and which keys are locked out.
+ *
+ * Both are mirrored into `AppConfig` because the load they guard against is
+ * *caused* by restarts. Every other throttle here — the LRU, the in-flight
+ * coalescing map — dies with the process, which is fine because losing them
+ * costs a SQLite read. Losing these costs upstream requests: a fresh backend
+ * would believe it has full budget and no key is failing, and immediately go
+ * and find out the hard way. A mutation audit restarts the backend ~26 times an
+ * hour, so "on restart" is the common case, not the edge case.
+ */
+const RATE_LIMIT_KEY = 'anilistRateLimit';
+const BACKOFF_KEY = 'anilistBackoff';
+
+/**
+ * Below this many requests left in the window, optional work stands down.
+ * Roughly one season's worth of pages, so a viewer-blocking fetch still has
+ * room to complete after we stop refreshing in the background.
+ */
+const BUDGET_FLOOR = 8;
+
+/** An observation older than this says nothing about the current window. */
+const BUDGET_FRESH_MS = 60_000;
+
+let budget: { remaining: number | null; limit: number | null; observedAt: number } | null = null;
+/** key -> epoch ms before which we must not ask AniList about it again. */
+let backoffUntil = new Map<string, number>();
+
+let stateLoaded = false;
+const stateReady = (async () => {
+  try {
+    const rows = await prisma.appConfig.findMany({
+      where: { key: { in: [RATE_LIMIT_KEY, BACKOFF_KEY] } },
+    });
+    const b = rows.find((r) => r.key === RATE_LIMIT_KEY)?.value;
+    if (b) budget = JSON.parse(b);
+    const c = rows.find((r) => r.key === BACKOFF_KEY)?.value;
+    if (c) backoffUntil = new Map(Object.entries(JSON.parse(c) as Record<string, number>));
+  } catch {
+    // A corrupt row must degrade to "we know nothing", never to an outage.
+  } finally {
+    stateLoaded = true;
+  }
+})();
+
+function persist(key: string, value: unknown): void {
+  const str = JSON.stringify(value);
+  prisma.appConfig
+    .upsert({ where: { key }, update: { value: str }, create: { key, value: str } })
+    .catch(() => undefined); // bookkeeping; never fail a request over it
+}
+
+function recordBudget(observed: { remaining: number | null; limit: number | null }): void {
+  if (observed.remaining == null) return;
+  budget = { ...observed, observedAt: Date.now() };
+  persist(RATE_LIMIT_KEY, budget);
+}
+
+/**
+ * Is there enough budget left to spend on work nobody is waiting for?
+ *
+ * Only ever consulted for background refreshes. A stale row is already being
+ * served, so standing down is free; the alternative is spending the last of the
+ * window on a refresh and leaving a never-cached season with nothing.
+ */
+function budgetAllowsOptionalWork(): boolean {
+  if (!stateLoaded) return false; // assume the worst until the DB has answered
+  if (!budget || budget.remaining == null) return true; // never asked; no reason to hold back
+  if (Date.now() - budget.observedAt > BUDGET_FRESH_MS) return true; // window has rolled over
+  return budget.remaining > BUDGET_FLOOR;
+}
+
+function lockedOut(key: string): boolean {
+  const until = backoffUntil.get(key);
+  if (until == null) return false;
+  if (Date.now() >= until) {
+    backoffUntil.delete(key);
+    persist(BACKOFF_KEY, Object.fromEntries(backoffUntil));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Remember that this key just failed, so the next request doesn't immediately
+ * try again — which is what turned a single 429 into a storm, since a stale row
+ * re-triggers its refresh on *every* request and on every restart.
+ */
+function markFailed(key: string, waitMs: number): void {
+  backoffUntil.set(key, Date.now() + Math.max(waitMs, DEFAULT_LOCKOUT_MS));
+  persist(BACKOFF_KEY, Object.fromEntries(backoffUntil));
+}
+
+function markSucceeded(key: string): void {
+  if (!backoffUntil.delete(key)) return;
+  persist(BACKOFF_KEY, Object.fromEntries(backoffUntil));
+}
 
 interface SeasonQuery {
   season?: string;
@@ -25,12 +124,21 @@ class UpstreamError extends Error {
 }
 
 /**
+ * Gave up on a 429. Carries the wait AniList asked for so the caller can set a
+ * cooldown of the right length rather than inventing one.
+ */
+class RateLimitedError extends Error {
+  constructor(public waitMs: number) {
+    super('AniList rate limit exceeded');
+  }
+}
+
+/**
  * Fetch one AniList page with 429 retry/backoff. Returns the GraphQL `Page`
  * object ({ pageInfo, media }). Throws UpstreamError on non-200/non-429.
  */
 async function fetchAniListPage(query: string, baseVariables: Record<string, unknown>, page: number) {
-  let attempts = 0;
-  const maxAttempts = 3;
+  let attempt = 0;
   while (true) {
     const response = await axios.post(
       'https://graphql.anilist.co',
@@ -41,34 +149,24 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
       }
     );
 
+    // AniList reports the remaining budget on *every* response, not just 429s.
+    // This is the number pacing decisions are made from — anything else is a
+    // guess at a value we are already being told.
+    recordBudget(readBudget(response.headers as Record<string, unknown>));
+
     if (response.status === 200) return response.data?.data?.Page ?? {};
     if (response.status !== 429) throw new UpstreamError(response.status);
 
-    // received 429, wait then retry
-    attempts++;
-    if (attempts > maxAttempts) throw new Error('AniList rate limit exceeded');
-    // Respect AniList headers when provided
-    const retryAfterHeader = response.headers['retry-after'];
-    const resetHeader = response.headers['x-ratelimit-reset'];
-
-    let waitMs: number;
-    if (retryAfterHeader) {
-      waitMs = Number(retryAfterHeader) * 1000;
-    } else if (resetHeader) {
-      const resetTs = Number(resetHeader) * 1000; // header is seconds
-      waitMs = Math.max(resetTs - Date.now(), 0);
-    } else {
-      // No headers on the 429: escalate within AniList's 1-minute window.
-      // (60s per attempt made a contended cold load feel dead — the page
-      // sat on skeletons for minutes when 15-45s was enough to recover.)
-      waitMs = 15_000 * attempts;
+    attempt++;
+    const { waitMs, source } = backoffFor(response.headers as Record<string, unknown>, attempt);
+    if (attempt >= MAX_ATTEMPTS) {
+      // The caller records the cooldown; it knows the cache key, we don't.
+      throw new RateLimitedError(waitMs);
     }
-    // Floor the wait: a reset timestamp in the past (clock skew, or the
-    // window rolling over mid-burst) yields 0 ms — instant retries just
-    // burn maxAttempts while the limit is still active.
-    waitMs = Math.max(waitMs, 2_000 * attempts);
 
-    console.warn(`AniList 429 received, retrying in ${(waitMs / 1000).toFixed(0)}s…`);
+    console.warn(
+      `AniList 429 (attempt ${attempt}/${MAX_ATTEMPTS}), waiting ${(waitMs / 1000).toFixed(0)}s [${source}]…`
+    );
     await delay(waitMs);
   }
 }
@@ -118,6 +216,8 @@ async function fetchSeasonFromAniList(query: string, baseVariables: Record<strin
 // In-flight cold fetches keyed like the memory cache — concurrent requests
 // for the same season await one shared AniList chain.
 const inflight = new Map<string, Promise<any[]>>();
+
+const ONE_HOUR_SECONDS = 60 * 60;
 
 router.get('/', async (req, res) => {
   const { season, year, format } = req.query as SeasonQuery;
@@ -234,12 +334,21 @@ router.get('/', async (req, res) => {
       let pending = inflight.get(memKey);
       if (!pending) {
         pending = (async () => {
-          const allMedia = await fetchSeasonFromAniList(query, {
-            perPage: 50,
-            season: season.toUpperCase(),
-            seasonYear: Number(year),
-            ...(format ? { format: format.toUpperCase() } : {})
-          });
+          let allMedia: any[];
+          try {
+            allMedia = await fetchSeasonFromAniList(query, {
+              perPage: 50,
+              season: season.toUpperCase(),
+              seasonYear: Number(year),
+              ...(format ? { format: format.toUpperCase() } : {})
+            });
+          } catch (err) {
+            // Record the lockout against this key so the next request — and the
+            // next process — doesn't walk straight back into it.
+            markFailed(memKey, err instanceof RateLimitedError ? err.waitMs : DEFAULT_LOCKOUT_MS);
+            throw err;
+          }
+          markSucceeded(memKey);
 
           // Save/replace cache (only the winning fetch writes)
           await prisma.$executeRawUnsafe(
@@ -258,32 +367,68 @@ router.get('/', async (req, res) => {
       return pending;
     };
 
-    const ONE_HOUR_SECONDS = 60 * 60; // 1 h
+    // One hour for every season, deliberately. It is tempting to pin a finished
+    // season for days on the grounds that it "cannot change" — but AniList
+    // entries do get added and corrected long after a season ends (late OVAs and
+    // specials, retitles, metadata fixes), and deciding on AniList's behalf that
+    // its data is frozen is how you ship staleness nobody can account for.
+    //
+    // Upstream load is handled where it belongs: by the observed budget and the
+    // per-key cooldown above, both of which survive a restart.
+    const ttlSeconds = ONE_HOUR_SECONDS;
     if (cached.length) {
       const currentEpoch = Math.floor(Date.now() / 1000);
       const ageSeconds = currentEpoch - Number(cached[0].updatedEpoch);
       const data = JSON.parse(cached[0].data);
-      if (ageSeconds < ONE_HOUR_SECONDS) {
+      if (ageSeconds < ttlSeconds) {
         // Serve from DB cache and populate in-memory cache for faster subsequent
         // calls. Seed with the DB row's *remaining* freshness (not a full fresh
         // hour) so the in-memory copy doesn't outlive the DB row's 1h validity.
-        memory.set(memKey, data, { ttl: Math.max(1, ONE_HOUR_SECONDS - ageSeconds) * 1000 });
+        memory.set(memKey, data, { ttl: Math.max(1, ttlSeconds - ageSeconds) * 1000 });
         return res.json(data);
       }
       // Stale-while-revalidate: season data barely changes hour-to-hour, and
       // a cold AniList fetch can take minutes under rate-limit pressure —
       // serve the expired copy instantly and refresh in the background.
-      startColdFetch().catch((err) =>
-        console.warn(`[anime] background refresh failed for ${memKey}:`, err?.message ?? err)
-      );
+      //
+      // Skipped when the budget is thin or this key is in a cooldown. We
+      // already have an answer to serve, so standing down costs the viewer
+      // nothing — whereas spending the last of the window here leaves a
+      // never-cached season, which has nothing to show anyone, with none.
+      if (budgetAllowsOptionalWork() && !lockedOut(memKey)) {
+        startColdFetch().catch((err) =>
+          console.warn(`[anime] background refresh failed for ${memKey}:`, err?.message ?? err)
+        );
+      }
       return res.json(data);
     }
 
-    // Never-fetched season: nothing to serve until AniList answers.
+    // Never-fetched season: nothing to serve until AniList answers. This path
+    // is never delayed on purpose — a viewer is watching a spinner — but it does
+    // refuse to queue behind a known lockout, because waiting out a 429 with a
+    // request held open is how a page comes to hang for minutes.
+    if (lockedOut(memKey)) {
+      return res.status(503).json({
+        error: 'AniList is rate-limiting us; try again shortly',
+        code: 'UPSTREAM_ERROR',
+      });
+    }
     res.json(await startColdFetch());
   } catch (error) {
     if (error instanceof UpstreamError) {
       return res.status(error.status).json({ error: 'AniList error', code: 'UPSTREAM_ERROR' });
+    }
+    if (error instanceof RateLimitedError) {
+      // Being rate-limited upstream is not a server error, and reporting it as
+      // one is actively misleading: a 500 says "we are broken", sends callers
+      // looking in the wrong place, and throws away the one useful fact we have.
+      // The lockout path a few lines above already answers 503 for exactly this
+      // condition, so the two must agree.
+      res.setHeader('Retry-After', Math.ceil(error.waitMs / 1000));
+      return res.status(503).json({
+        error: 'AniList is rate-limiting us; try again shortly',
+        code: 'UPSTREAM_ERROR',
+      });
     }
     console.error('AniList API error', error);
     res.status(500).json({ error: 'Failed to fetch data from AniList', code: 'SERVER_ERROR' });
