@@ -119,3 +119,64 @@ export function checkAvailability(
   _inFlight.set(mediaId, promise);
   return promise;
 }
+
+/** Server cap, mirrored so we chunk rather than get a 400. */
+const BATCH_MAX = 100;
+
+/**
+ * Ask about many shows in one request.
+ *
+ * Randomize needs an answer for every wheel item. Calling `checkAvailability`
+ * per show meant ~50 HTTP requests on every page load — enough to eat most of
+ * the Jellyfin router's 120/min budget, and on a cold backend enough to become
+ * 50 separate library lookups.
+ *
+ * Results are written into the same `_availabilityCache` the single-entry path
+ * reads, so a pop-up opened afterwards is still an instant cache hit.
+ */
+export async function checkAvailabilityMany(
+  entries: Array<{ mediaId: number; titles: string[] }>
+): Promise<Map<number, MediaAvailability>> {
+  const out = new Map<number, MediaAvailability>();
+  const tok = get(authToken);
+  if (!tok || get(mediaConfigured) === false) return out;
+
+  const missing: Array<{ mediaId: number; titles: string[] }> = [];
+  for (const e of entries) {
+    const cached = _availabilityCache.get(e.mediaId);
+    if (cached) out.set(e.mediaId, cached);
+    else if (!out.has(e.mediaId)) missing.push(e);
+  }
+  if (!missing.length) return out;
+
+  for (let i = 0; i < missing.length; i += BATCH_MAX) {
+    const chunk = missing.slice(i, i + BATCH_MAX);
+    try {
+      const r = await fetch('/api/jellyfin/availability/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({
+          items: chunk.map((e) => ({
+            mediaId: e.mediaId,
+            titles: e.titles.filter(Boolean).slice(0, 10),
+          })),
+        }),
+      });
+      if (!r.ok) continue; // leave them unanswered rather than asserting absence
+      const data = (await r.json()) as Record<string, MediaAvailability>;
+      for (const [id, info] of Object.entries(data)) {
+        const mediaId = Number(id);
+        // Same rule as the single path: "we couldn't ask" is never cached, and
+        // never reported as a definite answer.
+        if (!info?.unknown) {
+          _availabilityCache.set(mediaId, info);
+          out.set(mediaId, info);
+        }
+      }
+    } catch {
+      // Network failure: the callers treat an absent entry as "not checked",
+      // which is the honest reading and keeps Hide-Not-in-Library inert.
+    }
+  }
+  return out;
+}

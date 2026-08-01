@@ -7,7 +7,7 @@ import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
-import { checkAvailability, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
+import { checkAvailability, checkAvailabilityMany, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
 import { loadCastSdk, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
@@ -120,31 +120,34 @@ $: _lang = $options.titleLanguage;
     const forYear = year;
     try {
       const visible = unwatchedDetailed.filter((it) => !it.hidden);
-      const checks = await Promise.all(
-        visible.map(async (it) => ({
-          item: it,
-          info: await checkAvailability(it.id, [
+      // One request, not one per show. `checkAvailabilityMany` omits any entry
+      // it couldn't get a definite answer for, which is exactly the semantics
+      // this function needs — see the "never hide on unknown" note below.
+      const results = await checkAvailabilityMany(
+        visible.map((it) => ({
+          mediaId: it.id,
+          titles: [
             it.customName,
             it.title?.english,
             it.title?.romaji,
             it.title?.native,
-          ].filter(Boolean)).catch(() => ({ available: false, unknown: true })),
+          ].filter(Boolean),
         }))
       );
       if (season !== forSeason || year !== forYear) return;
       const next = new Map(libraryAvailability);
-      for (const c of checks) {
-        if (!c.info.unknown) next.set(c.item.id, c.info.available);
-      }
+      for (const [id, info] of results) next.set(id, info.available);
       libraryAvailability = next;
       // Never hide on an inconclusive answer — a timeout must not make
-      // shows disappear from the wheel.
+      // shows disappear from the wheel. An `unknown` verdict never reaches
+      // `results`, so an unanswered show simply isn't in it, and the explicit
+      // `=== false` below refuses to act on an absent entry.
       //
       // Title-only (`matchedBy === 'title'`) matches need no guard here: they
       // report `available: true`, so this only ever *keeps* them. That is the
       // conservative direction — an unconfirmed match's danger is playing the
       // wrong series, which the popup warns about, not vanishing from the wheel.
-      const missing = checks.filter((c) => !c.info.available && !c.info.unknown).map((c) => c.item);
+      const missing = visible.filter((it) => results.get(it.id)?.available === false);
       if (!missing.length) return;
 
       watchList = watchList.map((entry) =>
@@ -531,19 +534,29 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
   }
 
   $: if (wheelItems.length) {
-    for (const item of wheelItems) {
-      checkAvailability(item.id, [
-        item.customName,
-        item.title?.english,
-        item.title?.romaji,
-        item.title?.native,
-      ].filter(Boolean))
-        .then((info) => {
-          // Only record a definite answer; `unknown` means the server didn't reply.
-          if (!info.unknown) recordAvailability(item.id, info.available);
-        })
-        .catch(() => {});
-    }
+    // One request for the whole wheel, not one per show — a 50-item wheel used
+    // to fire 50 POSTs on every page load. `checkAvailabilityMany` fills the
+    // same cache the pop-up's single-show path reads, so opening one afterwards
+    // is still instant.
+    checkAvailabilityMany(
+      wheelItems.map((item) => ({
+        mediaId: item.id,
+        titles: [
+          item.customName,
+          item.title?.english,
+          item.title?.romaji,
+          item.title?.native,
+        ].filter(Boolean),
+      }))
+    )
+      .then((results) => {
+        for (const [mediaId, info] of results) {
+          // Only record a definite answer; `unknown` means the server didn't
+          // reply, and must never be read as "not in the library".
+          if (!info.unknown) recordAvailability(mediaId, info.available);
+        }
+      })
+      .catch(() => {});
   }
 
   // Only enabled while there's actually something to hide, so the button

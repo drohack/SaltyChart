@@ -274,6 +274,49 @@ let _lastLibraryRefresh = 0;
 let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null = null;
 
 /**
+ * Keeping a `Map` cache across restarts.
+ *
+ * The library cache was made restart-safe first, and these two are the same bug
+ * in its siblings: they hold answers to real Jellyfin calls, they live only in
+ * memory, and restarts are frequent — every dev reload, every deploy, ~26 times
+ * an hour during a mutation audit. A cold `availabilityCache` means the next
+ * wheel load re-derives ~50 shows, each an episodes lookup.
+ *
+ * The `Map` stays the hot path and its semantics are untouched. All that is
+ * added is: seed it at boot, and write it back on change. Writes are debounced
+ * because a wheel load populates ~50 entries in a burst and that must be one
+ * write, not fifty.
+ */
+const PERSIST_DEBOUNCE_MS = 5_000;
+const persistTimers = new Map<string, NodeJS.Timeout>();
+
+function persistMapSoon(key: string, snapshot: () => unknown): void {
+  const existing = persistTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const t = setTimeout(() => {
+    persistTimers.delete(key);
+    const value = JSON.stringify(snapshot());
+    prisma.appConfig
+      .upsert({ where: { key }, update: { value }, create: { key, value } })
+      .catch((err) => console.warn(`[jellyfin] could not persist ${key}`, err));
+  }, PERSIST_DEBOUNCE_MS);
+  // Don't hold the process open for a cache write.
+  if (typeof t.unref === 'function') t.unref();
+  persistTimers.set(key, t);
+}
+
+async function loadPersistedEntries<K, V>(key: string): Promise<Array<[K, V]>> {
+  try {
+    const row = await prisma.appConfig.findUnique({ where: { key } });
+    if (!row?.value) return [];
+    const parsed = JSON.parse(row.value);
+    return Array.isArray(parsed) ? (parsed as Array<[K, V]>) : [];
+  } catch {
+    return []; // a corrupt blob must mean "ask again", never an outage
+  }
+}
+
+/**
  * A file's own width and bitrate, cached.
  *
  * These describe the media on disk, so they cannot change while the item id
@@ -283,6 +326,7 @@ let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null 
 const sourceDims = new Map<string, { dims: { width: number; bitrate: number }; at: number }>();
 const SOURCE_DIMS_TTL_MS = 30 * 60 * 1000;
 const SOURCE_DIMS_MAX = 200;
+const SOURCE_DIMS_KEY = 'jellyfinSourceDims';
 
 function rememberSourceDims(key: string, dims: { width: number; bitrate: number }): void {
   const now = Date.now();
@@ -293,6 +337,7 @@ function rememberSourceDims(key: string, dims: { width: number; bitrate: number 
     sourceDims.delete(sourceDims.keys().next().value as string);
   }
   sourceDims.set(key, { dims, at: now });
+  persistMapSoon(SOURCE_DIMS_KEY, () => [...sourceDims]);
 }
 
 const LIBRARY_KEY = 'jellyfinLibrary';
@@ -558,38 +603,92 @@ router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res
 // shows appear without a restart). Always 200 — the server being down or
 // unconfigured is `{ available: false, unknown: true }`, never an error.
 const availabilityCache = new Map<number, { data: any; expires: number }>();
+const AVAILABILITY_KEY = 'jellyfinAvailability';
+const AVAILABILITY_MAX = 500; // a couple of seasons' worth; bounded like sourceDims
 
-router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
-  const { mediaId, titles, fresh } = req.body ?? {};
-  if (
+/**
+ * Record one availability answer, in memory and (debounced) on disk.
+ *
+ * Entries carry an absolute `expires`, so they age correctly across a restart
+ * with no extra bookkeeping — a 10-minute negative written before a deploy is
+ * still a 10-minute negative after it.
+ */
+function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
+  // `unknown` means "couldn't ask", not "not in the library". Caching it at all
+  // would make one slow moment stick; persisting it would make that survive a
+  // restart. The call sites already avoid this — the guard is here so a future
+  // one can't reintroduce it silently.
+  if (data?.unknown) return;
+
+  if (availabilityCache.size >= AVAILABILITY_MAX) {
+    availabilityCache.delete(availabilityCache.keys().next().value as number);
+  }
+  availabilityCache.set(mediaId, { data, expires: Date.now() + ttlMs });
+  persistMapSoon(AVAILABILITY_KEY, () => {
+    const now = Date.now();
+    return [...availabilityCache].filter(([, v]) => v.expires > now && !v.data?.unknown);
+  });
+}
+
+/**
+ * Seed the two in-memory caches from their persisted copies.
+ *
+ * Fire-and-forget: a request arriving before this resolves simply misses and
+ * fetches, which is exactly what used to happen on every restart. Expired
+ * entries are dropped on the way in rather than being trusted and re-checked.
+ */
+void (async () => {
+  const now = Date.now();
+  try {
+    for (const [k, v] of await loadPersistedEntries<number, { data: any; expires: number }>(AVAILABILITY_KEY)) {
+      if (v?.expires > now && !v.data?.unknown) availabilityCache.set(Number(k), v);
+    }
+    for (const [k, v] of await loadPersistedEntries<string, { dims: any; at: number }>(SOURCE_DIMS_KEY)) {
+      if (v?.at && now - v.at < SOURCE_DIMS_TTL_MS) sourceDims.set(String(k), v);
+    }
+    if (availabilityCache.size || sourceDims.size) {
+      console.log(`[jellyfin] restored ${availabilityCache.size} availability + ${sourceDims.size} source-dims entries`);
+    }
+  } catch {
+    // Caches are optional by definition; a failed restore just means a cold start.
+  }
+})();
+
+/** Shape check for one `{ mediaId, titles }` pair. */
+function invalidEntry(mediaId: unknown, titles: unknown): boolean {
+  return (
     !Number.isInteger(mediaId) ||
     !Array.isArray(titles) ||
     titles.length === 0 ||
     titles.length > 10 ||
     titles.some((t) => typeof t !== 'string' || !t.trim() || t.length > 300)
-  ) {
-    return res.status(400).json({
-      error: 'Expected { mediaId: int, titles: string[1..10] }',
-      code: 'BAD_REQUEST',
-    });
-  }
+  );
+}
 
+/**
+ * Resolve one entry, cache included. Shared by the single and batch routes so
+ * the matching rules have exactly one definition — a second copy is how the two
+ * would come to disagree about what counts as available.
+ *
+ * Never throws: a failure becomes `{ available: false, unknown: true }`, which
+ * means "couldn't ask" rather than "not in the library" and is deliberately not
+ * cached. In a batch that keeps one bad entry from contaminating the rest.
+ */
+async function resolveAvailability(
+  api: Api,
+  mediaId: number,
+  titles: string[],
+  fresh = false
+): Promise<any> {
   // `fresh: true` (sent when a popup opens on a previously-negative result)
   // bypasses the negative cache so a just-downloaded show appears immediately
   // instead of after the 10-minute negative TTL.
   const cached = availabilityCache.get(mediaId);
-  if (cached && cached.expires > Date.now() && !(fresh === true && !cached.data.available)) {
-    return res.json(cached.data);
+  if (cached && cached.expires > Date.now() && !(fresh && !cached.data.available)) {
+    return cached.data;
   }
 
-  const cfg = await getJellyfinConfig();
-  // `unknown` as well as `configured: false`: "we can't say" must never be
-  // read as "the library doesn't have it", or a tab whose config probe is
-  // stale-true would let Hide-Not-in-Library hide the entire list.
-  if (!cfg) return res.json({ available: false, configured: false, unknown: true });
-
   try {
-    const api = await jellyfinApi(cfg);
     // AniList id → TVDB id, when the community map knows this entry. Absent
     // is normal (coverage tracks how long a season has aired) and simply
     // means the match falls back to titles.
@@ -598,7 +697,7 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
 
     let library = await getSeriesLibrary(api);
     let hit = matchSeries(entry, library);
-    if (!hit && fresh === true && Date.now() - _lastLibraryRefresh > 30_000) {
+    if (!hit && fresh && Date.now() - _lastLibraryRefresh > 30_000) {
       // A fresh re-check should notice a just-added show, but only one
       // refetch per 30s: every negative result asking for its own refetch
       // turned into a stampede that reported everything as missing.
@@ -608,8 +707,8 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
     }
     if (!hit) {
       const data = { available: false };
-      availabilityCache.set(mediaId, { data, expires: Date.now() + 10 * 60 * 1000 });
-      return res.json(data);
+      rememberAvailability(mediaId, data, 10 * 60 * 1000);
+      return data;
     }
 
     // Respect the entry's season: a "3rd Season" entry must resolve to S3E01,
@@ -618,8 +717,8 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
     const episode = await getFirstEpisode(api, hit.series.id, seasonNumber);
     if (!episode) {
       const data = { available: false, libraryTitle: hit.series.title, matchedBy: hit.confidence };
-      availabilityCache.set(mediaId, { data, expires: Date.now() + 10 * 60 * 1000 });
-      return res.json(data);
+      rememberAvailability(mediaId, data, 10 * 60 * 1000);
+      return data;
     }
     const data = {
       available: true,
@@ -637,15 +736,86 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
       // Hide-Not-in-Library refuses to act on it.
       matchedBy: hit.confidence,
     };
-    availabilityCache.set(mediaId, { data, expires: Date.now() + 60 * 60 * 1000 });
-    res.json(data);
+    rememberAvailability(mediaId, data, 60 * 60 * 1000);
+    return data;
   } catch (err: any) {
     // Deliberately NOT cached — a transient hiccup shouldn't stick. `unknown`
     // distinguishes "we couldn't ask" from "the library doesn't have it", so
     // the UI never claims a show is missing (or hides it) on a timeout.
-    console.warn('[jellyfin] availability lookup failed:', err?.message ?? err);
-    res.json({ available: false, unknown: true });
+    console.warn(`[jellyfin] availability lookup failed for ${mediaId}:`, err?.message ?? err);
+    return { available: false, unknown: true };
   }
+}
+
+router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
+  const { mediaId, titles, fresh } = req.body ?? {};
+  if (invalidEntry(mediaId, titles)) {
+    return res.status(400).json({
+      error: 'Expected { mediaId: int, titles: string[1..10] }',
+      code: 'BAD_REQUEST',
+    });
+  }
+
+  const cfg = await getJellyfinConfig();
+  // `unknown` as well as `configured: false`: "we can't say" must never be
+  // read as "the library doesn't have it", or a tab whose config probe is
+  // stale-true would let Hide-Not-in-Library hide the entire list.
+  if (!cfg) return res.json({ available: false, configured: false, unknown: true });
+
+  res.json(await resolveAvailability(await jellyfinApi(cfg), mediaId, titles, fresh === true));
+});
+
+/**
+ * The same question for a whole page of shows, in one request.
+ *
+ * Randomize asks about every wheel item, and asking one at a time meant ~50 HTTP
+ * requests per page load — 40% of this router's own 120/min budget, repeated on
+ * every full page load because the browser-side cache doesn't outlive one. On a
+ * cold backend those 50 also became 50 Jellyfin episode lookups.
+ *
+ * The single-entry route above stays: the pop-up's `fresh: true` re-check really
+ * is one show at a time, and its 30 s refetch throttle assumes that.
+ */
+const AVAILABILITY_BATCH_MAX = 100; // mirrors /api/translate/check-batch
+
+router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res) => {
+  const { items } = req.body ?? {};
+  if (!Array.isArray(items) || items.length === 0 || items.length > AVAILABILITY_BATCH_MAX) {
+    return res.status(400).json({
+      error: `Expected { items: [{ mediaId, titles }] } with 1..${AVAILABILITY_BATCH_MAX} entries`,
+      code: 'BAD_REQUEST',
+    });
+  }
+  if (items.some((it: any) => invalidEntry(it?.mediaId, it?.titles))) {
+    return res.status(400).json({
+      error: 'Each item must be { mediaId: int, titles: string[1..10] }',
+      code: 'BAD_REQUEST',
+    });
+  }
+
+  const cfg = await getJellyfinConfig();
+  if (!cfg) {
+    // Same rule per entry as the single route: unconfigured is "can't say".
+    const out: Record<number, any> = {};
+    for (const it of items) out[it.mediaId] = { available: false, configured: false, unknown: true };
+    return res.json(out);
+  }
+
+  const api = await jellyfinApi(cfg);
+  const out: Record<number, any> = {};
+  // A warm cache makes every entry a Map lookup, so this pool only matters on a
+  // cold one — where the point is to walk the library at a steady rate rather
+  // than open 50 simultaneous episode queries against it.
+  const CONCURRENCY = 5;
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const it = items[next++];
+      out[it.mediaId] = await resolveAvailability(api, it.mediaId, it.titles);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
+  res.json(out);
 });
 
 // ---------------------------------------------------------------------------
