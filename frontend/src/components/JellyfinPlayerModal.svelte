@@ -574,6 +574,23 @@
       ...(chromecastReady ? { techOrder: ['chromecast', 'html5'], plugins: { chromecast: {} } } : {}),
     });
 
+    // The cast plugin appends its button, which lands to the *right* of
+    // fullscreen. Fullscreen should always be the last control, so put cast
+    // immediately before it — same "insert relative to fullscreenToggle"
+    // approach the subtitle and quality menus use above.
+    if (chromecastReady) {
+      const bar = player.getChild('controlBar');
+      const cast = bar?.getChild('chromecastButton') ?? bar?.getChild('ChromecastButton');
+      const full = bar?.getChild('fullscreenToggle');
+      if (bar && cast && full) {
+        const target = bar.children().indexOf(full);
+        if (target >= 0) {
+          bar.removeChild(cast);
+          bar.addChild(cast, {}, target);
+        }
+      }
+    }
+
     // Every "the user did something" path in video.js ends up here, so this is
     // the one place that can reliably stop the speed keys waking the bar.
     const reportActivity = player.reportUserActivity.bind(player);
@@ -687,8 +704,20 @@
 </script>
 
 <dialog open class="modal z-[999]">
-  <div class="modal-box w-full max-w-5xl p-3 flex flex-col gap-2">
-    <div class="flex items-center justify-between gap-2">
+  <!-- Sized like the trailer modal, which scales with the viewport. This was
+       `max-w-5xl`, a hard 64rem cap at any screen size — ~1024px of video on a
+       1905px display against the trailer's ~1524px.
+       The video itself is fully fluid — it is always a percentage of the window
+       and never a fixed size. The one constant is the `8rem` allowance for the
+       title row, the hint and the padding, used to stop a *tall* video pushing
+       the modal past the viewport on a short screen. It is a bound, not a size:
+       it only binds when height would otherwise be the limit, and being a little
+       generous just means a slightly smaller video, never an overlap.
+       Constraining height directly instead (forcing the player to fill a
+       fixed-height box) is what letterboxed the picture and stranded the control
+       bar in the dead space below it. -->
+  <div class="modal-box w-[95%] md:w-5/6 lg:w-4/5 max-w-[calc((92vh-8rem)*16/9)] p-3 pb-1.5 flex flex-col gap-1.5">
+    <div class="shrink-0 flex items-center justify-between gap-2">
       <h3 class="font-bold text-lg truncate">
         {title}
         {#if episodeTitle}<span class="opacity-60 font-normal"> — {episodeTitle}</span>{/if}
@@ -700,7 +729,7 @@
       >
     </div>
 
-    <div class="relative">
+    <div class="sc-stage relative">
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={videoEl} class="video-js vjs-big-play-centered w-full" playsinline></video>
 
@@ -730,7 +759,7 @@
 
       <div
         bind:this={flashEl}
-        class="pointer-events-none absolute top-3 right-4 z-30 select-none font-bold tabular-nums text-white text-4xl md:text-5xl transition-opacity duration-500 {rateFlashVisible
+        class="sc-rate-flash pointer-events-none absolute top-3 right-4 z-30 select-none font-bold tabular-nums text-white transition-opacity duration-500 {rateFlashVisible
           ? 'opacity-100'
           : 'opacity-0'}"
         style="text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 6px rgba(0,0,0,.8);"
@@ -740,7 +769,10 @@
       </div>
     </div>
 
-    <p class="text-xs opacity-50 m-0">
+    <!-- 6px above (the column's `gap-1.5`) and 6px below (`pb-1.5` overriding
+         the modal's `p-3`), so the hint sits in an evenly balanced band and the
+         video gets the space instead. -->
+    <p class="shrink-0 text-xs opacity-50 m-0 text-center">
       <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10×
     </p>
   </div>
@@ -792,5 +824,54 @@
      them to 1em while the bar is hidden, so they hop as it slides in and out. */
   :global(.video-js .vjs-text-track-display) {
     bottom: 3em !important;
+  }
+  /* The speed flash is sized against the *player*, not the viewport.
+     It was `text-4xl md:text-5xl`, which keys off screen width in two coarse
+     steps — so it stayed the same size whether the player filled the window or
+     sat small inside it, and jumped a step when the browser crossed 768px for
+     reasons nothing to do with the video. A container query ties it to the box
+     it actually sits in; `clamp` keeps it legible on a phone and stops it
+     dominating a fullscreen 4K frame. */
+  /* The stage must NOT impose a height — video.js derives the player's height
+     from the video's own ratio. Two attempts at being cleverer both broke it,
+     and both are worth not repeating: stretching `.video-js` to fill a
+     taller box letterboxed the picture while pinning the control bar to the
+     *box's* bottom (reading as "controls gone" plus a huge gap), and giving the
+     stage `aspect-ratio` + `self-center` in a column flex collapsed it to 0x0,
+     because `self-center` makes the cross-axis size shrink-to-fit and the video
+     inside is a percentage of that.
+     This element exists only as the reference box for the speed flash's `cqw`
+     sizing. */
+  .sc-stage {
+    container-type: inline-size;
+  }
+  .sc-rate-flash {
+    font-size: clamp(1.5rem, 6cqw, 5rem);
+    line-height: 1;
+  }
+  /* Fullscreen needs its own rule. The flash is re-parented into `player.el()`
+     on mount (so it survives fullscreen at all — the overlay would otherwise be
+     outside the fullscreen subtree), but `.sc-stage` stays laid out at the
+     modal's size while `.video-js` fills the screen. A container query would
+     therefore resolve against the *small* box and render the smallest text
+     exactly when the screen is largest. In fullscreen the player is the
+     viewport, so viewport units are the honest measure. */
+  :global(.video-js.vjs-fullscreen) .sc-rate-flash {
+    font-size: clamp(2rem, 5vw, 7rem);
+  }
+  /* The cast button renders blank. Its icon is a background image the plugin
+     ships (and which *does* bundle — Vite inlines it as a data URI), but
+     `experimentalSvgIcons` makes video.js inject an <svg> into every control's
+     .vjs-icon-placeholder, and that empty svg covers the background. Hide the
+     injected svg for this one button so the plugin's own icon shows through —
+     no custom artwork involved. The plugin also sizes the placeholder 12px,
+     about half the height of every neighbouring control; match them. */
+  :global(.video-js .vjs-chromecast-button .vjs-icon-placeholder > svg),
+  :global(.video-js .vjs-chromecast-button .vjs-svg-icon) {
+    display: none;
+  }
+  :global(.video-js .vjs-chromecast-button .vjs-icon-placeholder) {
+    width: 1.5em;
+    height: 1.5em;
   }
 </style>

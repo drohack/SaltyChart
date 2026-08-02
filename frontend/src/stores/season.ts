@@ -6,6 +6,23 @@ import { writable, type Writable } from 'svelte/store';
 
 export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
 
+/**
+ * How early to switch the default view to the upcoming season.
+ *
+ * Was 76 days, which flipped the default about two weeks after the *current*
+ * season's premieres — so for most of a season you landed on one where nothing
+ * had aired and nothing could be in the library yet. 50 days moves the cutover
+ * to roughly six weeks in, leaving the airing season as the default for longer
+ * while still giving a month and a half of trailer-browsing lead time.
+ *
+ * Declared at the top of the module on purpose: `computeInitialSeason()` runs
+ * during module initialisation (the store restores its value eagerly), so a
+ * `const` declared next to that function sits in the temporal dead zone and
+ * throws `Cannot access 'LOOKAHEAD_DAYS' before initialization` — which renders
+ * the entire app blank, since the store never initialises.
+ */
+const LOOKAHEAD_DAYS = 50;
+
 // Helper: derive the anime “production” season from today’s month.
 // Mapping follows the common industry convention:
 //   Winter : January – March  (0–2)
@@ -166,8 +183,9 @@ export function nextSeasonInfo(
   }
 }
 
-// Returns the season to show by default: the upcoming season if within 76 days of its start,
-// otherwise the current season. Handles the cross-year case (FALL→WINTER) correctly.
+// Returns the season to show by default: the upcoming season if within
+// LOOKAHEAD_DAYS (declared at the top of this module) of its start, otherwise
+// the current season. Handles the cross-year case (FALL→WINTER) correctly.
 function computeInitialSeason(date: Date = new Date()): { season: Season; year: number } {
   const m = date.getMonth();
   let raw: Season;
@@ -179,6 +197,6 @@ function computeInitialSeason(date: Date = new Date()): { season: Season; year: 
   const rawYear = date.getFullYear();
   const next = nextSeasonInfo(raw, rawYear);
   const daysUntil = (next.starts.getTime() - date.getTime()) / 86_400_000;
-  if (daysUntil <= 76) return { season: next.season, year: next.year };
+  if (daysUntil <= LOOKAHEAD_DAYS) return { season: next.season, year: next.year };
   return { season: raw, year: rawYear };
 }
