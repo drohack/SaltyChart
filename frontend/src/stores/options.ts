@@ -116,6 +116,19 @@ if (typeof window !== 'undefined') {
     // Skip saving during initial load to avoid overwriting with defaults
     if (isLoading) return;
 
+    // Always mirror to localStorage, signed in or not. The server stays
+    // authoritative on load for a logged-in user — this copy exists so the
+    // theme survives the gap before that fetch returns, and so logging out
+    // doesn't snap the UI back to whatever was last written as a guest.
+    // Previously this only ran on the `else` branch, so a signed-in user who
+    // chose LIGHT had the server saying LIGHT while localStorage still said
+    // SYSTEM indefinitely.
+    try {
+      localStorage.setItem('options', JSON.stringify(value));
+    } catch (e) {
+      console.error('[OPTIONS] Error saving to localStorage:', e);
+    }
+
     const token = get(authToken);
     if (token) {
       // Debounce backend saves (500ms) to handle rapid slider changes
@@ -136,12 +149,6 @@ if (typeof window !== 'undefined') {
           console.error('[OPTIONS] Error saving to backend:', err);
         });
       }, 500);
-    } else {
-      try {
-        localStorage.setItem('options', JSON.stringify(value));
-      } catch (e) {
-        console.error('[OPTIONS] Error saving to localStorage:', e);
-      }
     }
   });
 }

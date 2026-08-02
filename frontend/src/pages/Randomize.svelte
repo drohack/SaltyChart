@@ -132,6 +132,7 @@ $: _lang = $options.titleLanguage;
             it.title?.romaji,
             it.title?.native,
           ].filter(Boolean),
+          airing: { status: it.status, startDate: it.startDate },
         }))
       );
       if (season !== forSeason || year !== forYear) return;
@@ -147,7 +148,14 @@ $: _lang = $options.titleLanguage;
       // report `available: true`, so this only ever *keeps* them. That is the
       // conservative direction — an unconfirmed match's danger is playing the
       // wrong series, which the popup warns about, not vanishing from the wheel.
-      const missing = visible.filter((it) => results.get(it.id)?.available === false);
+      //
+      // `notAired` is also `available: false`, but it means "can't exist yet",
+      // not "we looked and it's missing". On the default season that is every
+      // entry, so hiding on it would empty the wheel in one click.
+      const missing = visible.filter((it) => {
+        const info = results.get(it.id);
+        return info?.available === false && !info.notAired;
+      });
       if (!missing.length) return;
 
       watchList = watchList.map((entry) =>
@@ -227,8 +235,9 @@ $: _lang = $options.titleLanguage;
       selected.title?.romaji,
       selected.title?.native,
     ].filter(Boolean);
+    const airing = { status: selected.status, startDate: selected.startDate };
     watchInfo = null;
-    checkAvailability(id, titles)
+    checkAvailability(id, titles, false, airing)
       .then((info) => {
         // Guard against a stale resolve after the user opened a different show.
         if (selected?.id !== id) return;
@@ -244,9 +253,11 @@ $: _lang = $options.titleLanguage;
           prewarm(info.itemId, info.mediaSourceId);
         }
         // Cached "not available" → re-check live, so a show downloaded a
-        // minute ago appears without waiting out the cache TTLs.
-        if (!info.available) {
-          checkAvailability(id, titles, true)
+        // minute ago appears without waiting out the cache TTLs. Skipped for
+        // `notAired`: nothing was cached and nothing can be downloaded yet, so
+        // this would just re-issue the lookup the gate exists to prevent.
+        if (!info.available && !info.notAired) {
+          checkAvailability(id, titles, true, airing)
             .then((freshInfo) => {
               if (selected?.id !== id) return;
               watchInfo = freshInfo;
@@ -547,6 +558,8 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
           item.title?.romaji,
           item.title?.native,
         ].filter(Boolean),
+        // Unaired entries are answered locally and never sent upstream.
+        airing: { status: item.status, startDate: item.startDate },
       }))
     )
       .then((results) => {
@@ -950,13 +963,20 @@ const sliceWorker: Worker = new SliceWorker();
 // the same action irrespective of which element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
   // While the player is open it owns the keyboard (Space/Esc/[/]) —
-  // Enter here would mark-watched and close the modal underneath it.
+  // Enter here would mark-watched and close the modal underneath it, and Escape
+  // is how you leave the player, not the pop-up behind it.
   if (showPlayer) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     markWatched();
+  } else if (e.key === 'Escape') {
+    // The pop-up's own overlay carried a keydown handler on a tabindex="-1"
+    // div that never received focus, so Escape did nothing. This listener is
+    // already window-level and already lifecycle-managed below, so Escape only
+    // ever needed to be handled here.
+    e.preventDefault();
+    showModal = false;
   }
-
 }
 
 // Clean-up in case the component is destroyed while the modal is open
@@ -1784,6 +1804,10 @@ $: {
           </div>
         {:else if $mediaConfigured && watchInfo?.unknown}
           <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server — try again shortly</p>
+        {:else if $mediaConfigured && watchInfo?.notAired}
+          <!-- Never looked up: an unaired series can't be in the library, and
+               asking only ever produced false positives. -->
+          <p class="text-center text-xs opacity-50 mb-4" data-not-aired>Not aired yet</p>
         {:else if $mediaConfigured && watchInfo && !watchInfo.available}
           <p class="text-center text-xs opacity-50 mb-4">
             Not in library{watchInfo.libraryTitle

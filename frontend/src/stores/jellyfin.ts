@@ -13,6 +13,12 @@ export interface MediaAvailability {
   available: boolean;
   /** True when the lookup failed (server slow/unreachable) — NOT "not present". */
   unknown?: boolean;
+  /**
+   * The series hasn't aired yet, so it was never looked up. Distinct from
+   * `available: false` on its own, which means "we asked and it isn't there" —
+   * bulk actions must not treat this as missing. See `isUnaired`.
+   */
+  notAired?: boolean;
   /** Jellyfin ids for the episode to play. */
   seriesId?: string;
   itemId?: string;
@@ -72,6 +78,38 @@ authToken.subscribe((tok) => {
 });
 
 const NOT_AVAILABLE: MediaAvailability = { available: false, unknown: true };
+const NOT_AIRED: MediaAvailability = { available: false, notAired: true };
+
+/** AniList airing facts, as they arrive on an `/api/anime` entry. */
+export interface AiringInfo {
+  status?: string | null;
+  startDate?: { year?: number | null; month?: number | null; day?: number | null } | null;
+}
+
+/**
+ * Has this series started airing?
+ *
+ * A show that hasn't aired cannot be in the library, so asking about it can only
+ * ever produce a false positive. Measured on the season the app opens on by
+ * default (76-day look-ahead → an unaired season): the AniList→TVDB map has no
+ * entries for brand-new shows, so every match fell through to fuzzy titles and
+ * *all* of them were wrong — "Firefly Wedding" → the 2002 series "Firefly",
+ * "Dragon Ball Super: Beerus" → "Dragon Ball". FALL 2026 was 83/83
+ * NOT_YET_RELEASED; SPRING 2026 had none, so aired seasons are unaffected.
+ *
+ * `status` is authoritative when present. `startDate` is the fallback and is
+ * routinely partial (`{year: 2026, month: 10, day: null}`) — a missing month or
+ * day is treated as the earliest possible, so a show is only called unaired when
+ * even its earliest possible date is still in the future.
+ */
+export function isUnaired(info?: AiringInfo | null, now: Date = new Date()): boolean {
+  if (!info) return false;
+  if (info.status) return info.status === 'NOT_YET_RELEASED';
+  const d = info.startDate;
+  if (!d?.year) return false;
+  const earliest = Date.UTC(d.year, (d.month ?? 1) - 1, d.day ?? 1);
+  return earliest > now.getTime();
+}
 
 /**
  * Is this AniList entry in the library? Cached per mediaId for the session,
@@ -85,10 +123,17 @@ const NOT_AVAILABLE: MediaAvailability = { available: false, unknown: true };
 export function checkAvailability(
   mediaId: number,
   titles: string[],
-  fresh = false
+  fresh = false,
+  airing?: AiringInfo | null
 ): Promise<MediaAvailability> {
   const tok = get(authToken);
   if (!tok || get(mediaConfigured) === false) return Promise.resolve(NOT_AVAILABLE);
+
+  // Never ask about a show that hasn't aired — see `isUnaired`. Deliberately
+  // ahead of the cache and not written to it: this is a fact about the calendar,
+  // not about the library, so it must be re-derived rather than pinned for the
+  // session (a show can start airing while the tab is open).
+  if (isUnaired(airing)) return Promise.resolve(NOT_AIRED);
 
   if (!fresh) {
     const cached = _availabilityCache.get(mediaId);
@@ -135,7 +180,7 @@ const BATCH_MAX = 100;
  * reads, so a pop-up opened afterwards is still an instant cache hit.
  */
 export async function checkAvailabilityMany(
-  entries: Array<{ mediaId: number; titles: string[] }>
+  entries: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }>
 ): Promise<Map<number, MediaAvailability>> {
   const out = new Map<number, MediaAvailability>();
   const tok = get(authToken);
@@ -143,6 +188,10 @@ export async function checkAvailabilityMany(
 
   const missing: Array<{ mediaId: number; titles: string[] }> = [];
   for (const e of entries) {
+    // Unaired entries are answered locally and never sent — on the default
+    // (unaired) season this is the whole list, so it also removes ~83 library
+    // lookups per page load. Not cached, for the reason in `checkAvailability`.
+    if (isUnaired(e.airing)) { out.set(e.mediaId, NOT_AIRED); continue; }
     const cached = _availabilityCache.get(e.mediaId);
     if (cached) out.set(e.mediaId, cached);
     else if (!out.has(e.mediaId)) missing.push(e);

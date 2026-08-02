@@ -176,9 +176,30 @@ $: _currentLang = $options.titleLanguage;
     }
   }
 
+  /**
+   * Briefly show why subtitles aren't coming. Deliberately transient and
+   * non-blocking: the trailer plays fine without subtitles, so this must never
+   * gate playback or cover the video — it sits in the existing control cluster
+   * beside the CC toggle and clears itself.
+   */
+  let translationError: string | null = null;
+  let _translationErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showTranslationError(msg: string) {
+    translationError = msg;
+    if (_translationErrorTimer) clearTimeout(_translationErrorTimer);
+    _translationErrorTimer = setTimeout(() => { translationError = null; }, 6000);
+  }
+
+  function clearTranslationError() {
+    translationError = null;
+    if (_translationErrorTimer) { clearTimeout(_translationErrorTimer); _translationErrorTimer = null; }
+  }
+
   function startTranslation(videoId: string, mediaParam: string = '') {
     subtitleSegments = [];
     currentSubtitle = '';
+    clearTranslationError();
     translationStatus = 'Downloading audio...';
 
     // If the viewer is already several seconds into the trailer (re-open, or
@@ -209,6 +230,12 @@ $: _currentLang = $options.titleLanguage;
         if (data.error) {
           console.error('[translate] Server error:', data.error);
           translationLoading = false;
+          // The message was written for a human ("try again shortly") but only
+          // ever reached the console: the status chip is gated on
+          // `translationLoading`, which this very line clears. The viewer saw a
+          // trailer with no subtitles and no way to tell that from a trailer
+          // that simply has none. Surface it briefly, without blocking playback.
+          showTranslationError(data.error);
           stopTranslation();
           return;
         }
@@ -287,10 +314,25 @@ $: _currentLang = $options.titleLanguage;
     }, 200);
   }
 
+  /**
+   * Escape closes the trailer. Bound to the window, because the handler used to
+   * live on the overlay div with `tabindex="-1"` — nothing ever focused it, so
+   * the keydown went to the still-focused trigger button and Escape closed
+   * nothing at all.
+   *
+   * Enter/Space are deliberately not handled here (the old overlay handler did):
+   * on a window listener they would fire on any keypress, and Enter is already
+   * bound to mark-watched.
+   */
+  function handleWindowKey(e: KeyboardEvent) {
+    if (modal && e.key === 'Escape') closeModal();
+  }
+
   function closeModal() {
     modal = null;
     currentSegIdx = 0;
     document.body.style.overflow = '';
+    clearTranslationError();
     stopTranslation();
     subtitleSegments = [];
     currentSubtitle = '';
@@ -602,6 +644,10 @@ const dispatch = createEventDispatcher();
   }
 </script>
 
+<!-- Must be top-level: <svelte:window> can't sit inside a block. The handler
+     itself checks whether the trailer modal is open. -->
+<svelte:window on:keydown={handleWindowKey} />
+
 <!-- grid of horizontal cards -->
 <!-- Responsive grid: 1 column, 2 columns at ≥1122px, 3 columns at ≥1732px -->
 <div class="grid grid-cols-1 2cols:grid-cols-2 3cols:grid-cols-3 gap-6">
@@ -787,16 +833,16 @@ const dispatch = createEventDispatcher();
 
   <!-- Modal overlay for large trailer player -->
 {#if modal}
+  <!-- svelte-ignore a11y-click-events-have-key-events
+       The backdrop is a convenience, not the keyboard path: Escape is handled
+       on <svelte:window> above (it could not be handled here — this element is
+       never focused, which is exactly the bug that shipped), and there is a
+       real labelled ✕ button inside the modal. -->
   <div
   class="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]"
     role="button"
     aria-label="Close trailer player"
     on:click|self={closeModal}
-    on:keydown={(e) => {
-      if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
-        closeModal();
-      }
-    }}
     tabindex="-1"
   >
     <!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -804,6 +850,13 @@ const dispatch = createEventDispatcher();
       class="relative w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video"
       on:mouseenter={showControls}
     >
+      <!-- The only close affordance used to be clicking the backdrop, which is
+           a thin strip on a phone and invisible as an affordance anywhere. -->
+      <button
+        class="btn btn-sm btn-circle btn-ghost absolute -top-10 right-0 text-white hover:bg-white/20 z-20"
+        aria-label="Close trailer"
+        on:click|stopPropagation={closeModal}
+      >✕</button>
       <iframe
         title="Trailer video"
         bind:this={iframeElement}
@@ -814,22 +867,32 @@ const dispatch = createEventDispatcher();
         on:load={onIframeLoad}
       />
 
-      <!-- Translation controls — spinner + CC toggle side by side -->
-      {#if translationLoading || translating}
+      <!-- Translation controls — spinner + CC toggle side by side.
+           `translationError` is in the condition because the error handler
+           clears `translationLoading`, so without it the cluster unmounts at
+           exactly the moment there is something to say. -->
+      {#if translationLoading || translating || translationError}
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           class="absolute top-12 right-2 flex items-center gap-2 z-10"
           on:mouseenter={showControls}
           on:mousemove={showControls}
           on:mouseleave={() => { if (videoPlaying) showControls(); }}
-          class:opacity-0={!controlsVisible && !(translationLoading && subtitlesVisible && checkResolved)}
-          class:opacity-100={controlsVisible || (translationLoading && subtitlesVisible && checkResolved)}
+          class:opacity-0={!controlsVisible && !(translationLoading && subtitlesVisible && checkResolved) && !(translationError && subtitlesVisible)}
+          class:opacity-100={controlsVisible || (translationLoading && subtitlesVisible && checkResolved) || (translationError && subtitlesVisible)}
           style="transition: opacity 0.75s ease-out; {controlsVisible ? 'transition-duration: 0s;' : ''}"
         >
           {#if translationLoading && subtitlesVisible && checkResolved}
             <div class="flex items-center gap-2 bg-black/60 text-white text-sm px-3 py-1.5 rounded">
               <span class="loading loading-spinner loading-sm"></span>
               {translationStatus}
+            </div>
+          {:else if translationError && subtitlesVisible}
+            <div
+              class="flex items-center gap-2 bg-black/60 text-white text-sm px-3 py-1.5 rounded"
+              data-translation-error
+            >
+              Subtitles unavailable — {translationError}
             </div>
           {/if}
           <button

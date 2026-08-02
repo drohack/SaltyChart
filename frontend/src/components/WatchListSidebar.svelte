@@ -33,7 +33,15 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
 // of the viewport).  We expose a local toggle button on small screens to let
 // the user minimise / restore the list so the Anime grid becomes visible on a
 // phone.
-let collapsed = false;
+//
+// Below the `sm` breakpoint this <aside> is `w-full`, so an open sidebar covers
+// the entire viewport and the grid is unreachable. It used to default to `false`
+// unconditionally, which meant every fresh page load on a phone landed on a
+// full-screen list — and because the flag was component-local, dismissing it
+// only lasted until the next reload. Home owns it now (`bind:collapsed`) and
+// persists the choice per user; the default here matches the breakpoint the
+// component's own classes key off.
+export let collapsed = typeof window !== 'undefined' && window.innerWidth < 640;
 
 function hideSidebar() {
   collapsed = true;
@@ -497,7 +505,7 @@ $: {
   <!-- Slide/hide handle shown on mobile. Appears as a small tab anchored to the
        left edge of the sidebar. -->
   <button
-    class="sm:hidden absolute left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center"
+    class="sm:hidden absolute left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-3 py-6 shadow flex items-center justify-center min-w-[44px]"
     title="Hide My List"
     on:click={hideSidebar}
     aria-label="Hide My List"
@@ -651,8 +659,8 @@ $: {
 <!-- Slide-in tab to restore the sidebar when collapsed (mobile only) -->
 {#if collapsed}
   <button
-    class="sm:hidden fixed z-30 right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center"
-    style="width: 1.25rem;"
+    class="sm:hidden fixed z-30 right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-3 py-6 shadow flex items-center justify-center"
+    style="min-width: 44px;"
     on:click={showSidebar}
     title="Show My List"
     aria-label="Show My List"

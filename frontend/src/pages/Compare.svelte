@@ -48,6 +48,13 @@ const rankOptions = [
   // suggestion list for combobox
   let suggestions: string[] = [];
   // load matching users (debounced)
+  /**
+   * The query the current `suggestions` were fetched for. Needed to tell "no
+   * such user" from "we haven't asked yet" — an unknown name returns an *empty*
+   * list, which is indistinguishable from the initial state without this.
+   */
+  let suggestionsFor: string | null = null;
+
   async function fetchSuggestions() {
     const q = otherInput.trim();
     const url = q ? `/api/users?q=${encodeURIComponent(q)}` : `/api/users`;
@@ -56,6 +63,7 @@ const rankOptions = [
       if (resp.ok) {
         suggestions = (await resp.json())
           .map((u: string) => ({ value: u, label: u }));
+        suggestionsFor = q;
       }
     } catch {}
   }
@@ -77,6 +85,26 @@ const rankOptions = [
    * bound prop cannot rot the way a mistyped event name does.
    */
   $: otherInput, queueSuggest();
+
+  /**
+   * The combobox only writes `selectedOther` when a real suggestion is picked,
+   * so typing a name that doesn't exist left the *previous* user's ranks on
+   * screen under a heading naming them — it read as "this is what they rated".
+   * Flag it instead: the typed text is non-empty, the suggestions have caught up
+   * with it, and none of them match.
+   */
+  $: typedOther = otherInput.trim();
+  $: unknownOtherUser =
+    typedOther.length > 0 &&
+    getSelectedUsername(selectedOther) !== typedOther &&
+    // "We asked about exactly this text and the server matched nobody."
+    // Gating on an empty list rather than on the absence of an *exact* match
+    // matters: `/api/users?q=` is a prefix search, so mid-typing ("droh" on the
+    // way to "drohack") still returns candidates and must stay quiet. Gating on
+    // `suggestionsFor` rather than `suggestions.length > 0` matters too — an
+    // unknown name is precisely the case that comes back empty.
+    suggestionsFor === typedOther &&
+    suggestions.length === 0;
 
 // ------------------------------------------------------------------
 // Reactive: fetch lists whenever any of the input parameters change, but
@@ -650,6 +678,13 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           inputAttributes={{ 'data-bwignore': true }}
           on:change={() => {/* fetch triggered reactively */}}
         />
+        {#if unknownOtherUser}
+          <!-- Without this, a typo leaves the previously-compared user's ranks
+               on screen and reads as if they belonged to the name just typed. -->
+          <p class="text-xs text-error mt-1" data-unknown-user>
+            No user named &ldquo;{typedOther}&rdquo;
+          </p>
+        {/if}
       </div>
 
       <!-- Row 3 -->

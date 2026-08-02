@@ -75,6 +75,18 @@ import { nextSeasonInfo } from '../stores/season';
   // don't match the latest ID (prevents rapid season-switching race condition).
   let _prefetchReqId = 0;
 
+  /**
+   * Server cap on `/api/translate/check-batch`, mirrored here so we chunk
+   * instead of being silently truncated.
+   *
+   * This used to send every id in one request — 126 on a full season — and the
+   * route does `.slice(0, 100)`. The tail was dropped with no error, so those
+   * shows never learned they had English CC and each one started an
+   * unnecessary Whisper translation when opened. Measured: 6 of the 26 dropped
+   * ids had `hasEnglishSubs=1` already recorded in the DB.
+   */
+  const CHECK_BATCH_MAX = 100;
+
   function prefetchSubtitleStatus(current: any[], prev: any[]) {
     const reqId = ++_prefetchReqId;
     prefetchComplete = false;
@@ -82,11 +94,23 @@ import { nextSeasonInfo } from '../stores/season';
       .filter(a => a.trailer?.site === 'youtube')
       .map(a => a.trailer.id as string);
     if (ids.length === 0) { prefetchComplete = true; return; }
-    fetch(`/api/translate/check-batch?videoIds=${ids.join(',')}`)
-      .then(r => r.json())
-      .then((data: Record<string, boolean>) => {
-        if (reqId !== _prefetchReqId) return; // stale response — discard
-        prefetchedSubs = new Map(Object.entries(data));
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += CHECK_BATCH_MAX) {
+      chunks.push(ids.slice(i, i + CHECK_BATCH_MAX));
+    }
+    Promise.all(
+      chunks.map(chunk =>
+        fetch(`/api/translate/check-batch?videoIds=${chunk.join(',')}`)
+          .then(r => r.json() as Promise<Record<string, boolean>>)
+      )
+    )
+      .then((parts) => {
+        // The staleness guard covers the whole set, not each chunk: a season
+        // switch mid-flight must discard every part, or the map ends up a mix
+        // of two seasons.
+        if (reqId !== _prefetchReqId) return;
+        prefetchedSubs = new Map(parts.flatMap(p => Object.entries(p)));
         prefetchComplete = true;
       })
       .catch((err) => {
@@ -192,6 +216,13 @@ let autoRename = false;
     return user ? `prefs-${user}` : 'prefs-guest';
   }
 
+  /**
+   * Whether the My List sidebar starts collapsed. Below `sm` the sidebar is
+   * full-width, so an open one hides the whole grid — default to collapsed
+   * there, and let a stored choice override it on any screen size.
+   */
+  let sidebarCollapsed = typeof window !== 'undefined' && window.innerWidth < 640;
+
   function loadPrefs(user: string | null) {
     try {
       const raw = localStorage.getItem(prefsKey(user));
@@ -204,13 +235,17 @@ let autoRename = false;
         catchUpMode = obj.catchUpMode ?? false;
         catchUpUser = obj.catchUpUser ?? null;
         savedFilters = obj.savedFilters ?? null;
+        // Only honour a stored value; absent means "use the width default"
+        // rather than "open", so existing users on phones aren't handed the
+        // full-screen sidebar just because they have an older prefs blob.
+        if (typeof obj.sidebarCollapsed === 'boolean') sidebarCollapsed = obj.sidebarCollapsed;
       }
     } catch {}
   }
 
   function savePrefs(user: string | null) {
     try {
-      const obj = { hideSequels, hideInList, autoRename, hideAdult, catchUpMode, catchUpUser, savedFilters };
+      const obj = { hideSequels, hideInList, autoRename, hideAdult, catchUpMode, catchUpUser, savedFilters, sidebarCollapsed };
       localStorage.setItem(prefsKey(user), JSON.stringify(obj));
     } catch {}
   }
@@ -243,6 +278,7 @@ let autoRename = false;
     catchUpMode;
     catchUpUser;
     savedFilters;
+    sidebarCollapsed;
     savePrefs($userName);
   }
 
@@ -461,6 +497,21 @@ let autoRename = false;
     }
   }
 
+  /**
+   * Every filtered section is empty while both fetches have finished and at
+   * least one of them returned something. Distinguishes "your search/filters
+   * matched nothing" from "this season is still loading" and from "the fetch
+   * failed" (which has its own per-section error + Retry).
+   */
+  $: noMatches =
+    !loadingMain && !loadingLeftovers && !errorMain && !errorLeftovers &&
+    (anime.length > 0 || prevSeasonAnime.length > 0) &&
+    tvAnimeFiltered.length === 0 &&
+    tvShortsFiltered.length === 0 &&
+    leftoversFiltered.length === 0 &&
+    ovaOnaSpecialFiltered.length === 0 &&
+    moviesFiltered.length === 0;
+
   $: inListIds = new Set(watchList.map((w) => w.mediaId));
   // Map for O(1) custom-name lookup during search filtering
   $: watchListByMediaId = new Map(watchList.map((w) => [w.mediaId, w]));
@@ -630,6 +681,20 @@ let autoRename = false;
         on:added={async (e) => { await fetchList(); sidebarRef?.promptRenameFor(e.detail); }}
       />
     {/if}
+
+    <!-- Every section above is gated on `.length`, so a search matching nothing
+         rendered a completely blank page — indistinguishable from "still
+         loading" or "the app is broken". Only shown once both fetches have
+         settled, so it can't flash during a slow load. -->
+    {#if noMatches}
+      <p class="text-center opacity-60 my-12" data-no-results>
+        {#if searchQuery.trim()}
+          No series match &ldquo;{searchQuery.trim()}&rdquo; in {season} {year}.
+        {:else}
+          Nothing to show — every series in {season} {year} is hidden by the filters above.
+        {/if}
+      </p>
+    {/if}
   {/if}
   </div>
 
@@ -641,6 +706,7 @@ let autoRename = false;
       year={year}
       user={$userName}
       bind:autoRename
+      bind:collapsed={sidebarCollapsed}
       on:update={(e) => {
         watchList = e.detail;
         saveList();
