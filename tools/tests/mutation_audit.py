@@ -273,6 +273,48 @@ MUTATIONS: list[Mutation] = [
                "silently, because the stop matches nothing",
         settle=0.0,
     ),
+    Mutation(
+        name="unaired series are looked up in the library again",
+        path="frontend/src/stores/jellyfin.ts",
+        find="  if (info.status) return info.status === 'NOT_YET_RELEASED';",
+        replace="  if (info.status) return false; /* mutation */",
+        test=T_UI,
+        expect="availability lookup(s) fired for a NOT_YET_RELEASED season",
+        guards="every match on the default (unaired) season falls through to fuzzy "
+               "titles against a library that cannot hold the show — measured 7/7 "
+               "wrong, offering 'Firefly' for 'Firefly Wedding'",
+    ),
+    Mutation(
+        name="Escape stops closing the trailer modal",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        find="    if (modal && e.key === 'Escape') closeModal();",
+        replace="    /* mutation: escape disabled */",
+        test=T_UI,
+        expect="Escape did not close the trailer modal",
+        guards="the only remaining exit is the backdrop, which is a thin strip on a "
+               "phone — and the test that was meant to catch this used to fall back "
+               "to a backdrop click and assert on that instead",
+    ),
+    Mutation(
+        name="the trailer modal loses its close button",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        find='        aria-label="Close trailer"',
+        replace='        aria-label="Close trailer mutated"',
+        test=T_UI,
+        expect="trailer modal has no visible close button",
+        guards="viewers who don't know Escape have to guess that the dark area "
+               "around the video is clickable",
+    ),
+    Mutation(
+        name="a no-match search renders nothing again",
+        path="frontend/src/pages/Home.svelte",
+        find="      <p class=\"text-center opacity-60 my-12\" data-no-results>",
+        replace="      <p class=\"text-center opacity-60 my-12\" data-no-results-mutated>",
+        test=T_UI,
+        expect="no-match search rendered nothing at all",
+        guards="searching for a show that isn't in this season shows a blank page, "
+               "which reads as a broken site rather than an empty result",
+    ),
 ]
 
 

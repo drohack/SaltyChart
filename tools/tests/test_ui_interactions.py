@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 14
+TOTAL = 16
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed — and a list whose ids aren't in the displayed season renders
@@ -462,17 +462,31 @@ def test_trailer_modal_escape(page, frontend: str):
     iframe_count = page.locator('iframe[src*="youtube"]').count()
     assert iframe_count > 0, "iframe didn't open"
 
-    step(9, "step 3/3: pressing Escape → expect modal gone")
+    step(9, "step 3/4: pressing Escape → expect modal gone")
     page.keyboard.press("Escape")
     page.wait_for_timeout(800)
     iframe_after = page.locator('iframe[src*="youtube"]').count()
-    if iframe_after > 0:
-        # Some implementations use backdrop click instead of Escape — try that
-        page.locator('.fixed.inset-0.bg-black\\/80').click(position={"x": 5, "y": 5})
-        page.wait_for_timeout(500)
-        iframe_after = page.locator('iframe[src*="youtube"]').count()
-    assert iframe_after == 0, f"modal still open after Escape: {iframe_after} iframes"
-    step(9, "PASS — modal closed cleanly")
+    # No backdrop-click fallback. This step used to fall back to clicking the
+    # backdrop and assert on *that*, so it passed for months while Escape closed
+    # nothing at all — the handler sat on a tabindex="-1" overlay that never
+    # received focus. If Escape is broken, this must go red.
+    assert iframe_after == 0, (
+        f"Escape did not close the trailer modal ({iframe_after} iframes still open). "
+        "Check the <svelte:window on:keydown> handler in AnimeGridTranslate.svelte."
+    )
+
+    step(9, "step 4/4: reopening and closing with the ✕ button")
+    trailer.click()
+    page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
+    close_btn = page.locator('button[aria-label="Close trailer"]')
+    assert close_btn.count() == 1, (
+        "trailer modal has no visible close button — the backdrop was the only "
+        "way out, which is near-invisible on a phone"
+    )
+    close_btn.click()
+    page.wait_for_timeout(600)
+    assert page.locator('iframe[src*="youtube"]').count() == 0, "✕ button did not close the modal"
+    step(9, "PASS — Escape and the ✕ button both close the trailer")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -732,6 +746,85 @@ def test_progressive_loading(page, frontend: str):
     step(14, "PASS -- one section failed alone, Retry recovered it")
 
 
+def test_no_results_message(page, frontend: str):
+    """A search matching nothing must say so.
+
+    Every section on Home is gated on `.length`, so a no-match search rendered a
+    completely blank page — indistinguishable from "still loading" or "broken".
+    """
+    step(15, "step 1/3: loading Home and searching for something that can't match")
+    page.goto(frontend)
+    wait_for_grids(page)
+    page.fill("#search", "zzzzznotarealshow")
+    page.wait_for_timeout(1200)
+
+    step(15, "step 2/3: expecting an explicit no-results message")
+    msg = page.locator("[data-no-results]")
+    assert msg.count() == 1, (
+        "a no-match search rendered nothing at all — no explanation, no empty state"
+    )
+    text = msg.inner_text()
+    assert "zzzzznotarealshow" in text, f"message didn't name the search term: {text!r}"
+
+    step(15, "step 3/3: clearing the search restores the grid")
+    page.fill("#search", "")
+    page.wait_for_timeout(1200)
+    assert page.locator("[data-no-results]").count() == 0, \
+        "no-results message stayed up after the search was cleared"
+    assert page.locator('img[alt]').count() > 0, "grid did not come back"
+    step(15, f"PASS — {text.strip()[:60]!r}")
+
+
+def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
+    """An unaired series must never be looked up in the library.
+
+    It cannot be there, so a lookup can only produce a false positive. Measured
+    before this guard: on the season the app opens on by default, *every* match
+    was fuzzy-title and *all* of them were wrong ("Firefly Wedding" → "Firefly",
+    "Dragon Ball Super: Beerus" → "Dragon Ball").
+    """
+    step(16, "step 1/3: finding a NOT_YET_RELEASED season to seed from")
+    unaired_season, unaired_year, ids = None, None, []
+    for season, year in [("FALL", 2026), ("WINTER", 2027), ("SPRING", 2026)]:
+        r = requests.get(f"{backend}/api/anime", params={"season": season, "year": year}, timeout=120)
+        if not r.ok:
+            continue
+        entries = [a for a in r.json() if a.get("status") == "NOT_YET_RELEASED"]
+        if len(entries) >= 3:
+            unaired_season, unaired_year = season, year
+            ids = [a["id"] for a in entries[:3]]
+            break
+    if not ids:
+        step(16, "SKIP — no season with unaired entries available right now")
+        return
+
+    requests.put(f"{backend}/api/list", timeout=15,
+                 headers={"Authorization": f"Bearer {token}"},
+                 json={"season": unaired_season, "year": unaired_year,
+                       "items": [{"mediaId": m} for m in ids]})
+    page.goto(frontend)
+    page.evaluate(
+        "([s, y]) => localStorage.setItem('season-year', JSON.stringify("
+        "{season: s, year: y, saved: Date.now()}))",
+        [unaired_season, unaired_year],
+    )
+
+    step(16, f"step 2/3: opening /random on {unaired_season} {unaired_year} "
+             f"and counting availability calls")
+    calls = []
+    page.on("request", lambda r: calls.append(r.url) if "/api/jellyfin/availability" in r.url else None)
+    page.goto(f"{frontend}/random")
+    page.wait_for_timeout(8000)
+
+    step(16, "step 3/3: expecting zero lookups for an unaired season")
+    assert not calls, (
+        f"{len(calls)} availability lookup(s) fired for a NOT_YET_RELEASED season — "
+        "the isUnaired() gate in stores/jellyfin.ts is not holding, so fuzzy title "
+        "matching will offer the wrong series"
+    )
+    step(16, f"PASS — 0 availability lookups across {len(ids)} unaired shows")
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -777,6 +870,8 @@ def main():
                 ("unknown never hides",lambda: test_unknown_never_hides(page, args.backend, frontend, token_a)),
                 ("share as image",     lambda: test_share_as_image(page, args.backend, frontend, token_a)),
                 ("progressive loading",lambda: test_progressive_loading(page, frontend)),
+                ("no-results message", lambda: test_no_results_message(page, frontend)),
+                ("unaired not looked up", lambda: test_unaired_never_looked_up(page, args.backend, frontend, token_a)),
             ]
             for label, fn in tests:
                 try:
