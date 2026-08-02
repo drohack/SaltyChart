@@ -150,6 +150,27 @@ What it established, each the hard way:
 nobody should trust — and one that has only been watched to fail, never to pass,
 is barely better.
 
+### How often to run what
+
+| when | what | cost |
+|---|---|---|
+| every push to master | `run_all.py --skip-burned-in` | ~4 min |
+| after touching `tools/tests/`, or the code a row anchors to | `mutation_audit.py --only N` for the affected rows | 1–3 min |
+| monthly, or before a large release | full `mutation_audit.py` | ~35 min |
+| before subtitle work, when the GPU is free | `run_all.py` *with* burned-in | + GPU time |
+
+`run_all.py` is the deploy gate: push to master builds and ships, so it runs
+every time. The audit is **not** a gate — it edits tracked source, restarts the
+backend ~26 times and starts real transcodes, which is not something to do
+casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
+Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
+
+The trigger for the audit is not a calendar, it is **"I changed a test, or the
+code a row points at"** — that is exactly when a row rots, and `--only N` makes
+checking one cheap. `test_audit_anchors.py` covers the rot that is detectable
+without running anything, on every push; a real audit is still the only way to
+find a row whose test has become vacuous.
+
 **⚠ AniList rate limit while testing.** Requests are **anonymous, so the limit
 is per IP** — AniList documents 90 req/min but has been **degraded to 30** for a
 long time, and the whole home network shares one public IP. There is no API key
@@ -234,9 +255,10 @@ Suite includes:
 | `test_player.py` | 10 steps driving the **real player**. Steps 1,2,3,5 always run — they open the player, and every later step operates on what they create; nesting any of them inside a `want()` block makes `--only-steps` skip setup and the run dies before asserting. Step 8 **reloads the page** before sampling with subtitles off: both passes seek to the same twelve timestamps, so the first leaves the browser holding subtitled segments at each, and restarting in place doesn't evict them — the comparison then reads its own frames back, byte-identical, and reports "not being burned in" against healthy code. Step 9 **stubs `play()` to reject once with `AbortError`** while the real play proceeds; that is the condition the guard exists for, and waiting for it to happen naturally does not work, because `play()` runs inside `one('loadedmetadata')` after a `currentTime()` seek so nothing interrupts it. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
+| `test_audit_anchors.py` | Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
-Final line on success: `Pre-deploy: 14/14 passed — ready to build` (13/13 with
+Final line on success: `Pre-deploy: 15/15 passed — ready to build` (14/14 with
 `--skip-burned-in`). On failure:
 `Pre-deploy: FAILED at step X — DO NOT deploy`. A run that can't warm the season
 cache stops before step 1 with

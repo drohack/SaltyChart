@@ -134,6 +134,11 @@ def main():
         # consulted by the rest of this suite. This one boots its own
         # production-mode backend on a spare port to prove they actually limit.
         ("rate limits",      ["py", "-3.13", "-u", str(TESTS / "test_rate_limits.py")], None, 180),
+        # A mutation-audit row that no longer matches its source SKIPs, which is
+        # easy to lose in a 35-minute run and means that invariant is quietly
+        # unaudited. Catching it costs a second and no servers, so it belongs on
+        # every push rather than waiting for the next audit.
+        ("audit anchors",    ["py", "-3.13", "-u", str(TESTS / "test_audit_anchors.py")], None, 30),
     ]
     # The browser checks. Run sequentially so they don't fight over the dev
     # server or share stale state.
