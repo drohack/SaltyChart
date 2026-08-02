@@ -47,17 +47,26 @@ $: _lang = $options.titleLanguage;
   // Track last selected wheel item ID to avoid immediate repeats
   let lastSelectedId: number | null = null;
 
-  // Derived: current user's watched rank for the selected show (1-based). Null
-  // when not watched. Uses watchedRank so it's on the same scale as the other
-  // users' ranks shown alongside it (not the pre-watch list-array position).
+  // Derived: this user's rank for the selected show (1-based), on exactly the
+  // same scale as the other users' ranks shown alongside it.
+  //
+  // `/api/list/nicknames` computes everyone else's as `watchedRank ?? order`,
+  // so an unwatched show still shows their pre-watch list position. This used
+  // to require `entry.watched` and return null otherwise — and since the wheel
+  // only ever holds *unwatched* shows, that meant your own number was missing
+  // from the pop-up essentially always, while everyone else's was right there.
+  // Mirror the server's rule instead of being stricter than it.
   $: myRank = selected
     ? (() => {
         const entry = watchList.find((w) => w.mediaId === selected.id);
-        if (!entry || !entry.watched) return null;
+        if (!entry) return null;
         if (typeof entry.watchedRank === 'number') return entry.watchedRank + 1;
-        // Watched but no persisted rank yet — fall back to the sidebar position.
-        const idx = watchedRank.findIndex((it) => it.id === selected.id);
-        return idx === -1 ? null : idx + 1;
+        if (entry.watched) {
+          // Watched but not yet persisted a rank — use the sidebar position.
+          const idx = watchedRank.findIndex((it) => it.id === selected.id);
+          if (idx !== -1) return idx + 1;
+        }
+        return typeof entry.order === 'number' ? entry.order + 1 : null;
       })()
     : null;
   let nicknameList: Array<{ userName: string; nickname: string | null; rank: number | null }> = [];
@@ -1789,13 +1798,21 @@ $: {
                   · {watchInfo.episodeTitle}
                 {/if}
               </span>
-              {#if watchInfo.matchedBy === 'title'}
-                <!-- Matched on title alone, with no id to confirm it. That is
-                     how a 2026 entry once resolved to a 2004 series of similar
-                     name, so say so rather than present it as fact. -->
+              {#if watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0}
+                <!-- Matched on a *partial* title, with no id to confirm it. That
+                     is how a 2026 entry once resolved to a 2004 series of
+                     similar name ("Firefly Wedding" → "Firefly"), so say so
+                     rather than present it as fact.
+                     Tier 0 — a normalised exact title — is deliberately not
+                     warned about. It used to be, which meant the common and
+                     entirely correct case ("Mebius Dust" → "Mebius Dust", whose
+                     only sin is that the community AniList→TVDB map hasn't
+                     caught up with a three-week-old show) carried the same
+                     warning as the genuinely dangerous prefix hits. A warning
+                     that fires on the ordinary case is a warning nobody reads. -->
                 <span
                   class="text-xs text-warning/80"
-                  title="Matched by title only — no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant."
+                  title="Matched on a partial title, and no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant."
                 >
                   ⚠ unconfirmed match
                 </span>

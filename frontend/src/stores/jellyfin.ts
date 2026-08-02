@@ -36,6 +36,12 @@ export interface MediaAvailability {
    * marks `title` matches, and bulk actions refuse to act on them.
    */
   matchedBy?: 'id' | 'title';
+  /**
+   * Which fuzzy tier matched: 0 exact, 1 prefix, 2 contains. Only set when
+   * `matchedBy === 'title'`. Tier 0 is a normalised exact hit and is treated as
+   * confirmed; the false positives this warning exists for were all tier 1.
+   */
+  titleTier?: 0 | 1 | 2;
 }
 
 /**
@@ -149,6 +155,9 @@ export function checkAvailability(
       mediaId,
       titles: titles.filter(Boolean).slice(0, 10),
       ...(fresh ? { fresh: true } : {}),
+      // Lets the server pick the episode by air date rather than by parsing a
+      // season number out of the title — see `getFirstEpisode`.
+      ...(airing?.startDate ? { startDate: airing.startDate } : {}),
     }),
   })
     .then((r) => (r.ok ? r.json() : NOT_AVAILABLE))
@@ -186,7 +195,7 @@ export async function checkAvailabilityMany(
   const tok = get(authToken);
   if (!tok || get(mediaConfigured) === false) return out;
 
-  const missing: Array<{ mediaId: number; titles: string[] }> = [];
+  const missing: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }> = [];
   for (const e of entries) {
     // Unaired entries are answered locally and never sent — on the default
     // (unaired) season this is the whole list, so it also removes ~83 library
@@ -208,6 +217,7 @@ export async function checkAvailabilityMany(
           items: chunk.map((e) => ({
             mediaId: e.mediaId,
             titles: e.titles.filter(Boolean).slice(0, 10),
+            ...(e.airing?.startDate ? { startDate: e.airing.startDate } : {}),
           })),
         }),
       });

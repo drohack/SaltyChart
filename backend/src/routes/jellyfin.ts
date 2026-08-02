@@ -527,12 +527,49 @@ async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
 }
 
 /**
- * First episode of the requested season. When the entry names a specific
- * season ("3rd Season") and the library doesn't have it, return null —
- * offering S1E1 for a season-3 entry would be wrong. Without a marker: first
- * episode overall, skipping season 0 (specials) when numbered seasons exist.
+ * How far an episode's air date may sit from the AniList entry's start date and
+ * still be considered the same broadcast. Anime premieres land within a few days
+ * of AniList's date; a month absorbs timezone/region skew and a `day: null`
+ * partial date (which we read as the 1st), while still being far tighter than
+ * the gap to any *other* season — the nearest neighbouring season is a cour
+ * away, ~90 days.
  */
-async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number | null) {
+const AIR_DATE_TOLERANCE_MS = 31 * 24 * 60 * 60 * 1000;
+
+/** AniList's partial date, read as the earliest day it could mean. */
+function anilistDateToMs(d?: { year?: number | null; month?: number | null; day?: number | null } | null): number | null {
+  if (!d?.year) return null;
+  return Date.UTC(d.year, (d.month ?? 1) - 1, d.day ?? 1);
+}
+
+/**
+ * Which episode does this AniList entry start at?
+ *
+ * **Air date is the primary signal, not the title.** Titles are a bad join key:
+ * `detectSeasonNumber` only understands "Nth Season" / "Season N" / 第N期, so
+ * `Part 2`, roman numerals (`II`), trailing digits (`Edgerunners 2`) and named
+ * arcs all fell through to "first episode overall" — and the worst case isn't a
+ * missing match, it's a confident wrong one. *BLEACH: Thousand-Year Blood War -
+ * The Calamity* resolved to `S1E1 · The Day I Became a Shinigami`, an episode
+ * from 2004, because TVDB models all of TYBW as later seasons of the original
+ * Bleach and the entry's title carries no season marker at all.
+ *
+ * An air date has none of those problems: it is language-independent, needs no
+ * marker, and is the same fact on both sides. Against that same entry it picks
+ * `S17E41` — 0 days off — and note it lands *mid-season*, on the cour boundary,
+ * which a season number cannot even express.
+ *
+ * The title tiers remain as the fallback, because the air date can be absent
+ * (no `startDate`), useless (a `year`-only partial), or unmatched (the library
+ * simply doesn't have that season — in which case nothing lands inside the
+ * tolerance and a season-marked entry correctly reports unavailable).
+ */
+async function getFirstEpisode(
+  api: Api,
+  seriesId: string,
+  seasonNumber: number | null,
+  airDateMs: number | null = null
+) {
   // Deliberately WITHOUT MediaSources. Asking for it here makes Jellyfin
   // enumerate the media sources of *every* episode — real disk work — to obtain
   // exactly one id, and the Randomize page runs this for every show on the
@@ -545,6 +582,41 @@ async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number 
   );
   const eps = data.Items ?? [];
   if (!eps.length) return null;
+
+  // ── Tier 1: air date ────────────────────────────────────────────────────
+  // `PremiereDate` is a default field on this endpoint (verified against the
+  // live server), so this costs no extra request.
+  if (airDateMs != null) {
+    let best: any = null;
+    let bestDelta = Infinity;
+    for (const e of eps) {
+      // Season 0 is specials, whose dates cluster around the seasons they ship
+      // with and would otherwise win ties against the real episode.
+      if ((e.ParentIndexNumber ?? 0) < 1 || !e.PremiereDate) continue;
+      const t = Date.parse(e.PremiereDate);
+      if (Number.isNaN(t)) continue;
+      const delta = Math.abs(t - airDateMs);
+      // Ties go to the earlier episode: a same-day double premiere should start
+      // at the first of the two, not whichever the list happened to yield last.
+      if (delta < bestDelta) { best = e; bestDelta = delta; }
+    }
+    if (best && bestDelta <= AIR_DATE_TOLERANCE_MS) {
+      return finishEpisode(api, best);
+    }
+    // We had a usable air date, the series has dated episodes, and *none* of
+    // them is anywhere near it. That is positive evidence the library holds a
+    // different part of this franchise, not this entry — so say so, rather than
+    // falling through to "first episode overall" and confidently offering an
+    // episode from 20 years earlier. This is the other half of the BLEACH case:
+    // the tier above fixes it when the library HAS the season, and this fixes it
+    // when the library doesn't.
+    //
+    // Guarded on `best` so a library whose episodes carry no PremiereDate at all
+    // (nothing to compare) still falls through instead of vanishing.
+    if (best && seasonNumber == null) return null;
+  }
+
+  // ── Tier 2: season marker in the title, else first episode overall ──────
   let pool: any[];
   if (seasonNumber != null) {
     pool = eps.filter((e) => e.ParentIndexNumber === seasonNumber);
@@ -558,7 +630,11 @@ async function getFirstEpisode(api: Api, seriesId: string, seasonNumber: number 
       (a.ParentIndexNumber ?? 0) - (b.ParentIndexNumber ?? 0) ||
       (a.IndexNumber ?? 0) - (b.IndexNumber ?? 0)
   );
-  const ep = pool[0];
+  return finishEpisode(api, pool[0]);
+}
+
+/** Resolve the one chosen episode's media source id. */
+async function finishEpisode(api: Api, ep: any) {
   // Now — and only now — ask for the one episode's media sources. Measured on
   // this library, 8 of 8 sampled episodes report a source id equal to their
   // item id, so this call almost always confirms what the fallback would have
@@ -602,9 +678,24 @@ router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res
 // episode? Cached per mediaId (1 h positives, 10 min negatives so newly-added
 // shows appear without a restart). Always 200 — the server being down or
 // unconfigured is `{ available: false, unknown: true }`, never an error.
-const availabilityCache = new Map<number, { data: any; expires: number }>();
+/** `v` is MATCH_ALGO_VERSION — entries from an older matcher are dropped on load. */
+const availabilityCache = new Map<number, { data: any; expires: number; v?: number }>();
 const AVAILABILITY_KEY = 'jellyfinAvailability';
 const AVAILABILITY_MAX = 500; // a couple of seasons' worth; bounded like sourceDims
+
+/**
+ * Bump when the matching logic changes, to drop answers the *old* logic
+ * produced.
+ *
+ * This cache is persisted and entries live up to an hour, so without a version
+ * a matcher fix doesn't take effect for existing entries until they expire —
+ * a deploy that corrects a wrong episode would keep serving the wrong episode
+ * across the restart, which is the one moment someone is looking for the fix.
+ *
+ * 2: episode chosen by air date, with a miss treated as evidence the library
+ *    doesn't hold this entry (was: first episode of the title-parsed season).
+ */
+const MATCH_ALGO_VERSION = 2;
 
 /**
  * Record one availability answer, in memory and (debounced) on disk.
@@ -623,7 +714,7 @@ function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
   if (availabilityCache.size >= AVAILABILITY_MAX) {
     availabilityCache.delete(availabilityCache.keys().next().value as number);
   }
-  availabilityCache.set(mediaId, { data, expires: Date.now() + ttlMs });
+  availabilityCache.set(mediaId, { data, expires: Date.now() + ttlMs, v: MATCH_ALGO_VERSION });
   persistMapSoon(AVAILABILITY_KEY, () => {
     const now = Date.now();
     return [...availabilityCache].filter(([, v]) => v.expires > now && !v.data?.unknown);
@@ -640,8 +731,15 @@ function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
 void (async () => {
   const now = Date.now();
   try {
-    for (const [k, v] of await loadPersistedEntries<number, { data: any; expires: number }>(AVAILABILITY_KEY)) {
+    let dropped = 0;
+    for (const [k, v] of await loadPersistedEntries<number, { data: any; expires: number; v?: number }>(AVAILABILITY_KEY)) {
+      // Answers from an older matcher are discarded, not aged out — see
+      // MATCH_ALGO_VERSION. Absent means "written before versioning", i.e. old.
+      if (v?.v !== MATCH_ALGO_VERSION) { dropped++; continue; }
       if (v?.expires > now && !v.data?.unknown) availabilityCache.set(Number(k), v);
+    }
+    if (dropped) {
+      console.log(`[jellyfin] dropped ${dropped} availability entries from an older matcher`);
     }
     for (const [k, v] of await loadPersistedEntries<string, { dims: any; at: number }>(SOURCE_DIMS_KEY)) {
       if (v?.at && now - v.at < SOURCE_DIMS_TTL_MS) sourceDims.set(String(k), v);
@@ -678,7 +776,8 @@ async function resolveAvailability(
   api: Api,
   mediaId: number,
   titles: string[],
-  fresh = false
+  fresh = false,
+  startDate?: { year?: number | null; month?: number | null; day?: number | null } | null
 ): Promise<any> {
   // `fresh: true` means "re-resolve this; don't hand me a cached answer".
   //
@@ -722,10 +821,14 @@ async function resolveAvailability(
       return data;
     }
 
-    // Respect the entry's season: a "3rd Season" entry must resolve to S3E01,
-    // and be honestly unavailable when the library lacks season 3.
+    // Which episode this entry starts at. The air date decides when we have one
+    // and the library holds a matching broadcast; the season marker is the
+    // fallback, and still makes a "3rd Season" entry honestly unavailable when
+    // the library lacks season 3.
     const seasonNumber = detectSeasonNumber(titles);
-    const episode = await getFirstEpisode(api, hit.series.id, seasonNumber);
+    const episode = await getFirstEpisode(
+      api, hit.series.id, seasonNumber, anilistDateToMs(startDate)
+    );
     if (!episode) {
       const data = { available: false, libraryTitle: hit.series.title, matchedBy: hit.confidence };
       rememberAvailability(mediaId, data, 10 * 60 * 1000);
@@ -746,6 +849,13 @@ async function resolveAvailability(
       // fuzzy has produced a real false positive, so the UI marks it and
       // Hide-Not-in-Library refuses to act on it.
       matchedBy: hit.confidence,
+      // Which fuzzy tier hit: 0 exact, 1 prefix, 2 contains. Worth reporting
+      // because "fuzzy" lumps together two very different things — an exact
+      // normalised title ("Mebius Dust" == "Mebius Dust") next to a prefix hit
+      // ("witch" ⊂ "witchontheholynight" → the 2004 cartoon W.I.T.C.H.). Both
+      // used to raise the same "unconfirmed match" warning, which made the
+      // warning noise on the common case and easy to ignore on the dangerous one.
+      titleTier: hit.tier,
     };
     rememberAvailability(mediaId, data, 60 * 60 * 1000);
     return data;
@@ -759,7 +869,7 @@ async function resolveAvailability(
 }
 
 router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
-  const { mediaId, titles, fresh } = req.body ?? {};
+  const { mediaId, titles, fresh, startDate } = req.body ?? {};
   if (invalidEntry(mediaId, titles)) {
     return res.status(400).json({
       error: 'Expected { mediaId: int, titles: string[1..10] }',
@@ -773,7 +883,9 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
   // stale-true would let Hide-Not-in-Library hide the entire list.
   if (!cfg) return res.json({ available: false, configured: false, unknown: true });
 
-  res.json(await resolveAvailability(await jellyfinApi(cfg), mediaId, titles, fresh === true));
+  res.json(await resolveAvailability(
+    await jellyfinApi(cfg), mediaId, titles, fresh === true, startDate
+  ));
 });
 
 /**
@@ -822,7 +934,7 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
   const worker = async () => {
     while (next < items.length) {
       const it = items[next++];
-      out[it.mediaId] = await resolveAvailability(api, it.mediaId, it.titles);
+      out[it.mediaId] = await resolveAvailability(api, it.mediaId, it.titles, false, it.startDate);
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
