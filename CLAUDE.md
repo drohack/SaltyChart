@@ -430,10 +430,19 @@ Two consequences that have both bitten:
   fetched once and cached 1h; **`Fields=ProviderIds,OriginalTitle` is
   mandatory** on that query or Jellyfin returns `ProviderIds: null`, which
   reads exactly like "no ids exist" and silently disables the id tier.
-  Per-mediaId cache: 1h positives, 10min negatives. `fresh: true` bypasses
-  the negative cache and refetches the library on a match-miss (throttled to
+  Per-mediaId cache: 1h positives, 10min negatives, **persisted** to
+  `AppConfig.jellyfinAvailability` so a restart doesn't re-derive ~50 shows.
+  `fresh: true` means "re-resolve; don't hand me a cached answer" — it bypasses
+  the cache entirely and refetches the library on a match-miss (throttled to
   one refetch per 30s — every negative asking for its own refetch turned into
-  a stampede that reported everything as missing).
+  a stampede that reported everything as missing). It used to bypass *only*
+  negatives, which matched its one caller (the pop-up re-checking an
+  unavailable show) but left no way to force a real resolution. That mattered
+  once the cache started surviving restarts: `test_jellyfin` proves the id tier
+  is alive by checking that some series matched by `id`, and with every answer
+  served from cache it was reading a recording rather than exercising the
+  matcher — a mutation disabling the tier went unnoticed. Widening it costs
+  nothing in production, since the only caller sends it for negatives.
   Always 200 — server down/unconfigured is `{ available: false, unknown: true }`
   (never cached). **`unknown` is load-bearing**: it means "couldn't ask", not
   "not in the library", and every consumer must refuse to hide a show on it,
