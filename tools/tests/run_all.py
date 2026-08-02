@@ -169,10 +169,22 @@ def main():
         futures = {ex.submit(_capture, lbl, cmd, cwd, to): (lbl, i)
                    for i, (lbl, cmd, cwd, to) in enumerate(parallel_checks, 1)}
         results: dict[int, tuple[str, bool, float, str]] = {}
+        # These run concurrently, so their own output can't be streamed without
+        # interleaving into nonsense — which left the status bar frozen on one
+        # line for the ~30s the phase takes. Announce each completion instead:
+        # the line names what finished, what is still outstanding, and how far
+        # through the whole suite we are, so it stands alone.
+        done_n = 0
         for f in concurrent.futures.as_completed(futures):
             label, i = futures[f]
             ok, elapsed, output = f.result()
             results[i] = (label, ok, elapsed, output)
+            done_n += 1
+            pending = [futures[g][0] for g in futures if not g.done()]
+            still = f"waiting on {', '.join(sorted(pending)[:3])}" if pending else "all in"
+            print(f"[parallel {done_n}/{n_parallel} of {total} pre-deploy] "
+                  f"{'ok' if ok else 'FAILED'}: {label} ({elapsed:.1f}s) — {still}",
+                  flush=True)
 
     # Print results in deterministic order (i=1..N) so output is readable
     any_failed = False

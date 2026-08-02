@@ -40,6 +40,8 @@
   // fullscreen subtree (a sibling overlay simply isn't rendered in fullscreen).
   let flashEl: HTMLDivElement;
   let flashHome: HTMLElement | null = null;
+  /** Poll that waits for the cast plugin to add its button; cleared on destroy. */
+  let castFixTimer: ReturnType<typeof setInterval> | null = null;
   let player: any = null;
   let rate = 1.0;
   // onMount awaits can outlive a quick close; every await point re-checks this.
@@ -574,20 +576,44 @@
       ...(chromecastReady ? { techOrder: ['chromecast', 'html5'], plugins: { chromecast: {} } } : {}),
     });
 
-    // The cast plugin appends its button, which lands to the *right* of
-    // fullscreen. Fullscreen should always be the last control, so put cast
-    // immediately before it — same "insert relative to fullscreenToggle"
-    // approach the subtitle and quality menus use above.
+    // Cast button: put it before fullscreen, and give it its icon back.
+    //
+    // Done on the DOM, not through video.js components, and retried — the
+    // previous attempt used `bar.getChild('chromecastButton')` immediately
+    // after construction and silently did nothing, because the plugin adds its
+    // button asynchronously once the Cast SDK reports in. There was no button
+    // to find yet.
+    //
+    // Two fixes:
+    //  * position — fullscreen must be the last control, always.
+    //  * icon — with `experimentalSvgIcons` video.js no longer renders the
+    //    `.vjs-icon-placeholder` span, and the plugin's stylesheet draws its
+    //    (shipped, bundled) PNG as that span's background. No span, no icon.
+    //    Re-adding the span makes the plugin's own artwork appear; nothing
+    //    custom is drawn.
     if (chromecastReady) {
-      const bar = player.getChild('controlBar');
-      const cast = bar?.getChild('chromecastButton') ?? bar?.getChild('ChromecastButton');
-      const full = bar?.getChild('fullscreenToggle');
-      if (bar && cast && full) {
-        const target = bar.children().indexOf(full);
-        if (target >= 0) {
-          bar.removeChild(cast);
-          bar.addChild(cast, {}, target);
+      const fixCastButton = () => {
+        const barEl = player?.el()?.querySelector('.vjs-control-bar');
+        const cast = barEl?.querySelector('.vjs-chromecast-button') as HTMLElement | null;
+        const full = barEl?.querySelector('.vjs-fullscreen-control');
+        if (!barEl || !cast || !full) return false;
+        if (!cast.querySelector('.vjs-icon-placeholder')) {
+          const icon = document.createElement('span');
+          icon.className = 'vjs-icon-placeholder';
+          icon.setAttribute('aria-hidden', 'true');
+          cast.insertBefore(icon, cast.firstChild);
         }
+        if (cast.nextElementSibling !== full) barEl.insertBefore(cast, full);
+        return true;
+      };
+      if (!fixCastButton()) {
+        // The SDK can take a moment; give up rather than watch forever, since a
+        // machine with no Cast receiver never gets a button at all.
+        let tries = 0;
+        const iv = setInterval(() => {
+          if (fixCastButton() || ++tries > 40) clearInterval(iv);
+        }, 250);
+        castFixTimer = iv;
       }
     }
 
@@ -694,6 +720,7 @@
     window.removeEventListener('keydown', handleKey, { capture: true });
     // Hand the flash back to Svelte before video.js destroys its subtree,
     // otherwise Svelte's own cleanup can't find the node.
+    if (castFixTimer) { clearInterval(castFixTimer); castFixTimer = null; }
     if (flashEl && flashHome && flashEl.parentElement !== flashHome) flashHome.appendChild(flashEl);
     player?.dispose?.();
     player = null;
@@ -859,19 +886,20 @@
   :global(.video-js.vjs-fullscreen) .sc-rate-flash {
     font-size: clamp(2rem, 5vw, 7rem);
   }
-  /* The cast button renders blank. Its icon is a background image the plugin
-     ships (and which *does* bundle — Vite inlines it as a data URI), but
-     `experimentalSvgIcons` makes video.js inject an <svg> into every control's
-     .vjs-icon-placeholder, and that empty svg covers the background. Hide the
-     injected svg for this one button so the plugin's own icon shows through —
-     no custom artwork involved. The plugin also sizes the placeholder 12px,
-     about half the height of every neighbouring control; match them. */
-  :global(.video-js .vjs-chromecast-button .vjs-icon-placeholder > svg),
-  :global(.video-js .vjs-chromecast-button .vjs-svg-icon) {
-    display: none;
-  }
+  /* The cast button's icon is a PNG the plugin ships, drawn as the background of
+     a `.vjs-icon-placeholder` span. Under `experimentalSvgIcons` video.js stops
+     rendering that span, so the button came out empty — the span is re-added in
+     script (see `fixCastButton`) and this only sizes it, since the plugin's own
+     rule is 12px, about half the height of every neighbouring control. */
   :global(.video-js .vjs-chromecast-button .vjs-icon-placeholder) {
     width: 1.5em;
     height: 1.5em;
+    background-size: contain;
+  }
+  /* Never show a control that can't do anything. The plugin hides its button
+     via `vjs-hidden` when no receiver is reachable; make that unambiguous so a
+     dead button can't sit in the bar looking clickable. */
+  :global(.video-js .vjs-chromecast-button.vjs-hidden) {
+    display: none !important;
   }
 </style>

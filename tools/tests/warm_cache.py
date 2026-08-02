@@ -96,9 +96,20 @@ def warm_one(backend: str, s: str, y: int, fmt: str, tag: str, timeout: int = 24
             print(f"[{tag}] {label}: {why} — gave up after {attempt} attempt(s) "
                   f"over {time.time() - started:.0f}s", flush=True)
             return False
+        # Count the wait down rather than sleeping silently. The status bar shows
+        # only the newest line, so a single "waiting 60s" sits there for a full
+        # minute looking like a hang — and reads as "the run is stuck on 429s"
+        # when it is in fact doing exactly the right thing.
         print(f"[{tag}] {label}: {why}, attempt {attempt} — waiting {wait}s "
               f"({left / 60:.0f} min left before giving up)", flush=True)
-        time.sleep(wait)
+        remaining = wait
+        while remaining > 0:
+            nap = min(10, remaining)
+            time.sleep(nap)
+            remaining -= nap
+            if remaining > 0:
+                print(f"[{tag}] {label}: {why} — retrying in {remaining}s "
+                      f"(attempt {attempt + 1})", flush=True)
 
 
 def warm(backend: str = "http://localhost:3000", timeout: int = 240) -> tuple[int, int]:
@@ -106,7 +117,11 @@ def warm(backend: str = "http://localhost:3000", timeout: int = 240) -> tuple[in
     keys = [(s, y, fmt) for s, y in season_keys() for fmt in ("", "TV")]
     warmed = failed = 0
     for n, (s, y, fmt) in enumerate(keys, 1):
-        if warm_one(backend, s, y, fmt, f"warm {n}/{len(keys)}", timeout):
+        # "pre-deploy warm" on purpose: this runs *before* step 1, and the status
+        # bar shows a single line with no surrounding context. Tagged only
+        # `warm n/N`, a 429 retry here reads as the suite itself failing on
+        # AniList rather than as pre-flight doing its job.
+        if warm_one(backend, s, y, fmt, f"pre-deploy warm {n}/{len(keys)}", timeout):
             warmed += 1
         else:
             failed += 1
