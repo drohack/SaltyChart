@@ -27,6 +27,11 @@
       }
     | null = null;
 
+  /** Shown as the URL placeholder, and used when the box is left blank. */
+  const DEFAULT_JF_URL = 'http://192.168.1.2:8096';
+  /** Last saved URL, so a blank box can fall back to it rather than clearing. */
+  let jfStoredUrl = '';
+
   async function loadConfig() {
     if (!$authToken) return;
     const auth = { Authorization: `Bearer ${$authToken}` };
@@ -34,11 +39,30 @@
       const res = await fetch('/api/jellyfin/config', { headers: auth });
       if (res.ok) {
         const data = await res.json();
-        jfUrl = data.url ?? '';
+        jfStoredUrl = data.url ?? '';
+        jfUrl = jfStoredUrl;
         jfKeySet = !!data.apiKeySet;
         jfUserId = data.userId ?? '';
       }
-      const list = await fetch('/api/jellyfin/users', { headers: auth });
+      await loadUsers();
+    } catch {}
+  }
+
+  /**
+   * The playback-account picker.
+   *
+   * Split out because it needs re-running after Test and after Save, not only on
+   * mount: `/api/jellyfin/users` reads the *stored* config, so on a first setup
+   * (or after correcting a bad URL/key) the mount-time call returns nothing and
+   * the picker sits empty with no way to choose an account — which is the one
+   * thing you came to this page to do.
+   */
+  async function loadUsers() {
+    if (!$authToken) return;
+    try {
+      const list = await fetch('/api/jellyfin/users', {
+        headers: { Authorization: `Bearer ${$authToken}` },
+      });
       if (list.ok) jfUsers = (await list.json()).users ?? [];
     } catch {}
   }
@@ -55,6 +79,10 @@
         body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined }),
       });
       jfTestResult = await res.json();
+      // A green test means the stored credentials can reach the server, so the
+      // account list is worth (re)fetching — otherwise you'd have to save and
+      // reload the page before the picker had anything in it.
+      if (jfTestResult?.ok) await loadUsers();
     } catch {
       jfTestResult = { ok: false, error: 'Request failed — is the backend up?' };
     } finally {
@@ -67,10 +95,17 @@
     jfSaveMsg = '';
     jfSaveErr = '';
     try {
+      // A blank URL means "I didn't touch this", not "clear it" — saving to
+      // change only the playback account should not wipe the server address.
+      // Fall back to whatever is stored, then to the placeholder default.
+      const url = jfUrl.trim() || jfStoredUrl || DEFAULT_JF_URL;
+      jfUrl = url;
       const res = await fetch('/api/jellyfin/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-        body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined, userId: jfUserId }),
+        // `apiKey: undefined` is the documented "keep the stored key" signal —
+        // the key is never sent to the browser, so a blank box means unchanged.
+        body: JSON.stringify({ url, apiKey: jfKey || undefined, userId: jfUserId }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -79,6 +114,9 @@
           jfKeySet = true;
           jfKey = '';
         }
+        // Now that the URL/key are stored, /users can actually answer — so the
+        // picker fills in without a page reload and the account can be chosen.
+        await loadUsers();
       } else {
         jfSaveErr = data?.error ?? 'Save failed.';
       }
@@ -113,11 +151,18 @@
           <label class="label" for="jf-url">
             <span class="label-text">Server URL</span>
           </label>
+          <!-- Password managers treat any text/password pair as a login form and
+               offer to fill it. These are server settings, not credentials for a
+               site, so opt out the same way Compare's username box does. -->
           <input
             id="jf-url"
             type="text"
             class="input input-bordered w-full"
             placeholder="http://192.168.1.2:8096"
+            autocomplete="off"
+            data-bwignore="true"
+            data-1p-ignore="true"
+            data-lpignore="true"
             bind:value={jfUrl}
           />
         </div>
@@ -131,6 +176,10 @@
             type="password"
             class="input input-bordered w-full"
             placeholder={jfKeySet ? '•••••••••• (saved — leave blank to keep)' : 'Paste a Jellyfin API key'}
+            autocomplete="new-password"
+            data-bwignore="true"
+            data-1p-ignore="true"
+            data-lpignore="true"
             bind:value={jfKey}
           />
           <div class="label">

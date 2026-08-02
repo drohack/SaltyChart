@@ -222,6 +222,67 @@ the list of what went unreached. Append anything confirmed to the log below.
 
 ## Findings log
 
+### Found after pass 1 — all three fixed
+
+**A sequel whose season lived inside the *same* TVDB series resolved to S1E1.**
+*BLEACH: Thousand-Year Blood War - The Calamity* matched
+`Library: Bleach · S1E1 · The Day I Became a Shinigami` — right series, wrong
+season, and no season marker in the title for `detectSeasonNumber` to read.
+
+This is **not** an id-tier coverage gap, which is what makes it different from
+the fuzzy-match problems above. Checked in `anilistTvdbMap`:
+
+| AniList | title | TVDB |
+|---|---|---|
+| 185874 | TYBW – The Calamity | **74796** |
+| 169755 | TYBW – Soukoku-tan (previous cour) | **74796** |
+
+TVDB models the whole of TYBW as later *seasons of the original Bleach*, so even
+a perfect id match lands on series 74796 and still has to choose a season. The
+id tier cannot help here by construction.
+
+**Fixed by matching on air date instead of the title.** `relations` (a `PREQUEL`
+edge to 169755) was the first idea, but the chain runs back through every cour to
+the 2004 original, so "prequels deep" is not a TVDB season number — it would have
+swapped one confidently-wrong episode for another.
+
+`startDate` is the better key: language-independent, needs no marker, and the
+same fact on both sides. `getFirstEpisode` now picks the episode whose
+`PremiereDate` is nearest, within ±31 days (a cour is ~90, so there is wide
+clearance). Against this entry it picks **S17E41, 0 days off** — and note it
+lands *mid-season*, on the cour boundary, which a season number cannot express.
+A miss is also treated as evidence: a usable date plus dated episodes plus
+nothing within a month means the library holds a different part of the
+franchise, so it reports unavailable rather than falling back to episode 1.
+
+The tiers are now: air date → season marker in the title → first episode
+overall. **Note the persisted cache**: answers live in `AppConfig`
+`jellyfinAvailability` for up to an hour *across restarts*, so a matcher fix
+would otherwise keep serving old answers through the deploy. `MATCH_ALGO_VERSION`
+is stamped on every entry and mismatches are dropped on load; bump it whenever
+matching changes.
+
+**The Jellyfin player pop-up was much smaller than the trailer pop-up** — its
+`modal-box` was `w-full max-w-5xl`, a hard 64rem/1024px cap at any screen size,
+against the trailer's scaling `w-[95%] md:w-5/6 lg:w-4/5`. Fixed by giving it the
+trailer's widths plus `max-h-[95vh]`, with `min-h-0 flex-1` on the video row so a
+wide-but-short window can't push the control bar off the bottom.
+
+**The 76-day look-ahead was switching the default too early** — two weeks after
+the *current* season's premieres you stopped landing on the season actually
+airing, and (since the unaired gate above) that default view is one where nothing
+can be in the library by definition. Now **50 days**: on Aug 2, 60 days from Oct
+1, the app opens on the airing SUMMER 2026. `LOOKAHEAD_DAYS` in `stores/season.ts`.
+
+That change also produced the sharpest lesson of the day. Declaring the constant
+next to `computeInitialSeason()` looked obviously fine, type-checked clean, and
+**rendered the entire app blank** — the store initialises eagerly at module load,
+so the `const` was still in its temporal dead zone: `Cannot access
+'LOOKAHEAD_DAYS' before initialization`. `test_frontend_smoke` caught it in about
+six seconds. Module-level constants used during module initialisation must be
+declared at the top of the file, and this is the fourth runtime-only failure in
+this repo that no type check could see.
+
 ### Pass 1 — 2026-08-01 (local dev, `1f5b20c`)
 
 **All six were fixed the same day, and every one now has a regression test and a
