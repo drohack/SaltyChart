@@ -76,6 +76,19 @@ trailer in the app once) or copy rows from the prod DB.
 - After any Whisper / sentence-transformers / Prisma version bump.
 - After any change to the SubtitleCache or WatchList schema.
 
+## What this suite cannot catch — `EXPLORATORY.md`
+
+Every check here asks *"does this mechanism work?"* in isolation, from a clean
+load, asserted by whoever wrote the feature. That shape can't see state going
+stale across a sequence, a control nobody thought to assert on, a console error
+where nothing is looking, or a layout that collapses at 390px.
+
+`EXPLORATORY.md` is the charter for an agent driving a real browser as a user.
+It is deliberately **not** automated — its output is a findings list, and
+anything it finds twice should graduate into this suite with a
+`mutation_audit.py` row. Read its *Traps* section before starting; several
+plausible-looking "bugs" there are measurement artifacts.
+
 ## Output format
 
 All tests emit self-contained progress lines per the global CLAUDE.md

@@ -22,6 +22,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -87,6 +88,57 @@ def main() -> int:
         return 1
 
     print(f"Done: all {len(rows)} mutation anchors resolve", flush=True)
+
+    rc = check_exploratory_charter(ma.REPO)
+    return rc
+
+
+def check_exploratory_charter(repo: Path) -> int:
+    """`EXPLORATORY.md` must not rot into misleading instructions.
+
+    It goes stale faster than anything else here, because *fixing* a bug it found
+    changes the behaviour it tells the next agent to expect. Within hours of pass
+    1 it carried two instructions that would have made the next agent re-file a
+    withdrawn finding, plus a `file.svelte:36` reference the fix had already
+    moved.
+
+    Only the mechanical half is checkable — prose can't be verified:
+      * every cited file path exists
+      * no `file.ext:NN` line references, which are the most rot-prone form
+        (CLAUDE.md says so explicitly) and rot silently. Cite an identifier.
+    """
+    doc = repo / "tools" / "tests" / "EXPLORATORY.md"
+    if not doc.exists():
+        print("[charter] SKIP — tools/tests/EXPLORATORY.md not present", flush=True)
+        return 0
+    text = doc.read_text(encoding="utf-8")
+    problems: list[str] = []
+
+    line_refs = re.findall(r"`([A-Za-z0-9_/.-]+\.(?:svelte|ts|css|py)):(\d+)`", text)
+    for path, line in line_refs:
+        problems.append(
+            f"line-number reference `{path}:{line}` — cite an identifier instead, "
+            f"line numbers move silently"
+        )
+
+    cited = set(re.findall(r"`([A-Za-z0-9_/.-]+\.(?:svelte|ts|css|py))`", text))
+    known = {p.name: p for p in repo.rglob("*")
+             if p.is_file() and "node_modules" not in p.parts and ".git" not in p.parts}
+    for ref in sorted(cited):
+        name = ref.split("/")[-1]
+        if not (repo / ref).exists() and name not in known:
+            problems.append(f"cites `{ref}`, which no longer exists anywhere in the repo")
+
+    if problems:
+        print(f"[charter] FAIL — EXPLORATORY.md has {len(problems)} stale reference(s):", flush=True)
+        for p in problems:
+            print(f"  {p}", flush=True)
+        print("[charter] A charter that misdescribes the app sends the next pass "
+              "chasing findings that were already fixed.", flush=True)
+        return 1
+
+    print(f"Done: EXPLORATORY.md cites {len(cited)} file(s), all resolve, no line refs",
+          flush=True)
     return 0
 
 

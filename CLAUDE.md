@@ -32,6 +32,16 @@ When your diff touches any of these, update the listed locations too:
   this file.
 - **Changed default behaviour** (default sort, theme, flag, etc.) → search
   for docs or inline comments that named the old default.
+- **Fixed something an exploratory pass found** → update
+  `tools/tests/EXPLORATORY.md`. This file rots faster than any other doc here,
+  because *fixing* a finding changes the behaviour the charter tells the next
+  agent to expect — a pass-1 finding was withdrawn as a measurement error while
+  the charter still instructed the reader to measure it that way, and a
+  `file.svelte:36` reference was moved by its own fix within the hour. Past-tense
+  the finding, say what the fix was, and correct any session step whose expected
+  value changed (e.g. "availability calls must be exactly 1" became "1 on an
+  aired season, 0 on an unaired one"). `test_audit_anchors.py` catches only the
+  mechanical half — dead file paths and line-number references.
 
 ### Verify nearby comments when editing code
 
@@ -158,10 +168,19 @@ is barely better.
 | after touching `tools/tests/`, or the code a row anchors to | `mutation_audit.py --only N` for the affected rows | 1–3 min |
 | monthly, or before a large release | full `mutation_audit.py` | ~35 min |
 | before subtitle work, when the GPU is free | `run_all.py` *with* burned-in | + GPU time |
+| before a release, or after reworking Home/Randomize/Compare or a modal | an exploratory pass — `tools/tests/EXPLORATORY.md` | ~1 h, an agent in a browser |
+
+The exploratory pass is the one that is **not** a script. Everything above
+asserts a mechanism in isolation from a clean load, which is why the first pass
+found a phone layout that hides the entire grid behind the My List panel, an
+Escape key that closes nothing, and a "Server busy" message written for a human
+that only ever reached the console. Its findings log doubles as the record of
+what has already been looked at; anything it finds twice belongs in `run_all.py`
+with a mutation row.
 
 `run_all.py` is the deploy gate: push to master builds and ships, so it runs
 every time. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~26 times and starts real transcodes, which is not something to do
+backend ~36 times (two per row, 18 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -193,7 +212,7 @@ minutes on a window that showed 13 of 30 requests still available.
 Load is amplified by restarts, because the LRU and the in-flight coalescing map
 die with the process — that part is fine, since losing them costs a SQLite read.
 What mattered is that a *stale* row re-triggers its refresh on the first request
-after every restart, and the mutation audit restarts the backend ~26 times an
+after every restart, and the mutation audit restarts the backend ~36 times an
 hour.
 
 Rules of thumb:
@@ -248,14 +267,14 @@ Suite includes:
 | `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
 | `test_api_negative.py` | 11 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates, and a **correctly signed JWT carrying no `id`** — which used to hang the request forever instead of returning 401, so the short timeout *is* the assertion |
 | `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
-| `test_ui_interactions.py` | 14 flows. Nine are button-click smoke (login, search, hide 18+, season, add-to-list, theme, wheel, logout, modal Escape). The rest assert things nothing verified before: **Compare** selects a second user and checks every rank and diff against deliberately different seeded orders — it used to look for the word "Compare" in the body text, which passes on a page with no rows; **/admin** loads with its playback-account picker populated and no API key anywhere in the DOM; **`unknown` never hides a show** — availability is route-intercepted to `{unknown:true}` and the Hide-Not-in-Library control must refuse to act; **share-as-image** produces a real JPEG with more than one colour (an all-blank render is the realistic silent failure); **progressive loading** fails *only* the leftovers fetch and asserts Retry appears while the main grid still renders. Seeds from live season data — the old hardcoded mediaIds had aged out of the season entirely, so every seeded list joined against nothing |
+| `test_ui_interactions.py` | 16 flows. Nine are button-click smoke (login, search, hide 18+, season, add-to-list, theme, wheel, logout, modal Escape — the Escape step **no longer falls back to a backdrop click**, which is how it passed for months while Escape closed nothing, and it now also asserts the trailer's ✕ button exists). Two came from the exploratory pass: **a no-match search** must render an explicit message rather than a blank page, and **an unaired season must issue zero `/api/jellyfin/availability` calls** — a `NOT_YET_RELEASED` series cannot be in the library, so a lookup can only ever produce a false positive (measured 7/7 wrong before the guard). The rest assert things nothing verified before: **Compare** selects a second user and checks every rank and diff against deliberately different seeded orders — it used to look for the word "Compare" in the body text, which passes on a page with no rows; **/admin** loads with its playback-account picker populated and no API key anywhere in the DOM; **`unknown` never hides a show** — availability is route-intercepted to `{unknown:true}` and the Hide-Not-in-Library control must refuse to act; **share-as-image** produces a real JPEG with more than one colour (an all-blank render is the realistic silent failure); **progressive loading** fails *only* the leftovers fetch and asserts Retry appears while the main grid still renders. Seeds from live season data — the old hardcoded mediaIds had aged out of the season entirely, so every seeded list joined against nothing |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_jellyfin.py` | 10 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured |
 | `test_player.py` | 10 steps driving the **real player**. Steps 1,2,3,5 always run — they open the player, and every later step operates on what they create; nesting any of them inside a `want()` block makes `--only-steps` skip setup and the run dies before asserting. Step 8 **reloads the page** before sampling with subtitles off: both passes seek to the same twelve timestamps, so the first leaves the browser holding subtitled segments at each, and restarting in place doesn't evict them — the comparison then reads its own frames back, byte-identical, and reports "not being burned in" against healthy code. Step 9 **stubs `play()` to reject once with `AbortError`** while the real play proceeds; that is the condition the guard exists for, and waiting for it to happen naturally does not work, because `play()` runs inside `one('loadedmetadata')` after a `currentTime()` seek so nothing interrupts it. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Pure helpers via `node --test`. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
-| `test_audit_anchors.py` | Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
+| `test_audit_anchors.py` | Two doc-rot checks, both cheap enough to run on every push. (1) **`EXPLORATORY.md` cites nothing dead** — every referenced file exists, and no `file.ext:NN` line references, which move silently (one did, within an hour of being written). It cannot check the prose, so a pass here does not mean the charter is accurate — see the doc-sync rule above. (2) Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 10 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it |
 
 Final line on success: `Pre-deploy: 15/15 passed — ready to build` (14/14 with
