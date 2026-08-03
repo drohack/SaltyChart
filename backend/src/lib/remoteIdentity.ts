@@ -4,7 +4,11 @@ import { getItemLookupApi } from '@jellyfin/sdk/lib/utils/api/item-lookup-api';
 import prisma from '../db';
 import { normalizeTitle, MatchableSeries } from './animeMatch';
 import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './episodeMatch';
-import { resolveIdentity, setIdentityOverride, identityReady } from './seriesIdentity';
+import {
+  needsRemoteLookup,
+  setIdentityOverride,
+  identityReady,
+} from './seriesIdentity';
 
 // ---------------------------------------------------------------------------
 // Creating the links nobody else has.
@@ -348,7 +352,10 @@ export async function runRemoteIdentitySweep(
         // even in the upstream anime databases — so asking about them is pure
         // waste. They are also not what this app is for.
         if (s.isAdult) continue;
-        if (resolveIdentity(s.id).source !== 'none') continue;
+        // NOT "has any identity row" — that retired an entry permanently the
+        // first time a search came back empty, and made the retry schedule
+        // below unreachable. See needsRemoteLookup.
+        if (!needsRemoteLookup(s.id)) continue;
         // Native included: TMDB stores an `original_title`, and it is the one
         // form that doesn't depend on which English localisation a cataloguer
         // chose.

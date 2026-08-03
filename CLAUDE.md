@@ -262,7 +262,7 @@ with a mutation row.
 
 `run_all.py` is the deploy gate: push to master builds and ships, so it runs
 every time. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~54 times (two per row, 27 rows) and starts real transcodes, which is not something to do
+backend ~58 times (two per row, 29 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -294,7 +294,7 @@ minutes on a window that showed 13 of 30 requests still available.
 Load is amplified by restarts, because the LRU and the in-flight coalescing map
 die with the process — that part is fine, since losing them costs a SQLite read.
 What mattered is that a *stale* row re-triggers its refresh on the first request
-after every restart, and the mutation audit restarts the backend ~54 times an
+after every restart, and the mutation audit restarts the backend ~58 times an
 hour.
 
 Rules of thumb:
@@ -694,7 +694,23 @@ So we make the links. Jellyfin is already configured to talk to TMDB and exposes
 `/Items/RemoteSearch/{Series,Movie}` — no new API key, no new dependency. A sweep
 runs 90s after boot and daily thereafter (same lifecycle as the map refresh),
 reads entries from `SeasonCache` rather than asking AniList, and is bounded at 40
-per run. Misses are recorded so they aren't re-searched; the retry interval is
+per run.
+
+**Two things make "check again later" actually work, and both were broken at
+first** — invisibly, because nothing looks wrong; the system just silently stops
+improving:
+
+- A row recording *"we looked and found nothing"* must **not** shadow the
+  community map. `resolveIdentity` returned any override first, so once a search
+  had failed, a pair added upstream could never take effect. An id-less,
+  unconfirmed, un-rejected row is bookkeeping, not an answer.
+- The sweep must select on **`needsRemoteLookup`**, not on "has an identity row".
+  Filtering on the latter retired an entry the first time a search came back
+  empty — which made the retry tiering below it unreachable, i.e. dead code.
+
+A human decision (confirmed, or an explicit rejection) *is* an answer and still
+wins over both. Note the consequence: a mistaken Reject is permanent until
+cleared on `/admin/matching`. Misses are recorded so they aren't re-searched; the retry interval is
 **tiered by how close the entry is to airing** (2 days within ±1 year, 30 days
 for older), because that is when a TMDB record actually appears.
 

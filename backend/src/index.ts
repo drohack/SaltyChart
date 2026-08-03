@@ -77,7 +77,7 @@ import jellyfinRouter from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
 import { runRemoteIdentitySweep } from './lib/remoteIdentity';
-import { getJellyfinConfig, getSeriesLibrary } from './routes/jellyfin';
+import { getJellyfinConfig, getSeriesLibrary, getFilmIndex } from './routes/jellyfin';
 import { jellyfinApi } from './lib/jellyfinApi';
 import prisma from './db';
 
@@ -567,6 +567,11 @@ ensureDatabaseSchema().then(() => {
         const cfg = await getJellyfinConfig();
         if (!cfg) return;
         const api = await jellyfinApi(cfg);
+        // Warm the film index HERE, not on a viewer's request. It is a
+        // 6638-item fetch, and it was reachable only from resolveAvailability —
+        // so on a cold process the first person whose wheel contained a film
+        // waited for it. That is the 7.5 MB map mistake again, in a new place.
+        await getFilmIndex(api).catch(() => undefined);
         // The library is what makes the air-date gate possible: a candidate we
         // hold can have its episodes dated against the AniList premiere, which
         // is the only signal that separates a correct sequel→parent match from

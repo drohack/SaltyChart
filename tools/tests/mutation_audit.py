@@ -204,9 +204,39 @@ MUTATIONS: list[Mutation] = [
                "list, and leaves the wrong Watch button on screen",
     ),
     Mutation(
+        name="a recorded miss shadows the community map",
+        path=BACKEND_IDENTITY,
+        # Both halves of "check again later" were broken by the same bookkeeping
+        # row. This half meant a pair added upstream could never take effect:
+        # once we had looked and failed, our empty row answered first, forever.
+        # Nothing observable goes wrong — the system just silently stops
+        # improving, which is why it needs a test rather than a reader.
+        find="  if (override && !isBookkeeping) return override;",
+        replace="  if (override) return override; /* mutation */",
+        test=T_UNIT,
+        expect="shadow the community map",
+        guards="identity quietly stops improving as the upstream map fills in",
+    ),
+    Mutation(
+        name="a failed lookup retires an entry forever",
+        path=BACKEND_IDENTITY,
+        # The other half: the sweep filtered on \"has any identity row\", so one
+        # empty search result took the entry out of scope permanently and the
+        # retry tiering below it could never fire.
+        find="  if (o?.tvdbId || o?.tmdbId) return false;           // we already have an id",
+        replace="  if (o) return false; /* mutation */",
+        test=T_UNIT,
+        expect="re-examines an entry it previously failed on",
+        guards="a show that gains a TVDB/TMDB record as it approaches airing is "
+               "never looked at again",
+    ),
+    Mutation(
         name="identity overrides are ignored",
         path=BACKEND_IDENTITY,
-        find="  if (override) return override;",
+        # Same line as "a recorded miss shadows the community map", mutated the
+        # other way: that row makes the override win too often, this one stops
+        # it winning at all.
+        find="  if (override && !isBookkeeping) return override;",
         replace="  /* mutation: overrides ignored */",
         test=T_JELLYFIN,
         expect="override did not change the verdict",

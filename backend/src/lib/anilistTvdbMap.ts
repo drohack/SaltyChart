@@ -252,3 +252,13 @@ export function anilistTvdbMapReady(): boolean {
 export function anilistTvdbMapSize(): number {
   return Object.keys(_map).length;
 }
+
+/** Test seam: populate the maps without a 7.5 MB download. */
+export function __setMapsForTest(
+  tvdb: Record<string, string>,
+  tmdb: Record<string, string>
+): void {
+  _map = tvdb;
+  _tmdb = tmdb;
+  _loaded = true;
+}

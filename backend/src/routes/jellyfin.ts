@@ -573,7 +573,7 @@ async function fetchFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
  * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
  * needed. Serves stale while refreshing behind, like everything else here.
  */
-async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
+export async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
   if (_films && _films.expires > Date.now()) return _films.byTmdb;
   if (_filmsInFlight) return _filmsInFlight;
 

@@ -133,11 +133,18 @@ export function resolveIdentity(anilistId: number): Identity {
   // Pending rows are returned too, and that is deliberate. They used to be
   // withheld because an unreviewed id could suppress a working match — but that
   // risk now lives where it belongs: `matchSeries` treats a `remote` id as
-  // positive-only, so it can add a Watch button and never take one away. With
-  // that in place, withholding the id only hides a usable answer behind a review
-  // queue for no safety gain. A row with no ids (a recorded miss) simply falls
-  // through to titles on its own.
-  if (override) return override;
+  // positive-only, so it can add a Watch button and never take one away.
+  //
+  // A row with NO ids is different, and must not win. The resolver writes one
+  // to record "we looked and found nothing", so it doesn't re-search the same
+  // dead end daily — but that is bookkeeping, not an answer. Returning it early
+  // shadowed the community map *permanently*: once we had looked and failed,
+  // Fribb adding the pair the next week could never take effect, because our
+  // empty row answered first. A human decision (confirmed, or an explicit
+  // rejection) is a real answer and still wins.
+  const isBookkeeping =
+    !!override && !override.tvdbId && !override.tmdbId && !override.confirmed && !override.rejected;
+  if (override && !isBookkeeping) return override;
 
   const tvdbId = tvdbIdForAnilist(anilistId);
   const tmdb = tmdbRefForAnilist(anilistId);
@@ -250,4 +257,33 @@ export function identityOverrideCount(): number {
  */
 export function rawIdentityOverride(anilistId: number): Identity | null {
   return _overrides.get(anilistId) ?? null;
+}
+
+/**
+ * Should the remote resolver look at this entry again?
+ *
+ * True when we still have no usable id and no human has settled it. A recorded
+ * miss does NOT make an entry permanently off-limits — that was the bug: the
+ * sweep filtered on "has any identity row", so a single failed search retired
+ * the entry forever and the tiered retry below it could never fire. TMDB gains
+ * records as a show approaches airing, which is exactly when it matters.
+ */
+export function needsRemoteLookup(anilistId: number): boolean {
+  const o = _overrides.get(anilistId);
+  if (o?.confirmed || o?.rejected) return false;      // a human has decided
+  if (o?.tvdbId || o?.tmdbId) return false;           // we already have an id
+  // No override worth keeping — but the map may still know it.
+  return !tvdbIdForAnilist(anilistId) && !tmdbRefForAnilist(anilistId);
+}
+
+/**
+ * Test seam: set the in-memory overrides directly.
+ *
+ * The real loader reads the DB. These invariants are about *precedence* — which
+ * source answers when several could — and that is pure logic worth testing
+ * without a database.
+ */
+export function __setOverridesForTest(rows: Record<number, Identity>): void {
+  _overrides = new Map(Object.entries(rows).map(([k, v]) => [Number(k), v]));
+  _loaded = true;
 }
