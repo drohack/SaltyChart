@@ -32,6 +32,16 @@ When your diff touches any of these, update the listed locations too:
   this file.
 - **Changed default behaviour** (default sort, theme, flag, etc.) → search
   for docs or inline comments that named the old default.
+- **New `AppConfig` key** → add it to the `AppConfig` bullet in the schema
+  section. Everything in that table caches an upstream answer, and the reason
+  each one is persisted (restarts are what generate the load) belongs with it.
+- **Changed matching behaviour** → update *Matching AniList entries to the
+  library*, re-run `check_match_corpus.py` (with `fresh` **and** `startDate`),
+  and re-baseline the replay only after reading its diff. A matcher change that
+  moves counts without a named cause is a regression until proven otherwise.
+- **Quoted a measurement in prose** → say what it was measured over and when it
+  would stop being true. `~55% coverage` and `~836 series` both survived here for
+  months as live facts and were wrong by 40 points and 3x respectively.
 - **Fixed something an exploratory pass found** → update
   `tools/tests/EXPLORATORY.md`. This file rots faster than any other doc here,
   because *fixing* a finding changes the behaviour the charter tells the next
@@ -43,6 +53,60 @@ When your diff touches any of these, update the listed locations too:
   aired season, 0 on an unaired one"). `test_audit_anchors.py` catches only the
   mechanical half — dead file paths and line-number references.
 
+### Measure before claiming — and check what you measured
+
+Every wrong conclusion in this repo's history has come from one of five shapes.
+They are listed with the instance that produced them, because the abstract
+version is easy to nod along to and ignore.
+
+**1. A diagnostic that doesn't send what the real caller sends measures a
+program you don't ship.** This has caused three separate wrong conclusions:
+
+| omitted | what was actually being graded |
+|---|---|
+| `fresh` in `check_match_corpus.py` | the availability cache — a recording of an earlier run |
+| `startDate` in the same tool | a build with the air-date guard *disabled* (20 false positives reported vs 12 real) |
+| `tmdbId` in the replay fixture | half of `matchSeries`; the TMDB tier was never exercised |
+
+Before trusting a number, diff your request against the real caller's.
+`build_match_fixtures.py` now refuses to write a column that is empty on every
+row, which is the general form of the fix.
+
+**2. Repeating a documented figure is not measuring it.** `~55% id coverage`
+(really 94% on TV) and `~836 series` (really 2271) were both quoted from this
+file as live facts. A number in prose is a record of one past measurement, not a
+property of the system. If a decision turns on it, re-measure it.
+
+**3. "It can't be found / can't be done" needs a search behind it.** 292 entries
+were called permanently unknowable; the upstream databases knew 284 of them, and
+a base-title search resolved 211. The claim was never tested.
+
+**4. Generalising from a handful of eyeballed cases produces guards that delete
+correct behaviour.** An `isRelation` guard was built from four samples and would
+have rejected `Bananya Around the World → Bananya`, which is right (1 day off).
+Season count "obviously" separating a spin-off from a sequel is false too —
+Bleach at 26 seasons is a correct match, Pokémon at 23 is wrong. **Air date
+separates them by three orders of magnitude; nothing else does.**
+
+**5. A test that goes red has not necessarily caught anything.** Beyond the
+`expect` substring rule in `mutation_audit.py`:
+- Order assertions **specific-first**. A generic "it resolved anyway" check
+  fired before the specific "it fell through to a series" one and caught its own
+  mutation for the wrong reason.
+- Assert on the surface that can actually be wrong. A hide-rollback test checked
+  the *server*, which is trivially correct when every write fails.
+- A row can go vacuous when unrelated code changes: nulling `tvdbId` stopped
+  disabling the id tier once TMDB backed it up.
+
+**And two habits that aren't about measurement:**
+
+- **Never pipe a long-running command through `tail`/`head`/`grep`** — it
+  silently discards the part of the output you didn't anticipate needing. A
+  per-format table was lost this way.
+- **Never truncate a collection silently.** `slice(0, 100)` on a 128-entry season
+  made a review page report "nothing needs review" for a third of it. Chunk, or
+  say what was dropped.
+
 ### Verify nearby comments when editing code
 
 - Re-read function-level `/** JSDoc */` and header comments next to your
@@ -52,6 +116,23 @@ When your diff touches any of these, update the listed locations too:
   moving to cards).
 - Markdown bullets citing specific line numbers, class names, or file paths
   are the most rot-prone — verify each still matches reality.
+
+### Secrets: the Jellyfin key leaves by more doors than you think
+
+The API key is guarded carefully on the way to a browser — the stream proxy
+**refuses** any manifest containing a credential, and `test_jellyfin` asserts it.
+That guard was written for one door, and the key walked out of another: an axios
+error carries its request `config`, so `console.warn('…', err)` printed
+`Token="…"` into the backend log on any library-refresh timeout.
+
+**Log `jellyfinErrorInfo(err)`, never the error object.** When adding a new
+`catch`, ask where else the value could carry a header — logs, error responses,
+telemetry, a message shown to a user.
+
+Same instinct for **repo contents**: this repo is public. The match-replay
+fixtures snapshot every title in the media library plus internal item ids, so
+they are gitignored and built locally. Before committing generated data, ask what
+it describes about the person running it.
 
 ### Style rules
 
@@ -72,7 +153,8 @@ When your diff touches any of these, update the listed locations too:
 3. **Before building Docker images for deploy**: run the full pre-deploy
    suite (`tools/tests/run_all.py`) — see *Testing* section below.
 4. Skim `README.md` and this file for stale mentions of the old behaviour
-   and update them.
+   and update them — including any **number** your change invalidates (step
+   counts, mutation-row counts, corpus sizes, coverage percentages).
 5. If you touched `shareCompare()` in `Compare.svelte` or `shareMyList()`
    in `WatchListSidebar.svelte`, manually verify the share button still
    exports a reasonable image — both functions are DOM-clone-heavy and
@@ -180,7 +262,7 @@ with a mutation row.
 
 `run_all.py` is the deploy gate: push to master builds and ships, so it runs
 every time. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~48 times (two per row, 24 rows) and starts real transcodes, which is not something to do
+backend ~54 times (two per row, 27 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -212,7 +294,7 @@ minutes on a window that showed 13 of 30 requests still available.
 Load is amplified by restarts, because the LRU and the in-flight coalescing map
 die with the process — that part is fine, since losing them costs a SQLite read.
 What mattered is that a *stale* row re-triggers its refresh on the first request
-after every restart, and the mutation audit restarts the backend ~48 times an
+after every restart, and the mutation audit restarts the backend ~54 times an
 hour.
 
 Rules of thumb:
@@ -271,7 +353,7 @@ Suite includes:
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_match_replay.py` | Replays the **shipping** matcher over a frozen 8-season corpus (945 real AniList entries × a 2271-series library snapshot) and diffs every verdict against a committed baseline. Seconds, no network, no server — which is the point: the live corpus check makes ~440 real Jellyfin lookups and takes ~7 minutes, so it can't run routinely. **The fixtures are gitignored**, because they are a snapshot of the whole media library — every title and its internal item ids — and this repo is public; the test SKIPS where they haven't been built, which costs nothing since `run_all.py` can't run in CI anyway. Twelve real false positives are asserted **by name**, because "234 → 236 matched" tells you nothing about whether the Pokémon bug came back. It also fails if a named assertion matches **no** corpus entry — an assertion with no subject reads as a pass forever, the same way a mutation row whose anchor moved reports SKIP. Measures matcher *logic*, not current holdings: the snapshot ages and that's expected. Re-baseline deliberately with `build_match_fixtures.py` then `match_replay.ts --write`, which **refuses** to bake a known-bad pair into the baseline |
-| `test_jellyfin.py` | 11 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured. Step 11 is a **round trip through the override table**, and covers two distinct paths because only one of them was originally tested: pointing an available show at a TVDB id nothing carries must flip it to unavailable, **and so must an outright rejection, which carries no ids at all**. The second shipped broken — a rejection fell through to the title tier, so Reject saved its row, dropped the entry from the review list, and left the wrong Watch button on screen. It was found by clicking the button in a browser; no type check, build or existing test saw it. Always cleans up in a `finally` — a stray override would quietly break that show for the live site as well as later runs |
+| `test_jellyfin.py` | 11 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured. Step 11 is a **round trip through the override table**, and covers two distinct paths because only one of them was originally tested: pointing an available show at a TVDB id nothing carries must flip it to unavailable, **and so must an outright rejection, which carries no ids at all**. The second shipped broken — a rejection fell through to the title tier, so Reject saved its row, dropped the entry from the review list, and left the wrong Watch button on screen. It was found by clicking the button in a browser; no type check, build or existing test saw it. It also asserts that **a film we don't hold does not fall through to a series title match** — the category error that produced `The Last Blossom → House`. Its assertions are ordered specific-first: the generic "resolved anyway" check fired first at one point and caught its own mutation for the wrong reason. Always cleans up in a `finally` — a stray override would quietly break that show for the live site as well as later runs |
 | `test_player.py` | 10 steps driving the **real player**. Steps 1,2,3,5 always run — they open the player, and every later step operates on what they create; nesting any of them inside a `want()` block makes `--only-steps` skip setup and the run dies before asserting. Step 8 **reloads the page** before sampling with subtitles off: both passes seek to the same twelve timestamps, so the first leaves the browser holding subtitled segments at each, and restarting in place doesn't evict them — the comparison then reads its own frames back, byte-identical, and reports "not being burned in" against healthy code. Step 9 **stubs `play()` to reject once with `AbortError`** while the real play proceeds; that is the condition the guard exists for, and waiting for it to happen naturally does not work, because `play()` runs inside `one('loadedmetadata')` after a `currentTime()` seek so nothing interrupts it. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
 | `backend npm run test:unit` | Pure helpers via `node --test`. `jellyfinApi`: **a logged error never carries the API key** — an axios error holds its request `config`, so `console.warn('…', err)` printed `Token="…"` into the backend log on any library-refresh timeout. The proxy already refuses to hand a credential to a browser; this was the same secret leaving by a different door, and `jellyfinErrorInfo` is what every catch must log instead. `remoteIdentity`: the acceptance ladder against the **real measured pairs** — Bananya at 1 day accepts, Babylon 5 at 9,441 rejects — plus `baseTitle`, which is pinned to what it actually produces (`Punirunes Puni`, not `Punirunes`) because the probe that first demonstrated it typed the shorter form by hand. `episodeMatch`: season 0 skipped, ties to the earlier episode, partial AniList dates read as the earliest day. `animeMatch`: a guessed id is positive-only while a map id is not. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
@@ -750,8 +832,11 @@ Two tiers, and **both are permanent**:
 
 Measured over a full season against the real library, the id tier finds a
 strict **subset** of what titles find (35 vs 45 of 52) — it adds no reach,
-because community id coverage tracks how long a season has been airing (~55%
-two months out, ~94% once finished). Its value is **confidence**: the response
+because community id coverage is uneven by *format*, not by season age. Measured
+over 8 seasons: **94% of TV** entries have a TVDB id — even the currently-airing
+season is 81% — but ONA is 40%, TV_SHORT 32%, MOVIE 3% and OVA 1%. An earlier
+note here claimed "~55% two months out"; that was never measured and is wrong.
+Its value is **confidence**: the response
 says `matchedBy`, the pop-up marks title-only matches as unconfirmed, and bulk
 actions refuse to act on them. That matters — fuzzy matching produced a real
 false positive (AniList's 2026 *Mahou Shoujo Lyrical Nanoha EXCEEDS* matching
@@ -1190,10 +1275,14 @@ Tables / columns:
   Holds `jellyfinFilmIndex` (TMDB film id → library item, so a film is never
   fuzzy-matched against TV series),
   `jellyfinUrl` / `jellyfinApiKey`, written by the admin `/admin` page
-  via `PUT /api/jellyfin/config`, plus `anilistTvdbMap` / `anilistTvdbMapAt`
+  via `PUT /api/jellyfin/config`, plus `anilistTmdbMap` (AniList → `tv:N` /
+  `movie:N`, the namespace kept because TMDB numbers films and shows
+  independently), `anilistTvdbMap` / `anilistTvdbMapAt`
   (the cached AniList→TVDB id map, refreshed at boot and daily on a timer,
   conditionally via `If-None-Match`, never on the request path),
-  `jellyfinLibrary` / `jellyfinLibraryAt` (the ~836-series match corpus), and
+  `jellyfinLibrary` / `jellyfinLibraryAt` (the match corpus — 2271 series on this
+  deployment; the "836" figure elsewhere in this file counts *anime folders*, not
+  the library), `jellyfinFilmIndex` (TMDB film id → item), and
   `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
   per-season cooldowns after a 429), and `jellyfinAvailability` /
   `jellyfinSourceDims` (the two per-item caches). Everything in this table that

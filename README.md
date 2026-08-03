@@ -88,9 +88,12 @@ chronological order; all features listed are live.
   an administrator is used.
 - On the Randomize page, the show pop-up gains **▶ Watch here** with the
   season and episode it will start on, playing in-page through the backend —
-  when the series is found in your library (matched by English *and* Japanese
-  titles, season-aware; the matched library title is shown under the button,
-  and a "Not in library" note appears otherwise).
+  when the series is found in your library. Matching goes by **id first** — a
+  show is identified before it is looked for — and falls back to English *and*
+  Japanese titles only when no id exists anywhere. It is season-aware, and picks
+  the episode by air date, so a "Part 2" or a mid-season cour opens where it
+  actually starts. The matched library title is shown under the button, and a
+  "Not in library" note appears otherwise.
 - If the media server can't be reached, the page **says so and offers Retry**
   rather than just showing no Watch buttons — which used to look exactly like
   "none of these are in your library". Bulk Hide/Show changes that the server

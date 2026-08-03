@@ -365,7 +365,7 @@ let _library: { series: JfSeries[]; expires: number } | null = null;
 let _libraryInFlight: Promise<JfSeries[]> | null = null;
 /** When a `fresh` re-check last forced a refetch (throttled below). */
 let _lastLibraryRefresh = 0;
-/** The DB-backed copy, so a restart doesn't refetch ~836 series. */
+/** The DB-backed copy, so a restart doesn't refetch the whole library (2271). */
 let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null = null;
 
 /**
@@ -482,7 +482,8 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
 /**
  * The library, persisted across restarts.
  *
- * In-memory only, this was refetched in full — ~836 series with ProviderIds —
+ * In-memory only, this was refetched in full — the whole library (2271 series)
+ * with ProviderIds —
  * every time the process restarted. In production that means the first viewer
  * after every deploy pays for it; in development it fired dozens of times an
  * hour, which is most of what pegged the Jellyfin server. `AppConfig` already
