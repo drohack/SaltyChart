@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { authToken } from '../stores/auth';
   import { isAdmin } from '../stores/jellyfin';
+  import { apiJson, QUICK } from '../lib/remote';
+  import AdminTabs from '../components/AdminTabs.svelte';
 
   // ── Jellyfin config ─────────────────────────────────────────────────
   // The API key is stored server-side and never sent back to a browser;
@@ -32,20 +34,27 @@
   /** Last saved URL, so a blank box can fall back to it rather than clearing. */
   let jfStoredUrl = '';
 
+  /** Set when the saved config couldn't be read — distinct from "nothing saved". */
+  let jfLoadError = '';
+
   async function loadConfig() {
     if (!$authToken) return;
     const auth = { Authorization: `Bearer ${$authToken}` };
+    // One `catch {}` used to wrap this *and* loadUsers, so any failure rendered
+    // as empty fields and an empty account picker — i.e. "nothing is
+    // configured", on the page whose entire job is showing what is configured.
     try {
-      const res = await fetch('/api/jellyfin/config', { headers: auth });
-      if (res.ok) {
-        const data = await res.json();
-        jfStoredUrl = data.url ?? '';
-        jfUrl = jfStoredUrl;
-        jfKeySet = !!data.apiKeySet;
-        jfUserId = data.userId ?? '';
-      }
-      await loadUsers();
-    } catch {}
+      const data = await apiJson<any>('/api/jellyfin/config', { headers: auth },
+                                      { label: 'jellyfin/config', timeoutMs: QUICK });
+      jfStoredUrl = data.url ?? '';
+      jfUrl = jfStoredUrl;
+      jfKeySet = !!data.apiKeySet;
+      jfUserId = data.userId ?? '';
+      jfLoadError = '';
+    } catch {
+      jfLoadError = "Couldn't load the saved configuration — the fields below may be blank for that reason, not because nothing is saved.";
+    }
+    await loadUsers();
   }
 
   /**
@@ -60,11 +69,18 @@
   async function loadUsers() {
     if (!$authToken) return;
     try {
-      const list = await fetch('/api/jellyfin/users', {
-        headers: { Authorization: `Bearer ${$authToken}` },
-      });
-      if (list.ok) jfUsers = (await list.json()).users ?? [];
-    } catch {}
+      const data = await apiJson<{ users?: any[] }>(
+        '/api/jellyfin/users',
+        { headers: { Authorization: `Bearer ${$authToken}` } },
+        { label: 'jellyfin/users', timeoutMs: QUICK }
+      );
+      jfUsers = data.users ?? [];
+    } catch {
+      // Not fatal: an unconfigured or unreachable server legitimately has no
+      // list to give. The picker's own empty state covers it, and apiJson
+      // logged why.
+      jfUsers = [];
+    }
   }
 
   onMount(loadConfig);
@@ -131,6 +147,7 @@
 
 <main class="max-w-2xl mx-auto px-4 flex flex-col gap-6">
   <h1 class="text-2xl font-bold">Admin</h1>
+  <AdminTabs current="connection" />
 
   {#if !$authToken || $isAdmin === false}
     <div class="alert alert-warning">
@@ -146,6 +163,15 @@
           subtitles into the video, so they arrive already rendered. The API key
           is stored server-side and never sent to browsers.
         </p>
+
+        {#if jfLoadError}
+          <!-- Blank fields after a failed read look exactly like "nothing is
+               configured", which is the one thing this page must not imply. -->
+          <div class="alert alert-warning text-sm mb-3" data-config-load-error>
+            <span>{jfLoadError}</span>
+            <button type="button" class="btn btn-xs btn-outline normal-case" on:click={loadConfig}>Retry</button>
+          </div>
+        {/if}
 
         <div class="form-control">
           <label class="label" for="jf-url">

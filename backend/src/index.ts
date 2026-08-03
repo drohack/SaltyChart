@@ -75,6 +75,10 @@ import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
+import { loadIdentityOverrides } from './lib/seriesIdentity';
+import { runRemoteIdentitySweep } from './lib/remoteIdentity';
+import { getJellyfinConfig, getSeriesLibrary } from './routes/jellyfin';
+import { jellyfinApi } from './lib/jellyfinApi';
 import prisma from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -403,6 +407,72 @@ async function ensureDatabaseSchema() {
       console.warn('[DB] Failed to create AppConfig table', err);
     }
 
+    // --------------------- SeriesIdentity table ---------------------
+    // Our own AniList → TVDB/TMDB overrides. Deliberately an override *layer*,
+    // not a copy of the community map: that map already answers 94% of TV
+    // correctly, so duplicating its 7,179 rows would add a staleness problem and
+    // no reach. Rows exist only for corrections, confirmations of title-only
+    // matches, and entries the map has never covered.
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SeriesIdentity" (
+          "anilistId" INTEGER NOT NULL PRIMARY KEY,
+          "tvdbId"    TEXT,
+          "tmdbId"    TEXT,
+          "tmdbKind"  TEXT,
+          "source"    TEXT NOT NULL DEFAULT 'manual',
+          "confirmed" BOOLEAN NOT NULL DEFAULT false,
+          "rejected"  BOOLEAN NOT NULL DEFAULT false,
+          "pending"   BOOLEAN NOT NULL DEFAULT false,
+          "matchedTitle" TEXT,
+          "candidates" TEXT,
+          "note"      TEXT,
+          "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    } catch (err) {
+      console.warn('[DB] Failed to create SeriesIdentity table', err);
+    }
+    // `rejected` must be its own column, not inferred from "confirmed with no
+    // ids": confirming a good title match also leaves the id boxes empty, so the
+    // two states are indistinguishable without it — and guessing wrong means the
+    // Reject button silently does nothing while looking like it worked.
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "SeriesIdentity" ADD COLUMN "rejected" BOOLEAN NOT NULL DEFAULT false`
+      );
+    } catch {
+      /* already present */
+    }
+    // `pending` marks a row whose ids are a *suggestion* — written by the remote
+    // resolver when it wasn't confident enough to act. The ids are recorded so a
+    // human can approve them in one click, but they are NOT used for matching:
+    // an id here is authoritative in both directions, so a fuzzy search writing
+    // one unreviewed could both invent a Watch button and hide a show you own.
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "SeriesIdentity" ADD COLUMN "pending" BOOLEAN NOT NULL DEFAULT false`
+      );
+    } catch {
+      /* already present */
+    }
+    // What the resolver saw, so a reviewer can judge without re-searching.
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "SeriesIdentity" ADD COLUMN "matchedTitle" TEXT`);
+    } catch {
+      /* already present */
+    }
+    // Every candidate the lookup returned, as JSON, so the review page can offer
+    // a picker. A search returns one result most of the time and up to twenty for
+    // a franchise name — and those are precisely the rows a human needs to
+    // disambiguate, so throwing away all but the winner made review harder
+    // exactly where it mattered.
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "SeriesIdentity" ADD COLUMN "candidates" TEXT`);
+    } catch {
+      /* already present */
+    }
+
     // --------------------- Drop the Plex subtitle cache ---------------------
     // Held WebVTT extracted from Plex media parts, which existed only because
     // Plex had no endpoint to serve a subtitle track — Jellyfin does, so the
@@ -471,9 +541,43 @@ ensureDatabaseSchema().then(() => {
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
     // Warm the AniList→TVDB map after the server is up, never during a
-    // request: it's a ~10MB download and availability lookups must not wait
+    // request: it's a 7.5MB download and availability lookups must not wait
     // on it. Failure is fine — matching falls back to titles alone.
+    //
+    // This was already the intent, but `resolveAvailability` awaited the same
+    // function, so a viewer's request joined this download whenever the stored
+    // copy had gone stale. It doesn't any more; the refresh lives entirely
+    // here.
     void ensureAnilistTvdbMap();
+    // ...and on a timer, so a long-running process doesn't rely on a restart to
+    // pick up new entries. The check is conditional (If-None-Match), so an
+    // unchanged file costs a 304.
+    setInterval(() => void ensureAnilistTvdbMap(true), 24 * 60 * 60 * 1000).unref();
+    // Our own overrides — a handful of rows, read on every availability lookup,
+    // so they load once here rather than being queried per show.
+    void loadIdentityOverrides();
+
+    // Fill in the ids no community map has, by asking Jellyfin's own metadata
+    // providers. On a timer for the same reason as the map refresh: an id is a
+    // permanent fact, so finding one shouldn't wait for someone to press a
+    // button. Delayed at boot so it never competes with the first page load,
+    // and bounded per run — see `runRemoteIdentitySweep`.
+    const sweep = async () => {
+      try {
+        const cfg = await getJellyfinConfig();
+        if (!cfg) return;
+        const api = await jellyfinApi(cfg);
+        // The library is what makes the air-date gate possible: a candidate we
+        // hold can have its episodes dated against the AniList premiere, which
+        // is the only signal that separates a correct sequel→parent match from
+        // "5-Oku-nen Button Part 2 → Babylon 5".
+        await runRemoteIdentitySweep(api, await getSeriesLibrary(api));
+      } catch (err: any) {
+        console.warn('[identity] sweep could not start:', err?.message ?? err);
+      }
+    };
+    setTimeout(() => void sweep(), 90_000).unref();
+    setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
   });
 
   // ────────────────────────────────────────────────────────────────────────────

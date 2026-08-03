@@ -16,12 +16,14 @@ CLAUDE.md convention:
 """
 import argparse
 import atexit
+import subprocess
 import sys
 from datetime import date
+from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 10
+TOTAL_STEPS = 11
 
 
 def step(n: int, msg: str) -> None:
@@ -31,6 +33,30 @@ def step(n: int, msg: str) -> None:
 def fail(n: int, msg: str) -> None:
     print(f"[{n}/{TOTAL_STEPS} Jellyfin] FAIL — {msg}", flush=True)
     sys.exit(1)
+
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def admin_token() -> str:
+    """A JWT for ADMIN_USER_ID, signed with the backend's own secret.
+
+    The identity endpoints are admin-gated and the fixture user here never is,
+    so without minting one they can't be exercised at all. Same helper as
+    `test_ui_interactions.admin_token` — signed through node so the suite gains
+    no dependency and signs exactly the way the app does.
+    """
+    script = ("require('dotenv').config();"
+              "const jwt=require('jsonwebtoken');"
+              "const id=parseInt(process.env.ADMIN_USER_ID||'1',10);"
+              "console.log(jwt.sign({id}, process.env.JWT_SECRET||'dev-secret',"
+              "{expiresIn:'10m'}));")
+    try:
+        r = subprocess.run(["node", "-e", script], cwd=REPO / "backend",
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def current_season_year() -> tuple[str, int]:
@@ -220,6 +246,11 @@ def main():
         av = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
                            json={"mediaId": s["id"], "titles": t[:10]}, timeout=90).json()
         if av.get("available"):
+            # Carry the inputs through: step 11 has to re-ask about this exact
+            # entry after writing an override, and the response alone doesn't
+            # say which AniList entry produced it.
+            av["mediaId"] = s["id"]
+            av["titles"] = t[:10]
             playable = av
             break
     if not playable:
@@ -357,6 +388,105 @@ def main():
                 fail(10, "no cues in the converted WebVTT")
             regions = head.count("Region:")
             step(10, f"PASS — {cues} cues, {regions} region(s) inside the header")
+
+    # ───────── 11/11  An identity override changes the verdict ─────────
+    #
+    # The admin matching page's entire promise is that a correction sticks. If
+    # the override layer were skipped, the page would report success and change
+    # nothing — worse than not offering the control, because it looks fixed.
+    #
+    # Asserted as a round trip against a show the library really has: point its
+    # AniList id at a TVDB id nothing carries, and availability must flip to
+    # false. With the negative-evidence rule that is the whole mechanism —
+    # a known id the library lacks ends the lookup instead of falling back to
+    # titles.
+    step(11, "an identity override changes the verdict")
+    admin = admin_token()
+    if not admin:
+        step(11, "SKIP — could not sign an admin token (node or backend/.env missing)")
+    elif not playable:
+        step(11, "SKIP — no available show in this season to override")
+    else:
+        ah = {"Authorization": f"Bearer {admin}"}
+        mid = playable["mediaId"]
+        titles = playable["titles"]
+        body = {"mediaId": mid, "titles": titles, "fresh": True}
+        before = requests.post(f"{backend}/api/jellyfin/availability",
+                               headers=auth, json=body, timeout=60).json()
+        if not before.get("available"):
+            step(11, "SKIP — control show is not available to begin with")
+        else:
+            w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
+                             json={"anilistId": mid, "tvdbId": "99999999", "confirmed": True,
+                                   "note": "test_jellyfin step 11"})
+            if w.status_code != 200:
+                fail(11, f"could not write the override: {w.status_code} {w.text[:160]}")
+            try:
+                after = requests.post(f"{backend}/api/jellyfin/availability",
+                                      headers=auth, json=body, timeout=60).json()
+                if after.get("available"):
+                    fail(11, "override did not change the verdict — a correction saved on "
+                             f"/admin/matching has no effect (still {after.get('libraryTitle')!r})")
+            finally:
+                # Always put it back: a stray override would quietly break this
+                # show for every later run and for the live site.
+                requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
+            restored = requests.post(f"{backend}/api/jellyfin/availability",
+                                     headers=auth, json=body, timeout=60).json()
+            if not restored.get("available"):
+                fail(11, "removing the override did not restore availability — the row was "
+                         "not cleaned up and this show is now broken for everyone")
+
+            # The Reject button, which is a DIFFERENT path and shipped broken.
+            # A rejection carries no ids at all, so unless it short-circuits
+            # before matching it falls straight through to the title tier — i.e.
+            # to the very match being rejected. The row saved, the entry left the
+            # review list, and the wrong Watch button stayed on screen. Nothing
+            # above catches it, because that case writes a bogus id instead.
+            w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
+                             json={"anilistId": mid, "tvdbId": None, "tmdbId": None,
+                                   "confirmed": True, "rejected": True,
+                                   "note": "test_jellyfin step 11 reject"})
+            if w.status_code != 200:
+                fail(11, f"could not write the rejection: {w.status_code} {w.text[:160]}")
+            try:
+                rej = requests.post(f"{backend}/api/jellyfin/availability",
+                                    headers=auth, json=body, timeout=60).json()
+                if rej.get("available"):
+                    fail(11, "override did not change the verdict — a rejection with no ids "
+                             "fell through to the title tier, so Reject on /admin/matching "
+                             f"leaves the Watch button in place ({rej.get('libraryTitle')!r})")
+            finally:
+                requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
+            # A film id must resolve against FILMS, and — when we don't hold the
+            # film — must NOT fall through to title-matching a list that contains
+            # only TV series. That fall-through is where "The Last Blossom" ->
+            # *House*, "ChaO" -> *ChäoS;Head* and "Demon Slayer: Infinity Castle"
+            # -> the television show came from: 26 category errors across 8
+            # seasons, against exactly 1 case where it found something real.
+            w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
+                             json={"anilistId": mid, "tmdbId": "999999999",
+                                   "tmdbKind": "movie", "note": "test_jellyfin film"})
+            if w.status_code != 200:
+                fail(11, f"could not write the film override: {w.status_code} {w.text[:160]}")
+            try:
+                film = requests.post(f"{backend}/api/jellyfin/availability",
+                                     headers=auth, json=body, timeout=60).json()
+                # Order matters: check the *specific* symptom first. When the
+                # fall-through is restored the series match is usually available
+                # too, so a generic "resolved anyway" would fire first and the
+                # mutation row would be caught for the wrong reason — red, but
+                # naming nothing.
+                if film.get("libraryTitle"):
+                    fail(11, "a film we do not hold fell through to a SERIES title match "
+                             f"({film.get('libraryTitle')!r}) — the category error is back")
+                if film.get("available"):
+                    fail(11, "override did not change the verdict — a film we do not hold "
+                             "resolved anyway")
+            finally:
+                requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
+            step(11, "PASS — wrong id, outright rejection and an unheld film all flip the "
+                     "verdict, and clearing restores")
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed — OK", flush=True)
 

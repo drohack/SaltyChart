@@ -70,6 +70,29 @@ test('genuine title-only matches still work', () => {
   assert.equal(matchByTitle(['Yani Neko', 'Chainsmoker Cat'], library)?.series.id, 'b');
 });
 
+test('a title inside a longer, different title is not a match', () => {
+  // Every one of these is a real pair the removed contains-anywhere tier
+  // produced against the live library — 9 fired across 6 seasons (696 shows)
+  // and all 9 were wrong. They are kept as fixtures because the tier looked
+  // reasonable in isolation and the temptation is to bring it back with a
+  // higher threshold; the *Four Seasons* pair sat at exactly the old 0.4 floor,
+  // so no threshold separates these from the ones that looked plausible.
+  const library = [
+    series('fs', 'The Four Seasons (2025)'), // live-action comedy
+    series('rg', 'Ragnarok'), // Norwegian drama, not Record of Ragnarok
+    series('tk', 'The 10th Kingdom'), // 2000 miniseries
+    series('op', 'One Piece'),
+  ];
+  for (const cand of [
+    'Agents of the Four Seasons: Dance of Spring',
+    'Record of Ragnarok III',
+    'Kingdom Season 6',
+    'Koisuru ONE PIECE',
+  ]) {
+    assert.equal(matchByTitle([cand], library), null, `"${cand}" should not match anything`);
+  }
+});
+
 test('exact beats prefix, and the shortest title wins within a tier', () => {
   const library = [
     series('long', "Frieren: Beyond Journey's End"),
@@ -100,11 +123,75 @@ test('a title-only match is reported as unconfirmed — the Nanoha false positiv
   if (r) assert.equal(r.confidence, 'title');
 });
 
-test('an unmapped id falls through to titles rather than failing', () => {
+test('a known id that the library lacks is the ANSWER, not a reason to guess', () => {
+  // This test asserted the opposite until the corpus was measured: an id miss
+  // used to fall through to titles. That fallback was the entire remaining
+  // false-positive class — 12 of 945 entries, every one of them a new work
+  // matched onto its franchise parent, and every one of them carrying an id the
+  // library did not have. We knew the answer and overwrote it with a guess.
   const library = [series('x', 'Sakamoto Days', undefined, '999')];
-  const r = matchSeries({ tvdbId: '12345', titles: ['Sakamoto Days'] }, library);
-  assert.equal(r?.confidence, 'title');
-  assert.equal(r?.series.id, 'x');
+  assert.equal(
+    matchSeries({ tvdbId: '12345', titles: ['Sakamoto Days'] }, library),
+    null,
+    'an id we hold must not be overridden by a title that happens to look close'
+  );
+  // …but only when we actually have an id. With none, titles are all we have
+  // and they resolve 65 corpus entries nothing else could reach.
+  assert.equal(matchSeries({ titles: ['Sakamoto Days'] }, library)?.confidence, 'title');
+});
+
+test('a guessed id is positive-only — it must not suppress a working title match', () => {
+  // The remote resolver hands us TMDB search results, which are guesses. Those
+  // may ADD a match and must never remove one, because the entries it touches
+  // are exactly the ones that resolve by title today: granting a guess negative
+  // evidence would let it delete a working Watch button.
+  const library = [series('a', 'Mebius Dust', undefined, '111')];
+  const guessed = { tvdbId: '999999', titles: ['Mebius Dust'], idIsAuthoritative: false };
+  assert.equal(
+    matchSeries(guessed, library)?.confidence,
+    'title',
+    'a resolver guess that misses must fall through to titles'
+  );
+  // The same miss from the community map DOES end the lookup — that is the rule
+  // that removed 11 wrong matches, and it stays.
+  assert.equal(matchSeries({ tvdbId: '999999', titles: ['Mebius Dust'] }, library), null);
+});
+
+test('the franchise-sibling class — real pairs that used to resolve wrongly', () => {
+  // Every pair below was produced against the live library. In each case the
+  // AniList entry has a TVDB id, the library does not hold that id, and the
+  // title tier matched the parent series anyway. Pokémon Concierge resolved to
+  // *episode 109 of season 20* of Pokémon.
+  //
+  // These are fixtures rather than a synthetic case because the shape is not
+  // guessable: "BLEACH: Thousand-Year Blood War" is a CORRECT match of exactly
+  // the same form, so nothing about the strings distinguishes them.
+  const library = [
+    series('pk', 'Pokémon', undefined, '12345'),
+    series('sao', 'Sword Art Online', undefined, '23456'),
+    series('7ds', 'The Seven Deadly Sins', undefined, '34567'),
+    series('nan', 'Magical Girl Lyrical Nanoha', undefined, '81115'),
+    series('tf', 'Thunderbolt Fantasy', undefined, '45678'),
+  ];
+  const cases: [string, string][] = [
+    ['Pokémon Concierge: Season 1: Part 2', '99001'],
+    ['Sword Art Online Alternative: Gun Gale Online', '99002'],
+    ['The Seven Deadly Sins: Four Knights of the Apocalypse', '99003'],
+    ['Magical Girl Lyrical Nanoha EXCEEDS Gun Blaze', '458309'],
+    ['Thunderbolt Fantasy: Touriken Yuuki 4', '99005'],
+  ];
+  for (const [title, tvdbId] of cases)
+    assert.equal(matchSeries({ tvdbId, titles: [title] }, library), null, `"${title}" must not match`);
+});
+
+test('a tmdb id resolves when tvdb is absent — the movie case', () => {
+  // TVDB is a TV database: it covers 4 of 117 corpus movies against TMDB's 43.
+  const lib: MatchableSeries[] = [
+    { id: 'mv', title: 'Some Anime Film', norms: [normalizeTitle('Some Anime Film')], tmdbId: '778899' },
+  ];
+  assert.equal(matchSeries({ tmdbId: '778899', titles: ['Totally Different Name'] }, lib)?.confidence, 'id');
+  // And the negative rule applies to tmdb too.
+  assert.equal(matchSeries({ tmdbId: '111', titles: ['Some Anime Film'] }, lib), null);
 });
 
 test('nothing in the library means no match, not a wrong one', () => {

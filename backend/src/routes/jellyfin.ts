@@ -13,13 +13,27 @@ import {
   normalizeTitle,
   type MatchableSeries,
 } from '../lib/animeMatch';
-import { ensureAnilistTvdbMap, tvdbIdForAnilist } from '../lib/anilistTvdbMap';
+import { ensureAnilistTvdbMap } from '../lib/anilistTvdbMap';
+import {
+  closestDatedEpisode,
+  AIR_DATE_TOLERANCE_MS,
+  anilistDateToMs,
+} from '../lib/episodeMatch';
+import {
+  resolveIdentity,
+  rawIdentityOverride,
+  identityReady,
+  setIdentityOverride,
+  clearIdentityOverride,
+  listIdentityOverrides,
+} from '../lib/seriesIdentity';
 import {
   DEVICE_ID,
   deviceProfile,
   jellyfinApi,
   jellyfinAuthHeader,
   jellyfinAxios,
+  jellyfinErrorInfo,
   type JellyfinConfig,
 } from '../lib/jellyfinApi';
 import type { Api } from '@jellyfin/sdk/lib/api';
@@ -138,6 +152,87 @@ router.get('/users', jellyfinLimiter, requireAuth, requireAdmin, async (_req, re
     // The picker is a convenience; a server that can't be reached is already
     // reported by the Test button.
     res.json({ users: [] });
+  }
+});
+
+// ── Identity overrides (admin) ───────────────────────────────────────────────
+// Our AniList → TVDB/TMDB corrections. See `lib/seriesIdentity.ts` for why this
+// is an overlay over the community map rather than a copy of it.
+
+router.get('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
+  res.json({ overrides: await listIdentityOverrides() });
+});
+
+/**
+ * What do we currently believe about these entries, and where did it come from?
+ *
+ * The admin page pairs this with `/availability/batch` — that endpoint says
+ * whether a show resolved and how (`matchedBy`, `titleTier`), this one says
+ * which id produced it and whether a human has confirmed it.
+ */
+router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, (req, res) => {
+  const ids = req.body?.mediaIds;
+  if (!Array.isArray(ids) || ids.length > 200) {
+    return res.status(400).json({ error: 'mediaIds must be an array of at most 200', code: 'BAD_REQUEST' });
+  }
+  const out: Record<number, any> = {};
+  for (const raw of ids) {
+    const id = Number(raw);
+    if (!Number.isFinite(id)) continue;
+    // The raw row first, so *pending* suggestions are visible here. Matching
+    // hides them on purpose; this page exists to show them.
+    out[id] = rawIdentityOverride(id) ?? resolveIdentity(id);
+  }
+  res.json({ identities: out, ready: identityReady() });
+});
+
+router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
+  const { anilistId, tvdbId, tmdbId, tmdbKind, confirmed, rejected, pending, matchedTitle, note } =
+    req.body ?? {};
+  const id = Number(anilistId);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: 'anilistId is required', code: 'BAD_REQUEST' });
+  }
+  if (tmdbKind != null && tmdbKind !== 'tv' && tmdbKind !== 'movie') {
+    return res.status(400).json({ error: "tmdbKind must be 'tv' or 'movie'", code: 'BAD_REQUEST' });
+  }
+  try {
+    const identity = await setIdentityOverride({
+      anilistId: id,
+      tvdbId: tvdbId ? String(tvdbId) : null,
+      tmdbId: tmdbId ? String(tmdbId) : null,
+      tmdbKind: tmdbKind ?? null,
+      confirmed: confirmed === true,
+      rejected: rejected === true,
+      // Confirming a suggestion clears , which is what puts its ids
+      // into use. Defaults to false so a plain admin edit is always live.
+      pending: pending === true,
+      matchedTitle: matchedTitle ? String(matchedTitle) : null,
+      note: note ? String(note) : null,
+    });
+    // The point of writing an override is to change the verdict. Leaving the
+    // cached one in place would mean the correction appears to do nothing for up
+    // to an hour — which reads exactly like the feature is broken.
+    availabilityCache.delete(id);
+    res.json({ ok: true, identity });
+  } catch (err: any) {
+    console.warn('[identity] save failed:', err?.message ?? err);
+    res.status(500).json({ error: 'Could not save the override', code: 'SERVER_ERROR' });
+  }
+});
+
+router.delete('/identity/:anilistId', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.anilistId);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: 'anilistId is required', code: 'BAD_REQUEST' });
+  }
+  try {
+    await clearIdentityOverride(id);
+    availabilityCache.delete(id);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.warn('[identity] delete failed:', err?.message ?? err);
+    res.status(500).json({ error: 'Could not remove the override', code: 'SERVER_ERROR' });
   }
 });
 
@@ -298,7 +393,7 @@ function persistMapSoon(key: string, snapshot: () => unknown): void {
     const value = JSON.stringify(snapshot());
     prisma.appConfig
       .upsert({ where: { key }, update: { value }, create: { key, value } })
-      .catch((err) => console.warn(`[jellyfin] could not persist ${key}`, err));
+      .catch((err) => console.warn(`[jellyfin] could not persist ${key}`, jellyfinErrorInfo(err)));
   }, PERSIST_DEBOUNCE_MS);
   // Don't hold the process open for a cache write.
   if (typeof t.unref === 'function') t.unref();
@@ -367,12 +462,18 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
     // Jellyfin has shipped both casings of this key across versions, and the
     // generated type is an index signature, so both stay.
     const tvdb = it.ProviderIds?.Tvdb ?? it.ProviderIds?.tvdb ?? null;
+    // These are Series items, so their Tmdb id is a TMDB *TV* id. Measured on
+    // the live library: 2252 of 2271 series carry one, near-identical coverage
+    // to Tvdb's 2259 — it adds almost nothing on TV but is the only usable id
+    // for films, where TVDB covers 4 of 117 corpus entries against TMDB's 43.
+    const tmdb = it.ProviderIds?.Tmdb ?? it.ProviderIds?.tmdb ?? null;
     series.push({
       id: String(it.Id),
       itemId: String(it.Id),
       title: String(it.Name),
       norms,
       tvdbId: tvdb == null ? null : String(tvdb),
+      tmdbId: tmdb == null ? null : String(tmdb),
     });
   }
   return series;
@@ -415,8 +516,106 @@ async function savePersistedLibrary(series: JfSeries[], total: number, at: numbe
       create: { key: LIBRARY_AT_KEY, value: String(at) },
     });
   } catch (err) {
-    console.warn('[jellyfin] could not persist the library cache', err);
+    console.warn('[jellyfin] could not persist the library cache', jellyfinErrorInfo(err));
   }
+}
+
+// ── Films ───────────────────────────────────────────────────────────────────
+//
+// Deliberately an id INDEX, not a second matchable corpus. Films are only ever
+// looked up by TMDB id — every film we resolve has one, from the community map
+// or from our own lookup — so titles are never compared and `OriginalTitle` is
+// never needed. That also sidesteps the whole class of error this exists to
+// stop: a film has no business being fuzzy-matched at all.
+//
+// Why it exists: `getSeriesLibrary` fetches `IncludeItemTypes=Series`, so a
+// film's id could never match anything and the lookup fell through to
+// title-matching against TV series. Measured over 8 seasons that produced 26
+// category errors — "The Last Blossom" -> *House*, "ChaO" -> *ChäoS;Head*,
+// "Demon Slayer: Infinity Castle" -> the television show — against exactly 1
+// case where the fall-through found something the air date accepted. It also
+// left 7 films we actually own unreachable.
+const FILM_INDEX_KEY = 'jellyfinFilmIndex';
+const FILM_TTL_MS = 6 * 60 * 60 * 1000; // films are added far less often than episodes
+
+interface FilmEntry {
+  itemId: string;
+  title: string;
+}
+let _films: { byTmdb: Record<string, FilmEntry>; expires: number } | null = null;
+let _filmsInFlight: Promise<Record<string, FilmEntry>> | null = null;
+
+async function fetchFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
+  const { data } = await getItemsApi(api).getItems(
+    {
+      includeItemTypes: [BaseItemKind.Movie],
+      recursive: true,
+      fields: [ItemFields.ProviderIds],
+      enableImages: false,
+    },
+    { timeout: 120_000 }
+  );
+  const out: Record<string, FilmEntry> = {};
+  for (const it of data.Items ?? []) {
+    if (!it.Id || !it.Name) continue;
+    const tmdb = it.ProviderIds?.Tmdb ?? it.ProviderIds?.tmdb;
+    if (tmdb == null) continue;
+    out[String(tmdb)] = { itemId: String(it.Id), title: String(it.Name) };
+  }
+  return out;
+}
+
+/**
+ * TMDB film id → the item in the library, cached and persisted.
+ *
+ * Persisted for the same reason as the series library: the load it avoids is
+ * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
+ * needed. Serves stale while refreshing behind, like everything else here.
+ */
+async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
+  if (_films && _films.expires > Date.now()) return _films.byTmdb;
+  if (_filmsInFlight) return _filmsInFlight;
+
+  if (!_films) {
+    try {
+      const row = await prisma.appConfig.findUnique({ where: { key: FILM_INDEX_KEY } });
+      if (row?.value) {
+        _films = { byTmdb: JSON.parse(row.value), expires: 0 };
+      }
+    } catch {
+      /* a missing or malformed row just means a cold fetch */
+    }
+  }
+
+  _filmsInFlight = (async () => {
+    try {
+      const byTmdb = await fetchFilmIndex(api);
+      _films = { byTmdb, expires: Date.now() + FILM_TTL_MS };
+      const value = JSON.stringify(byTmdb);
+      await prisma.appConfig.upsert({
+        where: { key: FILM_INDEX_KEY },
+        update: { value },
+        create: { key: FILM_INDEX_KEY, value },
+      });
+      console.log(`[jellyfin] film index: ${Object.keys(byTmdb).length} films with a TMDB id`);
+      return byTmdb;
+    } catch (err: any) {
+      console.warn('[jellyfin] film index refresh failed:', jellyfinErrorInfo(err));
+      // Degraded, not broken: an old copy still answers, and no copy at all just
+      // means films report as not held — which is what happened before this
+      // existed.
+      return _films?.byTmdb ?? {};
+    } finally {
+      _filmsInFlight = null;
+    }
+  })();
+
+  // Stale-while-revalidate: an expired copy is served immediately.
+  if (_films && Object.keys(_films.byTmdb).length) {
+    void _filmsInFlight;
+    return _films.byTmdb;
+  }
+  return _filmsInFlight;
 }
 
 /** Series count only — no items serialised, so it is cheap to ask often. */
@@ -441,12 +640,32 @@ async function countSeries(api: Api): Promise<number | null> {
  * `DateLastSaved` on items, so the watermark is our own fetch time rather than
  * a max over the results — hence the overlap window.
  */
-async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
+export async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (!force && _library && _library.expires > Date.now()) return _library.series;
   // Coalesce: the Randomize page asks about every show at once, and without
   // this each request pulled the whole library separately — dozens of
   // simultaneous full-library queries that all timed out, which reported
   // every show as missing.
+  if (_libraryInFlight) return _libraryInFlight;
+
+  // Stale-while-revalidate, the same rule `/api/anime` already applies to an
+  // expired SeasonCache row. Expiry used to make the *next* request pay for the
+  // refresh: open Randomize an hour after anyone last did, and the page waited
+  // on a count probe plus a refetch before it could say whether a single show
+  // was in the library — with nothing on screen to say why. The stale answer is
+  // seconds-to-an-hour old and describes a library that changes when media is
+  // added, so serving it while refreshing behind costs a viewer nothing.
+  const stale = _libraryPersisted ?? (await loadPersistedLibrary());
+  _libraryPersisted = stale;
+  if (!force && stale?.series?.length) {
+    void getSeriesLibraryFresh(api, false).catch(() => {});
+    return stale.series;
+  }
+  return getSeriesLibraryFresh(api, force);
+}
+
+/** The blocking refresh. Only awaited when there is no usable copy to serve. */
+async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries[]> {
   if (_libraryInFlight) return _libraryInFlight;
 
   _libraryInFlight = (async () => {
@@ -492,7 +711,9 @@ async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
           }
         }
       } catch (err) {
-        console.warn('[jellyfin] incremental library refresh failed, falling back to full', err);
+        // NOT `err` — an axios error carries the auth header. See jellyfinErrorInfo.
+        console.warn('[jellyfin] incremental library refresh failed, falling back to full',
+                     jellyfinErrorInfo(err));
       }
     }
 
@@ -526,21 +747,9 @@ async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   }
 }
 
-/**
- * How far an episode's air date may sit from the AniList entry's start date and
- * still be considered the same broadcast. Anime premieres land within a few days
- * of AniList's date; a month absorbs timezone/region skew and a `day: null`
- * partial date (which we read as the 1st), while still being far tighter than
- * the gap to any *other* season — the nearest neighbouring season is a cour
- * away, ~90 days.
- */
-const AIR_DATE_TOLERANCE_MS = 31 * 24 * 60 * 60 * 1000;
-
-/** AniList's partial date, read as the earliest day it could mean. */
-function anilistDateToMs(d?: { year?: number | null; month?: number | null; day?: number | null } | null): number | null {
-  if (!d?.year) return null;
-  return Date.UTC(d.year, (d.month ?? 1) - 1, d.day ?? 1);
-}
+// Both moved to lib/episodeMatch.ts so the remote id resolver measures "how far
+// off is this" with the exact same arithmetic — two copies would eventually
+// disagree, and the disagreement would be invisible.
 
 /**
  * Which episode does this AniList entry start at?
@@ -587,19 +796,9 @@ async function getFirstEpisode(
   // `PremiereDate` is a default field on this endpoint (verified against the
   // live server), so this costs no extra request.
   if (airDateMs != null) {
-    let best: any = null;
-    let bestDelta = Infinity;
-    for (const e of eps) {
-      // Season 0 is specials, whose dates cluster around the seasons they ship
-      // with and would otherwise win ties against the real episode.
-      if ((e.ParentIndexNumber ?? 0) < 1 || !e.PremiereDate) continue;
-      const t = Date.parse(e.PremiereDate);
-      if (Number.isNaN(t)) continue;
-      const delta = Math.abs(t - airDateMs);
-      // Ties go to the earlier episode: a same-day double premiere should start
-      // at the first of the two, not whichever the list happened to yield last.
-      if (delta < bestDelta) { best = e; bestDelta = delta; }
-    }
+    const closest = closestDatedEpisode(eps, airDateMs);
+    const best = closest?.episode ?? null;
+    const bestDelta = closest?.deltaMs ?? Infinity;
     if (best && bestDelta <= AIR_DATE_TOLERANCE_MS) {
       return finishEpisode(api, best);
     }
@@ -668,8 +867,13 @@ async function finishEpisode(api: Api, ep: any) {
 router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res) => {
   const isAdmin = req.userId === ADMIN_USER_ID;
   try {
-    res.json({ configured: !!(await getJellyfinConfig()), isAdmin });
-  } catch {
+    const configured = !!(await getJellyfinConfig());
+    // A false here silently removes every Watch button and disables
+    // Hide-Not-in-Library for that browser session, and left no trace at all.
+    if (!configured) console.warn('[jellyfin] /status answered configured:false — library UI will be hidden');
+    res.json({ configured, isAdmin });
+  } catch (err: any) {
+    console.warn('[jellyfin] /status failed, answering configured:false:', err?.message ?? err);
     res.json({ configured: false, isAdmin });
   }
 });
@@ -694,8 +898,11 @@ const AVAILABILITY_MAX = 500; // a couple of seasons' worth; bounded like source
  *
  * 2: episode chosen by air date, with a miss treated as evidence the library
  *    doesn't hold this entry (was: first episode of the title-parsed season).
+ * 3: a known id is authoritative in both directions — an id the library lacks
+ *    ends the lookup instead of falling back to titles. Every cached "available"
+ *    produced by the old rule has to go: 12 of them were the wrong series.
  */
-const MATCH_ALGO_VERSION = 2;
+const MATCH_ALGO_VERSION = 3;
 
 /**
  * Record one availability answer, in memory and (debounced) on disk.
@@ -705,6 +912,18 @@ const MATCH_ALGO_VERSION = 2;
  * still a 10-minute negative after it.
  */
 function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
+  // A match made before the id map has loaded skipped the id tier, so it is
+  // provisional — it may be title-tier where it should be exact, or missing
+  // where it should match. Caching it would pin that degraded answer for up to
+  // an hour, trading the blocking fetch this replaced for something worse.
+  // Requests during that window still get an answer; it just isn't recorded.
+  //
+  // This now also covers the override table, and the reason is sharper than it
+  // was: with the negative-evidence rule, "no id" doesn't merely downgrade a
+  // match, it decides whether a title match is *allowed at all*. Caching an
+  // answer computed before the ids were readable would pin a verdict reached
+  // under different rules.
+  if (!identityReady()) return;
   // `unknown` means "couldn't ask", not "not in the library". Caching it at all
   // would make one slow moment stick; persisting it would make that survive a
   // restart. The call sites already avoid this — the guard is here so a future
@@ -802,8 +1021,75 @@ async function resolveAvailability(
     // AniList id → TVDB id, when the community map knows this entry. Absent
     // is normal (coverage tracks how long a season has aired) and simply
     // means the match falls back to titles.
-    await ensureAnilistTvdbMap();
-    const entry = { tvdbId: tvdbIdForAnilist(mediaId), titles };
+    // Deliberately NOT awaited. This used to be `await ensureAnilistTvdbMap()`,
+    // which on a fresh process with a stale map joins the boot refresh and
+    // blocks the viewer's request on a 7.5 MB GitHub download (60s timeout),
+    // re-arming on every deploy. The map only ever gains entries and a missing
+    // one degrades this match to title-tier — which the module itself calls
+    // "degraded, not broken" — so a request reads whatever is loaded and never
+    // waits on a third party.
+    void ensureAnilistTvdbMap();
+    // Our override table first, then the community map — see `seriesIdentity.ts`.
+    // An id found here is authoritative in BOTH directions: if the library
+    // doesn't carry it, `matchSeries` returns null rather than guessing from
+    // titles. That single rule removed the entire remaining false-positive
+    // class (12 of 945 corpus entries, every one a new work matched onto its
+    // franchise parent) at zero cost to correct matches.
+    const identity = resolveIdentity(mediaId);
+    // An admin has said outright that this entry is not in the library. That has
+    // to short-circuit *before* matching, because a rejection carries no ids and
+    // would otherwise fall straight through to the title tier — which is exactly
+    // the match being rejected. Without this the Reject button on
+    // /admin/matching writes its row, drops the entry from the review list, and
+    // leaves the wrong Watch button on screen.
+    if (identity.rejected) {
+      const data = { available: false, matchedBy: 'override' };
+      rememberAvailability(mediaId, data, 60 * 60 * 1000);
+      return data;
+    }
+    // A film is resolved against films, never against the series list. If we
+    // know an entry is a film and we do not hold it, that IS the answer —
+    // falling through to title-matching a list of TV shows is a category error,
+    // and it is where "The Last Blossom" -> *House* came from. Measured: cutting
+    // it removes 26 wrong matches and costs 1 real one.
+    if (identity.tmdbKind === 'movie' && identity.tmdbId) {
+      const films = await getFilmIndex(api);
+      const film = films[identity.tmdbId];
+      if (!film) {
+        const data = { available: false, matchedBy: 'id' };
+        rememberAvailability(mediaId, data, 10 * 60 * 1000);
+        return data;
+      }
+      const item = await finishEpisode(api, { Id: film.itemId, Name: film.title });
+      const data = {
+        available: true,
+        seriesId: film.itemId,
+        itemId: item.itemId,
+        mediaSourceId: item.mediaSourceId,
+        // A film has no season or episode; the item itself is what plays.
+        episodeTitle: film.title,
+        seasonNumber: null,
+        episodeNumber: null,
+        libraryTitle: film.title,
+        matchedBy: 'id',
+        unverified: identity.source === 'remote' && !identity.confirmed,
+      };
+      rememberAvailability(mediaId, data, 60 * 60 * 1000);
+      return data;
+    }
+
+    const entry = {
+      tvdbId: identity.tvdbId,
+      // Only a TV-namespaced id can mean anything against a Series list; TMDB
+      // numbers movies and shows independently, so passing a film's id here
+      // could only ever match by coincidence.
+      tmdbId: identity.tmdbKind === 'tv' ? identity.tmdbId : null,
+      titles,
+      // A resolver guess is positive-only: it may add a Watch button, never take
+      // one away. Only the community map and human-confirmed rows may end the
+      // lookup on a miss.
+      idIsAuthoritative: identity.source !== 'remote' || identity.confirmed,
+    };
 
     let library = await getSeriesLibrary(api);
     let hit = matchSeries(entry, library);
@@ -849,13 +1135,20 @@ async function resolveAvailability(
       // fuzzy has produced a real false positive, so the UI marks it and
       // Hide-Not-in-Library refuses to act on it.
       matchedBy: hit.confidence,
-      // Which fuzzy tier hit: 0 exact, 1 prefix, 2 contains. Worth reporting
-      // because "fuzzy" lumps together two very different things — an exact
-      // normalised title ("Mebius Dust" == "Mebius Dust") next to a prefix hit
-      // ("witch" ⊂ "witchontheholynight" → the 2004 cartoon W.I.T.C.H.). Both
-      // used to raise the same "unconfirmed match" warning, which made the
-      // warning noise on the common case and easy to ignore on the dangerous one.
+      // Which fuzzy tier hit: 0 exact, 1 prefix. (A contains-anywhere tier
+      // existed and was removed — measured wrong 9 times out of 9.) Worth
+      // reporting because "fuzzy" lumps together two very different things: an
+      // exact normalised title ("Mebius Dust" == "Mebius Dust") measured 99%
+      // precise against the id tier, while prefix measured 60%. Both used to
+      // raise the same "unconfirmed match" warning, which made it noise on the
+      // common case and easy to ignore on the dangerous one.
       titleTier: hit.tier,
+      // An id match is normally exact — but a `remote` id is one the resolver
+      // *guessed* from a TMDB search, so it deserves the same warning a partial
+      // title match gets. Without this the UI would present a guess as fact,
+      // which is the opposite of what the confidence markers exist for. A row a
+      // human confirmed on /admin/matching is fact again.
+      unverified: hit.confidence === 'id' && identity.source === 'remote' && !identity.confirmed,
     };
     rememberAvailability(mediaId, data, 60 * 60 * 1000);
     return data;
@@ -931,6 +1224,7 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
   // than open 50 simultaneous episode queries against it.
   const CONCURRENCY = 5;
   let next = 0;
+  const startedAt = Date.now();
   const worker = async () => {
     while (next < items.length) {
       const it = items[next++];
@@ -938,6 +1232,20 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
+
+  // One line that separates every way this can go. Without it, "no Watch
+  // buttons on the page" was indistinguishable from "everything resolved and
+  // nothing was missing" — from the logs as well as on screen — which is why a
+  // real report cost four wrong theories and no answer. `unknown` is the one to
+  // watch: it means the lookup failed, not that the show is absent.
+  const vals = Object.values(out) as any[];
+  const unknown = vals.filter((v) => v?.unknown).length;
+  const available = vals.filter((v) => v?.available).length;
+  const line =
+    `[jellyfin] availability batch: ${items.length} asked, ${available} available, ` +
+    `${vals.length - available - unknown} absent, ${unknown} unknown, ${Date.now() - startedAt}ms`;
+  if (unknown) console.warn(`${line}  <- ${unknown} lookup(s) FAILED, not "not in library"`);
+  else console.log(line);
   res.json(out);
 });
 

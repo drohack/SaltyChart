@@ -139,6 +139,11 @@ def main():
         # unaudited. Catching it costs a second and no servers, so it belongs on
         # every push rather than waiting for the next audit.
         ("audit anchors",    ["py", "-3.13", "-u", str(TESTS / "test_audit_anchors.py")], None, 30),
+        # The live corpus check makes ~440 real Jellyfin lookups and takes ~7
+        # minutes, so it can't gate a push. This replays the same shipping
+        # matcher over frozen fixtures in seconds, and asserts twelve real
+        # false positives BY NAME rather than by a summary count.
+        ("match replay",     ["py", "-3.13", "-u", str(TESTS / "test_match_replay.py")], None, 120),
     ]
     # The browser checks. Run sequentially so they don't fight over the dev
     # server or share stale state.

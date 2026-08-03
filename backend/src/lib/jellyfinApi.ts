@@ -66,6 +66,33 @@ export function jellyfinAuthHeader(apiKey: string): string {
   ].join(', ');
 }
 
+/**
+ * A loggable summary of a failed Jellyfin call — **never the error object**.
+ *
+ * An axios error carries its whole request `config`, and that config carries the
+ * `Authorization` header. So `console.warn('…', err)` prints the server's
+ * Jellyfin API key into the backend log, where it goes to the Docker logs and
+ * into anything anyone pastes from them. Observed for real: a library-refresh
+ * timeout logged `Token="…"` in full.
+ *
+ * The codebase already treats this key as something that must never leave the
+ * server — the stream proxy refuses any manifest containing a credential, and
+ * `test_jellyfin` asserts it. That guard was written against browsers; logs are
+ * the same secret by a different route.
+ *
+ * Use this at every `catch` that logs. It keeps what is diagnostically useful
+ * (message, code, HTTP status) and drops everything that could carry a header.
+ */
+export function jellyfinErrorInfo(err: any): string {
+  const status = err?.response?.status;
+  const parts = [
+    err?.code,
+    status ? `HTTP ${status}` : null,
+    err?.message,
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : String(err);
+}
+
 export function jellyfinAxios(cfg: JellyfinConfig): AxiosInstance {
   return axios.create({
     baseURL: cfg.url,

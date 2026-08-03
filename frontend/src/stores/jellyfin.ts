@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { authToken } from './auth';
+import { apiFetch, apiJson, QUICK } from '../lib/remote';
 
 /**
  * Whether the logged-in user is the admin (null = probe in flight). Rides
@@ -37,6 +38,16 @@ export interface MediaAvailability {
    */
   matchedBy?: 'id' | 'title';
   /**
+   * The id behind an `id` match was *guessed* by the remote resolver rather than
+   * supplied by the community map or confirmed by a human.
+   *
+   * It still shows a Watch button — the id is positive-only, so it can only ever
+   * add one — but it carries the same warning a partial title match does. An
+   * unmarked guess presented as fact is exactly what the confidence markers
+   * exist to prevent.
+   */
+  unverified?: boolean;
+  /**
    * Which fuzzy tier matched: 0 exact, 1 prefix, 2 contains. Only set when
    * `matchedBy === 'title'`. Tier 0 is a normalised exact hit and is treated as
    * confirmed; the false positives this warning exists for were all tier 1.
@@ -51,6 +62,19 @@ export interface MediaAvailability {
  */
 export const mediaConfigured = writable<boolean | null>(null);
 
+/**
+ * How the last library lookup went, so a page can say *which* kind of nothing
+ * it is showing.
+ *
+ * Without this, four different situations rendered identically as a blank with
+ * no Watch buttons: still resolving, the request 502'd, the backend couldn't
+ * reach Jellyfin, and everything resolved fine with nothing to report. That
+ * ambiguity is why a real outage was indistinguishable from normal operation,
+ * from both sides.
+ */
+export type LibraryStatus = 'idle' | 'checking' | 'ok' | 'unreachable';
+export const libraryStatus = writable<LibraryStatus>('idle');
+
 let _statusCheckedFor: string | null = null;
 
 // Declared before the subscribe below — svelte stores invoke the subscriber
@@ -62,24 +86,50 @@ authToken.subscribe((tok) => {
   if (!tok) {
     mediaConfigured.set(false);
     isAdmin.set(false);
+    libraryStatus.set('idle');
     _statusCheckedFor = null;
     _availabilityCache.clear();
     _inFlight.clear();
     return;
   }
   if (_statusCheckedFor === tok) return;
-  _statusCheckedFor = tok;
   mediaConfigured.set(null);
   isAdmin.set(null);
-  fetch('/api/jellyfin/status', { headers: { Authorization: `Bearer ${tok}` } })
-    .then((r) => (r.ok ? r.json() : { configured: false, isAdmin: false }))
-    .then((d) => {
+
+  /**
+   * Probe whether a library is configured, retrying until we get a real answer.
+   *
+   * "Couldn't ask" is not "there is no library" — the same distinction
+   * `unknown` already makes for availability, which this probe was missing.
+   * It used to latch `_statusCheckedFor` *before* the request and treat any
+   * failure (including a non-200) as `configured: false`, so a single blip
+   * hid every Watch button and greyed out Hide-Not-in-Library for the rest of
+   * the session, silently and with no retry.
+   *
+   * That is exactly what a deploy looks like from the browser: the backend
+   * restarts, this one request hits it mid-restart, and the app quietly decides
+   * Jellyfin does not exist until you happen to reload. Only a definitive
+   * answer is recorded now; anything else is retried.
+   */
+  // `apiFetch` retries 5xx and network faults on its own budget and cannot
+  // hang; a 4xx is a real answer (bad or expired token) and stops the asking.
+  apiFetch('/api/jellyfin/status', { headers: { Authorization: `Bearer ${tok}` } },
+           { label: 'jellyfin/status', timeoutMs: QUICK })
+    .then(async (r) => {
+      const d = r.ok ? await r.json() : { configured: false, isAdmin: false };
+      if (get(authToken) !== tok) return; // logged out or switched user
+      _statusCheckedFor = tok;
       mediaConfigured.set(!!d.configured);
       isAdmin.set(!!d.isAdmin);
     })
     .catch(() => {
-      mediaConfigured.set(false);
-      isAdmin.set(false);
+      if (get(authToken) !== tok) return;
+      // Give up loudly rather than pretending there's no library: leaving
+      // `mediaConfigured` null keeps the UI in its "still figuring this out"
+      // state instead of asserting a wrong answer for the whole session, which
+      // is what latching `false` used to do — and it never recovered without a
+      // reload, even once the server came back.
+      console.warn('[jellyfin] status probe failed; library UI stays hidden until reload');
     });
 });
 
@@ -148,19 +198,22 @@ export function checkAvailability(
   const inFlight = _inFlight.get(mediaId);
   if (inFlight) return inFlight;
 
-  const promise = fetch('/api/jellyfin/availability', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-    body: JSON.stringify({
-      mediaId,
-      titles: titles.filter(Boolean).slice(0, 10),
-      ...(fresh ? { fresh: true } : {}),
-      // Lets the server pick the episode by air date rather than by parsing a
-      // season number out of the title — see `getFirstEpisode`.
-      ...(airing?.startDate ? { startDate: airing.startDate } : {}),
-    }),
-  })
-    .then((r) => (r.ok ? r.json() : NOT_AVAILABLE))
+  const promise = apiJson<MediaAvailability>(
+    '/api/jellyfin/availability',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify({
+        mediaId,
+        titles: titles.filter(Boolean).slice(0, 10),
+        ...(fresh ? { fresh: true } : {}),
+        // Lets the server pick the episode by air date rather than by parsing a
+        // season number out of the title — see `getFirstEpisode`.
+        ...(airing?.startDate ? { startDate: airing.startDate } : {}),
+      }),
+    },
+    { label: 'availability', timeoutMs: QUICK }
+  )
     .then((data: MediaAvailability) => {
       // Never cache "we couldn't ask" — otherwise one slow moment marks a
       // show as missing for the rest of the session.
@@ -193,7 +246,14 @@ export async function checkAvailabilityMany(
 ): Promise<Map<number, MediaAvailability>> {
   const out = new Map<number, MediaAvailability>();
   const tok = get(authToken);
-  if (!tok || get(mediaConfigured) === false) return out;
+  if (!tok || get(mediaConfigured) === false) {
+    // Not an answer — we never asked. Callers already refuse to act on a gap,
+    // but the page used to render this identically to "everything resolved and
+    // nothing is missing", which is how a broken lookup looked exactly like a
+    // healthy library.
+    if (tok) libraryStatus.set('unreachable');
+    return out;
+  }
 
   const missing: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }> = [];
   for (const e of entries) {
@@ -205,24 +265,43 @@ export async function checkAvailabilityMany(
     if (cached) out.set(e.mediaId, cached);
     else if (!out.has(e.mediaId)) missing.push(e);
   }
-  if (!missing.length) return out;
+  if (!missing.length) {
+    libraryStatus.set('ok');
+    return out;
+  }
+
+  libraryStatus.set('checking');
+  let failedChunks = 0;
 
   for (let i = 0; i < missing.length; i += BATCH_MAX) {
     const chunk = missing.slice(i, i + BATCH_MAX);
+    const body = JSON.stringify({
+      items: chunk.map((e) => ({
+        mediaId: e.mediaId,
+        titles: e.titles.filter(Boolean).slice(0, 10),
+        ...(e.airing?.startDate ? { startDate: e.airing.startDate } : {}),
+      })),
+    });
+
+    // Retry rather than drop. A chunk used to be abandoned on the first
+    // non-2xx or throw, leaving those shows permanently unanswered for the
+    // page — no Watch buttons, no explanation, and nothing re-triggered it
+    // because the only trigger is the wheel contents changing. The server
+    // never caches `unknown`, so re-asking is cheap and correct.
+    //
+    // `apiFetch` owns the retry policy: bounded by a total budget, and never
+    // retrying a timeout, so a slow-but-working server isn't asked three times
+    // over. It also can't hang — this request had no timeout at all before.
     try {
-      const r = await fetch('/api/jellyfin/availability/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({
-          items: chunk.map((e) => ({
-            mediaId: e.mediaId,
-            titles: e.titles.filter(Boolean).slice(0, 10),
-            ...(e.airing?.startDate ? { startDate: e.airing.startDate } : {}),
-          })),
-        }),
-      });
-      if (!r.ok) continue; // leave them unanswered rather than asserting absence
-      const data = (await r.json()) as Record<string, MediaAvailability>;
+      const data = await apiJson<Record<string, MediaAvailability>>(
+        '/api/jellyfin/availability/batch',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+          body,
+        },
+        { label: 'availability/batch', timeoutMs: QUICK }
+      );
       for (const [id, info] of Object.entries(data)) {
         const mediaId = Number(id);
         // Same rule as the single path: "we couldn't ask" is never cached, and
@@ -233,9 +312,10 @@ export async function checkAvailabilityMany(
         }
       }
     } catch {
-      // Network failure: the callers treat an absent entry as "not checked",
-      // which is the honest reading and keeps Hide-Not-in-Library inert.
+      failedChunks++; // apiFetch already logged why
     }
   }
+
+  libraryStatus.set(failedChunks ? 'unreachable' : 'ok');
   return out;
 }

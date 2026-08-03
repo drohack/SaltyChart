@@ -91,6 +91,34 @@ chronological order; all features listed are live.
   when the series is found in your library (matched by English *and* Japanese
   titles, season-aware; the matched library title is shown under the button,
   and a "Not in library" note appears otherwise).
+- If the media server can't be reached, the page **says so and offers Retry**
+  rather than just showing no Watch buttons — which used to look exactly like
+  "none of these are in your library". Bulk Hide/Show changes that the server
+  refuses are put back on screen with a note, instead of appearing to work and
+  vanishing on the next reload.
+- **A show we can identify but don't have is now reported as missing, not
+  guessed at.** Previously, if the id said a series wasn't in the library, a
+  fuzzy title match could still put a Watch button on it — which is how *Pokémon
+  Concierge* offered episode 109 of season 20 of *Pokémon*, and a 2026 *Nanoha*
+  offered the 2004 one. Measured across two years of shows, that mistake happened
+  12 times and is now impossible.
+- Admins get a **Matching** tab under Admin to review and permanently correct any
+  match that was made by title alone, so a bad one is fixed once instead of
+  coming back whenever the cache expires.
+- **Shows the community id map has never covered now get identified automatically.**
+  Roughly a third of a season — films, shorts, specials — has no entry in the
+  public AniList→TVDB mapping, so nothing could recognise them. SaltyChart now
+  looks them up through your own Jellyfin's metadata providers and records what it
+  finds, checking each answer against the show's real air date before trusting it.
+  It runs quietly in the background and re-checks upcoming seasons every couple of
+  days, since new entries appear as a show approaches airing. Anything it isn't
+  sure about still shows a Watch button, marked as unconfirmed, and is listed on
+  the Matching tab for a one-click confirm.
+- **Films are matched against your films.** Previously a movie could only be
+  compared against TV series, so *The Last Blossom* offered you *House* and
+  *Demon Slayer: Infinity Castle* offered the television show. Now a film either
+  finds the actual film — seven you already own became watchable — or honestly
+  reports that it isn't in the library.
 - Matches confirmed by an AniList→TVDB id chain are shown plainly; ones found
   only by title similarity are marked **⚠ unconfirmed match**, so a
   same-name-different-show mix-up is visible before you press play.

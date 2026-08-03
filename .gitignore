@@ -76,3 +76,9 @@ __pycache__/
 
 # Whisper benchmark data (audio clips + CC text, ~10MB, not needed in repo)
 tools/benchmark_data/
+
+# Match-replay fixtures: a snapshot of the real Jellyfin library, including
+# every title and its internal item ids. This repo is public, so committing it
+# would publish an inventory of the media server. Build them locally instead:
+#   py -3.13 -u tools/tests/build_match_fixtures.py
+tools/tests/fixtures/

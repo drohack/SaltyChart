@@ -105,6 +105,38 @@ model AppConfig {
   value String
 }
 
+/// Our own AniList → TVDB/TMDB overrides — an override *layer* over the
+/// community map, not a copy of it. Rows exist only for corrections,
+/// confirmations of title-only matches, and entries the map never covered.
+/// Created & maintained by the raw SQL in ensureDatabaseSchema() (index.ts);
+/// mirrored here so `prisma generate` types the client (same reason as
+/// SeasonCache). `source`: manual (a human) | remote (our own lookup).
+model SeriesIdentity {
+  anilistId Int      @id
+  tvdbId    String?
+  tmdbId    String?
+  tmdbKind  String?
+  source    String   @default("manual")
+  confirmed Boolean  @default(false)
+  /// "this entry is definitively NOT in the library" — suppresses the title
+  /// fallback as well as the map. Distinct from `confirmed` with blank ids,
+  /// which is what confirming a good title match looks like.
+  rejected  Boolean  @default(false)
+  /// The ids on this row are a *suggestion* from the remote resolver that could
+  /// not be verified against an air date. They ARE used — a resolver id is
+  /// positive-only, so it can add a Watch button and never remove one — but the
+  /// match is marked unverified in the UI and listed on /admin/matching.
+  pending      Boolean @default(false)
+  /// The title the resolver matched against, so a reviewer can judge the
+  /// suggestion without repeating the search.
+  matchedTitle String?
+  /// JSON array of every candidate the lookup returned, best-first, so the
+  /// review page can offer alternatives rather than a yes/no on the first hit.
+  candidates   String?
+  note      String?
+  updatedAt DateTime @default(now())
+}
+
 /// Per-YouTube-video subtitle cache: check results, translated segments, and
 /// user subtitle preferences. Created & maintained by the raw SQL in
 /// ensureDatabaseSchema() (index.ts); mirrored here (same reason as SeasonCache).

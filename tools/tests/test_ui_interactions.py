@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 16
+TOTAL = 19
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed — and a list whose ids aren't in the displayed season renders
@@ -775,6 +775,129 @@ def test_no_results_message(page, frontend: str):
     step(15, f"PASS — {text.strip()[:60]!r}")
 
 
+def test_library_unreachable_is_visible(page, backend: str, frontend: str, token: str):
+    """A failed library lookup must say so, and must recover without a reload.
+
+    This is the one failure that was actually reproduced from a real report: no
+    Watch buttons anywhere, Hide-Not-in-Library greyed out, nothing on screen
+    explaining it, and no retry — so it looked identical to a healthy library
+    with nothing missing. The batch was failing and the store swallowed it.
+    """
+    step(17, "step 1/3: seeding a list, then failing every availability lookup")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    pin_season(page)
+    page.route("**/api/jellyfin/availability/batch**",
+               lambda route: route.fulfill(status=502, body="bad gateway"))
+    try:
+        page.goto(f"{frontend}/random")
+        page.wait_for_timeout(12_000)   # allow the retries to run out
+
+        step(17, "step 2/3: the page must name the problem and offer a way back")
+        status = page.locator("[data-library-status='unreachable']")
+        if not status.count():
+            # Jellyfin unconfigured => the whole block is hidden by design.
+            if not page.locator("button:has-text('Hide Not in Library')").count():
+                step(17, "SKIP — media library not configured on this backend")
+                return
+            raise AssertionError(
+                "availability lookup failed and the page said nothing — this is "
+                "indistinguishable from 'everything is in your library', which is "
+                "exactly how a real outage went undiagnosed"
+            )
+        assert page.locator("button:text-is('Retry')").count(), \
+            "no way to retry a failed lookup without reloading the page"
+    finally:
+        page.unroute("**/api/jellyfin/availability/batch**")
+
+    step(17, "step 3/3: Retry recovers once the server is back")
+    page.locator("button:text-is('Retry')").first.click()
+    page.wait_for_timeout(6000)
+    assert not page.locator("[data-library-status='unreachable']").count(), \
+        "still reporting unreachable after a successful retry"
+    step(17, "PASS — failure is visible, and Retry clears it")
+
+
+def test_hung_backend_does_not_hang_the_page(page, backend: str, frontend: str, token: str):
+    """A request that never answers must not spin forever.
+
+    There were no AbortSignals anywhere in the frontend, so a hung backend hung
+    the page indefinitely — no error, no timeout, nothing to catch, and nothing
+    on screen. That is a different failure from a 502 and the one nothing could
+    previously survive.
+    """
+    step(18, "step 1/2: seeding a list, then hanging the availability lookup")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    pin_season(page)
+    # Never fulfil: the request just sits there.
+    page.route("**/api/jellyfin/availability/batch**", lambda route: None)
+    try:
+        page.goto(f"{frontend}/random")
+        step(18, "step 2/2: expecting a reported failure well inside the timeout budget")
+        # 15s timeout, and a timeout is deliberately not retried.
+        page.wait_for_selector("[data-library-status='unreachable']", timeout=45_000)
+    except Exception:
+        if not page.locator("button:has-text('Hide Not in Library')").count():
+            step(18, "SKIP — media library not configured on this backend")
+            return
+        raise AssertionError(
+            "a hung availability request left the page waiting with nothing on "
+            "screen — this is the failure mode with no upper bound"
+        )
+    finally:
+        page.unroute("**/api/jellyfin/availability/batch**")
+    step(18, "PASS — a hang becomes a reported failure, not an endless spinner")
+
+
+def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str):
+    """An optimistic hide that doesn't persist must be put back, and said.
+
+    Hide All updated the list locally then fired the writes with
+    `.catch(() => {})`. A failure left the screen showing shows as hidden while
+    the server disagreed — reload and they were all back. Silent data loss.
+    """
+    step(19, "step 1/3: seeding a visible list")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    pin_season(page)
+    page.goto(f"{frontend}/random")
+    page.wait_for_timeout(6000)
+
+    step(19, "step 2/3: failing every hide write, then pressing Hide All")
+    page.route("**/api/list/hidden**",
+               lambda route: route.fulfill(status=502, body="bad gateway"))
+    try:
+        hide_all = page.locator("button:text-is('Hide All')")
+        if not hide_all.count():
+            step(19, "SKIP — no Hide All control (empty list)")
+            return
+        hide_all.first.click()
+        # The message clears itself, so poll rather than sleeping past it.
+        page.wait_for_selector("[data-hide-write-error]", timeout=30_000)
+    finally:
+        page.unroute("**/api/list/hidden**")
+
+    step(19, "step 3/3: the screen must agree with the server, not just the server")
+    # Assert on the *UI*. The server is trivially correct here — the writes
+    # failed, so nothing is hidden there no matter what the page does. The whole
+    # bug is the page believing something the server never accepted, so checking
+    # the server proves nothing and would pass with the revert deleted.
+    hidden = requests.get(f"{backend}/api/list", timeout=15,
+                          headers={"Authorization": f"Bearer {token}"},
+                          params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+    assert not [w for w in hidden if w.get("hidden")], "server unexpectedly recorded a hide"
+    show_all = page.locator("button:text-is('Show All')")
+    assert show_all.count() and show_all.first.is_disabled(), (
+        "the page still shows items as hidden after every write failed — UI and "
+        "server have diverged, and a reload will silently undo what was just done"
+    )
+    step(19, "PASS — failed writes reverted and reported")
+
+
 def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
     """An unaired series must never be looked up in the library.
 
@@ -872,6 +995,9 @@ def main():
                 ("progressive loading",lambda: test_progressive_loading(page, frontend)),
                 ("no-results message", lambda: test_no_results_message(page, frontend)),
                 ("unaired not looked up", lambda: test_unaired_never_looked_up(page, args.backend, frontend, token_a)),
+                ("library unreachable visible", lambda: test_library_unreachable_is_visible(page, args.backend, frontend, token_a)),
+                ("hung backend reported", lambda: test_hung_backend_does_not_hang_the_page(page, args.backend, frontend, token_a)),
+                ("failed hide write reverts", lambda: test_failed_hide_write_reverts(page, args.backend, frontend, token_a)),
             ]
             for label, fn in tests:
                 try:

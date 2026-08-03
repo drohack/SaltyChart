@@ -7,6 +7,7 @@
   let Randomize: any;
   let Compare: any;
   let Admin: any;
+  let AdminMatching: any;
 
 import { authToken, userName } from './stores/auth';
 import { isAdmin } from './stores/jellyfin';
@@ -76,6 +77,9 @@ $: {
       case '/admin':
         Admin = Admin || (await import('./pages/Admin.svelte')).default;
         return Admin;
+      case '/admin/matching':
+        AdminMatching = AdminMatching || (await import('./pages/AdminMatching.svelte')).default;
+        return AdminMatching;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;
@@ -177,7 +181,7 @@ $: {
       {#if $isAdmin}
         <a
           href="/admin"
-          class="link pointer-events-auto" class:font-bold={route === '/admin'} class:text-primary={route === '/admin'}
+          class="link pointer-events-auto" class:font-bold={route.startsWith('/admin')} class:text-primary={route.startsWith('/admin')}
           on:click|preventDefault={() => goto('/admin')}
         >
           Admin

@@ -6,6 +6,7 @@ import {
   jellyfinApi,
   jellyfinAuthHeader,
   jellyfinAxios,
+  jellyfinErrorInfo,
 } from './jellyfinApi';
 
 // The device id is a contract between two endpoints that never talk to each
@@ -85,4 +86,35 @@ test('the quality tiers reach the profile', () => {
   const conds = p.CodecProfiles?.[0]?.Conditions ?? [];
   assert.equal(conds.find((c) => c.Property === 'Width')?.Value, '854');
   assert.equal(conds.find((c) => c.Property === 'VideoBitrate')?.Value, '1500000');
+});
+
+test('a logged Jellyfin error never carries the API key', () => {
+  // An axios error carries its whole request config, and the config carries the
+  // Authorization header. `console.warn('…', err)` therefore prints the server's
+  // Jellyfin key into the backend log — observed for real when a library refresh
+  // timed out. The proxy already refuses to hand a credential to a browser;
+  // this is the same secret leaving by a different door.
+  const key = '36e12d0c65894b03afcee74d7e4e67c6';
+  const axiosish: any = {
+    code: 'ECONNABORTED',
+    message: 'timeout of 30000ms exceeded',
+    isAxiosError: true,
+    config: {
+      timeout: 30_000,
+      headers: { Authorization: jellyfinAuthHeader(key), Accept: 'application/json' },
+    },
+    response: { status: 504 },
+  };
+  const logged = jellyfinErrorInfo(axiosish);
+  assert.ok(!logged.includes(key), `the key leaked into the log line: ${logged}`);
+  assert.ok(!/token=/i.test(logged), `an auth header reached the log line: ${logged}`);
+  // Still worth reading, or nobody will use it.
+  assert.match(logged, /ECONNABORTED/);
+  assert.match(logged, /504/);
+  assert.match(logged, /timeout/);
+});
+
+test('a plain Error still logs something useful', () => {
+  assert.match(jellyfinErrorInfo(new Error('boom')), /boom/);
+  assert.match(jellyfinErrorInfo('just a string'), /just a string/);
 });

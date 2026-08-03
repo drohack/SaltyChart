@@ -6,6 +6,7 @@ import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
+import { apiJson, QUICK } from '../lib/remote';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
   // combobox component
@@ -46,7 +47,14 @@ const rankOptions = [
   let selectedOther: any = null;
 
   // suggestion list for combobox
-  let suggestions: string[] = [];
+  /**
+   * Options for the second-user combobox.
+   *
+   * Declared as `string[]` until now, which was simply untrue — every write puts
+   * `{ value, label }` in and every read uses `.value`. svelte-check had two
+   * standing errors from that mismatch; typing it honestly clears both.
+   */
+  let suggestions: Array<{ value: string; label: string }> = [];
   // load matching users (debounced)
   /**
    * The query the current `suggestions` were fetched for. Needed to tell "no
@@ -55,17 +63,24 @@ const rankOptions = [
    */
   let suggestionsFor: string | null = null;
 
+  /** Set when the user list couldn't be fetched, so the box isn't silently empty. */
+  let userSearchFailed = false;
+
   async function fetchSuggestions() {
     const q = otherInput.trim();
     const url = q ? `/api/users?q=${encodeURIComponent(q)}` : `/api/users`;
     try {
-      const resp = await fetch(url);
-      if (resp.ok) {
-        suggestions = (await resp.json())
-          .map((u: string) => ({ value: u, label: u }));
-        suggestionsFor = q;
-      }
-    } catch {}
+      // A failure here used to be swallowed whole: the picker stayed empty with
+      // no explanation, *and* the "No user named…" warning could never fire,
+      // because it keys off a completed fetch. So a broken /api/users looked
+      // exactly like a username that doesn't exist.
+      const users = await apiJson<string[]>(url, undefined, { label: 'users', timeoutMs: QUICK });
+      suggestions = users.map((u) => ({ value: u, label: u }));
+      suggestionsFor = q;
+      userSearchFailed = false;
+    } catch {
+      userSearchFailed = true; // apiJson logged the reason
+    }
   }
   let suggestTimer: any;
   function queueSuggest() {
@@ -678,7 +693,16 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           inputAttributes={{ 'data-bwignore': true }}
           on:change={() => {/* fetch triggered reactively */}}
         />
-        {#if unknownOtherUser}
+        {#if userSearchFailed}
+          <!-- Distinct from "no such user": the list never arrived, so we can't
+               say whether the name exists. Claiming the latter would be a lie. -->
+          <p class="text-xs text-warning mt-1" data-user-search-failed>
+            Couldn't load the user list
+            <button type="button" class="btn btn-xs btn-outline normal-case ml-1" on:click={fetchSuggestions}>
+              Retry
+            </button>
+          </p>
+        {:else if unknownOtherUser}
           <!-- Without this, a typo leaves the previously-compared user's ranks
                on screen and reads as if they belonged to the name just typed. -->
           <p class="text-xs text-error mt-1" data-unknown-user>

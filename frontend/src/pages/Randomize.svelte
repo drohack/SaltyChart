@@ -7,8 +7,12 @@ import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
 import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
-import { checkAvailability, checkAvailabilityMany, mediaConfigured, type MediaAvailability } from '../stores/jellyfin';
+import { checkAvailability, checkAvailabilityMany, mediaConfigured, libraryStatus, type MediaAvailability } from '../stores/jellyfin';
 import { loadCastSdk, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
+import { apiFetch, QUICK } from '../lib/remote';
+
+/** Set when a hide/show write failed and the optimistic change was put back. */
+let hideWriteError = '';
 // Reactive trigger for title-language changes
 $: _lang = $options.titleLanguage;
 
@@ -100,16 +104,44 @@ $: _lang = $options.titleLanguage;
       return hit ? { ...entry, hidden: targetHidden } : entry;
     });
 
-    for (const item of targets) {
-      fetch('/api/list/hidden', {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${$authToken}`
-        },
-        body: JSON.stringify({ season, year, mediaId: item.id, hidden: targetHidden })
-      }).catch(() => {});
-    }
+    // The local change above is optimistic. Until now the write that backs it
+    // was fire-and-forget with `.catch(() => {})`, so a failure left the screen
+    // showing shows as hidden while the server disagreed — reload and they were
+    // all back. Silent data loss, and per-show, so a partial failure left the
+    // list half-applied with nothing to indicate it. Revert what didn't stick.
+    const failed = await writeHidden(targets.map((t) => t.id), targetHidden);
+    if (failed.length) revertHidden(failed, !targetHidden, targets.length);
+  }
+
+  /** Persist one hidden flag per show. Returns the ids that did not stick. */
+  async function writeHidden(ids: number[], hidden: boolean): Promise<number[]> {
+    const failed: number[] = [];
+    await Promise.all(
+      ids.map(async (mediaId) => {
+        try {
+          await apiFetch(
+            '/api/list/hidden',
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+              body: JSON.stringify({ season, year, mediaId, hidden }),
+            },
+            { label: 'list/hidden', timeoutMs: QUICK }
+          );
+        } catch {
+          failed.push(mediaId); // apiFetch already logged the reason
+        }
+      })
+    );
+    return failed;
+  }
+
+  /** Put the optimistic change back, and say so rather than diverging quietly. */
+  function revertHidden(ids: number[], back: boolean, attempted: number) {
+    const undo = new Set(ids);
+    watchList = watchList.map((e) => (undo.has(e.mediaId) ? { ...e, hidden: back } : e));
+    hideWriteError = `Couldn't save ${ids.length} of ${attempted} change${attempted === 1 ? '' : 's'} — put back.`;
+    setTimeout(() => (hideWriteError = ''), 8000);
   }
 
   const hideAll = () => setHiddenForAll(true);
@@ -170,13 +202,11 @@ $: _lang = $options.titleLanguage;
       watchList = watchList.map((entry) =>
         missing.some((m) => m.id === entry.mediaId) ? { ...entry, hidden: true } : entry
       );
-      for (const item of missing) {
-        fetch('/api/list/hidden', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-          body: JSON.stringify({ season: forSeason, year: forYear, mediaId: item.id, hidden: true }),
-        }).catch(() => {});
-      }
+      // Same optimistic-write rule as setHiddenForAll: revert whatever the
+      // server didn't accept, rather than leaving the screen and the database
+      // disagreeing until the next reload.
+      const failed = await writeHidden(missing.map((m) => m.id), true);
+      if (failed.length) revertHidden(failed, false, missing.length);
     } finally {
       hidingNonLibrary = false;
     }
@@ -553,11 +583,18 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     libraryAvailability = new Map(libraryAvailability).set(id, available);
   }
 
-  $: if (wheelItems.length) {
-    // One request for the whole wheel, not one per show — a 50-item wheel used
-    // to fire 50 POSTs on every page load. `checkAvailabilityMany` fills the
-    // same cache the pop-up's single-show path reads, so opening one afterwards
-    // is still instant.
+  /**
+   * Ask about every wheel item in one request.
+   *
+   * Extracted from the reactive block below so the Retry button can call it.
+   * Previously the only thing that could trigger a lookup was `wheelItems`
+   * changing, so a failed check stayed failed for as long as the page was open
+   * — the page had no way back short of a reload.
+   */
+  function refreshLibraryAvailability() {
+    if (!wheelItems.length) return;
+    // `checkAvailabilityMany` fills the same cache the pop-up's single-show
+    // path reads, so opening one afterwards is still instant.
     checkAvailabilityMany(
       wheelItems.map((item) => ({
         mediaId: item.id,
@@ -580,6 +617,14 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
       })
       .catch(() => {});
   }
+
+  function retryLibraryCheck() {
+    refreshLibraryAvailability();
+  }
+
+  // One request for the whole wheel, not one per show — a 50-item wheel used to
+  // fire 50 POSTs on every page load.
+  $: if (wheelItems.length) refreshLibraryAvailability();
 
   // Only enabled while there's actually something to hide, so the button
   // greys out once it has done its job (same feel as Hide All / Show All).
@@ -1494,11 +1539,38 @@ $: {
                   class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
                   on:click={hideNotInLibrary}
                   disabled={!hasNonLibraryVisible || hidingNonLibrary}
-                  title="Hide every unwatched show the library doesn't have (confirmed matches only)"
+                  title={$libraryStatus === 'unreachable'
+                    ? "Can't reach the media server, so nothing is known to be missing"
+                    : $libraryStatus === 'checking'
+                    ? 'Still checking which shows the library has…'
+                    : hasNonLibraryVisible
+                    ? "Hide every unwatched show the library doesn't have (confirmed matches only)"
+                    : 'Nothing to hide — every unwatched show is in the library'}
                 >
                   {#if hidingNonLibrary}<span class="loading loading-spinner loading-xs"></span>{/if}
                   Hide Not in Library
                 </button>
+
+                <!-- Which kind of nothing this is. A disabled button looks the
+                     same whether every show is present or the lookup never
+                     answered, and those were indistinguishable on screen — the
+                     reason a real outage read as normal operation. -->
+                {#if hideWriteError}
+                  <span class="text-xs text-error" data-hide-write-error>{hideWriteError}</span>
+                {/if}
+                {#if $libraryStatus === 'checking'}
+                  <span class="text-xs opacity-60 flex items-center gap-1" data-library-status="checking">
+                    <span class="loading loading-spinner loading-xs"></span>
+                    Checking your library…
+                  </span>
+                {:else if $libraryStatus === 'unreachable'}
+                  <span class="text-xs text-warning flex items-center gap-2" data-library-status="unreachable">
+                    Can't reach the media server
+                    <button type="button" class="btn btn-xs btn-outline normal-case" on:click={retryLibraryCheck}>
+                      Retry
+                    </button>
+                  </span>
+                {/if}
               {/if}
             </div>
           {/if}
@@ -1798,7 +1870,7 @@ $: {
                   · {watchInfo.episodeTitle}
                 {/if}
               </span>
-              {#if watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0}
+              {#if (watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0) || watchInfo.unverified}
                 <!-- Matched on a *partial* title, with no id to confirm it. That
                      is how a 2026 entry once resolved to a 2004 series of
                      similar name ("Firefly Wedding" → "Firefly"), so say so
@@ -1812,7 +1884,9 @@ $: {
                      that fires on the ordinary case is a warning nobody reads. -->
                 <span
                   class="text-xs text-warning/80"
-                  title="Matched on a partial title, and no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant."
+                  title={watchInfo.unverified
+                    ? 'Matched by an id we looked up ourselves rather than one from the community map, and nobody has confirmed it yet. Check the title above is really the show you meant.'
+                    : 'Matched on a partial title, and no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant.'}
                 >
                   ⚠ unconfirmed match
                 </span>

@@ -82,6 +82,9 @@ class Mutation:
 
 
 BACKEND_JF = "backend/src/routes/jellyfin.ts"
+BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
+BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
+BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 
 PY = ["py", "-3.13", "-u"]
@@ -98,6 +101,7 @@ def player(*steps: int) -> list[str]:
 T_NEGATIVE = PY + [str(TESTS / "test_api_negative.py")]
 T_UI = PY + [str(TESTS / "test_ui_interactions.py")]
 T_UNIT = ["npm", "run", "test:unit"]
+T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
 
 MUTATIONS: list[Mutation] = [
     Mutation(
@@ -112,14 +116,102 @@ MUTATIONS: list[Mutation] = [
         guards="the server's Jellyfin credential is handed to every viewer's browser",
     ),
     Mutation(
-        name="AniList->TVDB id match tier disabled",
+        name="AniList->TVDB/TMDB id match tier disabled",
         path=BACKEND_JF,
-        find="    const entry = { tvdbId: tvdbIdForAnilist(mediaId), titles };",
-        replace="    const entry = { tvdbId: null, titles }; /* mutation */",
+        # Both ids, not just tvdbId. Nulling TVDB alone leaves the tier alive
+        # through TMDB — measured: step 6 still found id matches, and the
+        # mutation was caught by an unrelated assertion instead. A row that
+        # fails for the wrong reason audits nothing.
+        find="""    const identity = resolveIdentity(mediaId);""",
+        replace="""    const identity = { ...resolveIdentity(mediaId), tvdbId: null, tmdbId: null }; /* mutation */""",
         test=T_JELLYFIN,
         expect="NONE by id",
         guards="every match silently degrades to fuzzy titles, which has already "
                "matched a 2026 show to a 2004 one",
+    ),
+    Mutation(
+        name="a known id no longer rules out a title match",
+        path=BACKEND_MATCH,
+        # Removing the negative-evidence rule, i.e. restoring the fallback that
+        # produced every remaining false positive. The replay names the pairs it
+        # brings back rather than reporting a moved count.
+        # This row and "a guessed id gains negative-evidence power" mutate the
+        # same line in opposite directions, which is exactly right: one deletes
+        # negative evidence, the other hands it to guesses. Both are wrong, in
+        # ways that produce different bugs.
+        find="    if (entry.idIsAuthoritative !== false) return null;",
+        replace="    /* mutation: fall back to titles */",
+        test=T_REPLAY,
+        expect="franchise-sibling false positive is back",
+        guards="a new work resolves to its franchise parent — Pokemon Concierge "
+               "played episode 109 of season 20 of Pokemon",
+    ),
+    Mutation(
+        name="a guessed id gains negative-evidence power",
+        path=BACKEND_MATCH,
+        # Resolver ids must be positive-only. Granting them both directions lets
+        # an unverified TMDB guess delete a working title match — the same
+        # false-positive class as the franchise siblings, from the other side.
+        find="    if (entry.idIsAuthoritative !== false) return null;",
+        replace="    return null; /* mutation */",
+        test=T_UNIT,
+        expect="positive-only",
+        guards="an unverified guess suppresses a Watch button that works today",
+    ),
+    Mutation(
+        name="the air-date gate stops rejecting absurd remote matches",
+        path=BACKEND_REMOTE,
+        # Without it, "5-Oku-nen Button Part 2" resolves to Babylon 5 (9,441 days
+        # off) and "Star Wars: Visions Volume 3" to Star Wars Rebels (2,795).
+        find="    return input.deltaMs <= AIR_DATE_TOLERANCE_MS ? 'accept' : 'reject';",
+        replace="    return 'accept'; /* mutation */",
+        test=T_UNIT,
+        expect="should reject",
+        guards="a TMDB search result decades away from the entry is written into "
+               "the identity table as fact",
+    ),
+    Mutation(
+        name="a film we don't hold falls back to matching TV series",
+        path=BACKEND_JF,
+        # Restoring the category error: without the early return, a film id that
+        # isn't in the film index drops through to title-matching a series-only
+        # list. Measured at 26 wrong matches against 1 real one.
+        find="""      if (!film) {
+        const data = { available: false, matchedBy: 'id' };
+        rememberAvailability(mediaId, data, 10 * 60 * 1000);
+        return data;
+      }""",
+        replace="      if (!film) { /* mutation: fall through to series */ } else {",
+        also=[("      rememberAvailability(mediaId, data, 60 * 60 * 1000);\n      return data;\n    }\n\n    const entry = {",
+               "      rememberAvailability(mediaId, data, 60 * 60 * 1000);\n      return data;\n      }\n    }\n\n    const entry = {")],
+        test=T_JELLYFIN,
+        expect="fell through to a SERIES title match",
+        guards="a film resolves to the television series of the same name — "
+               "The Last Blossom played House",
+    ),
+    Mutation(
+        name="an explicit rejection no longer suppresses the title match",
+        path=BACKEND_JF,
+        # This shipped broken and no test caught it: a rejection carries no ids,
+        # so without the short-circuit it falls through to the title tier — the
+        # very match being rejected. It looked fixed on screen (the row leaves
+        # the review list) while the Watch button stayed.
+        find="    if (identity.rejected) {",
+        replace="    if (false) { /* mutation */",
+        test=T_JELLYFIN,
+        expect="override did not change the verdict",
+        guards="Reject on /admin/matching saves a row, drops the entry from the "
+               "list, and leaves the wrong Watch button on screen",
+    ),
+    Mutation(
+        name="identity overrides are ignored",
+        path=BACKEND_IDENTITY,
+        find="  if (override) return override;",
+        replace="  /* mutation: overrides ignored */",
+        test=T_JELLYFIN,
+        expect="override did not change the verdict",
+        guards="the admin page appears to save a correction that never takes "
+               "effect, which is worse than not offering one",
     ),
     Mutation(
         name="subtitles 'Off' stops sending subtitleStreamIndex=-1",
@@ -272,6 +364,42 @@ MUTATIONS: list[Mutation] = [
         guards="closing the player stops telling Jellyfin to kill the transcode, "
                "silently, because the stop matches nothing",
         settle=0.0,
+    ),
+    Mutation(
+        name="requests can hang forever again (abort timeout removed)",
+        path="frontend/src/lib/remote.ts",
+        find="      const res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });",
+        replace="      const res = await fetch(path, { ...init }); /* mutation */",
+        test=T_UI,
+        expect="hung availability request left the page waiting",
+        guards="a hung backend hangs the page indefinitely — no error, no timeout, "
+               "nothing to catch, which is the failure mode with no upper bound",
+    ),
+    Mutation(
+        name="a failed hide write no longer reverts",
+        path="frontend/src/pages/Randomize.svelte",
+        # Break the state revert only, leaving the message. Removing the whole
+        # `revertHidden` call also removes the warning, so the test died waiting
+        # for that instead of reaching the assertion about UI/server agreement —
+        # red, but for the wrong reason, which proves nothing about the guard.
+        find="    watchList = watchList.map((e) => (undo.has(e.mediaId) ? { ...e, hidden: back } : e));",
+        replace="    /* mutation: no revert */",
+        test=T_UI,
+        expect="UI and server have diverged",
+        guards="the screen shows shows as hidden while the server disagrees, so a "
+               "reload silently undoes what the user just did — data loss, not "
+               "just a missing message",
+    ),
+    Mutation(
+        name="a failed library lookup goes back to being silent",
+        path="frontend/src/stores/jellyfin.ts",
+        find="  libraryStatus.set(failedChunks ? 'unreachable' : 'ok');",
+        replace="  libraryStatus.set('ok'); /* mutation */",
+        test=T_UI,
+        expect="the page said nothing",
+        guards="a failed availability lookup renders exactly like a healthy library "
+               "with nothing missing — the state a real outage was reported in, "
+               "which cost four wrong theories and was never explained",
     ),
     Mutation(
         name="unaired series are looked up in the library again",
