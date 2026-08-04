@@ -398,6 +398,10 @@ SaltyChart/
 ├── tools/            # Python helpers: local_translate.py, benchmark_whisper_settings.py
 │   │                 #   + bench_pipeline.py (swappable ASR/translate/align stages)
 │   │                 #   + bench_player.py (Jellyfin playback startup timings)
+│   │                 #   + bench_transcode_cpu.py (per-condition playback CPU:
+│   │                 #     burn-in 5.9x realtime ~1.5 cores, remux 11.2x — reads
+│   │                 #     the server's CPU from the mirrored syslog; sessions
+│   │                 #     torn down by playSessionId, atexit-registered)
 │   │                 #   + check_match_corpus.py (real-data library matching check)
 │   ├── tests/        # Pre-deploy smoke/regression suite (run_all.py)
 │   └── unraid/       # Reference copy of the update_saltychart User Script
