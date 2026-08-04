@@ -22,6 +22,7 @@ import {
   lookupByProviderId,
   type RemoteCandidate,
 } from '../lib/remoteIdentity';
+import { skyhookSearch } from '../lib/skyhookIdentity';
 import {
   closestDatedEpisode,
   AIR_DATE_TOLERANCE_MS,
@@ -417,10 +418,42 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
 
     const term = parseLookupTerm(termRaw);
     if (term.kind === 'name') {
+      // Series-first: TVDB ids arrive natively from skyhook (Sonarr's own
+      // metadata service) instead of hoping the cross-walk can fill them —
+      // this Jellyfin's remote search returns TMDB only. Degrades to the
+      // TMDB-only list if skyhook is unreachable.
+      const sky: RemoteCandidate[] = (await skyhookSearch(term.name)).slice(0, 5).map((s) => ({
+        tvdbId: s.tvdbId,
+        tmdbId: null,
+        tmdbKind: null,
+        matchedTitle: s.title,
+        exact: false,
+        year: s.firstAired ? Number(s.firstAired.slice(0, 4)) : null,
+        image: null,
+        premiereDate: s.firstAired,
+      }));
       const cands = await searchBothKinds(api, term.name, year);
-      const results = cands.map(toResult);
+      // Merge, deduped by completed identity — a skyhook row and a TMDB row
+      // for the same series collapse into one, keeping the richer fields.
+      const results: ReturnType<typeof toResult>[] = [];
+      const seen = new Map<string, ReturnType<typeof toResult>>();
+      for (const r of [...sky, ...cands].map(toResult)) {
+        const key = r.tvdbId ? `tvdb:${r.tvdbId}` : `tmdb:${r.tmdbKind ?? ''}:${r.tmdbId ?? ''}`;
+        const prev = seen.get(key);
+        if (!prev) {
+          seen.set(key, r);
+          results.push(r);
+          continue;
+        }
+        prev.image = prev.image ?? r.image;
+        prev.year = prev.year ?? r.year;
+        prev.tmdbId = prev.tmdbId ?? r.tmdbId;
+        prev.tmdbKind = prev.tmdbKind ?? r.tmdbKind;
+        prev.title = prev.title ?? r.title;
+        prev.library = prev.library ?? r.library;
+      }
       await persistLearnedYear(results);
-      return res.json({ mode: 'name', results });
+      return res.json({ mode: 'name', results: results.slice(0, 12) });
     }
 
     // id mode: one result, resolved locally first; a TMDB id nothing local

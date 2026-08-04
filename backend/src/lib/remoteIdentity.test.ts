@@ -36,7 +36,7 @@ test('the acceptance ladder — real pairs measured against the live library', (
   ];
   for (const [label, days, want] of cases) {
     assert.equal(
-      verdictFor({ exact: false, inLibrary: true, deltaMs: days * DAY, yearDelta: null, kind: 'tv', premiereDeltaMs: null }).verdict,
+      verdictFor({ exact: false, inLibrary: true, deltaMs: days * DAY, yearDelta: null, kind: 'tv', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
       want,
       `${label} (${days}d) should ${want}`
     );
@@ -44,7 +44,7 @@ test('the acceptance ladder — real pairs measured against the live library', (
 });
 
 test('an exact title is accepted without needing the library', () => {
-  const v = verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv', premiereDeltaMs: null });
+  const v = verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(v.verdict, 'accept');
   assert.equal(v.rung, 'exact title');
 });
@@ -54,22 +54,22 @@ test('an unverifiable result is queued, not thrown away', () => {
   // resolver ids are positive-only, so keeping it cannot cost anything, and the
   // id is what a future Sonarr/Radarr hand-off needs.
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv', premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue'
   );
 });
 
 test('a film is judged on release year, having no episodes to date', () => {
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'accept'
   );
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 1, kind: 'movie', premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 1, kind: 'movie', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'accept'
   );
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 9, kind: 'movie', premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 9, kind: 'movie', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue'
   );
 });
@@ -80,12 +80,12 @@ test('the year rung is for films only — a TV candidate cannot be accepted on r
   // could decide — when we don't hold it, "queue" is the honest verdict. An
   // accept here writes a wrong id as permanent fact with no human in the loop.
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
     'year rung is for films only — a same-year TV sibling must queue for review'
   );
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: null, premiereDeltaMs: null }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: null, premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
     'an id-less kind must not be treated as a film'
   );
@@ -96,7 +96,7 @@ test('a premiere date outranks title text — the Echo class', () => {
   // exact title, 1012 days off. The old ladder accepted on the text alone —
   // date evidence must send it to review instead.
   assert.equal(
-    verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 3, kind: 'movie', premiereDeltaMs: 1012 * DAY }).verdict,
+    verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 3, kind: 'movie', premiereDeltaMs: 1012 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
     'an exact title dated 1012d from the premiere must not blind-accept'
   );
@@ -104,12 +104,12 @@ test('a premiere date outranks title text — the Echo class', () => {
   // release, AniList the broadcast. That pair is why beyond-tolerance QUEUES
   // for a human and must never auto-reject.
   assert.equal(
-    verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 1, kind: 'movie', premiereDeltaMs: 523 * DAY }).verdict,
+    verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 1, kind: 'movie', premiereDeltaMs: 523 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue'
   );
   // And within tolerance the date VERIFIES the accept — the rung must say so,
   // because /admin/matching renders trust straight from it.
-  const good = verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 3 * DAY });
+  const good = verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 3 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(good.verdict, 'accept');
   assert.equal(good.rung, 'premiere date 3d');
 });
@@ -118,7 +118,7 @@ test('a dated non-exact candidate within tolerance is accepted — localized tit
   // 14 of the 105 queued rows resolve this way: TMDB holds the work under a
   // localized English title ("Kagaku×Bouken Survival!" → "Surviving Science!",
   // 0 days). Title text can never match those; the date is a fingerprint.
-  const v = verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: 0 });
+  const v = verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: 0, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(v.verdict, 'accept');
   assert.equal(v.rung, 'premiere date 0d');
 });
@@ -127,7 +127,7 @@ test('library episode evidence outranks a big series-premiere delta', () => {
   // Bananya Around the World -> Bananya: the SERIES premiered years before the
   // entry, so the premiere delta is huge — but the entry's own episode lands
   // 1 day off. Episode evidence must win or every held sequel gets queued.
-  const v = verdictFor({ exact: false, inLibrary: true, deltaMs: 1 * DAY, yearDelta: null, kind: 'tv', premiereDeltaMs: 3300 * DAY });
+  const v = verdictFor({ exact: false, inLibrary: true, deltaMs: 1 * DAY, yearDelta: null, kind: 'tv', premiereDeltaMs: 3300 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(v.verdict, 'accept');
   assert.equal(v.rung, 'air date 1d');
 });
@@ -137,10 +137,49 @@ test('a contradicting premiere date blocks the year rung', () => {
   // (62–201d) — a ±1 year window admits up to ~730 days, and the day already
   // knows better.
   assert.equal(
-    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 201 * DAY }).verdict,
+    verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 201 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
     'the year rung must not fire when the premiere date already disagrees'
   );
+});
+
+test('a TVDB season premiere accepts a held sequel the stale library rejected', () => {
+  // Ranma1/2 (2024) Season 3: we hold seasons 1-2, so the nearest HELD episode
+  // is 287d from the entry premiere and the old gate rejected the correct
+  // parent. TVDB's schedule has S3E1 on the premiere day — that evidence must
+  // win, because held episodes are naturally stale for a season nobody has
+  // grabbed yet.
+  const v = verdictFor({
+    exact: false, inLibrary: true, deltaMs: 287 * DAY, yearDelta: null, kind: 'tv',
+    premiereDeltaMs: null, tvdbSeasonDeltaMs: 0, tvdbHasUndatedFutureSeason: false,
+  });
+  assert.equal(v.verdict, 'accept',
+    'a TVDB season premiere on the entry date must beat stale held episodes');
+  assert.equal(v.rung, 'tvdb season premiere 0d');
+});
+
+test('an undated future season at TVDB softens a held rejection to review', () => {
+  // Sousou no Frieren 3rd Season: held episodes end 553d before the entry
+  // premiere, and TVDB lists season 3 but has not dated it. Rejecting writes
+  // "not this series" about the show's own parent — queue it instead.
+  const v = verdictFor({
+    exact: false, inLibrary: true, deltaMs: 553 * DAY, yearDelta: null, kind: 'tv',
+    premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: true,
+  });
+  assert.equal(v.verdict, 'queue',
+    'a rejection is premature while TVDB lists an undated future season');
+  // And the rejections that were CORRECT stay rejections: One Piece Fan Letter
+  // (329d) and Babylon 5 (9,441d) — no undated future season on either.
+  for (const days of [329, 9441]) {
+    assert.equal(
+      verdictFor({
+        exact: false, inLibrary: true, deltaMs: days * DAY, yearDelta: null, kind: 'tv',
+        premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false,
+      }).verdict,
+      'reject',
+      `${days}d with no future season must still reject`
+    );
+  }
 });
 
 const cand = (

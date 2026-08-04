@@ -622,6 +622,20 @@ def main():
         if not any(x.get("tmdbId") for x in results):
             fail(12, "a name search returned no id-bearing results — the lookup "
                      "can only offer picks it can act on")
+        # Series-first via skyhook: a name search for a series must ALSO offer
+        # TVDB ids natively (this Jellyfin's own remote search cannot — no
+        # TVDB plugin). Skipped, not failed, when skyhook is unreachable: the
+        # merge is designed to degrade to the TMDB-only list.
+        if not any(x.get("tvdbId") for x in results):
+            try:
+                sky_up = requests.get("https://skyhook.sonarr.tv/v1/tvdb/search/en/",
+                                      params={"term": "One Piece"}, timeout=15).status_code == 200
+            except requests.RequestException:
+                sky_up = False
+            if sky_up:
+                fail(12, "skyhook is reachable but the name search offered no "
+                         "TVDB-bearing result — the series-first merge is dead")
+            step(12, "note — skyhook unreachable, TVDB-bearing assertion skipped")
         ident = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
                               timeout=20, json={"mediaIds": [playable["mediaId"]]}).json()
         row = (ident.get("identities") or {}).get(str(playable["mediaId"])) or {}

@@ -163,10 +163,12 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_REMOTE,
         # Without it, "5-Oku-nen Button Part 2" resolves to Babylon 5 (9,441 days
         # off) and "Star Wars: Visions Volume 3" to Star Wars Rebels (2,795).
-        find="""    return input.deltaMs <= AIR_DATE_TOLERANCE_MS
-      ? { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` }
-      : { verdict: 'reject', rung: null };""",
-        replace="    return { verdict: 'accept', rung: 'air date 0d' }; /* mutation */",
+        find="""    if (input.deltaMs <= AIR_DATE_TOLERANCE_MS) {
+      return { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` };
+    }""",
+        replace="""    if (input.deltaMs >= 0) { /* mutation: everything within tolerance */
+      return { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` };
+    }""",
         test=T_UNIT,
         expect="should reject",
         guards="a TMDB search result decades away from the entry is written into "
@@ -510,6 +512,49 @@ MUTATIONS: list[Mutation] = [
         expect="the one the premiere date vouches for must win",
         guards="a title collision is decided by TMDB popularity instead of the "
                "entry's own premiere date",
+    ),
+    Mutation(
+        name="a collapsed base title relates to everything again",
+        path="backend/src/lib/skyhookIdentity.ts",
+        # baseTitle legitimately collapses "Re:Zero kara ..." to "Re" — without
+        # the length floor that prefix relates to every Re-titled work, and the
+        # measurement that shaped this watched it relate to "Re:Born".
+        find="    if (shorter.length < MIN_RELATION_CHARS) continue;",
+        replace="    if (false) continue; /* mutation */",
+        test=T_UNIT,
+        expect="never relate",
+        guards="every skyhook search result sharing two letters with a "
+               "collapsed base becomes date-checkable",
+    ),
+    Mutation(
+        name="any weekly episode verifies a TVDB season again",
+        path="backend/src/lib/skyhookIdentity.ts",
+        # An AniList entry's start date is a season START, and a weekly series
+        # has SOME episode within days of any date — the first pass of the
+        # measurement 'verified' Natsume S7 against a Lego Friends mid-run
+        # episode exactly this way.
+        find="    if (e.seasonNumber <= 0 || e.episodeNumber !== 1 || !e.airDate) continue;",
+        replace="    if (e.seasonNumber <= 0 || !e.airDate) continue; /* mutation */",
+        test=T_UNIT,
+        expect="must not verify",
+        guards="any currently-airing series on TVDB date-verifies against any "
+               "seasonal entry — the Lego Friends confound",
+    ),
+    Mutation(
+        name="a held rejection ignores TVDB's undated future season",
+        path=BACKEND_REMOTE,
+        # The sequel-reject bug: held episodes are stale by construction for a
+        # season nobody has grabbed, so Frieren S3 was rejected against its own
+        # parent at 553d. While TVDB lists an undated future season, the honest
+        # verdict is review, not reject.
+        find="""    return input.tvdbHasUndatedFutureSeason
+      ? { verdict: 'queue', rung: null }
+      : { verdict: 'reject', rung: null };""",
+        replace="    return { verdict: 'reject', rung: null }; /* mutation */",
+        test=T_UNIT,
+        expect="premature",
+        guards="every unaired new season of a held show writes 'not this "
+               "series' about its own parent — the Frieren S3 class",
     ),
     Mutation(
         name="identity writes tell no one — the availability cache goes stale",

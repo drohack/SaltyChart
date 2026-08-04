@@ -127,6 +127,14 @@
            (a?.tmdbKind ?? null) === (b?.tmdbKind ?? null);
   }
 
+  /** "Ranma ½ (2024)" + 2024 must not render "(2024) (2024)" — TVDB titles
+   *  embed the disambiguation year that we'd otherwise append. */
+  function withYear(title: string | null | undefined, year: number | null | undefined): string {
+    const t = title ?? '';
+    if (year == null || t.endsWith(`(${year})`)) return t;
+    return `${t} (${year})`;
+  }
+
   function openPicker(r: Row) {
     openFor = r.mediaId;
     // Prefill with the entry's own title and search right away, like Sonarr's
@@ -402,7 +410,8 @@
   // of magnitude.
   const dateVerified = (r: Row) => {
     const n = r.note ?? '';
-    return n.startsWith('remote: air date') || n.startsWith('remote: premiere date');
+    return n.startsWith('remote: air date') || n.startsWith('remote: premiere date')
+      || n.startsWith('remote: tvdb season premiere');
   };
   const resolverAccept = (r: Row) =>
     !r.confirmed && r.source === 'remote' && !r.pending &&
@@ -444,6 +453,9 @@
           if (rung.startsWith('premiere date')) {
             return { verdict: 'Matched', detail: `auto-match, premiere date verified (${rung.replace('premiere date ', '')} off)`, cls: 'badge-success', options };
           }
+          if (rung.startsWith('tvdb season premiere')) {
+            return { verdict: 'Matched', detail: `auto-match, TVDB season premiere verified (${rung.replace('tvdb season premiere ', '')} off)`, cls: 'badge-success', options };
+          }
           if (rung.startsWith('release year')) {
             return { verdict: 'Matched', detail: `auto-match, release year ${rung.replace('release year ', '')}`, cls: 'badge-info', options };
           }
@@ -470,7 +482,7 @@
       return { verdict: 'Not in library', detail: `id known (${from}), not held`, cls: 'badge-ghost', options };
     }
     if (r.pending) {
-      return { verdict: 'Not matched', detail: 'auto-search found nothing (TMDB only — no TVDB plugin)', cls: 'badge-error badge-outline', options: null };
+      return { verdict: 'Not matched', detail: 'auto-search found nothing at TMDB or TVDB', cls: 'badge-error badge-outline', options: null };
     }
     return { verdict: 'Not matched', detail: 'no id anywhere, no title match', cls: 'badge-error badge-outline', options: null };
   }
@@ -622,7 +634,7 @@
               >
                 {#if selected[r.mediaId]}
                   <span class="truncate">
-                    {selected[r.mediaId]?.title ?? 'Id known — open to name it'}{selected[r.mediaId]?.year ? ` (${selected[r.mediaId]?.year})` : ''}
+                    {selected[r.mediaId]?.title ? withYear(selected[r.mediaId]?.title, selected[r.mediaId]?.year) : 'Id known — open to name it'}
                   </span>
                   <!-- Sonarr/Radarr convention: a series shows its TVDB id, a
                        film its TMDB id. The other appears only when the
@@ -689,7 +701,7 @@
                             <img src={opt.image} alt="" class="w-6 h-9 object-cover rounded" loading="lazy" />
                           {/if}
                           <span class="min-w-0 flex-1 whitespace-normal break-words">
-                            {opt.title ?? 'Unnamed'}{opt.year ? ` (${opt.year})` : ''}
+                            {opt.title ? withYear(opt.title, opt.year) : 'Unnamed'}
                           </span>
                           <span class="opacity-60 shrink-0">{opt.tmdbKind === 'movie' ? 'film' : 'series'}</span>
                           {#if opt.suggested}

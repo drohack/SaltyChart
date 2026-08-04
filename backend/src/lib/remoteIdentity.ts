@@ -13,6 +13,13 @@ import {
   mergeIdentityPatch,
 } from './seriesIdentity';
 import { anilistTvdbMapSize, crosswalkIds } from './anilistTvdbMap';
+import {
+  skyhookSearch,
+  skyhookEpisodes,
+  titleRelated,
+  seasonPremiereDelta,
+  hasUndatedFutureSeason,
+} from './skyhookIdentity';
 
 // ---------------------------------------------------------------------------
 // Creating the links nobody else has.
@@ -127,6 +134,21 @@ export function verdictFor(input: {
    * without holding the show.
    */
   premiereDeltaMs: number | null;
+  /**
+   * |nearest TVDB SEASON premiere − entry premiere| for the candidate, from
+   * skyhook's schedule (seasonPremiereDelta). Episode evidence for seasons we
+   * do NOT hold — which is why it sits above the held-library check: held
+   * episodes are naturally stale for a season nobody has grabbed yet, and
+   * that staleness rejected Ranma S3's correct parent at 287d while TVDB had
+   * S3E1 on the entry's premiere day.
+   */
+  tvdbSeasonDeltaMs: number | null;
+  /**
+   * TVDB lists a season newer than its newest dated one (Frieren S3 before
+   * scheduling). A held-library rejection is premature while this is true —
+   * the entry is probably that very season.
+   */
+  tvdbHasUndatedFutureSeason: boolean;
 }): { verdict: Verdict; rung: string | null } {
   // The rung rides along so the stored note can never drift from the ladder —
   // the note used to be re-derived at the write site, which would misreport
@@ -143,12 +165,27 @@ export function verdictFor(input: {
   // ends in queue rather than reject — that one is the correct film, TMDB just
   // dates the theatrical release where AniList dates the broadcast.
   if (input.exact && p == null) return { verdict: 'accept', rung: 'exact title' };
+  // B0: TVDB's schedule has a season premiering on the entry's date. Checked
+  // BEFORE the held-library rung on purpose — for a season nobody has grabbed
+  // yet, held episodes are stale by construction and would reject the show's
+  // own parent (Ranma S3, Punirunes 2/3, Chibi Godzilla S3, all measured).
+  if (input.tvdbSeasonDeltaMs != null && input.tvdbSeasonDeltaMs <= AIR_DATE_TOLERANCE_MS) {
+    return { verdict: 'accept', rung: `tvdb season premiere ${days(input.tvdbSeasonDeltaMs)}d` };
+  }
   // B/C: we hold it, so the entry's own episode is datable — and it decides.
   // Above the premiere rungs on purpose: a held sequel's SERIES premiere is
-  // years off (Bananya), but its episode lands within a day.
+  // years off (Bananya), but its episode lands within a day. The one soften:
+  // while TVDB lists an undated future season, "no held episode is near the
+  // premiere" is exactly what a not-yet-grabbed new season looks like, so it
+  // queues for a human instead of rejecting (Frieren S3 at 553d) — One Piece
+  // Fan Letter (329d) and Babylon 5 (9,441d) carry no such season and still
+  // reject.
   if (input.inLibrary && input.deltaMs != null) {
-    return input.deltaMs <= AIR_DATE_TOLERANCE_MS
-      ? { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` }
+    if (input.deltaMs <= AIR_DATE_TOLERANCE_MS) {
+      return { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` };
+    }
+    return input.tvdbHasUndatedFutureSeason
+      ? { verdict: 'queue', rung: null }
       : { verdict: 'reject', rung: null };
   }
   // D0/D1: the premiere date decides for anything we don't hold. Within
@@ -365,6 +402,79 @@ export interface RemoteResult {
    * exactly the entries a human most needs to disambiguate.
    */
   candidates: RemoteCandidate[];
+  /**
+   * TVDB schedule evidence per tvdbId, gathered while searching so the sweep
+   * doesn't refetch it to run the ladder.
+   */
+  tvdbEvidence?: Map<string, TvdbEvidence>;
+}
+
+export interface TvdbEvidence {
+  seasonDeltaMs: number | null;
+  undatedFutureSeason: boolean;
+}
+
+/**
+ * TVDB-native candidates for a series entry, via skyhook — with schedule
+ * evidence for the top matches. Series-first on purpose: TVDB ids are what
+ * Sonarr acts on, and the cross-walk from a TMDB-only result is exactly what
+ * failed for the 125 stored rows this closes. Bounded per row: one search per
+ * title variant, episodes for the top two related candidates only.
+ */
+async function searchSkyhookCandidates(
+  q: RemoteQuery
+): Promise<{ cands: RemoteCandidate[]; evidence: Map<string, TvdbEvidence> }> {
+  const titles = q.titles.filter(Boolean).slice(0, 3);
+  const bases = titles.map(baseTitle).filter((b) => b && !titles.includes(b));
+  const searched = [...titles, ...new Set(bases)];
+  const wantedNorms = titles.map(normalizeTitle).filter(Boolean);
+  const related: { tvdbId: string; title: string; firstAired: string | null }[] = [];
+  const seen = new Set<string>();
+  for (const term of [...new Set(searched)]) {
+    for (const s of await skyhookSearch(term)) {
+      if (seen.has(s.tvdbId)) continue;
+      seen.add(s.tvdbId);
+      // Only candidates the title vouches for may be date-checked at all —
+      // see titleRelated for the two measured failure modes this blocks.
+      if (!titleRelated(s.title, searched)) continue;
+      related.push(s);
+    }
+    if (related.length >= 4) break;
+  }
+  const evidence = new Map<string, TvdbEvidence>();
+  const cands: RemoteCandidate[] = [];
+  for (const [i, s] of related.slice(0, 4).entries()) {
+    if (i < 2) {
+      const eps = await skyhookEpisodes(s.tvdbId);
+      if (eps.length) {
+        evidence.set(s.tvdbId, {
+          seasonDeltaMs: seasonPremiereDelta(eps, q.airDateMs ?? null),
+          undatedFutureSeason: hasUndatedFutureSeason(eps),
+        });
+      }
+    }
+    const got = normalizeTitle(s.title);
+    cands.push({
+      tvdbId: s.tvdbId,
+      tmdbId: null,
+      tmdbKind: null,
+      matchedTitle: s.title,
+      exact: !!got && wantedNorms.includes(got),
+      year: s.firstAired ? Number(s.firstAired.slice(0, 4)) : null,
+      image: null,
+      premiereDate: s.firstAired,
+    });
+  }
+  // A candidate whose season premiere lands within tolerance is the strongest
+  // evidence in the list — front it so the fallback pick takes it (a sequel's
+  // parent is never "exact" and its firstAired is years off, so none of
+  // pickCandidate's dated/exact ranks would otherwise catch it).
+  const within = (c: RemoteCandidate) => {
+    const ev = evidence.get(c.tvdbId ?? '');
+    return ev?.seasonDeltaMs != null && ev.seasonDeltaMs <= AIR_DATE_TOLERANCE_MS ? 0 : 1;
+  };
+  cands.sort((a, b) => within(a) - within(b));
+  return { cands, evidence };
 }
 
 export async function resolveRemoteIdentity(
@@ -395,6 +505,29 @@ export async function resolveRemoteIdentity(
     }
   };
 
+  // Series go to TVDB first: the id arrives natively instead of hoping a
+  // cross-walk fills it, and skyhook's schedule can verify a season we don't
+  // hold. When its evidence already settles the entry, the TMDB pass is
+  // skipped entirely; otherwise both candidate lists merge for the picker.
+  let tvdbEvidence: Map<string, TvdbEvidence> | undefined;
+  if (q.format !== 'MOVIE') {
+    const sky = await searchSkyhookCandidates(q);
+    tvdbEvidence = sky.evidence;
+    add(sky.cands);
+    const settled = sky.cands.find((c) => {
+      const ev = sky.evidence.get(c.tvdbId ?? '');
+      if (ev?.seasonDeltaMs != null && ev.seasonDeltaMs <= AIR_DATE_TOLERANCE_MS) return true;
+      const d = premiereDelta(c.premiereDate, q.airDateMs ?? null);
+      return c.exact && d != null && d <= AIR_DATE_TOLERANCE_MS;
+    });
+    if (settled) {
+      // `settled` itself, not pickCandidate: a sequel's verified parent is
+      // never "exact" and its firstAired is years off, so no dated/exact rank
+      // would choose it over other noise.
+      return { chosen: settled, candidates: all, tvdbEvidence };
+    }
+  }
+
   for (const names of passes) {
     for (const kind of [first, second] as const) {
       for (const t of names) {
@@ -408,13 +541,13 @@ export async function resolveRemoteIdentity(
           const d = premiereDelta(c.premiereDate, q.airDateMs ?? null);
           return d == null || d <= AIR_DATE_TOLERANCE_MS;
         });
-        if (exact) return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all };
+        if (exact) return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all, tvdbEvidence };
       }
     }
     if (all.length) break;
   }
   if (!all.length) return null;
-  return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all };
+  return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all, tvdbEvidence };
 }
 
 /**
@@ -629,6 +762,36 @@ async function saveSweepStatus(s: SweepStatus): Promise<void> {
   }
 }
 
+/**
+ * TVDB schedule evidence for the candidate being judged. The resolver's own
+ * map answers when the candidate came from skyhook; otherwise it is fetched
+ * lazily — and only for the reject-shaped held case, because that is the one
+ * place the schedule changes a verdict (a held series whose newest held
+ * episode is stale for the entry's premiere is what a not-yet-grabbed new
+ * season looks like). Memoised inside skyhookEpisodes, degrades to nothing.
+ */
+async function tvdbEvidenceFor(
+  fromResolver: Map<string, TvdbEvidence> | undefined,
+  hit: RemoteCandidate,
+  inLib: MatchableSeries | undefined | null,
+  deltaMs: number | null,
+  airDateMs: number | null
+): Promise<TvdbEvidence> {
+  const own = fromResolver?.get(hit.tvdbId ?? '');
+  if (own) return own;
+  const rejectShaped = inLib && deltaMs != null && deltaMs > AIR_DATE_TOLERANCE_MS;
+  const tvdbId = hit.tvdbId ?? (inLib?.tvdbId ? String(inLib.tvdbId) : null);
+  if (!rejectShaped || !tvdbId || airDateMs == null) {
+    return { seasonDeltaMs: null, undatedFutureSeason: false };
+  }
+  const eps = await skyhookEpisodes(tvdbId);
+  if (!eps.length) return { seasonDeltaMs: null, undatedFutureSeason: false };
+  return {
+    seasonDeltaMs: seasonPremiereDelta(eps, airDateMs),
+    undatedFutureSeason: hasUndatedFutureSeason(eps),
+  };
+}
+
 /** The entry's own episode distance, when we hold the candidate. */
 async function episodeDeltaMs(
   api: Api,
@@ -723,11 +886,14 @@ export async function regradeStoredRows(
       (hit.tvdbId ? byTvdb.get(hit.tvdbId) : undefined) ??
       (hit.tmdbId && hit.tmdbKind === 'tv' ? byTmdb.get(hit.tmdbId) : undefined);
     const deltaMs = await episodeDeltaMs(api, inLib, entry.airDateMs);
+    const tvdb = await tvdbEvidenceFor(found.tvdbEvidence, hit, inLib, deltaMs, entry.airDateMs ?? null);
     const yearDelta =
       hit.year != null && entry.year != null ? Math.abs(hit.year - entry.year) : null;
     const { verdict, rung } = verdictFor({
       exact: hit.exact, inLibrary: !!inLib, deltaMs, yearDelta, kind: hit.tmdbKind,
       premiereDeltaMs: premiereDelta(hit.premiereDate, entry.airDateMs ?? null),
+      tvdbSeasonDeltaMs: tvdb.seasonDeltaMs,
+      tvdbHasUndatedFutureSeason: tvdb.undatedFutureSeason,
     });
     const nowPending = verdict !== 'accept';
     if (ex.pending && !nowPending) promoted++;
@@ -746,6 +912,86 @@ export async function regradeStoredRows(
     }));
   }
   return { regraded, promoted, flagged, stamped };
+}
+
+/**
+ * Fill the TVDB half of rows the remote search could only give TMDB for —
+ * the population a Sonarr request flow needs (125 rows when this shipped;
+ * measured: skyhook date-verifies 37 of them and exact-titles 18 more).
+ *
+ * Self-throttling without a marker: every attempt bumps `updatedAt`, and rows
+ * younger than `retryAfterFor` are skipped — the same schedule the main sweep
+ * uses, because the answer changes on the same clock (TVDB gains the record
+ * as the show approaches airing).
+ */
+export async function fillTvdbGaps(
+  entryById: Map<number, RemoteQuery>,
+  max: number,
+  /** Drain-only: ignore the retry schedule (a backlog drain IS the retry). */
+  force = false
+): Promise<{ tried: number; filled: number; verified: number }> {
+  const gapRows = await prisma.seriesIdentity.findMany({
+    where: { source: 'remote', confirmed: false, rejected: false, tmdbId: { not: null }, tvdbId: null },
+    select: { anilistId: true, updatedAt: true },
+    orderBy: { updatedAt: 'asc' },
+  });
+  let tried = 0;
+  let filled = 0;
+  let verified = 0;
+  for (const row of gapRows) {
+    if (tried >= max) break;
+    const ex = rawIdentityOverride(row.anilistId);
+    if (!ex || ex.source !== 'remote' || ex.confirmed || ex.rejected || ex.tvdbId || !ex.tmdbId) continue;
+    const entry = entryById.get(row.anilistId);
+    if (!entry) continue; // aged out of the season cache — nothing to search with
+    if (!force && Date.now() - row.updatedAt.getTime() < retryAfterFor(entry.year)) continue;
+    tried++;
+    const sky = await searchSkyhookCandidates(entry);
+    await new Promise((r) => setTimeout(r, PACE_MS));
+
+    const within = (v: number | null) => v != null && v <= AIR_DATE_TOLERANCE_MS;
+    const seasonHit = sky.cands.find((c) => within(sky.evidence.get(c.tvdbId ?? '')?.seasonDeltaMs ?? null));
+    const firstHit = sky.cands.find((c) => within(premiereDelta(c.premiereDate, entry.airDateMs ?? null)));
+    const exactHit = sky.cands.find((c) => c.exact);
+    const hit = seasonHit ?? firstHit ?? exactHit ?? null;
+
+    // Merge the TVDB candidates into the stored picker list either way.
+    const stored = ex.candidates ?? [];
+    const have = new Set(stored.map((c) => c.tvdbId).filter(Boolean));
+    const mergedCands = [...stored, ...sky.cands.filter((c) => c.tvdbId && !have.has(c.tvdbId))].slice(0, 8);
+
+    if (!hit) {
+      // Nothing trustworthy — rewrite unchanged (plus any new candidates) so
+      // updatedAt bumps and the retry schedule owns the next attempt.
+      await setIdentityOverride(mergeIdentityPatch(ex, {
+        anilistId: row.anilistId,
+        tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
+        candidates: mergedCands.length ? mergedCands : ex.candidates,
+        confirmed: ex.confirmed, rejected: ex.rejected, pending: ex.pending,
+      }));
+      continue;
+    }
+    const dateProof = hit === seasonHit
+      ? `tvdb season premiere ${Math.round((sky.evidence.get(hit.tvdbId ?? '')!.seasonDeltaMs ?? 0) / 86400000)}d`
+      : hit === firstHit
+        ? `premiere date ${Math.round((premiereDelta(hit.premiereDate, entry.airDateMs ?? null) ?? 0) / 86400000)}d`
+        : null;
+    await setIdentityOverride(mergeIdentityPatch(ex, {
+      anilistId: row.anilistId,
+      tvdbId: hit.tvdbId,
+      tmdbId: ex.tmdbId,
+      tmdbKind: ex.tmdbKind,
+      candidates: mergedCands,
+      // A date-verified TVDB id settles a row that was only queued; an
+      // exact-title one fills the id but stays whatever it was.
+      pending: dateProof ? false : ex.pending,
+      note: dateProof && ex.pending ? `remote: ${dateProof}` : ex.note,
+      confirmed: ex.confirmed, rejected: ex.rejected,
+    }));
+    filled++;
+    if (dateProof) verified++;
+  }
+  return { tried, filled, verified };
 }
 
 export async function runRemoteIdentitySweep(
@@ -917,6 +1163,15 @@ export async function runRemoteIdentitySweep(
       );
     }
 
+    // Fill the TVDB half of TMDB-only rows from skyhook — capped, retry-tiered.
+    const gaps = await fillTvdbGaps(entryById, MAX_PER_RUN);
+    if (gaps.tried) {
+      console.log(
+        `[identity] tvdb gap fill: ${gaps.tried} searched, ${gaps.filled} filled ` +
+          `(${gaps.verified} date-verified)`
+      );
+    }
+
     if (!batch.length) {
       // "Ran and found nothing to ask" is a result worth recording — the whole
       // point of the status is telling that apart from "never ran".
@@ -939,11 +1194,14 @@ export async function runRemoteIdentitySweep(
           (hit.tvdbId ? byTvdb.get(hit.tvdbId) : undefined) ??
           (hit.tmdbId && hit.tmdbKind === 'tv' ? byTmdb.get(hit.tmdbId) : undefined);
         const deltaMs = await episodeDeltaMs(api, inLib, q.airDateMs);
+        const tvdb = await tvdbEvidenceFor(found.tvdbEvidence, hit, inLib, deltaMs, q.airDateMs ?? null);
         const yearDelta =
           hit.year != null && q.year != null ? Math.abs(hit.year - q.year) : null;
         const { verdict, rung } = verdictFor({
           exact: hit.exact, inLibrary: !!inLib, deltaMs, yearDelta, kind: hit.tmdbKind,
           premiereDeltaMs: premiereDelta(hit.premiereDate, q.airDateMs ?? null),
+          tvdbSeasonDeltaMs: tvdb.seasonDeltaMs,
+          tvdbHasUndatedFutureSeason: tvdb.undatedFutureSeason,
         });
         if (verdict === 'reject') {
           // We hold this series and its episodes are nowhere near the entry's
