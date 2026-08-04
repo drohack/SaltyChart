@@ -5,7 +5,7 @@ import {
   pickCandidate,
   premiereDelta,
   premiereOf,
-  baseTitle,
+  baseTitles,
   parseSweepStatus,
   parseLookupTerm,
   completeIdentityIds,
@@ -255,24 +255,50 @@ test('premiere dates parse defensively', () => {
   assert.equal(premiereDelta('not a date', airMs), null, 'malformed must read as undated, never NaN');
 });
 
-test('baseTitle strips what TMDB does not catalogue', () => {
-  // TMDB files a sequel as a season of one series, so it holds the base name.
-  //
-  // Note it strips the *marker*, not back to the franchise root: "Punirunes
-  // Puni 2" becomes "Punirunes Puni", not "Punirunes". The exploratory probe
-  // that first showed this working typed the shorter form by hand, so the
-  // measured +59 belongs to this behaviour — pinning it here stops a future
-  // reading of that note from "fixing" the function to match the anecdote.
-  assert.equal(baseTitle('Punirunes Puni 2'), 'Punirunes Puni');
-  assert.equal(baseTitle('Kumarba Season 2'), 'Kumarba');
-  assert.equal(
-    baseTitle("BanG Dream! It's MyGO!!!!!: Haru no Hidamari, Mayoi Neko"),
-    "BanG Dream! It's MyGO!!!!!"
+test('baseTitles strips what TMDB does not catalogue, least-destructive first', () => {
+  // Marker stripping keeps its measured behaviour: the marker goes, not the
+  // franchise root — "Punirunes Puni", never "Punirunes". The probe that first
+  // demonstrated the base pass typed the shorter form by hand.
+  assert.deepEqual(baseTitles('Punirunes Puni 2'), ['Punirunes Puni']);
+  assert.deepEqual(baseTitles('Kumarba Season 2'), ['Kumarba']);
+  assert.deepEqual(
+    baseTitles("BanG Dream! It's MyGO!!!!!: Haru no Hidamari, Mayoi Neko"),
+    ["BanG Dream! It's MyGO!!!!!"]
   );
-  assert.equal(baseTitle('Sylvanian Families: Freya no Piece of Secret'), 'Sylvanian Families');
-  // A title with nothing to strip is returned unchanged, so the caller can tell
-  // there is no second pass worth making.
-  assert.equal(baseTitle('Mebius Dust'), 'Mebius Dust');
+  assert.deepEqual(baseTitles('Sylvanian Families: Freya no Piece of Secret'),
+    ['Sylvanian Families']);
+  // Variants only: nothing to strip means nothing to search twice for.
+  assert.deepEqual(baseTitles('Mebius Dust'), []);
+});
+
+test('markers are stripped BEFORE the subtitle, and they stack', () => {
+  // The real false positive this ordering fixes: the old form stripped at the
+  // first separator first, so this title collapsed straight to "Mission" —
+  // which TMDB answered with *Mission: Impossible* — and the form that
+  // actually resolves on TVDB (tvdb 424019) was never generated.
+  assert.deepEqual(baseTitles('Mission: Yozakura Family Season 2 Part 2'), [
+    'Mission: Yozakura Family', // tried first; resolves, so "Mission" is never searched
+    'Mission',
+  ]);
+});
+
+test('a separator must look like a separator', () => {
+  // A colon without a trailing space is part of the word: "Re:Zero" collapsing
+  // to "Re" is what once proposed "RE: European Stories".
+  assert.deepEqual(
+    baseTitles('Re:Zero kara Hajimeru Kyuukei Jikan (Break Time) 3rd Season'),
+    ['Re:Zero kara Hajimeru Kyuukei Jikan (Break Time)']
+  );
+  // A dash without leading whitespace is part of the word — mid-word splits
+  // truncated this to "Shin Tennis no Ouji", which matches nothing.
+  assert.deepEqual(
+    baseTitles('Shin Tennis no Ouji-sama: U-17 WORLD CUP Semifinal'),
+    ['Shin Tennis no Ouji-sama']
+  );
+  // …and "5-Oku-nen" collapsing to "5" is the entire Babylon 5 story.
+  assert.deepEqual(baseTitles('5-Oku-nen Button Part 2'), ['5-Oku-nen Button']);
+  // A spaced dash IS a separator, as before.
+  assert.deepEqual(baseTitles('Solo Leveling -ReAwakening-'), ['Solo Leveling']);
 });
 
 test('closestDatedEpisode ignores season 0 and prefers the earlier of a tie', () => {

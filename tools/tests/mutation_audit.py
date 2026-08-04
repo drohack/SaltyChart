@@ -514,11 +514,40 @@ MUTATIONS: list[Mutation] = [
                "entry's own premiere date",
     ),
     Mutation(
+        name="baseTitles strips the subtitle before the season marker again",
+        path=BACKEND_REMOTE,
+        # The old ordering collapsed "Mission: Yozakura Family Season 2 Part 2"
+        # straight to "Mission" — which TMDB answered with Mission: Impossible —
+        # while the form that resolves on TVDB was never generated at all.
+        find="""  let m = t;
+  while (SEASON_MARKER.test(m)) m = m.replace(SEASON_MARKER, '');""",
+        replace="""  let m = t.replace(SUBTITLE_SEPARATOR, '').trim(); /* mutation */
+  while (SEASON_MARKER.test(m)) m = m.replace(SEASON_MARKER, '');""",
+        test=T_UNIT,
+        expect="markers are stripped BEFORE the subtitle",
+        guards="a sequel with a subtitle searches as its bare franchise word and "
+               "matches whatever is popular under it",
+    ),
+    Mutation(
+        name="a mid-word colon or dash counts as a subtitle separator again",
+        path=BACKEND_REMOTE,
+        # Greedy separators are how "Re:Zero" became "Re" (-> RE: European
+        # Stories), "Ouji-sama" split mid-word, and "5-Oku-nen" collapsed to
+        # "5" (-> Babylon 5).
+        find="const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;",
+        replace="const SUBTITLE_SEPARATOR = /\s*[:\-–—]\s*.*$/; /* mutation */",
+        test=T_UNIT,
+        expect="a separator must look like a separator",
+        guards="search terms collapse to fragments like 'Re' and '5', which "
+               "match unrelated popular works",
+    ),
+    Mutation(
         name="a collapsed base title relates to everything again",
         path="backend/src/lib/skyhookIdentity.ts",
-        # baseTitle legitimately collapses "Re:Zero kara ..." to "Re" — without
-        # the length floor that prefix relates to every Re-titled work, and the
-        # measurement that shaped this watched it relate to "Re:Born".
+        # Short search terms still reach here ("Q" and "mono" are full titles,
+        # "Mission" a legitimate variant) — without the length floor a short
+        # prefix relates to every similarly-titled work; the measurement that
+        # shaped this watched a collapsed "Re" relate to "Re:Born".
         find="    if (shorter.length < MIN_RELATION_CHARS) continue;",
         replace="    if (false) continue; /* mutation */",
         test=T_UNIT,

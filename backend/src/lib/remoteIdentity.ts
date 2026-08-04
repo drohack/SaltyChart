@@ -425,7 +425,7 @@ async function searchSkyhookCandidates(
   q: RemoteQuery
 ): Promise<{ cands: RemoteCandidate[]; evidence: Map<string, TvdbEvidence> }> {
   const titles = q.titles.filter(Boolean).slice(0, 3);
-  const bases = titles.map(baseTitle).filter((b) => b && !titles.includes(b));
+  const bases = [...new Set(titles.flatMap(baseTitles))].filter((b) => !titles.includes(b));
   const searched = [...titles, ...new Set(bases)];
   const wantedNorms = titles.map(normalizeTitle).filter(Boolean);
   const related: { tvdbId: string; title: string; firstAired: string | null }[] = [];
@@ -486,12 +486,15 @@ export async function resolveRemoteIdentity(
   const titles = q.titles.filter(Boolean).slice(0, 3);
   if (!titles.length) return null;
 
-  // Full titles first, then the stripped base. Measured: the base pass is worth
-  // +59 of 292 — TMDB files "BanG Dream! It's MyGO!!!!!: Haru no Hidamari,
-  // Mayoi Neko" under "BanG Dream! It's MyGO!!!!!" and returns nothing for the
-  // full string. It is also how "5-Oku-nen Button Part 2" reaches *Babylon 5*,
-  // which is why `verdictFor` never accepts a non-exact result on title alone.
-  const bases = titles.map(baseTitle).filter((b) => b && !titles.includes(b));
+  // Full titles first, then the stripped variants (least-destructive first —
+  // see baseTitles). Measured: the base pass is worth +59 of 292 — TMDB files
+  // "BanG Dream! It's MyGO!!!!!: Haru no Hidamari, Mayoi Neko" under
+  // "BanG Dream! It's MyGO!!!!!" and returns nothing for the full string. The
+  // old greedy strip is also how "5-Oku-nen Button Part 2" reached *Babylon 5*
+  // (it collapsed to "5"); that pathway is closed at the source now, but the
+  // rule it taught stands: `verdictFor` never accepts a non-exact result on
+  // title alone, because a search TERM this speculative earns no trust.
+  const bases = [...new Set(titles.flatMap(baseTitles))].filter((b) => !titles.includes(b));
   const passes = [titles, [...new Set(bases)]];
 
   const seen = new Set<string>();
@@ -594,22 +597,46 @@ export function pickCandidate(all: RemoteCandidate[], airDateMs: number | null):
 }
 
 /**
- * Drop a trailing subtitle or season marker.
+ * Fallback search terms for a title TMDB/TVDB may file differently, ordered
+ * least-destructive first.
  *
- * TMDB catalogues a sequel as a *season* of one series, so searching the full
- * AniList title returns zero results; the base returns the parent, which the
- * air-date tier then confirms or rejects. It strips the MARKER, not back to a
- * franchise root: "Punirunes Puni 2" becomes "Punirunes Puni" (not
- * "Punirunes") — the unit test pins that exact output, because the probe that
- * first demonstrated this typed the shorter form by hand and an earlier
- * version of this very comment repeated the anecdote as though it were the
- * behaviour.
+ *   1. season markers stripped, subtitle KEPT — iteratively, because they
+ *      stack ("Season 2 Part 2");
+ *   2. the subtitle stripped from that.
+ *
+ * The order is the fix for a real false positive: the old single-form version
+ * stripped at the first separator BEFORE looking at markers, so
+ * "Mission: Yozakura Family Season 2 Part 2" collapsed straight to "Mission" —
+ * which TMDB answered with *Mission: Impossible* — while the form that
+ * actually resolves, "Mission: Yozakura Family", was never generated at all.
+ *
+ * Separators are deliberately narrow: a colon only counts with a space after
+ * it ("Re:Zero kara …" must not collapse to "Re" — that search returned
+ * "RE: European Stories"), and a dash only with whitespace before it
+ * ("Ouji-sama", "U-17" and "5-Oku-nen" are words, not subtitles; the last of
+ * those collapsing to "5" is the entire Babylon 5 story).
+ *
+ * Marker stripping keeps its measured behaviour: "Punirunes Puni 2" →
+ * "Punirunes Puni", not "Punirunes" — the probe that first demonstrated the
+ * base pass typed the shorter form by hand, and the pinned test exists so the
+ * anecdote can't replace the behaviour.
+ *
+ * Returns only VARIANTS — a title with nothing to strip yields [], so callers
+ * can tell there is no second pass worth paying for.
  */
-export function baseTitle(t: string): string {
-  return t
-    .replace(/\s*[:\-–—]\s*.*$/, '')
-    .replace(/\s+(season\s*\d+|\d+(st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+|\d+)$/i, '')
-    .trim();
+const SEASON_MARKER =
+  /\s+(season\s*\d+|\d+(st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+|\d+)$/i;
+const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;
+
+export function baseTitles(t: string): string[] {
+  const out: string[] = [];
+  let m = t;
+  while (SEASON_MARKER.test(m)) m = m.replace(SEASON_MARKER, '');
+  m = m.trim();
+  if (m && m !== t) out.push(m);
+  const s = m.replace(SUBTITLE_SEPARATOR, '').trim();
+  if (s && s !== m && s !== t) out.push(s);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -114,11 +114,13 @@ export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]>
  * May this search result be date-checked at all?
  *
  * Normalized exact, or a prefix relation where the SHORTER side still carries
- * meaning. The floor exists because `baseTitle` can legitimately collapse a
- * title to almost nothing — "Re:Zero kara ..." strips at the colon to "Re" —
- * and a 2-char prefix relates to everything ("Re:Born", in the measurement
- * that shaped this). Sharing a word is not a relation either: "Lego Friends"
- * vs "Natsume's Book of Friends" must fail here.
+ * meaning. The floor originally existed because the old single-form
+ * `baseTitle` collapsed "Re:Zero kara ..." to "Re", and a 2-char prefix
+ * relates to everything ("Re:Born", in the measurement that shaped this).
+ * `baseTitles` no longer produces that collapse — but the floor STAYS, because
+ * genuinely short titles arrive regardless ("Q" and "mono" are full titles,
+ * and "Mission" is a legitimate variant). Sharing a word is not a relation
+ * either: "Lego Friends" vs "Natsume's Book of Friends" must fail here.
  */
 const MIN_RELATION_CHARS = 5;
 export function titleRelated(candidate: string | null | undefined, searched: string[]): boolean {
