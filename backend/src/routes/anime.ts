@@ -10,7 +10,9 @@ const router = Router();
 // In-memory cache to avoid hitting SQLite (and AniList) for hot requests.
 // 20 keys ≈ two years of data including format variants; each payload is a
 // couple of hundred kilobytes at most → memory footprint is negligible.
-const memory = new LRUCache<string, any[]>({ max: 20, ttl: 1000 * 60 * 60 });
+// The default ttl matches the DB row's; a copy seeded from an aging DB row gets
+// only that row's *remaining* freshness (see the memory.set below).
+const memory = new LRUCache<string, any[]>({ max: 20, ttl: 6 * 60 * 60 * 1000 });
 
 /**
  * What AniList last told us about our budget, and which keys are locked out.
@@ -217,7 +219,7 @@ async function fetchSeasonFromAniList(query: string, baseVariables: Record<strin
 // for the same season await one shared AniList chain.
 const inflight = new Map<string, Promise<any[]>>();
 
-const ONE_HOUR_SECONDS = 60 * 60;
+const SEASON_TTL_SECONDS = 6 * 60 * 60;
 
 router.get('/', async (req, res) => {
   const { season, year, format } = req.query as SeasonQuery;
@@ -367,15 +369,20 @@ router.get('/', async (req, res) => {
       return pending;
     };
 
-    // One hour for every season, deliberately. It is tempting to pin a finished
-    // season for days on the grounds that it "cannot change" — but AniList
-    // entries do get added and corrected long after a season ends (late OVAs and
-    // specials, retitles, metadata fixes), and deciding on AniList's behalf that
-    // its data is frozen is how you ship staleness nobody can account for.
+    // Six hours for every season, deliberately flat. Two boundaries, both real:
+    // pinning a finished season for DAYS decides on AniList's behalf that its
+    // data is frozen — entries get added and corrected long after a season ends
+    // (late OVAs, retitles, metadata fixes) — while refreshing every HOUR spends
+    // the shared ~30 req/min per-IP budget on data that barely moves, and it was
+    // the background-refresh frequency behind every 429 storm here (a ~90-minute
+    // test run outgrew a 1h TTL and re-fired a refresh on each of ~114 backend
+    // restarts). Stale-while-revalidate below means the TTL never adds viewer
+    // latency either way; it only sets how often AniList gets asked. The one
+    // user-visible cost of 6h: a show added on AniList takes up to ~6h to appear.
     //
-    // Upstream load is handled where it belongs: by the observed budget and the
-    // per-key cooldown above, both of which survive a restart.
-    const ttlSeconds = ONE_HOUR_SECONDS;
+    // Upstream load beyond that is handled where it belongs: by the observed
+    // budget and the per-key cooldown above, both of which survive a restart.
+    const ttlSeconds = SEASON_TTL_SECONDS;
     if (cached.length) {
       const currentEpoch = Math.floor(Date.now() / 1000);
       const ageSeconds = currentEpoch - Number(cached[0].updatedEpoch);
@@ -383,7 +390,7 @@ router.get('/', async (req, res) => {
       if (ageSeconds < ttlSeconds) {
         // Serve from DB cache and populate in-memory cache for faster subsequent
         // calls. Seed with the DB row's *remaining* freshness (not a full fresh
-        // hour) so the in-memory copy doesn't outlive the DB row's 1h validity.
+        // TTL) so the in-memory copy doesn't outlive the DB row's validity.
         memory.set(memKey, data, { ttl: Math.max(1, ttlSeconds - ageSeconds) * 1000 });
         return res.json(data);
       }

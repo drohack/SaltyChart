@@ -220,6 +220,20 @@ What it established, each the hard way:
   AniList→TVDB match tier was disabled so every match silently fell back to
   fuzzy titles (10/10 again). Both are failure classes that have already
   happened in this repo.
+- **A mutant must type-check, or it audits the compiler.** `if (false &&
+  library)` narrows `library` to `null` inside the dead block, ts-node refuses
+  to compile the file (TS18047), and node --test reports the whole test file as
+  `ERR_TEST_FAILURE` without running one assertion — red, wrong reason, and the
+  guard itself never exercised. The fix was a mutant that compiles clean
+  (`tvdbId = tvdbId ?? null`) and was watched to fail naming its invariant.
+- **A test that infers "not applicable" from the screen will skip exactly when
+  it matters.** The library-unreachable flow decided "Jellyfin isn't
+  configured" from an empty DOM (no status chip, no Hide button) and skipped —
+  but a slow or broken render on a *configured* backend looks identical, so the
+  full-audit run watched its mutation survive while the 55 other rows caught.
+  Skip decisions now ask `/api/jellyfin/status` directly; only the backend can
+  say which kind of nothing the page is showing — the same lesson `unknown`
+  availability already taught, one layer up.
 - **Six of fourteen rows once audited nothing.** `--only-steps` was added to cut
   transcode cost and quietly hollowed out what it was optimising: steps other
   steps depend on sat inside `want()` blocks, so selecting a later step skipped
@@ -308,7 +322,12 @@ Rules of thumb:
 - **Warm before a run, and *wait* for it.** `tools/tests/warm_cache.py` fetches
   the previous, current and next season in both format variants; `run_all.py`
   and `mutation_audit.py` both call it before their first test. Warming once
-  carries a whole run, because nothing re-fetches on a restart any more.
+  carries a whole run, because nothing re-fetches on a restart any more —
+  **provided the run fits inside the 6 h season TTL**. That proviso broke
+  silently once: the audit grew from 18 rows (~35 min, inside the old 1 h TTL)
+  to 57 (~90 min, outside it), and its last half hour re-fired a stale refresh
+  on every restart. A test run must never provoke a live AniList 429 — the
+  429/backoff logic is unit-tested (`anilistRateLimit`), off the network.
   It **retries rather than shrugging** — honouring `Retry-After`, up to
   `PER_KEY_BUDGET_S` (8 min) per key — and if a key still can't be fetched,
   **both runners refuse to start**. That is deliberate: a missing season doesn't
@@ -341,9 +360,15 @@ Rules of thumb:
     immediately instead of holding the connection open.
   - Cold fetches coalesced per season; expired rows served stale while
     refreshing in the background.
-- The TTL stays a flat hour on purpose. Pinning a finished season for days on
-  the grounds that it "cannot change" is a guess about AniList's data that is
-  not ours to make — entries do get added and corrected after a season ends.
+- The TTL is a flat **6 hours**, bounded on both sides. Pinning a finished
+  season for *days* on the grounds that it "cannot change" is a guess about
+  AniList's data that is not ours to make — entries do get added and corrected
+  after a season ends. But the original flat *hour* set the background-refresh
+  frequency that fed every 429 storm here: a ~90-minute audit outgrew it and
+  re-fired a stale refresh on each of its ~114 backend restarts. Serve-stale
+  means the TTL adds no viewer latency at any value — it only sets how often
+  AniList gets asked — so 6h buys ~6× less upstream traffic for one visible
+  cost: a newly added show takes up to ~6h to appear.
 - `stores/season.ts` exports `getCurrentSeasonFromAPI()`, which calls
   `graphql.anilist.co` **directly from the browser** — invisible to every
   control above, because the backend never sees it. It currently has no callers.
@@ -1983,7 +2008,9 @@ cd frontend && npm run build
 - Frontend routing is file-based in `src/pages`; lazy-loading requires
   updating the switch in `App.svelte`.
 - Cache season data in `SeasonCache` table (SQLite) and in-memory LRU
-  (`routes/anime.ts`), on a flat 1 h TTL.
+  (`routes/anime.ts`), on a flat 6 h TTL (see the rationale in *Testing* —
+  serve-stale hides the TTL from viewers; it only sets AniList refresh
+  frequency).
 - Respect rate limits for the AniList API — retry/backoff, global pacing, and
   season-aware TTLs. **Anything added to reduce AniList load must survive a
   process restart**, because restarts are what generate the load in the first

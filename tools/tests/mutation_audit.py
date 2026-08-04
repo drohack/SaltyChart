@@ -34,6 +34,7 @@ Needs the same running dev servers as the suite it audits.
 import argparse
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -399,10 +400,15 @@ MUTATIONS: list[Mutation] = [
         # its TVDB sibling from the held library item (or the map) at write
         # time, or every resolver row reads TMDB-flavoured to a Sonarr user
         # and the id redundancy the matcher relies on never materialises.
+        # `if (false && library)` was the first version, and it never exercised
+        # the guard: TS narrows `library` to null inside the dead block, the
+        # file fails to COMPILE (TS18047 x3), and node --test reports the whole
+        # test file as ERR_TEST_FAILURE without running one assertion — red for
+        # the wrong reason. A mutant must type-check, or it audits the compiler.
         find="""  if (library) {
     tvdbId = tvdbId ?? library.tvdbId ?? null;""",
-        replace="""  if (false && library) { /* mutation: half-filled */
-    tvdbId = tvdbId ?? library.tvdbId ?? null;""",
+        replace="""  if (library) {
+    tvdbId = tvdbId ?? null; /* mutation: half-filled */""",
         test=T_UNIT,
         expect="must take its tvdb id",
         guards="resolver rows stay TMDB-only forever; nulling one id space in "
@@ -534,8 +540,8 @@ MUTATIONS: list[Mutation] = [
         # Greedy separators are how "Re:Zero" became "Re" (-> RE: European
         # Stories), "Ouji-sama" split mid-word, and "5-Oku-nen" collapsed to
         # "5" (-> Babylon 5).
-        find="const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;",
-        replace="const SUBTITLE_SEPARATOR = /\s*[:\-–—]\s*.*$/; /* mutation */",
+        find=r"const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;",
+        replace=r"const SUBTITLE_SEPARATOR = /\s*[:\-–—]\s*.*$/; /* mutation */",
         test=T_UNIT,
         expect="a separator must look like a separator",
         guards="search terms collapse to fragments like 'Re' and '5', which "
@@ -1019,16 +1025,35 @@ def restore(m: Mutation, wait: bool = True) -> None:
         wait_for_backend()
 
 
-def run_test(m: Mutation) -> tuple[bool, str]:
-    """True when the test PASSED (i.e. the mutation went unnoticed)."""
+def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
+    """True when the test PASSED (i.e. the mutation went unnoticed).
+
+    The child's output is a diagnostic to scan afterwards, never progress to
+    show — but a silent 110s child is a frozen status line (the status bar
+    shows the last line of output, and a UI-suite row prints nothing for two
+    minutes). So the child writes to a temp file and a heartbeat ticks here,
+    carrying the row context because a bare "still running" is meaningless as
+    the one visible line.
+    """
     cwd = REPO / "backend" if m.test is T_UNIT else REPO
     shell = sys.platform == "win32" and m.test[0] in ("npm", "npx")
-    try:
-        r = subprocess.run(m.test, cwd=cwd, capture_output=True, text=True,
-                           timeout=900, shell=shell, encoding="utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        return False, "TIMED OUT"
-    return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as sink:
+        p = subprocess.Popen(m.test, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
+                             shell=shell, encoding="utf-8", errors="replace")
+        t0 = time.time()
+        while True:
+            try:
+                rc = p.wait(timeout=20)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = time.time() - t0
+                if elapsed > 900:
+                    p.kill()
+                    p.wait()
+                    return False, "TIMED OUT"
+                say(f"{ctx} test running {elapsed:.0f}s…")
+        sink.seek(0)
+        return rc == 0, sink.read()
 
 
 def main() -> int:
@@ -1072,6 +1097,17 @@ def main() -> int:
     # restart — dozens of cold AniList fetches across a run, which is what kept
     # tripping the 30/min limit and made rows fail for reasons unrelated to the
     # invariant they were testing.
+    #
+    # INVARIANT: the audit's whole runtime must fit inside the season-cache TTL
+    # (6 h, routes/anime.ts), because this warm happens ONCE. The runtime grows
+    # every time a row is added, and this assumption has already broken
+    # silently: 18 rows (~35 min) fit the old 1 h TTL, 57 rows (~90 min) did
+    # not, and the last half hour of that run fired a stale background refresh
+    # per restart into AniList's shared ~30/min budget — nothing failed, the
+    # run just quietly became a 429 storm. Live tests must never provoke a 429;
+    # the 429/backoff *logic* is unit-tested in anilistRateLimit without
+    # touching the network. If the audit ever approaches the TTL, raise the
+    # TTL case for re-warming here rather than letting it ride.
     _, warm_failed = warm_cache.warm()
     if warm_failed:
         # An audit against a missing season is worse than no audit: every row
@@ -1087,20 +1123,24 @@ def main() -> int:
     try:
         for i, m in enumerate(chosen, 1):
             n = args.only or i
-            say(f"[{n}/{len(MUTATIONS)}] {m.name}")
+            # Every line below carries this: the status bar shows exactly one
+            # line, and "caught in 112s" with no row number tells a reader
+            # nothing about where the run is.
+            ctx = f"[{n}/{len(MUTATIONS)}]"
+            say(f"{ctx} {m.name}")
             if not apply(m):
-                say("      SKIP — anchor text not found; the code moved, update this row\n")
+                say(f"      {ctx} SKIP — anchor text not found; the code moved, update this row\n")
                 skipped.append(m.name)
                 continue
             try:
                 settle_after_edit(m)
                 t0 = time.time()
-                passed, out = run_test(m)
+                passed, out = run_test(m, ctx)
             finally:
                 restore(m)
             took = time.time() - t0
             if passed:
-                say(f"      SURVIVED in {took:.0f}s — nothing caught it")
+                say(f"      {ctx} SURVIVED in {took:.0f}s — nothing caught it")
                 say(f"      would ship: {m.guards}\n")
                 survived.append(m.name)
             elif m.expect and m.expect.lower() not in out.lower():
@@ -1121,7 +1161,7 @@ def main() -> int:
                     crash = next((l.strip() for l in reversed(out.splitlines())
                                   if l.strip() and not l.startswith((" ", "\t"))), "")
                     why = f"CRASHED before asserting — {crash[:100]}"
-                say(f"      WRONG REASON in {took:.0f}s — red, but not because of "
+                say(f"      {ctx} WRONG REASON in {took:.0f}s — red, but not because of "
                     f"this invariant")
                 say(f"      expected to see: {m.expect!r}")
                 say(f"      actually failed: {why[:140] or '(no FAIL line)'}")
@@ -1130,7 +1170,7 @@ def main() -> int:
             else:
                 hit = next((l for l in out.splitlines()
                             if m.expect.lower() in l.lower()), "").strip()
-                say(f"      caught in {took:.0f}s — {hit[:150]}\n")
+                say(f"      {ctx} caught in {took:.0f}s — {hit[:130]}\n")
     finally:
         # Belt and braces: restore what this run touched, including on Ctrl-C.
         #

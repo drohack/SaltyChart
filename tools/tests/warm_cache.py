@@ -8,14 +8,22 @@ trips the limit before the first assertion.
 
 The backend now survives a restart without refetching, so warming once at the
 start is enough to carry a whole run — including a mutation audit, which
-restarts the backend dozens of times.
+restarts the backend dozens of times. That "once" holds only while the run
+fits inside the season-cache TTL (6 h, routes/anime.ts): the mutation audit
+outgrew the old 1 h TTL silently as rows were added, and its final half hour
+fired a stale background refresh per restart. A run must never provoke a live
+AniList 429 — the 429/backoff logic is unit-tested in anilistRateLimit, off
+the network.
 
 Both format variants are warmed for each season, because `format=TV` is a
 *separate cache key* from no-format: Home's leftovers call uses one and its
 main call the other, so warming only one leaves half the run cold.
 
-Failures are reported and tolerated. A cold AniList is a reason to expect a slow
-run, not a reason to refuse to start one.
+A key that cannot be warmed is a reason to STOP: warm_one retries — honouring
+Retry-After, up to PER_KEY_BUDGET_S per key — and both runners refuse to start
+on a failure, because a missing season doesn't fail the suite, it makes it
+pass vacuously (every fixture joins against an empty list). That has happened
+here once already.
 
 Usable directly:  py -3.13 -u tools/tests/warm_cache.py
 """

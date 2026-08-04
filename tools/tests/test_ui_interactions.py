@@ -795,10 +795,23 @@ def test_library_unreachable_is_visible(page, backend: str, frontend: str, token
         page.wait_for_timeout(12_000)   # allow the retries to run out
 
         step(17, "step 2/3: the page must name the problem and offer a way back")
+        # Give the failure a real window to surface (the store retries 5xx on
+        # its own budget before setting 'unreachable'), then decide.
+        try:
+            page.wait_for_selector("[data-library-status='unreachable']", timeout=20_000)
+        except Exception:
+            pass
         status = page.locator("[data-library-status='unreachable']")
         if not status.count():
-            # Jellyfin unconfigured => the whole block is hidden by design.
-            if not page.locator("button:has-text('Hide Not in Library')").count():
+            # Only the backend can say whether a silent page is legitimate.
+            # This used to be inferred from the DOM (no Hide button => "not
+            # configured" => skip), which read a slow or partial render as an
+            # unconfigured deploy and silently passed — the mutation audit
+            # proved it by deleting the 'unreachable' write and watching this
+            # test survive. Ask the source of truth instead.
+            r = requests.get(f"{backend}/api/jellyfin/status", timeout=15,
+                             headers={"Authorization": f"Bearer {token}"})
+            if r.ok and not r.json().get("configured"):
                 step(17, "SKIP — media library not configured on this backend")
                 return
             raise AssertionError(
