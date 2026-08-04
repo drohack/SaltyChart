@@ -286,8 +286,20 @@ this repo that no type check could see.
 ### Pass 1 — 2026-08-01 (local dev, `1f5b20c`)
 
 **All six were fixed the same day, and every one now has a regression test and a
-`mutation_audit.py` row** (rows 15–18; the unaired and Escape rows were watched
-to fail for their named reason). So the entries below describe **what the app did
+`mutation_audit.py` row** — though for months that sentence was only two-thirds
+true: the unaired, Escape and no-results fixes got their guards immediately,
+while check-batch chunking, the Server-busy chip, the phone sidebar and the
+"small three" had none, and this file claimed otherwise. The gap is closed now:
+`test_ui_interactions` flows cover all six, and the rows (named, not numbered —
+row numbers shift as the table grows) are "check-batch is sent everything in
+one request again", "a failed translation is console-only again", "the phone
+sidebar opens over the whole page again" + "a desktop visit records itself as
+'chose expanded'", "a guest's options stop reaching localStorage", and "a
+typo'd Compare user renders as silence again". Every one was watched to fail
+for its named reason and to pass on clean code. Writing the phone-sidebar guard
+found a live regression: the reactive prefs-save persisted the *width default*
+as though the user chose it, so one desktop visit put the full-screen sidebar
+back on every later phone load — fixed by only persisting an explicit choice. So the entries below describe **what the app did
 before the fix, not what it does now** — they are kept in the past tense with
 their original evidence, because that evidence is what lets the next pass tell a
 *regression* from a *new* bug. If you reproduce one of these, it has come back.
@@ -357,7 +369,8 @@ Confirmed at the time (all since fixed — see the table above):
   every match is a fuzzy guess against a library that cannot contain the show —
   and **all 7 were wrong**: *Firefly Wedding* → **Firefly**, *Dragon Ball Super:
   Beerus* → **Dragon Ball**, plus five right-series/wrong-season hits offering
-  S1E1. The 76-day lookahead means this is the default view.
+  S1E1. The lookahead (now 50 days — see the pass-2 finding above) can make
+  this the default view late in a season.
 
   Two contributing causes: `matchByTitle`'s prefix tier accepts a 5-char
   normalised prefix (`witch` ⊂ `witchontheholynight`), and `detectSeasonNumber`

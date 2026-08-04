@@ -48,11 +48,13 @@ export interface MediaAvailability {
    */
   unverified?: boolean;
   /**
-   * Which fuzzy tier matched: 0 exact, 1 prefix, 2 contains. Only set when
+   * Which fuzzy tier matched: 0 exact, 1 prefix. Only set when
    * `matchedBy === 'title'`. Tier 0 is a normalised exact hit and is treated as
    * confirmed; the false positives this warning exists for were all tier 1.
+   * (A contains-anywhere tier 2 existed and was removed backend-side — 9 fired,
+   * 9 wrong — so 2 can never arrive on the wire.)
    */
-  titleTier?: 0 | 1 | 2;
+  titleTier?: 0 | 1;
 }
 
 /**
@@ -147,7 +149,7 @@ export interface AiringInfo {
  *
  * A show that hasn't aired cannot be in the library, so asking about it can only
  * ever produce a false positive. Measured on the season the app opens on by
- * default (76-day look-ahead → an unaired season): the AniList→TVDB map has no
+ * default (the look-ahead can land on an unaired season): the AniList→TVDB map has no
  * entries for brand-new shows, so every match fell through to fuzzy titles and
  * *all* of them were wrong — "Firefly Wedding" → the 2002 series "Firefly",
  * "Dragon Ball Super: Beerus" → "Dragon Ball". FALL 2026 was 83/83

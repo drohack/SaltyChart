@@ -163,8 +163,10 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_REMOTE,
         # Without it, "5-Oku-nen Button Part 2" resolves to Babylon 5 (9,441 days
         # off) and "Star Wars: Visions Volume 3" to Star Wars Rebels (2,795).
-        find="    return input.deltaMs <= AIR_DATE_TOLERANCE_MS ? 'accept' : 'reject';",
-        replace="    return 'accept'; /* mutation */",
+        find="""    return input.deltaMs <= AIR_DATE_TOLERANCE_MS
+      ? { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` }
+      : { verdict: 'reject', rung: null };""",
+        replace="    return { verdict: 'accept', rung: 'air date 0d' }; /* mutation */",
         test=T_UNIT,
         expect="should reject",
         guards="a TMDB search result decades away from the entry is written into "
@@ -229,6 +231,332 @@ MUTATIONS: list[Mutation] = [
         expect="re-examines an entry it previously failed on",
         guards="a show that gains a TVDB/TMDB record as it approaches airing is "
                "never looked at again",
+    ),
+    Mutation(
+        name="concurrent cold film lookups each fetch the whole index",
+        path="backend/src/lib/jellyfinFilmIndex.ts",
+        # The whole guard is check-and-set with nothing awaited between. Making
+        # the set unconditional recreates the race the first shape had (check,
+        # await the persisted read, then assign): the availability batch's
+        # concurrency pool starts one ~6,600-item scan per movie entry.
+        find="  if (!_filmsInFlight) {",
+        replace="  if (true) { /* mutation: every caller starts its own fetch */",
+        test=T_UNIT,
+        expect="share one in-flight fetch",
+        guards="a cold wheel with two films fires duplicate full-library scans "
+               "at Jellyfin — the stampede class this codebase keeps relearning",
+    ),
+    Mutation(
+        name="a same-day double premiere opens on whichever episode came last",
+        path="backend/src/lib/episodeMatch.ts",
+        find="    if (delta < bestDelta || (delta === bestDelta && best !== null && earlier(e, best))) {",
+        replace="    if (delta < bestDelta) { /* mutation: first-seen wins ties */",
+        test=T_UNIT,
+        expect="ties must go to the earlier episode even when",
+        guards="Watch opens episode 2 of a double premiere whenever Jellyfin "
+               "happens to list it first — order the API never promised",
+    ),
+    Mutation(
+        name="specials win air-date ties against real episodes again",
+        path="backend/src/lib/episodeMatch.ts",
+        # Season 0 dates cluster around the seasons they ship with; without the
+        # skip a special can sit exactly on the premiere date and beat E1.
+        find="    if ((e.ParentIndexNumber ?? 0) < 1 || !e.PremiereDate) continue;",
+        replace="    if (!e.PremiereDate) continue; /* mutation: specials compete */",
+        test=T_UNIT,
+        expect="season 0 must not compete for air-date ties",
+        guards="Watch opens an OVA or recap instead of the season premiere for "
+               "any show whose specials shipped alongside it",
+    ),
+    Mutation(
+        name="check-batch is sent everything in one request again",
+        path="frontend/src/pages/Home.svelte",
+        # The route does .slice(0, 100): everything past position 100 is
+        # silently dropped, those shows never learn they have English CC, and
+        # each starts a needless Whisper translation when opened. Only
+        # meaningful while current+prev trailers exceed 100 (the flow prints
+        # the live count; 146 when this row was written).
+        find="""    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += CHECK_BATCH_MAX) {
+      chunks.push(ids.slice(i, i + CHECK_BATCH_MAX));
+    }""",
+        replace="    const chunks: string[][] = [ids]; /* mutation: unchunked */",
+        test=T_UI,
+        expect="the server slices at 100",
+        guards="a third of a full season silently loses its known English CC "
+               "and burns CPU re-translating trailers that never needed it",
+    ),
+    Mutation(
+        name="a failed translation is console-only again",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        # "Server busy" was written for a human and only ever reached the
+        # console; the viewer saw a trailer with no subtitles, identical to a
+        # trailer that simply has none.
+        find="          showTranslationError(data.error);",
+        replace="          /* mutation: console-only again */",
+        test=T_UI,
+        expect="data-translation-error",
+        guards="a struggling translation server is indistinguishable from "
+               "subtitles that don't exist",
+    ),
+    Mutation(
+        name="the phone sidebar opens over the whole page again",
+        path="frontend/src/pages/Home.svelte",
+        find="  let sidebarCollapsed = typeof window !== 'undefined' && window.innerWidth < 640;",
+        replace="  let sidebarCollapsed = false; /* mutation */",
+        test=T_UI,
+        expect="covers the viewport centre on a 375px phone load",
+        guards="every phone load starts behind a full-screen My List panel "
+               "that has to be dismissed before anything is usable",
+    ),
+    Mutation(
+        name="a desktop visit records itself as 'chose expanded'",
+        path="frontend/src/pages/Home.svelte",
+        # The subtler half of the same bug, found by the flow's realistic
+        # ordering (desktop flows run before the phone one): the reactive
+        # prefs-save persisted the width DEFAULT as though the user chose it,
+        # so one desktop visit poisoned every later phone load.
+        find="      if (sidebarChoiceMade) {",
+        replace="      if (true) { /* mutation: default recorded as a choice */",
+        test=T_UI,
+        expect="covers the viewport centre on a 375px phone load",
+        guards="anyone who ever opened Home on a desktop gets the full-screen "
+               "sidebar back on every phone load, stored as their own choice",
+    ),
+    Mutation(
+        name="a guest's options stop reaching localStorage",
+        path="frontend/src/stores/options.ts",
+        find="      localStorage.setItem('options', JSON.stringify(value));",
+        replace="      /* mutation: guests lose options on reload */",
+        test=T_UI,
+        expect="did not reach localStorage",
+        guards="a guest's theme and language choices silently revert on every "
+               "reload",
+    ),
+    Mutation(
+        name="a typo'd Compare user renders as silence again",
+        path="frontend/src/pages/Compare.svelte",
+        find="""    suggestionsFor === typedOther &&
+    suggestions.length === 0;""",
+        replace="""    suggestionsFor === typedOther &&
+    false; /* mutation: never fires */""",
+        test=T_UI,
+        expect="data-unknown-user",
+        guards="a typo leaves the previous user's ranks on screen under the "
+               "wrong name, reading as what that person rated",
+    ),
+    Mutation(
+        name="unaired shows light the Hide button again",
+        path="frontend/src/pages/Randomize.svelte",
+        # notAired is `available:false` with `unknown` falsy, so a writer that
+        # guards only `unknown` records every unaired show as confirmed-missing
+        # and the button enables on seasons where nothing was checked at all.
+        # The hide action itself filters notAired, so this lies without acting —
+        # which is why only the button-state assertion can see it.
+        find="          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
+        replace="          if (!info.unknown) recordAvailability(mediaId, info.available); /* mutation */",
+        test=T_UI,
+        expect="'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED",
+        guards="the app's default look-ahead season shows an enabled control "
+               "promising hides it cannot perform",
+    ),
+    Mutation(
+        name="every Confirm claims the human looked it up",
+        path="frontend/src/pages/AdminMatching.svelte",
+        # `chosen` (a picked lookup result) is the Confirm discriminator; its
+        # predecessor inferred "hand-typed" from prefilled boxes and relabelled
+        # every id-bearing confirm as source:'manual', note:null — wiping the
+        # provenance the server-side merge exists to preserve. This recreates
+        # that: an untouched confirm is dressed up as a manual correction.
+        find="                  const changed = !sameIdentity(sel, baseline[r.mediaId] ?? null);",
+        replace="                  const changed = !!sel; /* mutation: any selection reads as a correction */",
+        test=T_UI,
+        expect="relabelled it manual",
+        guards="the review page's own Confirm button erases which rung of the "
+               "ladder accepted every id it touches",
+    ),
+    Mutation(
+        name="an id paste stops naming the library match",
+        path=BACKEND_JF,
+        # The preview is the feature: what the admin is agreeing to, named,
+        # before Confirm writes it as permanent fact. Unnamed, the lookup is
+        # the old raw id box with more steps.
+        find="""      if (s) {
+        library = { title: s.title };""",
+        replace="""      if (s) {
+        /* mutation: unnamed */""",
+        test=T_JELLYFIN,
+        expect="did not name the library match",
+        guards="the admin confirms bare numbers again, which is exactly the "
+               "blind agreement this control replaced",
+    ),
+    Mutation(
+        name="the sweep stores half-filled identities again",
+        path=BACKEND_REMOTE,
+        # The remote search supplies TMDB only; a stored series row must take
+        # its TVDB sibling from the held library item (or the map) at write
+        # time, or every resolver row reads TMDB-flavoured to a Sonarr user
+        # and the id redundancy the matcher relies on never materialises.
+        find="""  if (library) {
+    tvdbId = tvdbId ?? library.tvdbId ?? null;""",
+        replace="""  if (false && library) { /* mutation: half-filled */
+    tvdbId = tvdbId ?? library.tvdbId ?? null;""",
+        test=T_UNIT,
+        expect="must take its tvdb id",
+        guards="resolver rows stay TMDB-only forever; nulling one id space in "
+               "a library edit silently disables the id tier for them",
+    ),
+    Mutation(
+        name="the id cross-walk stops joining through the anilist key",
+        path="backend/src/lib/anilistTvdbMap.ts",
+        # Jellyfin's remote search returns TMDB ids only on this server, so the
+        # cross-walk is the only thing that puts a TVDB id on a looked-up pick
+        # (and vice versa for a pasted tvdb:). Without the join, an id paste
+        # resolves to half an identity and nobody is told.
+        find="      if (ref) return { tvdbId: wantTvdb, tmdbId: ref.id, tmdbKind: ref.kind };",
+        replace="      /* mutation: no join */",
+        test=T_UNIT,
+        expect="a tvdb id must pick up its tmdb sibling from the map",
+        guards="pasted ids and picked results carry only the id space they "
+               "arrived in — corrections quietly lose their redundancy",
+    ),
+    Mutation(
+        name="a title-text remote accept is invisible to review again",
+        path="frontend/src/pages/AdminMatching.svelte",
+        # The resolver accepts an exact title without any air date vouching for
+        # it, stored pending=false — this clause is the only one that lists such
+        # a row. Neutering it recreates the hole: a wrong exact-title collision
+        # (two works genuinely sharing a name) becomes permanent, and the empty
+        # state says nothing needs review.
+        find="""  const resolverAccept = (r: Row) =>
+    !r.confirmed && r.source === 'remote' && !r.pending &&""",
+        replace="""  const resolverAccept = (r: Row) =>
+    false && !r.confirmed && r.source === 'remote' && !r.pending && /* mutation */""",
+        test=T_UI,
+        expect="remote-accepted row is invisible on /admin/matching",
+        guards="everything the resolver accepts on a title string alone is "
+               "invisible to the one page that could catch a wrong one",
+    ),
+    Mutation(
+        name="a corrupt sweep-status row is served as a status",
+        path=BACKEND_REMOTE,
+        # Same contract as every persisted AppConfig blob: corrupt means
+        # "no status", never garbage handed to the page as though it ran.
+        find="""    return v && typeof v === 'object' && typeof v.finishedAt === 'number'
+      ? (v as SweepStatus)
+      : null;""",
+        replace="    return v as SweepStatus; /* mutation: no shape guard */",
+        test=T_UNIT,
+        expect="a non-object must read as no-status",
+        guards="a hand-edited or half-written cache row renders as a nonsense "
+               "status line instead of the honest 'hasn't run yet'",
+    ),
+    Mutation(
+        name="the release-year rung accepts TV candidates again",
+        path=BACKEND_REMOTE,
+        # The year rung exists because a film has no episodes to date. For a
+        # series the year is nearly free — TMDB's Year-filtered search returns
+        # same-year works — so ungating it writes a coincidental TV sibling
+        # into the identity table as accepted fact, no human in the loop.
+        find="  if (input.kind === 'movie' && input.yearDelta != null && input.yearDelta <= 1) {",
+        replace="  if (input.yearDelta != null && input.yearDelta <= 1) { /* mutation */",
+        test=T_UNIT,
+        expect="year rung is for films only",
+        guards="a same-year TV franchise sibling we don't hold becomes a stored "
+               "id that is never re-examined — the air-date gate's failure "
+               "class, minus the air date",
+    ),
+    Mutation(
+        name="an exact title blind-accepts against a refuting premiere date",
+        path=BACKEND_REMOTE,
+        # The Echo bug restored: rung A2 used to be the whole of rung A — an
+        # exact title accepted unconditionally, so TMDB's "Echo" (2023) was
+        # written as fact for an anime premiering 2026-07-19, with the day that
+        # refuted it (1,012d) sitting unread in the same search response.
+        find="  if (input.exact && p == null) return { verdict: 'accept', rung: 'exact title' };",
+        replace="  if (input.exact) return { verdict: 'accept', rung: 'exact title' }; /* mutation */",
+        test=T_UNIT,
+        expect="must not blind-accept",
+        guards="a same-titled work years from the entry's premiere is stored as "
+               "an accepted match — the Echo class",
+    ),
+    Mutation(
+        name="a dated localized-title match stays queued forever",
+        path=BACKEND_REMOTE,
+        # Rung D0 is what resolves the queue rows title text never could: TMDB
+        # holds the work under its localized English title, 0 days from the
+        # AniList premiere. Neutering it re-strands all 14 measured cases.
+        # `p <= -1` and not `if (false)`: p is an absolute delta so it can never
+        # fire, but the branch stays reachable — TS drops null-narrowing inside
+        # unreachable code and `if (false)` turns the mutation into a compile
+        # error, which the audit would report as CRASHED rather than a catch.
+        find="    if (p <= AIR_DATE_TOLERANCE_MS) return { verdict: 'accept', rung: `premiere date ${days(p)}d` };",
+        replace="    if (p <= -1) return { verdict: 'accept', rung: `premiere date ${days(p)}d` }; /* mutation */",
+        test=T_UNIT,
+        expect="localized titles",
+        guards="a work TMDB files under its English title can never leave the "
+               "review queue, however perfectly its premiere date matches",
+    ),
+    Mutation(
+        name="the pick takes TMDB's first exact title again",
+        path=BACKEND_REMOTE,
+        # The other half of the Echo bug: with two same-titled candidates the
+        # winner was whichever TMDB ranked first (popularity), not the one the
+        # premiere date vouches for — DIVE IN! shipped its 167d sibling while
+        # the 16d one sat second in the list.
+        find="  const datedExact = all.filter((c) => c.exact && within(c)).sort(byDelta);",
+        replace="  const datedExact = all.filter((c) => c.exact); /* mutation */",
+        test=T_UNIT,
+        expect="the one the premiere date vouches for must win",
+        guards="a title collision is decided by TMDB popularity instead of the "
+               "entry's own premiere date",
+    ),
+    Mutation(
+        name="identity writes tell no one — the availability cache goes stale",
+        path=BACKEND_IDENTITY,
+        # Every identity writer (admin PUT and the sweep's three call sites)
+        # invalidates the cached availability through this one notify. Gutting
+        # it recreates the persist gap: the correction looks applied (fresh
+        # reads bypass the cache) but the on-disk blob keeps the old verdict,
+        # and the next restart restores it.
+        find="  notifyIdentityChanged(input.anilistId);",
+        replace="  /* mutation: identity writes tell no one */",
+        test=T_JELLYFIN,
+        expect="stale availability verdict survives a restart",
+        guards="an admin correction silently reverts on the next deploy or dev "
+               "reload, for up to the entry's remaining TTL",
+    ),
+    Mutation(
+        name="identity invalidation never reaches the persisted blob",
+        path=BACKEND_JF,
+        # The in-memory delete alone looked correct in every live check — the
+        # persist call is what makes the correction survive a restart, and it
+        # is the half that was originally missing.
+        find="""  availabilityCache.delete(id);
+  persistMapSoon(AVAILABILITY_KEY, availabilitySnapshot);
+});""",
+        replace="""  availabilityCache.delete(id);
+  /* mutation: deletion never reaches the persisted blob */
+});""",
+        test=T_JELLYFIN,
+        expect="stale availability verdict survives a restart",
+        guards="boot restore resurrects the pre-correction verdict from disk — "
+               "the exact failure the identity cache-bust exists to prevent",
+    ),
+    Mutation(
+        name="Confirm wipes provenance again",
+        path=BACKEND_IDENTITY,
+        # The PUT handler merges onto the stored row so that confirming a
+        # resolver suggestion keeps its source/note/candidates. Nulling the note
+        # on every write is exactly what the handler used to do — one click of
+        # Confirm erased which rung of the ladder accepted the id and relabelled
+        # it a human decision.
+        find="    note: patch.note !== undefined ? patch.note : existing.note,",
+        replace="    note: patch.note ?? null, /* mutation */",
+        test=T_UNIT,
+        expect="Confirm must not wipe provenance",
+        guards="the review page destroys its own evidence — every confirmed row "
+               "reads as a hand-typed correction with no explanation",
     ),
     Mutation(
         name="identity overrides are ignored",
@@ -345,8 +673,8 @@ MUTATIONS: list[Mutation] = [
         # mutation survives having changed nothing. Both layers have to go for
         # the invariant to be exercised at all.
         extra=[("frontend/src/pages/Randomize.svelte",
-                "          if (!info.unknown) recordAvailability(mediaId, info.available);",
-                "          recordAvailability(mediaId, info.available); /* mutation */")],
+                "          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
+                "          if (!info.notAired) recordAvailability(mediaId, info.available); /* mutation */")],
         test=T_UI,
         # The failure text, not the pass text — 'unknown verdicts' appears only
         # in the PASS line, so matching it reported a real catch as a hole.

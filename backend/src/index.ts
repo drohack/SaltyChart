@@ -77,7 +77,8 @@ import jellyfinRouter from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
 import { runRemoteIdentitySweep } from './lib/remoteIdentity';
-import { getJellyfinConfig, getSeriesLibrary, getFilmIndex } from './routes/jellyfin';
+import { getJellyfinConfig, getSeriesLibrary } from './routes/jellyfin';
+import { getFilmIndex } from './lib/jellyfinFilmIndex';
 import { jellyfinApi } from './lib/jellyfinApi';
 import prisma from './db';
 
@@ -427,6 +428,7 @@ async function ensureDatabaseSchema() {
           "matchedTitle" TEXT,
           "candidates" TEXT,
           "note"      TEXT,
+          "year"      INTEGER,
           "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
@@ -452,6 +454,18 @@ async function ensureDatabaseSchema() {
     try {
       await prisma.$executeRawUnsafe(
         `ALTER TABLE "SeriesIdentity" ADD COLUMN "pending" BOOLEAN NOT NULL DEFAULT false`
+      );
+    } catch {
+      /* already present */
+    }
+    // The identity's release year, from the source that named it (TMDB via the
+    // sweep, or the admin lookup). Display only — matching never reads it. It
+    // exists because unheld gap entries have no other local source of a date,
+    // and a match control reading "Title TMDB 128386" with no year made the
+    // admin look the show up elsewhere to know what they were confirming.
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "SeriesIdentity" ADD COLUMN "year" INTEGER`
       );
     } catch {
       /* already present */
@@ -556,6 +570,20 @@ ensureDatabaseSchema().then(() => {
     // Our own overrides — a handful of rows, read on every availability lookup,
     // so they load once here rather than being queried per show.
     void loadIdentityOverrides();
+    // Warm the film index NOW, not on the sweep's 90-second delay and never on
+    // a viewer's request. On a restart the persisted copy answers anyway; the
+    // case this covers is a genuinely fresh deployment (no AppConfig row yet),
+    // where any movie lookup inside the sweep delay paid for the whole
+    // 6,638-item fetch — the "first person pays" window, narrowed to first-ever
+    // boot and now closed.
+    void (async () => {
+      try {
+        const cfg = await getJellyfinConfig();
+        if (cfg) await getFilmIndex(await jellyfinApi(cfg));
+      } catch {
+        /* degraded, not broken: films report as not held until it loads */
+      }
+    })();
 
     // Fill in the ids no community map has, by asking Jellyfin's own metadata
     // providers. On a timer for the same reason as the map refresh: an id is a
@@ -567,10 +595,10 @@ ensureDatabaseSchema().then(() => {
         const cfg = await getJellyfinConfig();
         if (!cfg) return;
         const api = await jellyfinApi(cfg);
-        // Warm the film index HERE, not on a viewer's request. It is a
-        // 6638-item fetch, and it was reachable only from resolveAvailability —
-        // so on a cold process the first person whose wheel contained a film
-        // waited for it. That is the 7.5 MB map mistake again, in a new place.
+        // Re-warm the film index daily (6h TTL, so the sweep's run refreshes
+        // it off the request path). The boot-time warm above covers a fresh
+        // process; this keeps a long-running one from ever refreshing under a
+        // viewer's request.
         await getFilmIndex(api).catch(() => undefined);
         // The library is what makes the air-date gate possible: a candidate we
         // hold can have its episodes dated against the AniList premiere, which

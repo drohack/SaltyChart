@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 19
+TOTAL = 24
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed — and a list whose ids aren't in the displayed season renders
@@ -301,7 +301,7 @@ def test_watched_trailer_button(page, backend: str):
     token = page.evaluate("localStorage.getItem('token')")
     auth = {"Authorization": f"Bearer {token}"}
     # Read the season/year the UI is actually displaying — the default season
-    # moves with the calendar (76-day lookahead), so hardcoding e.g. SUMMER
+    # moves with the calendar (50-day lookahead), so hardcoding e.g. SUMMER
     # breaks once the app rolls over to the next season.
     ui_season = page.evaluate("""() => {
         for (const b of document.querySelectorAll('button')) {
@@ -906,7 +906,7 @@ def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
     was fuzzy-title and *all* of them were wrong ("Firefly Wedding" → "Firefly",
     "Dragon Ball Super: Beerus" → "Dragon Ball").
     """
-    step(16, "step 1/3: finding a NOT_YET_RELEASED season to seed from")
+    step(16, "step 1/4: finding a NOT_YET_RELEASED season to seed from")
     unaired_season, unaired_year, ids = None, None, []
     for season, year in [("FALL", 2026), ("WINTER", 2027), ("SPRING", 2026)]:
         r = requests.get(f"{backend}/api/anime", params={"season": season, "year": year}, timeout=120)
@@ -932,20 +932,382 @@ def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
         [unaired_season, unaired_year],
     )
 
-    step(16, f"step 2/3: opening /random on {unaired_season} {unaired_year} "
+    step(16, f"step 2/4: opening /random on {unaired_season} {unaired_year} "
              f"and counting availability calls")
     calls = []
     page.on("request", lambda r: calls.append(r.url) if "/api/jellyfin/availability" in r.url else None)
     page.goto(f"{frontend}/random")
     page.wait_for_timeout(8000)
 
-    step(16, "step 3/3: expecting zero lookups for an unaired season")
+    step(16, "step 3/4: expecting zero lookups for an unaired season")
     assert not calls, (
         f"{len(calls)} availability lookup(s) fired for a NOT_YET_RELEASED season — "
         "the isUnaired() gate in stores/jellyfin.ts is not holding, so fuzzy title "
         "matching will offer the wrong series"
     )
-    step(16, f"PASS — 0 availability lookups across {len(ids)} unaired shows")
+
+    step(16, "step 4/4: unaired shows must not light 'Hide Not in Library'")
+    # notAired is `available: false` with `unknown` falsy, so a writer guarding
+    # only `unknown` records every unaired show as confirmed-missing — and the
+    # button enables with a tooltip promising hides it cannot perform. The hide
+    # action itself always filtered notAired; this is the button state lying.
+    hide = page.locator("button", has_text="Hide Not in Library")
+    if hide.count():
+        assert hide.first.is_disabled(), (
+            "'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED shows — "
+            "notAired verdicts are being recorded as 'not in library'"
+        )
+    step(16, f"PASS — 0 availability lookups across {len(ids)} unaired shows, "
+             f"hide control {'disabled' if hide.count() else 'not offered'}")
+
+
+def test_remote_accept_visible(page, backend: str, frontend: str):
+    """A resolver accept decided on title text alone must be reviewable.
+
+    `verdictFor` accepts an exact title without any air date having vouched for
+    it, and the sweep stores that with pending=false. Before the fourth clause
+    of the review filter, such a row failed every branch — the page's empty
+    state actively said nothing needed review while a wrong exact-title
+    collision (two works genuinely sharing a name — `The Last Blossom` →
+    *House* was this shape) sat permanent and invisible.
+    """
+    step(20, "step 1/6: minting an admin token")
+    tok = admin_token()
+    if not tok:
+        step(20, "SKIP — could not sign an admin token (node or backend/.env missing)")
+        return
+    ah = {"Authorization": f"Bearer {tok}"}
+    # The seeded entry must be one the library does NOT hold at all. A held or
+    # title-matched show is surfaced by the older filter clauses anyway — the
+    # first version of this test seeded one and kept passing with the new
+    # clause deleted, which is exactly the vacuous pass it exists to prevent.
+    r = requests.get(f"{backend}/api/anime",
+                     params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}, timeout=120)
+    r.raise_for_status()
+    shows = r.json()[:40]
+    items = [{"mediaId": s["id"],
+              "titles": ([t for t in (s.get("title") or {}).values()
+                          if isinstance(t, str) and t][:3] or [str(s["id"])])}
+             for s in shows]
+    a = requests.post(f"{backend}/api/jellyfin/availability/batch", headers=ah,
+                      json={"items": items}, timeout=120)
+    verdicts = a.json() if a.status_code == 200 else {}
+
+    # The marker makes THIS row findable among real resolver rows the dev DB
+    # may hold — the note renders verbatim next to the "our lookup" badge.
+    marker = "ui-test-seed"
+    step(20, "step 2/6: seeding a remote title-text accept the older clauses can't see")
+    mid = None
+    for s in shows:
+        v = verdicts.get(str(s["id"]))
+        if not (v and v.get("available") is False and not v.get("unknown")
+                and not v.get("libraryTitle")):
+            continue
+        cand, titles = s["id"], next(i["titles"] for i in items if i["mediaId"] == s["id"])
+        # The page renders english-else-romaji as the row title — the locator
+        # anchor. (A marker in the note used to serve this, until the raw note
+        # stopped being rendered as text.)
+        seed_title = ((s.get("title") or {}).get("english")
+                      or (s.get("title") or {}).get("romaji") or str(s["id"]))
+        w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                         json={"anilistId": cand, "tvdbId": "99999998",
+                               "source": "remote", "note": f"remote: exact title [{marker}]"})
+        assert w.status_code == 200, \
+            f"could not seed the identity row: {w.status_code} {w.text[:120]}"
+        # Verify the seeded row really is invisible to the OLDER clauses. A
+        # remote id is positive-only, so seeding it revives the title tier, and
+        # an entry that prefix-matches its own franchise (the Madoka film → the
+        # Madoka series) comes back matchedBy='title' — which the title-only
+        # clause already lists. 133007 did exactly that, and the first version
+        # of this test kept passing with the new clause deleted.
+        chk = requests.post(f"{backend}/api/jellyfin/availability", headers=ah, timeout=60,
+                            json={"mediaId": cand, "titles": titles, "fresh": True})
+        if chk.status_code == 200 and not chk.json().get("matchedBy"):
+            mid = cand
+            break
+        requests.delete(f"{backend}/api/jellyfin/identity/{cand}", headers=ah, timeout=15)
+    if mid is None:
+        step(20, "SKIP — no season entry stays fully unmatched once seeded")
+        return
+    try:
+        step(20, "step 3/6: the row must appear in the review list")
+        page.goto(frontend)
+        page.evaluate("t => { localStorage.setItem('token', t);"
+                      " localStorage.setItem('username', 'admin_probe'); }", tok)
+        page.goto(f"{frontend}/admin/matching")
+        page.wait_for_selector("[data-matching-list], [data-matching-empty], [data-matching-error]",
+                               timeout=30_000)
+        page.wait_for_timeout(1000)
+        # The sweep status line renders in one of its two states ("last ran…"
+        # or "hasn't completed a run yet") — without it the daily resolver has
+        # no admin-visible trace at all, which is how three of its bugs stayed
+        # invisible.
+        assert page.locator("[data-sweep-status]").count(), (
+            "no resolver-sweep status line on /admin/matching — the daily sweep is "
+            "invisible to the admin again")
+        # The admin trusts resolver accepts: the default queue must NOT hold
+        # them (low priority was the ask), and the second filter option is
+        # where they live — reachable, never invisible.
+        assert not page.locator("[data-matching-list] li", has_text=seed_title).count(), (
+            "a resolver accept sits in the default 'Needs attention' queue — these "
+            "are trusted and belong behind the unverified-auto-matches filter")
+        page.locator("[data-filter-mode]").select_option("attention+accepts")
+        page.wait_for_timeout(500)
+        row = page.locator("[data-matching-list] li", has_text=seed_title)
+        assert row.count(), (
+            "remote-accepted row is invisible on /admin/matching — an accept decided "
+            "on title text alone is unreachable under every filter, and the empty "
+            "state says nothing needs looking at")
+
+        step(20, "step 4/6: the match dropdown fills and previews without saving")
+        LOOKUP_ROUTE = "**/api/jellyfin/identity/lookup**"
+        LOOKUP_BODY = json.dumps({"mode": "name", "results": [{
+            "title": "Deterministic Result", "year": 2024,
+            "tvdbId": "424242", "tmdbId": "242424", "tmdbKind": "tv",
+            "image": None, "library": None}]})
+        page.route(LOOKUP_ROUTE, lambda rt: rt.fulfill(
+            status=200, content_type="application/json", body=LOOKUP_BODY))
+        try:
+            # The control opens a Sonarr-style dropdown, prefilled with the
+            # entry's own title and searched immediately — the intercepted
+            # route answers with the deterministic result.
+            row.first.locator("[data-match-control]").click()
+            page.wait_for_selector("[data-match-dropdown]", timeout=10_000)
+            page.wait_for_selector("[data-lookup-results] button", timeout=15_000)
+            page.locator("[data-lookup-results] button",
+                         has_text="Deterministic Result").first.click()
+            page.wait_for_timeout(300)
+            control = row.first.locator("[data-match-control]").text_content() or ""
+            assert "424242" in control, (
+                "the canonical id (TVDB, for a series) is not shown on the match "
+                f"control ({control[:120]!r})")
+            pair = row.first.locator("[data-match-control] span[title]").first                 .get_attribute("title") or ""
+            assert "242424" in pair, (
+                f"the full id pair is not on the control's hover title ({pair!r})")
+            assert row.first.locator("[data-match-changed]").count(), (
+                "no 'changed — Confirm saves as manual' indicator after picking a "
+                "different match")
+            # Picking must FILL, never save — Confirm is the act of agreement.
+            got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                timeout=20, json={"mediaIds": [mid]}).json()
+            pre = (got.get("identities") or {}).get(str(mid)) or {}
+            assert pre.get("tvdbId") == "99999998", (
+                "picking a lookup result wrote the override by itself — Confirm must "
+                "stay the act of agreement")
+            row.first.locator("button[aria-label^='Reset']").click()
+            page.wait_for_timeout(300)
+            assert not row.first.locator("[data-match-changed]").count(), \
+                "reset did not return the control to the stored match"
+        finally:
+            page.unroute(LOOKUP_ROUTE)
+
+        step(20, "step 5/6: Confirm settles it and it leaves the list")
+        row.first.locator("button", has_text="Confirm").click()
+        page.wait_for_timeout(3000)
+        assert not page.locator("[data-matching-list] li", has_text=seed_title).count(), \
+            "confirming the row did not remove it from the review list"
+        # And the click must not have relabelled it: the id boxes are PREFILLED
+        # with the stored ids, so an untouched Confirm has to keep the
+        # resolver's provenance — "typed" means "changed", not "non-empty".
+        # The first version of the handler got this wrong and every id-bearing
+        # confirm arrived as source:'manual', note:null.
+        got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                            timeout=20, json={"mediaIds": [mid]}).json()
+        confirmed_row = (got.get("identities") or {}).get(str(mid)) or {}
+        assert confirmed_row.get("source") == "remote", (
+            "confirming an untouched suggestion relabelled it manual — the prefilled "
+            f"id boxes are being read as hand-typed (source={confirmed_row.get('source')!r})")
+
+        step(20, "step 6/6: a looked-up Confirm writes the picked ids as manual")
+        w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                         json={"anilistId": mid, "tvdbId": "99999998",
+                               "source": "remote", "note": f"remote: exact title [{marker}]"})
+        assert w.status_code == 200, f"could not re-seed: {w.status_code} {w.text[:120]}"
+        page.route(LOOKUP_ROUTE, lambda rt: rt.fulfill(
+            status=200, content_type="application/json", body=LOOKUP_BODY))
+        try:
+            page.goto(f"{frontend}/admin/matching")
+            page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
+            page.wait_for_timeout(1000)
+            page.locator("[data-filter-mode]").select_option("attention+accepts")
+            page.wait_for_timeout(500)
+            row2 = page.locator("[data-matching-list] li", has_text=seed_title)
+            assert row2.count(), "the re-seeded row did not reappear in the review list"
+            row2.first.locator("[data-match-control]").click()
+            page.wait_for_selector("[data-match-dropdown]", timeout=10_000)
+            page.wait_for_selector("[data-lookup-results] button", timeout=15_000)
+            page.locator("[data-lookup-results] button",
+                         has_text="Deterministic Result").first.click()
+            page.wait_for_timeout(300)
+            row2.first.locator("button", has_text="Confirm").click()
+            page.wait_for_timeout(3000)
+            got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                timeout=20, json={"mediaIds": [mid]}).json()
+            after = (got.get("identities") or {}).get(str(mid)) or {}
+            assert after.get("tvdbId") == "424242" and after.get("source") == "manual", (
+                "a looked-up Confirm did not write the picked identity as a manual "
+                f"correction (tvdbId={after.get('tvdbId')!r}, source={after.get('source')!r})")
+        finally:
+            page.unroute(LOOKUP_ROUTE)
+    finally:
+        requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
+    step(20, "PASS — a title-text remote accept is listed, the lookup fills without "
+             "saving, and Confirm settles both paths with the right provenance")
+
+
+def test_check_batch_chunked(page, frontend: str):
+    """More than 100 video ids must arrive in ≤100-id chunks, none dropped.
+
+    Home used to post [...current, ...prev] in one request — 126 on a full
+    season — and the route does `.slice(0, 100)`: the tail was silently
+    dropped, six of those shows had English CC already recorded, and each one
+    started a needless Whisper translation when opened.
+    """
+    step(21, "step 1/2: loading Home and capturing check-batch requests")
+    from urllib.parse import parse_qs, urlparse
+    reqs: list[str] = []
+
+    def on_req(r):
+        if "/api/translate/check-batch" in r.url:
+            reqs.append(r.url)
+
+    page.on("request", on_req)
+    try:
+        page.goto(frontend)
+        pin_season(page)
+        page.goto(frontend)
+        wait_for_grids(page)
+        page.wait_for_timeout(2500)
+    finally:
+        page.remove_listener("request", on_req)
+
+    step(21, "step 2/2: every chunk at most 100 ids, and the tail not dropped")
+    sizes, ids = [], set()
+    for u in reqs:
+        vids = [v for v in parse_qs(urlparse(u).query).get("videoIds", [""])[0].split(",") if v]
+        sizes.append(len(vids))
+        ids.update(vids)
+    assert sizes, "no check-batch request fired at all"
+    assert max(sizes) <= 100, (
+        f"a check-batch request carried {max(sizes)} ids — the server slices at 100 "
+        "and silently drops the tail")
+    if len(ids) > 100:
+        assert len(sizes) >= 2, (
+            f"{len(ids)} unique ids but one request — everything past 100 was dropped")
+    step(21, f"PASS — {len(ids)} ids across {len(sizes)} request(s), all within the cap "
+             f"({'chunking exercised' if len(ids) > 100 else 'season small enough for one chunk'})")
+
+
+def test_translation_error_visible(page, frontend: str):
+    """A failed translation stream must say so on screen.
+
+    "Server busy" was written for a human and only ever reached the console —
+    the viewer just saw subtitles never arrive, indistinguishable from a slow
+    translation. The fix is a transient chip by the CC toggle.
+    """
+    step(22, "step 1/3: forcing 'no CC anywhere' and a failing stream")
+    page.route("**/api/translate/check-batch**", lambda r: r.fulfill(
+        status=200, content_type="application/json", body="{}"))
+    page.route("**/api/translate/check?**", lambda r: r.fulfill(
+        status=200, content_type="application/json",
+        body='{"hasEnglish": false, "subtitlesDisabled": false, "hasCachedSegments": false}'))
+    # The stream reports failure IN-BAND: an SSE message carrying {error}, on a
+    # 200 — that is what the chip's handler reads. A plain 503 here only
+    # triggers EventSource's silent reconnect and exercises nothing.
+    page.route("**/api/translate/stream**", lambda r: r.fulfill(
+        status=200, content_type="text/event-stream",
+        body='data: {"error": "Server busy - please try again later."}\n\n'))
+    try:
+        step(22, "step 2/3: opening a trailer")
+        page.goto(frontend)
+        wait_for_grids(page)
+        page.locator('button:has(img[src*="ytimg.com"])').first.click()
+        page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
+
+        step(22, "step 3/3: the failure must be visible, not console-only")
+        page.wait_for_selector("[data-translation-error]", timeout=25_000)
+    finally:
+        page.keyboard.press("Escape")
+        page.unroute("**/api/translate/stream**")
+        page.unroute("**/api/translate/check?**")
+        page.unroute("**/api/translate/check-batch**")
+    step(22, "PASS — a failed stream renders 'Subtitles unavailable' on screen")
+
+
+def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
+    """On a phone, the My List sidebar must not cover the page on load.
+
+    Measured at 375×667 before the fix: the <aside> was 375×667 at (0,0),
+    opaque, and 25/25 sampled viewport points landed on it — every fresh load
+    required dismissing it before anything else was usable.
+    """
+    step(23, "step 1/2: seeding a list and loading Home at 375×667")
+    seed_list(backend, token, season_ids(backend, 3))
+    original = page.viewport_size
+    page.set_viewport_size({"width": 375, "height": 667})
+    try:
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(frontend)
+        wait_for_grids(page)
+
+        step(23, "step 2/2: the viewport centre must not be the sidebar")
+        covered = page.evaluate(
+            "() => { const el = document.elementFromPoint(187, 333);"
+            " return !!(el && el.closest('aside')); }")
+        assert not covered, (
+            "the My List sidebar covers the viewport centre on a 375px phone load — "
+            "`collapsed` is not defaulting to true below the sm breakpoint")
+    finally:
+        page.set_viewport_size(original)
+    step(23, "PASS — sidebar starts collapsed on a phone-sized viewport")
+
+
+def test_guest_options_and_compare_warning(page, frontend: str):
+    """The 'small three' remnants: a guest's options must mirror to
+    localStorage (a theme choice used to survive only until reload), and
+    Compare must say "No user named …" for a typo'd username instead of
+    rendering silently nothing.
+    """
+    step(24, "step 1/2: a guest theme choice must land in localStorage")
+    page.goto(frontend)
+    # The guest check needs a logged-out page, but Compare below needs the
+    # session back — /compare renders no picker for guests.
+    prior_token = page.evaluate("localStorage.getItem('token')")
+    prior_name = page.evaluate("localStorage.getItem('username')")
+    page.evaluate("localStorage.removeItem('token'); localStorage.removeItem('username');"
+                  " localStorage.removeItem('options')")
+    page.goto(frontend)
+    page.get_by_role("button", name="Options").click()
+    page.wait_for_selector("select#themeSelect", timeout=5_000)
+    page.locator("select#themeSelect").select_option("NIGHT")
+    page.wait_for_timeout(500)
+    stored = page.evaluate("JSON.parse(localStorage.getItem('options') || 'null')")
+    assert stored and stored.get("theme") == "NIGHT", (
+        f"a guest's theme choice did not reach localStorage (stored={stored!r}) — "
+        "it will silently revert on the next load")
+    page.locator("select#themeSelect").select_option("SYSTEM")
+    page.keyboard.press("Escape")
+
+    step(24, "step 2/2: Compare must name a user it can't find")
+    if prior_token:
+        page.evaluate("([t, n]) => { localStorage.setItem('token', t);"
+                      " if (n) localStorage.setItem('username', n); }",
+                      [prior_token, prior_name])
+    page.goto(f"{frontend}/compare")
+    box = page.locator("#otherUser").first
+    box.wait_for(timeout=15_000)
+    box.click()
+    # No Escape afterwards: svelte-select clears its filter text on Escape,
+    # which empties `typedOther` and hides the very warning being asserted.
+    box.type("zz_no_such_user_999", delay=30)
+    page.wait_for_selector("[data-unknown-user]", timeout=15_000)
+    body = page.evaluate("document.body.textContent || ''")
+    assert "No user named" in body, (
+        "a typo'd second user renders silently as nothing — indistinguishable "
+        "from the user having no list at all")
+    step(24, "PASS — guest options persist, and a missing user is named on screen")
 
 
 
@@ -998,6 +1360,11 @@ def main():
                 ("library unreachable visible", lambda: test_library_unreachable_is_visible(page, args.backend, frontend, token_a)),
                 ("hung backend reported", lambda: test_hung_backend_does_not_hang_the_page(page, args.backend, frontend, token_a)),
                 ("failed hide write reverts", lambda: test_failed_hide_write_reverts(page, args.backend, frontend, token_a)),
+                ("remote accept visible", lambda: test_remote_accept_visible(page, args.backend, frontend)),
+                ("check-batch chunked",  lambda: test_check_batch_chunked(page, frontend)),
+                ("translation error visible", lambda: test_translation_error_visible(page, frontend)),
+                ("phone sidebar collapsed", lambda: test_phone_sidebar_collapsed(page, args.backend, frontend, token_a)),
+                ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
             ]
             for label, fn in tests:
                 try:

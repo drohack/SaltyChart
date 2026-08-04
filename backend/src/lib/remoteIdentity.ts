@@ -8,7 +8,11 @@ import {
   needsRemoteLookup,
   setIdentityOverride,
   identityReady,
+  identityOverrideCount,
+  rawIdentityOverride,
+  mergeIdentityPatch,
 } from './seriesIdentity';
+import { anilistTvdbMapSize, crosswalkIds } from './anilistTvdbMap';
 
 // ---------------------------------------------------------------------------
 // Creating the links nobody else has.
@@ -52,6 +56,17 @@ export interface RemoteCandidate {
   exact: boolean;
   /** The result's own release year — the only verifiable signal for a film. */
   year: number | null;
+  /** TMDB poster URL when the provider sent one — display only, never matched on. */
+  image: string | null;
+  /**
+   * The result's premiere at DAY precision (ISO `yyyy-mm-dd`). Jellyfin's
+   * remote search always carried this; for months only the year was kept, and
+   * the difference is the whole Echo bug: an exact-title film 1,012 days from
+   * the entry's premiere was accepted while the day that refuted it sat unread
+   * in the response. Absent (not null — absent) on rows stored before this
+   * field existed, which is what the sweep's re-grade pass keys on.
+   */
+  premiereDate: string | null;
 }
 
 export interface RemoteQuery {
@@ -98,18 +113,63 @@ export function verdictFor(input: {
   deltaMs: number | null;
   /** Result's own release year vs the entry's — the only check available for a film. */
   yearDelta: number | null;
-}): Verdict {
-  // A: the title is the same work by any reading.
-  if (input.exact) return 'accept';
-  // B/C: we hold it, so the air date is decidable — and it decides.
+  /**
+   * What TMDB says this candidate is. Required, not optional: the year rung is
+   * only meaningful for films, and a forgotten field must be a compile error
+   * rather than a silently widened acceptance.
+   */
+  kind: 'tv' | 'movie' | null;
+  /**
+   * |candidate PremiereDate − entry premiere|, when both are known. Required
+   * for the same reason as `kind`. Measured over all 270 unconfirmed remote
+   * rows: correct picks land ≤31d, wrong ones 62–21,929d — the same
+   * three-orders-of-magnitude gap as the library air-date tier, available
+   * without holding the show.
+   */
+  premiereDeltaMs: number | null;
+}): { verdict: Verdict; rung: string | null } {
+  // The rung rides along so the stored note can never drift from the ladder —
+  // the note used to be re-derived at the write site, which would misreport
+  // every fall-through this ladder added.
+  const days = (ms: number) => Math.round(ms / 86400000);
+  const p = input.premiereDeltaMs;
+  // A: an exact title the premiere date VOUCHES for — verified, and named so.
+  if (input.exact && p != null && p <= AIR_DATE_TOLERANCE_MS) {
+    return { verdict: 'accept', rung: `premiere date ${days(p)}d` };
+  }
+  // A2: an exact title with no date on either side — today's rung A, unchanged.
+  // An exact title the date REFUTES falls through: "Echo" (2023) at 1,012d was
+  // accepted on text alone, and "cocoon" at 523d shows why the fall-through
+  // ends in queue rather than reject — that one is the correct film, TMDB just
+  // dates the theatrical release where AniList dates the broadcast.
+  if (input.exact && p == null) return { verdict: 'accept', rung: 'exact title' };
+  // B/C: we hold it, so the entry's own episode is datable — and it decides.
+  // Above the premiere rungs on purpose: a held sequel's SERIES premiere is
+  // years off (Bananya), but its episode lands within a day.
   if (input.inLibrary && input.deltaMs != null) {
-    return input.deltaMs <= AIR_DATE_TOLERANCE_MS ? 'accept' : 'reject';
+    return input.deltaMs <= AIR_DATE_TOLERANCE_MS
+      ? { verdict: 'accept', rung: `air date ${days(input.deltaMs)}d` }
+      : { verdict: 'reject', rung: null };
+  }
+  // D0/D1: the premiere date decides for anything we don't hold. Within
+  // tolerance it accepts candidates title text never could — 14 of the 105
+  // queued rows are the same work under a localized English title, 0d off.
+  // Beyond it, queue: it also blocks the year rung below, whose ±1 window
+  // admits up to ~730 days the day already refuted.
+  if (p != null) {
+    if (p <= AIR_DATE_TOLERANCE_MS) return { verdict: 'accept', rung: `premiere date ${days(p)}d` };
+    return { verdict: 'queue', rung: null };
   }
   // D: a film has no episodes to date; its release year is the nearest thing.
-  if (input.yearDelta != null && input.yearDelta <= 1) return 'accept';
+  // Films ONLY — for a series the year is nearly free (TMDB's Year-filtered
+  // search hands back same-year works), so it is no evidence at all there.
+  // Reachable only when undated now.
+  if (input.kind === 'movie' && input.yearDelta != null && input.yearDelta <= 1) {
+    return { verdict: 'accept', rung: `release year ±${input.yearDelta}` };
+  }
   // E: nothing verifiable. Keep it — positive-only means it can still only help
   // — but surface it for review.
-  return 'queue';
+  return { verdict: 'queue', rung: null };
 }
 
 /**
@@ -128,6 +188,33 @@ export function verdictFor(input: {
  * orders of magnitude. Do not reintroduce a title/relation heuristic without
  * re-measuring.
  */
+
+/** Search results carry PremiereDate more reliably than ProductionYear. */
+function yearOf(r: any): number | null {
+  if (typeof r?.ProductionYear === 'number') return r.ProductionYear;
+  const t = r?.PremiereDate ? Date.parse(r.PremiereDate) : NaN;
+  return Number.isNaN(t) ? null : new Date(t).getUTCFullYear();
+}
+
+/**
+ * The premiere at day precision. The date part is taken verbatim — Jellyfin
+ * renders TMDB's release day as local-midnight-in-UTC (`2025-04-29T05:00:00Z`),
+ * so parsing the timestamp and flooring it in the wrong zone can shift a day.
+ */
+export function premiereOf(r: any): string | null {
+  const p = r?.PremiereDate;
+  if (typeof p !== 'string') return null;
+  return /^\d{4}-\d{2}-\d{2}/.test(p) ? p.slice(0, 10) : null;
+}
+
+/** |candidate premiere − entry premiere| in ms; null whenever either side is unknown. */
+export function premiereDelta(premiereDate: string | null | undefined, airDateMs: number | null | undefined): number | null {
+  if (!premiereDate || airDateMs == null) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(premiereDate);
+  if (!m) return null;
+  const ms = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  return Number.isFinite(ms) ? Math.abs(ms - airDateMs) : null;
+}
 
 function idsFrom(providerIds: Record<string, string> | undefined | null, kind: 'tv' | 'movie') {
   const p = providerIds ?? {};
@@ -181,10 +268,81 @@ async function searchOne(
       ...ids,
       matchedTitle: rawName,
       exact: !!got && wantedNorms.includes(got),
-      year: typeof r?.ProductionYear === 'number' ? r.ProductionYear : null,
+      year: yearOf(r),
+      image: r?.ImageUrl ?? null,
+      premiereDate: premiereOf(r),
     });
   }
   return out;
+}
+
+/**
+ * Both search kinds on one name, merged and deduped — the admin lookup's name
+ * mode. Series first for the same reason the sweep asks tv first: most of what
+ * this app shows is television. Sequential on purpose (provider pacing).
+ */
+export async function searchBothKinds(
+  api: Api,
+  name: string,
+  year?: number | null
+): Promise<RemoteCandidate[]> {
+  const tv = await searchOne(api, 'tv', name, year, [name]);
+  const movie = await searchOne(api, 'movie', name, year, [name]);
+  const seen = new Set<string>();
+  const out: RemoteCandidate[] = [];
+  for (const c of [...tv, ...movie]) {
+    const key = c.tmdbId ? `${c.tmdbKind}:${c.tmdbId}` : `tvdb:${c.tvdbId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out.slice(0, 8);
+}
+
+/**
+ * Name a provider id, the way Jellyfin's own Identify dialog does: a remote
+ * search whose SearchInfo carries ProviderIds instead of a name. Degrades to
+ * null on anything — a pasted id we can't name is still usable, just unnamed.
+ * The result must echo the asked-for id back, or it's the provider free-
+ * associating on an empty query and must not be trusted.
+ */
+export async function lookupByProviderId(
+  api: Api,
+  tmdbId: string,
+  kind?: 'tv' | 'movie' | null
+): Promise<RemoteCandidate | null> {
+  const lookup = getItemLookupApi(api);
+  const kinds: Array<'tv' | 'movie'> = kind ? [kind] : ['tv', 'movie'];
+  for (const k of kinds) {
+    try {
+      const searchInfo = { ProviderIds: { Tmdb: String(tmdbId) } };
+      const { data } =
+        k === 'movie'
+          ? await lookup.getMovieRemoteSearchResults(
+              { movieInfoRemoteSearchQuery: { SearchInfo: searchInfo, IncludeDisabledProviders: true } },
+              { timeout: 15_000 }
+            )
+          : await lookup.getSeriesRemoteSearchResults(
+              { seriesInfoRemoteSearchQuery: { SearchInfo: searchInfo, IncludeDisabledProviders: true } },
+              { timeout: 15_000 }
+            );
+      const r = (data ?? [])[0];
+      if (!r) continue;
+      const ids = idsFrom(r?.ProviderIds as Record<string, string> | null | undefined, k);
+      if (ids.tmdbId !== String(tmdbId)) continue;
+      return {
+        ...ids,
+        matchedTitle: String(r?.Name ?? ''),
+        exact: false,
+        year: yearOf(r),
+        image: r?.ImageUrl ?? null,
+        premiereDate: premiereOf(r),
+      };
+    } catch {
+      /* degrade — the id stays usable, just unnamed */
+    }
+  }
+  return null;
 }
 
 /**
@@ -241,25 +399,78 @@ export async function resolveRemoteIdentity(
     for (const kind of [first, second] as const) {
       for (const t of names) {
         add(await searchOne(api, kind, t, q.year, titles));
-        const exact = all.find((c) => c.exact);
         // An exact title is decisive, so stop paying for more searches — but
         // return everything gathered so far, so the picker still has options.
-        if (exact) return { chosen: exact, candidates: all };
+        // An exact the premiere date REFUTES doesn't stop the search: it is
+        // exactly the case where a later variant may surface the right work.
+        const exact = all.find((c) => {
+          if (!c.exact) return false;
+          const d = premiereDelta(c.premiereDate, q.airDateMs ?? null);
+          return d == null || d <= AIR_DATE_TOLERANCE_MS;
+        });
+        if (exact) return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all };
       }
     }
     if (all.length) break;
   }
   if (!all.length) return null;
-  return { chosen: all[0], candidates: all };
+  return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all };
+}
+
+/**
+ * Which candidate to act on. Pure, because the ranking is where the Echo bug
+ * lived: the old pick took the FIRST exact title in TMDB relevance order, so a
+ * popular 2023 "Echo" beat the entry's own 2026 siblings while the dates
+ * proving it wrong sat in the same list.
+ *
+ * Ranking: dated-within-tolerance exact (closest first — the DIVE IN! pair,
+ * 16d over 167d) → dated-within-tolerance anything (closest first — "Beyond
+ * Twilight" at 0d over a same-named 2007 work) → undated exact, tie-broken by
+ * year distance when both sides know one → first candidate, exactly as before,
+ * which the ladder then queues if a date refuted it.
+ */
+export function pickCandidate(all: RemoteCandidate[], airDateMs: number | null): RemoteCandidate | null {
+  if (!all.length) return null;
+  const delta = (c: RemoteCandidate) => premiereDelta(c.premiereDate, airDateMs);
+  const within = (c: RemoteCandidate) => {
+    const d = delta(c);
+    return d != null && d <= AIR_DATE_TOLERANCE_MS;
+  };
+  const byDelta = (a: RemoteCandidate, b: RemoteCandidate) => delta(a)! - delta(b)!;
+  const datedExact = all.filter((c) => c.exact && within(c)).sort(byDelta);
+  if (datedExact.length) return datedExact[0];
+  const datedAny = all.filter(within).sort(byDelta);
+  if (datedAny.length) return datedAny[0];
+  const undatedExact = all.filter((c) => c.exact && delta(c) == null);
+  if (undatedExact.length) {
+    const entryYear = airDateMs != null ? new Date(airDateMs).getUTCFullYear() : null;
+    if (entryYear != null) {
+      // Stable sort: candidates without a year keep provider order at the end.
+      undatedExact.sort((a, b) => {
+        const da = a.year != null ? Math.abs(a.year - entryYear) : Infinity;
+        const db = b.year != null ? Math.abs(b.year - entryYear) : Infinity;
+        return da - db;
+      });
+    }
+    return undatedExact[0];
+  }
+  // Nothing a date vouches for: keep the exact title as the stored best-guess
+  // (the ladder queues it anyway) rather than whatever TMDB ranked first —
+  // the Echo re-grade stored "Echo Boomers" over the exact-titled "Echo".
+  return all.find((c) => c.exact) ?? all[0];
 }
 
 /**
  * Drop a trailing subtitle or season marker.
  *
- * TMDB catalogues a sequel as a *season* of one series, so it holds "Punirunes",
- * not "Punirunes Puni 2". Searching the full AniList title returns zero results
- * for those; the base returns the parent, which the air-date tier then confirms
- * or rejects.
+ * TMDB catalogues a sequel as a *season* of one series, so searching the full
+ * AniList title returns zero results; the base returns the parent, which the
+ * air-date tier then confirms or rejects. It strips the MARKER, not back to a
+ * franchise root: "Punirunes Puni 2" becomes "Punirunes Puni" (not
+ * "Punirunes") — the unit test pins that exact output, because the probe that
+ * first demonstrated this typed the shorter form by hand and an earlier
+ * version of this very comment repeated the anecdote as though it were the
+ * behaviour.
  */
 export function baseTitle(t: string): string {
   return t
@@ -318,6 +529,225 @@ interface CachedShow {
  * Never throws: this is background work, and a failure must leave matching
  * exactly as it was.
  */
+/** A lookup term the way Sonarr reads one: a name, or a prefixed provider id. */
+export type LookupTerm =
+  | { kind: 'name'; name: string }
+  | { kind: 'tvdb' | 'tmdb'; id: string };
+
+export function parseLookupTerm(term: string): LookupTerm {
+  // The prefix is REQUIRED for an id — bare digits are real titles (the anime
+  // "86"). Case-insensitive with optional spaces, matching Sonarr's syntax.
+  const m = /^\s*(tvdb|tmdb)\s*:\s*(\d+)\s*$/i.exec(term);
+  if (m) return { kind: m[1].toLowerCase() as 'tvdb' | 'tmdb', id: m[2] };
+  return { kind: 'name', name: term.trim() };
+}
+
+/**
+ * Complete an identity in both id spaces before it is stored.
+ *
+ * Jellyfin's remote search returns TMDB ids only on this server, and a
+ * Sonarr/Radarr user expects series rows to carry TVDB ids — so a row must not
+ * be written half-filled when anything already knows the pair. The library's
+ * own metadata is the first translation (a held item carries both ids after
+ * Jellyfin's deep fetch); the community map's cross-walk is the second.
+ * Nothing is invented: unknown stays honestly null.
+ */
+export function completeIdentityIds(
+  ids: { tvdbId: string | null; tmdbId: string | null; tmdbKind: 'tv' | 'movie' | null },
+  library: { tvdbId?: string | null; tmdbId?: string | null } | null
+): { tvdbId: string | null; tmdbId: string | null; tmdbKind: 'tv' | 'movie' | null } {
+  let { tvdbId, tmdbId, tmdbKind } = ids;
+  if (library) {
+    tvdbId = tvdbId ?? library.tvdbId ?? null;
+    if (!tmdbId && library.tmdbId) {
+      tmdbId = String(library.tmdbId);
+      tmdbKind = tmdbKind ?? 'tv';
+    }
+  }
+  if (!tvdbId || !tmdbId) {
+    const x = crosswalkIds({ tvdbId, tmdbId, tmdbKind });
+    if (x) {
+      tvdbId = tvdbId ?? x.tvdbId;
+      tmdbId = tmdbId ?? x.tmdbId;
+      tmdbKind = tmdbKind ?? x.tmdbKind;
+    }
+  }
+  return { tvdbId, tmdbId, tmdbKind };
+}
+
+/** What the last sweep did, persisted so the admin page can show it ran. */
+export interface SweepStatus {
+  finishedAt: number;
+  looked: number;
+  accepted: number;
+  queued: number;
+  rejected: number;
+  /** Entries still needing a lookup after this bounded run. */
+  remaining: number;
+  /** Override rows in memory, and the community map size, for scale. */
+  overrides: number;
+  mapSize: number;
+}
+
+export function parseSweepStatus(raw: string | null): SweepStatus | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    // A persisted cache row like every other AppConfig blob: corrupt means
+    // "no status", never a crashed admin page.
+    return v && typeof v === 'object' && typeof v.finishedAt === 'number'
+      ? (v as SweepStatus)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const SWEEP_STATUS_KEY = 'remoteSweepStatus';
+
+/** The last run's summary, or null when no sweep has completed yet. */
+export async function sweepStatus(): Promise<SweepStatus | null> {
+  try {
+    const row = await prisma.appConfig.findUnique({ where: { key: SWEEP_STATUS_KEY } });
+    return parseSweepStatus(row?.value ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/** Recording the run must never fail the run. */
+async function saveSweepStatus(s: SweepStatus): Promise<void> {
+  try {
+    const value = JSON.stringify(s);
+    await prisma.appConfig.upsert({
+      where: { key: SWEEP_STATUS_KEY },
+      update: { value },
+      create: { key: SWEEP_STATUS_KEY, value },
+    });
+  } catch (err: any) {
+    console.warn('[identity] could not record the sweep status:', err?.message ?? err);
+  }
+}
+
+/** The entry's own episode distance, when we hold the candidate. */
+async function episodeDeltaMs(
+  api: Api,
+  inLib: MatchableSeries | undefined | null,
+  airDateMs: number | null | undefined
+): Promise<number | null> {
+  if (!inLib || airDateMs == null) return null;
+  try {
+    const { data } = await getTvShowsApi(api).getEpisodes(
+      { seriesId: inLib.id, enableImages: false },
+      { timeout: 30_000 }
+    );
+    return closestDatedEpisode(data.Items ?? [], airDateMs)?.deltaMs ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-grade rows stored before candidates carried premiere dates.
+ *
+ * Every pre-feature accept was decided blind to the day-precision evidence the
+ * search response already contained; this re-resolves those rows through the
+ * current ladder — verifying the accepts the date vouches for, flagging the
+ * ones it refutes (Echo), and promoting queued rows whose localized-title
+ * match only a date could see. Selection key: a row is legacy exactly when its
+ * stored candidates lack the `premiereDate` key, and every rewrite stamps the
+ * key, so the pass is self-terminating rather than a permanent tax on the
+ * provider.
+ *
+ * Conservative on purpose: confirmed, rejected and manual rows are never
+ * touched, and a verdict of `reject` here writes `pending` (review) rather
+ * than the reject-wipe — a stored accept must not be auto-deleted on evidence
+ * a human hasn't seen.
+ */
+export async function regradeStoredRows(
+  api: Api,
+  library: MatchableSeries[],
+  entryById: Map<number, RemoteQuery>,
+  max: number
+): Promise<{ regraded: number; promoted: number; flagged: number; stamped: number }> {
+  const byTvdb = new Map<string, MatchableSeries>();
+  const byTmdb = new Map<string, MatchableSeries>();
+  for (const s of library) {
+    if (s.tvdbId) byTvdb.set(String(s.tvdbId), s);
+    if (s.tmdbId) byTmdb.set(String(s.tmdbId), s);
+  }
+  const stored = await prisma.seriesIdentity.findMany({
+    where: { source: 'remote', confirmed: false, rejected: false, tmdbId: { not: null } },
+    select: { anilistId: true },
+    orderBy: { updatedAt: 'asc' },
+  });
+  let regraded = 0;
+  let promoted = 0;
+  let flagged = 0;
+  let stamped = 0;
+  for (const row of stored) {
+    if (regraded >= max) break;
+    const ex = rawIdentityOverride(row.anilistId);
+    if (!ex || ex.source !== 'remote' || ex.confirmed || ex.rejected) continue;
+    const cands = ex.candidates;
+    if (!cands?.length || cands.every((c) => 'premiereDate' in c)) continue;
+    const entry = entryById.get(row.anilistId);
+    if (!entry) {
+      // Aged out of the season cache — nothing to grade against. Stamp the key
+      // so the row doesn't recycle through this pass forever, changing nothing.
+      await setIdentityOverride(mergeIdentityPatch(ex, {
+        anilistId: row.anilistId,
+        tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
+        candidates: cands.map((c) => ({ ...c, premiereDate: c.premiereDate ?? null })),
+        confirmed: ex.confirmed, rejected: ex.rejected, pending: ex.pending,
+      }));
+      stamped++;
+      continue;
+    }
+    const found = await resolveRemoteIdentity(api, entry);
+    regraded++;
+    await new Promise((r) => setTimeout(r, PACE_MS));
+    const hit = found?.chosen ?? null;
+    if (!found || !hit) {
+      // The search finds nothing today; keep what's stored, stamped.
+      await setIdentityOverride(mergeIdentityPatch(ex, {
+        anilistId: row.anilistId,
+        tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
+        candidates: cands.map((c) => ({ ...c, premiereDate: c.premiereDate ?? null })),
+        confirmed: ex.confirmed, rejected: ex.rejected, pending: ex.pending,
+      }));
+      stamped++;
+      continue;
+    }
+    const inLib =
+      (hit.tvdbId ? byTvdb.get(hit.tvdbId) : undefined) ??
+      (hit.tmdbId && hit.tmdbKind === 'tv' ? byTmdb.get(hit.tmdbId) : undefined);
+    const deltaMs = await episodeDeltaMs(api, inLib, entry.airDateMs);
+    const yearDelta =
+      hit.year != null && entry.year != null ? Math.abs(hit.year - entry.year) : null;
+    const { verdict, rung } = verdictFor({
+      exact: hit.exact, inLibrary: !!inLib, deltaMs, yearDelta, kind: hit.tmdbKind,
+      premiereDeltaMs: premiereDelta(hit.premiereDate, entry.airDateMs ?? null),
+    });
+    const nowPending = verdict !== 'accept';
+    if (ex.pending && !nowPending) promoted++;
+    if (!ex.pending && nowPending) flagged++;
+    const full = completeIdentityIds(hit, inLib ?? null);
+    await setIdentityOverride(mergeIdentityPatch(ex, {
+      anilistId: row.anilistId,
+      tvdbId: full.tvdbId, tmdbId: full.tmdbId, tmdbKind: full.tmdbKind,
+      matchedTitle: hit.matchedTitle,
+      candidates: found.candidates,
+      year: hit.year ?? ex.year,
+      pending: nowPending,
+      note: verdict === 'accept' && rung ? `remote: ${rung}` : 'remote: unverified',
+      confirmed: ex.confirmed,
+      rejected: ex.rejected,
+    }));
+  }
+  return { regraded, promoted, flagged, stamped };
+}
+
 export async function runRemoteIdentitySweep(
   api: Api | null,
   library: MatchableSeries[]
@@ -337,6 +767,9 @@ export async function runRemoteIdentitySweep(
     const rows = await prisma.seasonCache.findMany();
     const seen = new Set<number>();
     const todo: RemoteQuery[] = [];
+    // Every entry, not just the ones needing a first lookup — the re-grade
+    // pass below needs titles and premiere dates for rows already stored.
+    const entryById = new Map<number, RemoteQuery>();
     for (const row of rows) {
       let shows: CachedShow[];
       try {
@@ -352,23 +785,25 @@ export async function runRemoteIdentitySweep(
         // even in the upstream anime databases — so asking about them is pure
         // waste. They are also not what this app is for.
         if (s.isAdult) continue;
-        // NOT "has any identity row" — that retired an entry permanently the
-        // first time a search came back empty, and made the retry schedule
-        // below unreachable. See needsRemoteLookup.
-        if (!needsRemoteLookup(s.id)) continue;
         // Native included: TMDB stores an `original_title`, and it is the one
         // form that doesn't depend on which English localisation a cataloguer
         // chose.
         const titles = [s.title?.english, s.title?.romaji, s.title?.native]
           .filter(Boolean) as string[];
         if (!titles.length) continue;
-        todo.push({
+        const q: RemoteQuery = {
           anilistId: s.id,
           titles,
           format: s.format ?? null,
           year: s.startDate?.year ?? null,
           airDateMs: anilistDateToMs(s.startDate ?? null),
-        });
+        };
+        entryById.set(s.id, q);
+        // NOT "has any identity row" — that retired an entry permanently the
+        // first time a search came back empty, and made the retry schedule
+        // below unreachable. See needsRemoteLookup.
+        if (!needsRemoteLookup(s.id)) continue;
+        todo.push(q);
       }
     }
 
@@ -388,13 +823,109 @@ export async function runRemoteIdentitySweep(
         .map((q) => q.anilistId)
     );
     const batch = todo.filter((t) => !skip.has(t.anilistId)).slice(0, MAX_PER_RUN);
-    if (!batch.length) return;
 
     const byTvdb = new Map<string, MatchableSeries>();
     const byTmdb = new Map<string, MatchableSeries>();
     for (const s of library) {
       if (s.tvdbId) byTvdb.set(String(s.tvdbId), s);
       if (s.tmdbId) byTmdb.set(String(s.tmdbId), s);
+    }
+
+    // Backfill rows written before ids were completed at write time: a stored
+    // remote row missing one id space gains its sibling once the library or
+    // the community map has learned it (a Sonarr user expects series rows to
+    // carry TVDB ids, and the remote search only ever supplied TMDB). Pure
+    // in-memory joins — cheap, idempotent, and the merge preserves the row's
+    // provenance while the identity-change hook busts any cached verdict.
+    let backfilled = 0;
+    const stored = await prisma.seriesIdentity.findMany({
+      where: { source: 'remote' },
+      select: { anilistId: true, tvdbId: true, tmdbId: true },
+    });
+    for (const row of stored) {
+      if ((row.tvdbId && row.tmdbId) || (!row.tvdbId && !row.tmdbId)) continue;
+      const ex = rawIdentityOverride(row.anilistId);
+      if (!ex) continue;
+      const inLib =
+        (ex.tvdbId ? byTvdb.get(String(ex.tvdbId)) : undefined) ??
+        (ex.tmdbId && ex.tmdbKind !== 'movie' ? byTmdb.get(String(ex.tmdbId)) : undefined);
+      const full = completeIdentityIds(
+        { tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind },
+        inLib ?? null
+      );
+      if (full.tvdbId === ex.tvdbId && full.tmdbId === ex.tmdbId) continue;
+      await setIdentityOverride(mergeIdentityPatch(ex, {
+        anilistId: row.anilistId,
+        tvdbId: full.tvdbId,
+        tmdbId: full.tmdbId,
+        tmdbKind: full.tmdbKind,
+        // Date it while we're here: the stored candidates and the held
+        // library item are the only local sources.
+        year: ex.year ?? (ex.candidates ?? []).find((c) => c.year != null)?.year
+          ?? inLib?.year ?? null,
+        confirmed: ex.confirmed,
+        rejected: ex.rejected,
+        pending: ex.pending,
+      }));
+      backfilled++;
+    }
+    if (backfilled) {
+      console.log(`[identity] backfilled ${backfilled} half-filled row(s) with cross-walked ids`);
+    }
+
+    // Date legacy rows the local sources couldn't: one remote by-id lookup
+    // each, capped per run — the backlog (271 undated rows when this shipped)
+    // drains across a week of sweeps instead of hammering the provider. Rows
+    // are taken oldest-updatedAt first and TOUCHED even when the provider has
+    // no date, so the window rotates instead of retrying the same undatable
+    // forty forever.
+    let dated = 0;
+    const undatedRows = await prisma.seriesIdentity.findMany({
+      where: { source: 'remote', year: null, tmdbId: { not: null } },
+      select: { anilistId: true },
+      orderBy: { updatedAt: 'asc' },
+      take: MAX_PER_RUN,
+    });
+    for (const row of undatedRows) {
+      const ex = rawIdentityOverride(row.anilistId);
+      if (!ex?.tmdbId || ex.year != null) continue;
+      const named = await lookupByProviderId(api, ex.tmdbId, ex.tmdbKind);
+      await setIdentityOverride(mergeIdentityPatch(ex, {
+        anilistId: row.anilistId,
+        tvdbId: ex.tvdbId,
+        tmdbId: ex.tmdbId,
+        tmdbKind: ex.tmdbKind,
+        year: named?.year ?? null,
+        confirmed: ex.confirmed,
+        rejected: ex.rejected,
+        pending: ex.pending,
+      }));
+      if (named?.year != null) dated++;
+      await new Promise((r) => setTimeout(r, PACE_MS));
+    }
+    if (dated) {
+      console.log(`[identity] dated ${dated} legacy row(s) via remote lookup`);
+    }
+
+    // Re-grade rows stored before candidates carried premiere dates — capped
+    // and self-terminating like the passes above.
+    const rg = await regradeStoredRows(api, library, entryById, MAX_PER_RUN);
+    if (rg.regraded) {
+      console.log(
+        `[identity] re-graded ${rg.regraded} stored row(s) with premiere dates ` +
+          `(${rg.promoted} promoted, ${rg.flagged} flagged for review)`
+      );
+    }
+
+    if (!batch.length) {
+      // "Ran and found nothing to ask" is a result worth recording — the whole
+      // point of the status is telling that apart from "never ran".
+      await saveSweepStatus({
+        finishedAt: Date.now(), looked: 0, accepted: 0, queued: 0, rejected: 0,
+        remaining: todo.length, overrides: identityOverrideCount(),
+        mapSize: anilistTvdbMapSize(),
+      });
+      return;
     }
 
     for (const q of batch) {
@@ -407,21 +938,13 @@ export async function runRemoteIdentitySweep(
         const inLib =
           (hit.tvdbId ? byTvdb.get(hit.tvdbId) : undefined) ??
           (hit.tmdbId && hit.tmdbKind === 'tv' ? byTmdb.get(hit.tmdbId) : undefined);
-        let deltaMs: number | null = null;
-        if (inLib && q.airDateMs != null) {
-          try {
-            const { data } = await getTvShowsApi(api).getEpisodes(
-              { seriesId: inLib.id, enableImages: false },
-              { timeout: 30_000 }
-            );
-            deltaMs = closestDatedEpisode(data.Items ?? [], q.airDateMs)?.deltaMs ?? null;
-          } catch {
-            deltaMs = null;
-          }
-        }
+        const deltaMs = await episodeDeltaMs(api, inLib, q.airDateMs);
         const yearDelta =
           hit.year != null && q.year != null ? Math.abs(hit.year - q.year) : null;
-        const verdict = verdictFor({ exact: hit.exact, inLibrary: !!inLib, deltaMs, yearDelta });
+        const { verdict, rung } = verdictFor({
+          exact: hit.exact, inLibrary: !!inLib, deltaMs, yearDelta, kind: hit.tmdbKind,
+          premiereDeltaMs: premiereDelta(hit.premiereDate, q.airDateMs ?? null),
+        });
         if (verdict === 'reject') {
           // We hold this series and its episodes are nowhere near the entry's
           // premiere, so the candidate is a different work. Record only that we
@@ -435,28 +958,27 @@ export async function runRemoteIdentitySweep(
           await new Promise((r) => setTimeout(r, PACE_MS));
           continue;
         }
+        // Complete the ids before storing: the search returned TMDB only, but
+        // the library item (when held) and the community map both know the
+        // TVDB sibling — a Sonarr user expects series rows to carry it.
+        const full = completeIdentityIds(hit, inLib ?? null);
         await setIdentityOverride({
           anilistId: q.anilistId,
-          tvdbId: hit.tvdbId,
-          tmdbId: hit.tmdbId,
-          tmdbKind: hit.tmdbKind,
+          tvdbId: full.tvdbId,
+          tmdbId: full.tmdbId,
+          tmdbKind: full.tmdbKind,
+          // The year is known right here (TMDB said it) and nothing else can
+          // date an unheld gap entry later — store it or lose it.
+          year: hit.year,
           // `pending` no longer withholds the id — positive-only does the
           // protecting. It only marks what still wants a human eye.
           pending: verdict === 'queue',
           matchedTitle: hit.matchedTitle,
           candidates: found.candidates,
           source: 'remote',
-          // Say which rung of the ladder accepted it. `?? 0` here would print
-          // "air date 0d" for a film that never had an air-date check at all —
-          // a note that reads as strong evidence for a decision made on
-          // something weaker.
-          note: verdict !== 'accept'
-            ? 'remote: unverified'
-            : hit.exact
-              ? 'remote: exact title'
-              : deltaMs != null
-                ? `remote: air date ${Math.round(deltaMs / 86400000)}d`
-                : `remote: release year ±${yearDelta}`,
+          // Say which rung of the ladder accepted it — the ladder itself names
+          // it, so the note can never claim evidence the verdict didn't use.
+          note: verdict === 'accept' && rung ? `remote: ${rung}` : 'remote: unverified',
         });
         verdict === 'accept' ? accepted++ : queued++;
         await new Promise((r) => setTimeout(r, PACE_MS));
@@ -477,6 +999,11 @@ export async function runRemoteIdentitySweep(
         `${todo.length - batch.length} left for next run ` +
         `(${((Date.now() - started) / 1000).toFixed(1)}s)`
     );
+    await saveSweepStatus({
+      finishedAt: Date.now(), looked, accepted, queued, rejected,
+      remaining: todo.length - batch.length, overrides: identityOverrideCount(),
+      mapSize: anilistTvdbMapSize(),
+    });
   } catch (err: any) {
     console.warn('[identity] remote sweep failed:', err?.message ?? err);
   } finally {

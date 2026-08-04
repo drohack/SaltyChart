@@ -13,7 +13,15 @@ import {
   normalizeTitle,
   type MatchableSeries,
 } from '../lib/animeMatch';
-import { ensureAnilistTvdbMap } from '../lib/anilistTvdbMap';
+import { ensureAnilistTvdbMap, crosswalkIds } from '../lib/anilistTvdbMap';
+import { getFilmIndex } from '../lib/jellyfinFilmIndex';
+import {
+  sweepStatus,
+  parseLookupTerm,
+  searchBothKinds,
+  lookupByProviderId,
+  type RemoteCandidate,
+} from '../lib/remoteIdentity';
 import {
   closestDatedEpisode,
   AIR_DATE_TOLERANCE_MS,
@@ -24,8 +32,10 @@ import {
   rawIdentityOverride,
   identityReady,
   setIdentityOverride,
+  mergeIdentityPatch,
   clearIdentityOverride,
   listIdentityOverrides,
+  onIdentityChanged,
 } from '../lib/seriesIdentity';
 import {
   DEVICE_ID,
@@ -170,10 +180,39 @@ router.get('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (_req,
  * whether a show resolved and how (`matchedBy`, `titleTier`), this one says
  * which id produced it and whether a human has confirmed it.
  */
-router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, (req, res) => {
+router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
   const ids = req.body?.mediaIds;
   if (!Array.isArray(ids) || ids.length > 200) {
     return res.status(400).json({ error: 'mediaIds must be an array of at most 200', code: 'BAD_REQUEST' });
+  }
+  // Candidates stored before the sweep kept years have `year: null` forever —
+  // but when we HOLD the candidate, its year is sitting in the library caches.
+  // Enrich at read time (display only, storage untouched); the maps are the
+  // cached in-memory ones, so this costs lookups, not fetches. Copies, never
+  // mutations: `rawIdentityOverride` returns the live in-memory row.
+  let yearFor: (c: { tvdbId?: string | null; tmdbId?: string | null; tmdbKind?: string | null }) => number | null =
+    () => null;
+  try {
+    const cfg = await getJellyfinConfig();
+    if (cfg) {
+      const api = await jellyfinApi(cfg);
+      const [series, films] = await Promise.all([getSeriesLibrary(api), getFilmIndex(api)]);
+      const byTvdb = new Map<string, number>();
+      const byTmdb = new Map<string, number>();
+      for (const s of series) {
+        if (s.year == null) continue;
+        if (s.tvdbId) byTvdb.set(String(s.tvdbId), s.year);
+        if (s.tmdbId) byTmdb.set(String(s.tmdbId), s.year);
+      }
+      yearFor = (c) =>
+        c.tmdbKind === 'movie'
+          ? (c.tmdbId ? films[String(c.tmdbId)]?.year ?? null : null)
+          : (c.tvdbId ? byTvdb.get(String(c.tvdbId)) : undefined) ??
+            (c.tmdbId ? byTmdb.get(String(c.tmdbId)) : undefined) ??
+            null;
+    }
+  } catch {
+    /* enrichment is optional — years just stay absent */
   }
   const out: Record<number, any> = {};
   for (const raw of ids) {
@@ -181,13 +220,28 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, (re
     if (!Number.isFinite(id)) continue;
     // The raw row first, so *pending* suggestions are visible here. Matching
     // hides them on purpose; this page exists to show them.
-    out[id] = rawIdentityOverride(id) ?? resolveIdentity(id);
+    const ident = rawIdentityOverride(id) ?? resolveIdentity(id);
+    out[id] = {
+      ...ident,
+      // The identity's own display year: stored (the sweep dates rows at
+      // write time now), else the held library item's — the match control is
+      // pre-populated from this row and must not read dateless while its
+      // dropdown options are dated.
+      year: ident.year ?? yearFor(ident),
+      candidates: ident?.candidates?.length
+        ? ident.candidates.map((c) => (c.year != null ? c : { ...c, year: yearFor(c) }))
+        : ident?.candidates ?? null,
+    };
   }
-  res.json({ identities: out, ready: identityReady() });
+  // The sweep summary rides along so /admin/matching can say when the daily
+  // resolver last ran and what it did — a background system that "silently
+  // stops improving" is this codebase's most-repeated failure class, and until
+  // now its only trace was a backend console line nobody watches.
+  res.json({ identities: out, ready: identityReady(), sweep: await sweepStatus() });
 });
 
 router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
-  const { anilistId, tvdbId, tmdbId, tmdbKind, confirmed, rejected, pending, matchedTitle, note } =
+  const { anilistId, tvdbId, tmdbId, tmdbKind, confirmed, rejected, pending, matchedTitle, note, source, year } =
     req.body ?? {};
   const id = Number(anilistId);
   if (!Number.isFinite(id)) {
@@ -196,28 +250,210 @@ router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, 
   if (tmdbKind != null && tmdbKind !== 'tv' && tmdbKind !== 'movie') {
     return res.status(400).json({ error: "tmdbKind must be 'tv' or 'movie'", code: 'BAD_REQUEST' });
   }
+  if (source !== undefined && source !== 'manual' && source !== 'remote') {
+    return res.status(400).json({ error: "source must be 'manual' or 'remote'", code: 'BAD_REQUEST' });
+  }
   try {
-    const identity = await setIdentityOverride({
+    // Merged onto the stored row: a field the client didn't send keeps its
+    // stored value, so Confirm doesn't wipe the resolver's provenance (source,
+    // note, candidates) — an explicit value, including null, still changes it.
+    const identity = await setIdentityOverride(mergeIdentityPatch(rawIdentityOverride(id), {
       anilistId: id,
       tvdbId: tvdbId ? String(tvdbId) : null,
       tmdbId: tmdbId ? String(tmdbId) : null,
       tmdbKind: tmdbKind ?? null,
       confirmed: confirmed === true,
       rejected: rejected === true,
-      // Confirming a suggestion clears , which is what puts its ids
-      // into use. Defaults to false so a plain admin edit is always live.
+      // Confirming a suggestion clears `pending`, which is what takes it off
+      // the review list. Defaults to false so a plain admin edit is always live.
       pending: pending === true,
-      matchedTitle: matchedTitle ? String(matchedTitle) : null,
-      note: note ? String(note) : null,
-    });
-    // The point of writing an override is to change the verdict. Leaving the
-    // cached one in place would mean the correction appears to do nothing for up
-    // to an hour — which reads exactly like the feature is broken.
-    availabilityCache.delete(id);
+      ...(matchedTitle !== undefined ? { matchedTitle: matchedTitle ? String(matchedTitle) : null } : {}),
+      ...(note !== undefined ? { note: note ? String(note) : null } : {}),
+      ...(source !== undefined ? { source: source as 'manual' | 'remote' } : {}),
+      ...(Number.isFinite(Number(year)) && year !== null ? { year: Number(year) } : {}),
+    }));
+    // Cache invalidation (in-memory AND the persisted blob) happens in the
+    // onIdentityChanged listener, so the sweep's writes are covered by the
+    // same path. Nothing to do here.
     res.json({ ok: true, identity });
   } catch (err: any) {
     console.warn('[identity] save failed:', err?.message ?? err);
     res.status(500).json({ error: 'Could not save the override', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Sonarr-style lookup for /admin/matching: a name searches Jellyfin's remote
+ * providers; `tvdb:12345` / `tmdb:12345` resolves a pasted id. Every result
+ * carries both ids where they can be known (library metadata first, community
+ * map cross-walk second — this server's remote search returns TMDB ids only)
+ * and an `library` tag naming what we hold under those ids, so the admin sees
+ * what they are agreeing to BEFORE Confirm writes it as permanent fact.
+ * Admin-only and never on a viewer's path; the library/film caches it reads
+ * are the existing stale-while-revalidate ones.
+ */
+router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
+  const termRaw = String(req.query.term ?? '');
+  if (!termRaw.trim() || termRaw.length > 200) {
+    return res.status(400).json({ error: 'term is required (name, tvdb:<id>, or tmdb:<id>)', code: 'BAD_REQUEST' });
+  }
+  const yearQ = Number(req.query.year);
+  const year = Number.isFinite(yearQ) ? yearQ : null;
+  try {
+    const cfg = await getJellyfinConfig();
+    if (!cfg) return res.json({ mode: 'name', results: [] });
+    const api = await jellyfinApi(cfg);
+    const [series, films] = await Promise.all([getSeriesLibrary(api), getFilmIndex(api)]);
+    const byTvdb = new Map<string, MatchableSeries>();
+    const byTmdb = new Map<string, MatchableSeries>();
+    for (const s of series) {
+      if (s.tvdbId) byTvdb.set(String(s.tvdbId), s);
+      if (s.tmdbId) byTmdb.set(String(s.tmdbId), s);
+    }
+
+    /** Complete the ids and name what the library holds under them. */
+    const resolveLocal = (c: {
+      tvdbId?: string | null;
+      tmdbId?: string | null;
+      tmdbKind?: 'tv' | 'movie' | null;
+    }) => {
+      let tvdbId = c.tvdbId ?? null;
+      let tmdbId = c.tmdbId ?? null;
+      let tmdbKind = c.tmdbKind ?? null;
+      let library: { title: string } | null = null;
+      /** The held item's own year — fills results the provider left undated. */
+      let libYear: number | null = null;
+
+      const s =
+        (tvdbId ? byTvdb.get(String(tvdbId)) : undefined) ??
+        (tmdbId && tmdbKind !== 'movie' ? byTmdb.get(String(tmdbId)) : undefined);
+      if (s) {
+        library = { title: s.title };
+        libYear = s.year ?? null;
+        // The library's own metadata carries both ids — the first free
+        // tvdb<->tmdb translation.
+        tvdbId = tvdbId ?? s.tvdbId ?? null;
+        if (!tmdbId && s.tmdbId) tmdbId = String(s.tmdbId);
+        if (tmdbId && !tmdbKind) tmdbKind = 'tv';
+      }
+      // A raw `tmdb:` paste has no kind — a film-index hit is itself the
+      // evidence the number means a film. Only a known-'tv' id skips this.
+      if (!library && tmdbId && tmdbKind !== 'tv') {
+        const f = films[String(tmdbId)];
+        if (f) {
+          library = { title: f.title };
+          libYear = f.year ?? null;
+          tmdbKind = 'movie';
+        }
+      }
+      if (!tvdbId || !tmdbId) {
+        // The community map is the second translation: anilist→tvdb joined to
+        // anilist→tmdb through the anilist key.
+        const x = crosswalkIds({ tvdbId, tmdbId, tmdbKind });
+        if (x) {
+          tvdbId = tvdbId ?? x.tvdbId;
+          tmdbId = tmdbId ?? x.tmdbId;
+          tmdbKind = tmdbKind ?? x.tmdbKind;
+          // The kind may only now be known — give the film index its shot.
+          if (!library && tmdbId && tmdbKind === 'movie') {
+            const f = films[String(tmdbId)];
+            if (f) {
+              library = { title: f.title };
+              libYear = f.year ?? null;
+            }
+          }
+        }
+      }
+      return { library, libYear, tvdbId, tmdbId, tmdbKind };
+    };
+
+    const toResult = (c: RemoteCandidate) => {
+      const local = resolveLocal(c);
+      return {
+        title: c.matchedTitle || local.library?.title || null,
+        year: c.year ?? local.libYear,
+        tvdbId: local.tvdbId,
+        tmdbId: local.tmdbId,
+        tmdbKind: local.tmdbKind,
+        image: c.image,
+        library: local.library,
+      };
+    };
+
+    // Which review row this lookup serves, when the caller says. A learned
+    // year must not evaporate on refresh: if that row is stored undated and a
+    // result matches the row's OWN ids, persist the year through the merge —
+    // ids and flags are read from the authoritative row, so nothing else can
+    // be touched, and a failure here never fails the lookup.
+    const anilistIdQ = Number(req.query.anilistId);
+    const rowId = Number.isFinite(anilistIdQ) ? anilistIdQ : null;
+    const persistLearnedYear = async (
+      results: Array<{ tvdbId: string | null; tmdbId: string | null; tmdbKind: string | null; year: number | null }>
+    ) => {
+      if (rowId == null) return;
+      const ex = rawIdentityOverride(rowId);
+      if (!ex || ex.year != null || (!ex.tvdbId && !ex.tmdbId)) return;
+      const m = results.find(
+        (o) =>
+          (ex.tvdbId && o.tvdbId === ex.tvdbId) ||
+          (ex.tmdbId && o.tmdbId === ex.tmdbId && (o.tmdbKind ?? 'tv') === (ex.tmdbKind ?? 'tv'))
+      );
+      if (m?.year == null) return;
+      try {
+        await setIdentityOverride(mergeIdentityPatch(ex, {
+          anilistId: rowId,
+          tvdbId: ex.tvdbId,
+          tmdbId: ex.tmdbId,
+          tmdbKind: ex.tmdbKind,
+          year: m.year,
+          confirmed: ex.confirmed,
+          rejected: ex.rejected,
+          pending: ex.pending,
+        }));
+      } catch {
+        /* display data — never fail the lookup over it */
+      }
+    };
+
+    const term = parseLookupTerm(termRaw);
+    if (term.kind === 'name') {
+      const cands = await searchBothKinds(api, term.name, year);
+      const results = cands.map(toResult);
+      await persistLearnedYear(results);
+      return res.json({ mode: 'name', results });
+    }
+
+    // id mode: one result, resolved locally first; a TMDB id nothing local
+    // names gets the identify-by-id attempt so the admin still sees a title.
+    const local = resolveLocal(term.kind === 'tvdb' ? { tvdbId: term.id } : { tmdbId: term.id });
+    let title: string | null = local.library?.title ?? null;
+    let resultYear: number | null = local.libYear;
+    let image: string | null = null;
+    const tmdbToName = term.kind === 'tmdb' ? term.id : local.tmdbId;
+    if (!title && tmdbToName) {
+      const named = await lookupByProviderId(api, tmdbToName, local.tmdbKind);
+      if (named) {
+        title = named.matchedTitle || null;
+        resultYear = resultYear ?? named.year;
+        image = named.image;
+        if (!local.tmdbKind) local.tmdbKind = named.tmdbKind;
+        if (!local.tvdbId && named.tvdbId) local.tvdbId = named.tvdbId;
+      }
+    }
+    const idResults = [{
+      title,
+      year: resultYear,
+      tvdbId: local.tvdbId ?? (term.kind === 'tvdb' ? term.id : null),
+      tmdbId: local.tmdbId ?? (term.kind === 'tmdb' ? term.id : null),
+      tmdbKind: local.tmdbKind,
+      image,
+      library: local.library,
+    }];
+    await persistLearnedYear(idResults);
+    return res.json({ mode: 'id', results: idResults });
+  } catch (err: any) {
+    console.warn('[identity] lookup failed:', jellyfinErrorInfo(err));
+    res.status(502).json({ error: 'Lookup failed', code: 'UPSTREAM_ERROR' });
   }
 });
 
@@ -228,7 +464,6 @@ router.delete('/identity/:anilistId', jellyfinLimiter, requireAuth, requireAdmin
   }
   try {
     await clearIdentityOverride(id);
-    availabilityCache.delete(id);
     res.json({ ok: true });
   } catch (err: any) {
     console.warn('[identity] delete failed:', err?.message ?? err);
@@ -256,11 +491,17 @@ router.put('/config', jellyfinLimiter, requireAuth, requireAdmin, async (req, re
       .status(400)
       .json({ error: 'URL must start with http:// or https://', code: 'BAD_REQUEST' });
   }
-  await prisma.appConfig.upsert({
-    where: { key: 'jellyfinUrl' },
-    update: { value: cleanUrl },
-    create: { key: 'jellyfinUrl', value: cleanUrl },
-  });
+  // Like the key, an empty URL keeps the stored one. The admin form starts
+  // blank when its config GET failed, and this write used to be unconditional —
+  // so Save in that state replaced a working URL with whatever the form fell
+  // back to, silently breaking availability and playback for everyone.
+  if (cleanUrl) {
+    await prisma.appConfig.upsert({
+      where: { key: 'jellyfinUrl' },
+      update: { value: cleanUrl },
+      create: { key: 'jellyfinUrl', value: cleanUrl },
+    });
+  }
   if (typeof apiKey === 'string' && apiKey.trim()) {
     await prisma.appConfig.upsert({
       where: { key: 'jellyfinApiKey' },
@@ -474,6 +715,7 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
       norms,
       tvdbId: tvdb == null ? null : String(tvdb),
       tmdbId: tmdb == null ? null : String(tmdb),
+      year: typeof it.ProductionYear === 'number' ? it.ProductionYear : null,
     });
   }
   return series;
@@ -521,103 +763,8 @@ async function savePersistedLibrary(series: JfSeries[], total: number, at: numbe
   }
 }
 
-// ── Films ───────────────────────────────────────────────────────────────────
-//
-// Deliberately an id INDEX, not a second matchable corpus. Films are only ever
-// looked up by TMDB id — every film we resolve has one, from the community map
-// or from our own lookup — so titles are never compared and `OriginalTitle` is
-// never needed. That also sidesteps the whole class of error this exists to
-// stop: a film has no business being fuzzy-matched at all.
-//
-// Why it exists: `getSeriesLibrary` fetches `IncludeItemTypes=Series`, so a
-// film's id could never match anything and the lookup fell through to
-// title-matching against TV series. Measured over 8 seasons that produced 26
-// category errors — "The Last Blossom" -> *House*, "ChaO" -> *ChäoS;Head*,
-// "Demon Slayer: Infinity Castle" -> the television show — against exactly 1
-// case where the fall-through found something the air date accepted. It also
-// left 7 films we actually own unreachable.
-const FILM_INDEX_KEY = 'jellyfinFilmIndex';
-const FILM_TTL_MS = 6 * 60 * 60 * 1000; // films are added far less often than episodes
-
-interface FilmEntry {
-  itemId: string;
-  title: string;
-}
-let _films: { byTmdb: Record<string, FilmEntry>; expires: number } | null = null;
-let _filmsInFlight: Promise<Record<string, FilmEntry>> | null = null;
-
-async function fetchFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
-  const { data } = await getItemsApi(api).getItems(
-    {
-      includeItemTypes: [BaseItemKind.Movie],
-      recursive: true,
-      fields: [ItemFields.ProviderIds],
-      enableImages: false,
-    },
-    { timeout: 120_000 }
-  );
-  const out: Record<string, FilmEntry> = {};
-  for (const it of data.Items ?? []) {
-    if (!it.Id || !it.Name) continue;
-    const tmdb = it.ProviderIds?.Tmdb ?? it.ProviderIds?.tmdb;
-    if (tmdb == null) continue;
-    out[String(tmdb)] = { itemId: String(it.Id), title: String(it.Name) };
-  }
-  return out;
-}
-
-/**
- * TMDB film id → the item in the library, cached and persisted.
- *
- * Persisted for the same reason as the series library: the load it avoids is
- * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
- * needed. Serves stale while refreshing behind, like everything else here.
- */
-export async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
-  if (_films && _films.expires > Date.now()) return _films.byTmdb;
-  if (_filmsInFlight) return _filmsInFlight;
-
-  if (!_films) {
-    try {
-      const row = await prisma.appConfig.findUnique({ where: { key: FILM_INDEX_KEY } });
-      if (row?.value) {
-        _films = { byTmdb: JSON.parse(row.value), expires: 0 };
-      }
-    } catch {
-      /* a missing or malformed row just means a cold fetch */
-    }
-  }
-
-  _filmsInFlight = (async () => {
-    try {
-      const byTmdb = await fetchFilmIndex(api);
-      _films = { byTmdb, expires: Date.now() + FILM_TTL_MS };
-      const value = JSON.stringify(byTmdb);
-      await prisma.appConfig.upsert({
-        where: { key: FILM_INDEX_KEY },
-        update: { value },
-        create: { key: FILM_INDEX_KEY, value },
-      });
-      console.log(`[jellyfin] film index: ${Object.keys(byTmdb).length} films with a TMDB id`);
-      return byTmdb;
-    } catch (err: any) {
-      console.warn('[jellyfin] film index refresh failed:', jellyfinErrorInfo(err));
-      // Degraded, not broken: an old copy still answers, and no copy at all just
-      // means films report as not held — which is what happened before this
-      // existed.
-      return _films?.byTmdb ?? {};
-    } finally {
-      _filmsInFlight = null;
-    }
-  })();
-
-  // Stale-while-revalidate: an expired copy is served immediately.
-  if (_films && Object.keys(_films.byTmdb).length) {
-    void _filmsInFlight;
-    return _films.byTmdb;
-  }
-  return _filmsInFlight;
-}
+// The film index lives in lib/jellyfinFilmIndex.ts — an id index, never a
+// matchable corpus. Imported above; warmed at boot in index.ts.
 
 /** Series count only — no items serialised, so it is cheap to ask often. */
 async function countSeries(api: Api): Promise<number | null> {
@@ -935,11 +1082,26 @@ function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
     availabilityCache.delete(availabilityCache.keys().next().value as number);
   }
   availabilityCache.set(mediaId, { data, expires: Date.now() + ttlMs, v: MATCH_ALGO_VERSION });
-  persistMapSoon(AVAILABILITY_KEY, () => {
-    const now = Date.now();
-    return [...availabilityCache].filter(([, v]) => v.expires > now && !v.data?.unknown);
-  });
+  persistMapSoon(AVAILABILITY_KEY, availabilitySnapshot);
 }
+
+/** What the persisted availability blob holds: live, non-unknown entries only. */
+function availabilitySnapshot() {
+  const now = Date.now();
+  return [...availabilityCache].filter(([, v]) => v.expires > now && !v.data?.unknown);
+}
+
+// The point of writing an identity override is to change the verdict. Leaving
+// the cached one in place would mean the correction appears to do nothing for
+// up to an hour — which reads exactly like the feature is broken. The persist
+// matters as much as the delete: without it the on-disk blob still holds the
+// old answer, and a restart inside the debounce window restores it, silently
+// reverting the correction. Registered here (not in the route handlers) so the
+// daily sweep's writes invalidate too.
+onIdentityChanged((id) => {
+  availabilityCache.delete(id);
+  persistMapSoon(AVAILABILITY_KEY, availabilitySnapshot);
+});
 
 /**
  * Seed the two in-memory caches from their persisted copies.

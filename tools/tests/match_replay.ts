@@ -7,6 +7,15 @@
 // it can gate every push where the live corpus check (7 minutes, ~440 Jellyfin
 // lookups) cannot.
 //
+// Scope, precisely: `matchSeries` with community-map ids only. The identity
+// LAYER — the override table, the remote resolver's positive-only ids, the
+// film-index short-circuit — sits above `matchSeries` and is NOT replayed
+// here; it is covered by the unit tests, `test_jellyfin`'s override round
+// trip, and `check_match_corpus.py` (which drives the full live path). Saying
+// "the shipping matcher" without that caveat overstated what a green replay
+// proves — the same trap as a diagnostic that doesn't send what the real
+// caller sends.
+//
 // It measures **matcher logic**, not current holdings. When the library changes
 // the fixture ages; that is expected and does not make the test wrong. Rebuild
 // deliberately with build_match_fixtures.py + `--write`, and read the diff.

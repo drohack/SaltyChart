@@ -54,10 +54,12 @@ export interface Identity {
   pending: boolean;
   /** What the resolver matched against, so a reviewer needn't re-search. */
   matchedTitle: string | null;
-  /** Every candidate the lookup returned, best-first. Drives the review picker. */
+  /** The lookup's top candidates (five), best-first. Drives the review picker. */
   candidates: RemoteChoice[] | null;
   /** How the id was arrived at, e.g. "remote: air date 3d". Shown when reviewing. */
   note: string | null;
+  /** Release year from whatever source named the identity. Display only. */
+  year: number | null;
 }
 
 /** One option the remote lookup returned. Mirrors `RemoteCandidate`. */
@@ -68,6 +70,14 @@ export interface RemoteChoice {
   matchedTitle: string;
   exact: boolean;
   year: number | null;
+  /** Present on rows stored since the lookup gained posters; older rows lack it. */
+  image?: string | null;
+  /**
+   * Day-precision premiere (`yyyy-mm-dd`). Present (possibly null) on rows
+   * stored since the resolver read dates; its ABSENCE is how the sweep's
+   * re-grade pass recognises a row decided blind to them.
+   */
+  premiereDate?: string | null;
 }
 
 const NONE: Identity = {
@@ -81,6 +91,7 @@ const NONE: Identity = {
   matchedTitle: null,
   candidates: null,
   note: null,
+  year: null,
 };
 
 /**
@@ -92,6 +103,33 @@ const NONE: Identity = {
  */
 let _overrides = new Map<number, Identity>();
 let _loaded = false;
+
+/**
+ * Run when an identity row is written or removed, with the anilistId.
+ *
+ * The availability cache in routes/jellyfin.ts embeds identity answers, so an
+ * identity write must bust (and re-persist) the cached verdict — the route
+ * handlers used to do this themselves, which left the daily sweep's writes
+ * uncovered and never rewrote the persisted blob, so a restart inside the
+ * debounce window resurrected the pre-correction verdict. The cache registers
+ * here instead; every writer — admin PUT/DELETE and all three sweep call
+ * sites — then notifies without knowing the cache exists.
+ */
+const _changeListeners: Array<(anilistId: number) => void> = [];
+
+export function onIdentityChanged(cb: (anilistId: number) => void): void {
+  _changeListeners.push(cb);
+}
+
+function notifyIdentityChanged(anilistId: number): void {
+  for (const cb of _changeListeners) {
+    try {
+      cb(anilistId);
+    } catch {
+      // A listener must never break the write it is reacting to.
+    }
+  }
+}
 
 export async function loadIdentityOverrides(): Promise<void> {
   try {
@@ -109,6 +147,7 @@ export async function loadIdentityOverrides(): Promise<void> {
         matchedTitle: r.matchedTitle ?? null,
         candidates: parseCandidates(r.candidates),
         note: r.note ?? null,
+        year: r.year ?? null,
       });
     }
     _overrides = next;
@@ -160,6 +199,7 @@ export function resolveIdentity(anilistId: number): Identity {
     matchedTitle: null,
     candidates: null,
     note: null,
+    year: null,
   };
 }
 
@@ -198,6 +238,8 @@ export async function setIdentityOverride(input: {
   matchedTitle?: string | null;
   candidates?: RemoteChoice[] | null;
   note?: string | null;
+  /** Release year from the source that named the identity. Display only. */
+  year?: number | null;
   /** Who wrote it: a human on /admin/matching, or the background resolver. */
   source?: 'manual' | 'remote';
 }): Promise<Identity> {
@@ -212,6 +254,7 @@ export async function setIdentityOverride(input: {
     matchedTitle: input.matchedTitle ?? null,
     candidates: input.candidates ? JSON.stringify(input.candidates) : null,
     note: input.note ?? null,
+    year: input.year ?? null,
     updatedAt: new Date(),
   };
   await prisma.seriesIdentity.upsert({
@@ -230,14 +273,61 @@ export async function setIdentityOverride(input: {
     matchedTitle: data.matchedTitle,
     candidates: input.candidates ?? null,
     note: data.note,
+    year: data.year,
   };
   _overrides.set(input.anilistId, identity);
+  notifyIdentityChanged(input.anilistId);
   return identity;
+}
+
+/** What a caller may send when editing an identity row. */
+export interface IdentityPatch {
+  anilistId: number;
+  tvdbId?: string | null;
+  tmdbId?: string | null;
+  tmdbKind?: 'tv' | 'movie' | null;
+  confirmed?: boolean;
+  rejected?: boolean;
+  pending?: boolean;
+  matchedTitle?: string | null;
+  candidates?: RemoteChoice[] | null;
+  note?: string | null;
+  year?: number | null;
+  source?: 'manual' | 'remote';
+}
+
+/**
+ * Merge an edit onto the stored row: absent means "keep what's stored",
+ * an explicit value (including null) means "change it".
+ *
+ * Only provenance/display fields are preserved — `note`, `matchedTitle`,
+ * `candidates`, `year`, `source`. Everything else passes through exactly as sent, because the review
+ * page always sends the id/flag fields it means. Without this, one click of
+ * Confirm relabelled a resolver id as a human decision (`source` defaulted back
+ * to 'manual') and erased which rung of the ladder accepted it (`note` → null)
+ * — the review page destroyed its own evidence.
+ *
+ * This lives here and NOT inside `setIdentityOverride`, whose absent-means-null
+ * contract the sweep depends on: its "no match" bookkeeping write omits
+ * `candidates` precisely because a row that means "we found nothing" must not
+ * keep a stale candidate list.
+ */
+export function mergeIdentityPatch(existing: Identity | null, patch: IdentityPatch): IdentityPatch {
+  if (!existing) return patch;
+  return {
+    ...patch,
+    note: patch.note !== undefined ? patch.note : existing.note,
+    matchedTitle: patch.matchedTitle !== undefined ? patch.matchedTitle : existing.matchedTitle,
+    candidates: patch.candidates !== undefined ? patch.candidates : existing.candidates,
+    year: patch.year !== undefined ? patch.year : existing.year,
+    source: patch.source !== undefined ? patch.source : (existing.source === 'remote' ? 'remote' : 'manual'),
+  };
 }
 
 export async function clearIdentityOverride(anilistId: number): Promise<void> {
   await prisma.seriesIdentity.deleteMany({ where: { anilistId } });
   _overrides.delete(anilistId);
+  notifyIdentityChanged(anilistId);
 }
 
 export async function listIdentityOverrides() {
@@ -249,11 +339,12 @@ export function identityOverrideCount(): number {
 }
 
 /**
- * The stored row exactly as written, pending included.
+ * The stored row exactly as written — bookkeeping rows included.
  *
- * `resolveIdentity` deliberately hides pending rows, because matching must not
- * use an unreviewed id. The admin page needs the opposite — it exists to *show*
- * those suggestions — so it reads through here instead.
+ * `resolveIdentity` withholds an id-less bookkeeping row so it can't shadow
+ * the community map (pending rows with ids it returns — they're positive-only).
+ * The admin page needs the raw truth either way: it exists to show what was
+ * recorded, so it reads through here instead.
  */
 export function rawIdentityOverride(anilistId: number): Identity | null {
   return _overrides.get(anilistId) ?? null;

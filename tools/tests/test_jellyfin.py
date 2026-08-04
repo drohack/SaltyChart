@@ -12,7 +12,7 @@ Usage:
 Exits 0 if all steps pass (or the configured-only steps were skipped),
 1 on any failure. Each progress line is self-contained per the global
 CLAUDE.md convention:
-  [k/8 Jellyfin] step name — detail
+  [k/12 Jellyfin] step name — detail
 """
 import argparse
 import atexit
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 
 
 def step(n: int, msg: str) -> None:
@@ -64,6 +64,48 @@ def current_season_year() -> tuple[str, int]:
     today = date.today()
     season = ("WINTER", "SPRING", "SUMMER", "FALL")[(today.month - 1) // 3]
     return season, today.year
+
+
+def persisted_verdict(mid: int):
+    """The persisted availability entry for one mediaId, or None.
+
+    Read-only URI open on purpose: the dev server owns this DB, and a plain
+    connect would contend with its writes. Same DB path convention as
+    build_match_fixtures.py (the nested prisma/prisma is real).
+    """
+    import json
+    import sqlite3
+    db = REPO / "backend" / "prisma" / "prisma" / "data.db"
+    try:
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return None
+    try:
+        row = con.execute(
+            "SELECT value FROM AppConfig WHERE key='jellyfinAvailability'").fetchone()
+    finally:
+        con.close()
+    if not row or not row[0]:
+        return None
+    try:
+        entries = json.loads(row[0])
+    except ValueError:
+        return None
+    for pair in entries:
+        if isinstance(pair, list) and len(pair) == 2 and int(pair[0]) == mid:
+            return pair[1]
+    return None
+
+
+def wait_for(cond, timeout_s: float) -> bool:
+    """Poll once a second — the backend's persist writes are debounced (~5s)."""
+    import time
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(1.0)
+    return bool(cond())
 
 
 def main():
@@ -111,6 +153,7 @@ def main():
     step(3, "config endpoints as non-admin — expect 403 ADMIN_REQUIRED")
     checks = [
         ("GET", "/api/jellyfin/config", None),
+        ("GET", "/api/jellyfin/identity/lookup?term=x", None),
         ("PUT", "/api/jellyfin/config", {"url": "http://example.invalid"}),
         ("POST", "/api/jellyfin/config/test", {"url": "http://example.invalid"}),
     ]
@@ -118,7 +161,7 @@ def main():
         r = requests.request(method, f"{backend}{path}", headers=auth, json=payload, timeout=5)
         if r.status_code != 403 or r.json().get("code") != "ADMIN_REQUIRED":
             fail(3, f"{method} {path}: expected 403 ADMIN_REQUIRED, got {r.status_code} {r.text[:160]}")
-    step(3, "PASS — all three admin endpoints gated")
+    step(3, "PASS — all four admin endpoints gated")
 
     # ───────── 4/8  Status shape ─────────
     step(4, "GET /api/jellyfin/status")
@@ -408,6 +451,27 @@ def main():
         step(11, "SKIP — no available show in this season to override")
     else:
         ah = {"Authorization": f"Bearer {admin}"}
+        # An empty URL in a config save must keep the stored one. The form
+        # starts blank when the config GET fails, and the URL used to be
+        # written unconditionally — so Save in that state replaced a working
+        # URL with the frontend's placeholder (or nothing), silently breaking
+        # playback for everyone. The API key always worked keep-on-empty; the
+        # URL must too.
+        cfg_before = requests.get(f"{backend}/api/jellyfin/config",
+                                  headers=ah, timeout=20).json()
+        w = requests.put(f"{backend}/api/jellyfin/config", headers=ah, timeout=20,
+                         json={"url": ""})
+        if w.status_code != 200:
+            fail(11, f"config save with an empty url errored: {w.status_code} {w.text[:120]}")
+        cfg_after = requests.get(f"{backend}/api/jellyfin/config",
+                                 headers=ah, timeout=20).json()
+        if cfg_after.get("url") != cfg_before.get("url"):
+            # Put the real URL back BEFORE failing — leaving it wiped would
+            # break the dev site and every later step of this run.
+            requests.put(f"{backend}/api/jellyfin/config", headers=ah, timeout=20,
+                         json={"url": cfg_before.get("url") or ""})
+            fail(11, "an empty URL in a config save overwrote the stored one — "
+                     f"{cfg_before.get('url')!r} became {cfg_after.get('url')!r}")
         mid = playable["mediaId"]
         titles = playable["titles"]
         body = {"mediaId": mid, "titles": titles, "fresh": True}
@@ -416,12 +480,34 @@ def main():
         if not before.get("available"):
             step(11, "SKIP — control show is not available to begin with")
         else:
+            # The `before` lookup cached its positive verdict and scheduled the
+            # debounced persist (~5s). Wait that timer OUT before writing the
+            # override — not merely for the entry to appear. Two vacuous passes
+            # hide in anything weaker: an unexpired entry from an earlier run
+            # satisfies a presence check instantly, and a persist still pending
+            # at override time flushes the in-memory deletion itself, so the
+            # blob loses the entry even on code that never persists deletions.
+            # (That combination let this assertion pass against the unfixed
+            # backend on its first run.) The bug is the override written AFTER
+            # the last persist fired — which is every real admin correction.
+            import time as _time
+            _time.sleep(7)
+            if (persisted_verdict(mid) or {}).get("expires", 0) <= _time.time() * 1000:
+                fail(11, "the persisted availability blob never recorded the control show "
+                         "— cannot prove an override's invalidation reaches disk")
             w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
                              json={"anilistId": mid, "tvdbId": "99999999", "confirmed": True,
                                    "note": "test_jellyfin step 11"})
             if w.status_code != 200:
                 fail(11, f"could not write the override: {w.status_code} {w.text[:160]}")
             try:
+                # In-memory deletion alone looked identical in every test until a
+                # restart: boot restored the pre-correction verdict from disk and
+                # the just-saved fix silently reverted for up to an hour.
+                if not wait_for(lambda: persisted_verdict(mid) is None, 15):
+                    fail(11, "stale availability verdict survives a restart — the override "
+                             "busted the in-memory cache but the persisted blob still holds "
+                             "the old answer")
                 after = requests.post(f"{backend}/api/jellyfin/availability",
                                       headers=auth, json=body, timeout=60).json()
                 if after.get("available"):
@@ -458,6 +544,31 @@ def main():
                              f"leaves the Watch button in place ({rej.get('libraryTitle')!r})")
             finally:
                 requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
+            # Confirm must not wipe provenance. The PUT merges onto the stored
+            # row — fields the client doesn't send keep their stored values.
+            # Before that, one click of Confirm relabelled a resolver id as
+            # 'manual' and nulled the rung note ("remote: exact title"), so the
+            # review page destroyed the very evidence it renders.
+            w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
+                             json={"anilistId": mid, "tvdbId": "99999999",
+                                   "source": "remote", "note": "remote: exact title"})
+            if w.status_code != 200:
+                fail(11, f"could not seed the remote-sourced row: {w.status_code} {w.text[:160]}")
+            try:
+                w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
+                                 json={"anilistId": mid, "tvdbId": "99999999",
+                                       "confirmed": True, "rejected": False, "pending": False})
+                if w.status_code != 200:
+                    fail(11, f"could not confirm the seeded row: {w.status_code} {w.text[:160]}")
+                got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                    timeout=20, json={"mediaIds": [mid]}).json()
+                row = (got.get("identities") or {}).get(str(mid)) or {}
+                if row.get("source") != "remote" or row.get("note") != "remote: exact title":
+                    fail(11, "Confirm must not wipe provenance — confirming a resolver row "
+                             f"relabelled it (source={row.get('source')!r}, "
+                             f"note={row.get('note')!r})")
+            finally:
+                requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
             # A film id must resolve against FILMS, and — when we don't hold the
             # film — must NOT fall through to title-matching a list that contains
             # only TV series. That fall-through is where "The Last Blossom" ->
@@ -486,7 +597,52 @@ def main():
             finally:
                 requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
             step(11, "PASS — wrong id, outright rejection and an unheld film all flip the "
-                     "verdict, and clearing restores")
+                     "verdict, clearing restores, and Confirm keeps provenance")
+
+    # ───────── 12/12  The admin lookup names what an id points at ─────────
+    #
+    # Jellyfin's remote search returns TMDB ids only on this server (measured:
+    # every stored resolver candidate), so the lookup's whole value is the join
+    # it performs: a name search offers id-bearing picks, and a pasted
+    # tvdb:<id> comes back NAMED, tagged with what the library holds under it,
+    # and carrying its TMDB sibling. Without that, /admin/matching is back to
+    # a human keying numbers blind.
+    step(12, "the admin lookup names what an id points at")
+    if not admin:
+        step(12, "SKIP — could not sign an admin token (node or backend/.env missing)")
+    elif not configured or not playable:
+        step(12, "SKIP — Jellyfin unconfigured or nothing in the season is held")
+    else:
+        ah = {"Authorization": f"Bearer {admin}"}
+        r = requests.get(f"{backend}/api/jellyfin/identity/lookup",
+                         params={"term": "One Piece"}, headers=ah, timeout=90)
+        if r.status_code != 200:
+            fail(12, f"name lookup errored: {r.status_code} {r.text[:160]}")
+        results = r.json().get("results") or []
+        if not any(x.get("tmdbId") for x in results):
+            fail(12, "a name search returned no id-bearing results — the lookup "
+                     "can only offer picks it can act on")
+        ident = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                              timeout=20, json={"mediaIds": [playable["mediaId"]]}).json()
+        row = (ident.get("identities") or {}).get(str(playable["mediaId"])) or {}
+        tvdb = row.get("tvdbId")
+        if not tvdb:
+            step(12, "PASS — name search offers id-bearing picks (the control show "
+                     "has no tvdb id, so the paste path had no subject this run)")
+        else:
+            r = requests.get(f"{backend}/api/jellyfin/identity/lookup",
+                             params={"term": f"tvdb:{tvdb}"}, headers=ah, timeout=90)
+            if r.status_code != 200:
+                fail(12, f"id lookup errored: {r.status_code} {r.text[:160]}")
+            one = ((r.json().get("results") or []) + [{}])[0]
+            if not (one.get("library") or {}).get("title"):
+                fail(12, "id paste did not name the library match — the admin is "
+                         "agreeing to a bare number again")
+            if not one.get("tmdbId"):
+                fail(12, "id paste did not cross-walk to its TMDB sibling — the "
+                         "identity arrives half-filled")
+            step(12, f"PASS — name search offers ids, and tvdb:{tvdb} came back as "
+                     f"{(one.get('library') or {}).get('title')!r} with TMDB {one.get('tmdbId')}")
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed — OK", flush=True)
 

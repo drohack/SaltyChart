@@ -243,9 +243,40 @@ let autoRename = false;
     } catch {}
   }
 
+  /**
+   * True once the sidebar state reflects a choice — this session's toggle, or
+   * a stored one honoured by loadPrefs. Only then may it be persisted:
+   * auto-saving the width default recorded a plain desktop visit as "chose
+   * expanded", and the next phone load honoured that over the small-screen
+   * default — the full-screen-sidebar bug, back for anyone who had ever
+   * loaded Home on a desktop first.
+   */
+  let sidebarChoiceMade = false;
+  let _sidebarPrev: boolean | null = null;
+  $: {
+    if (_sidebarPrev === null) _sidebarPrev = sidebarCollapsed;
+    else if (sidebarCollapsed !== _sidebarPrev) {
+      _sidebarPrev = sidebarCollapsed;
+      sidebarChoiceMade = true;
+    }
+  }
+
   function savePrefs(user: string | null) {
     try {
-      const obj = { hideSequels, hideInList, autoRename, hideAdult, catchUpMode, catchUpUser, savedFilters, sidebarCollapsed };
+      const obj: Record<string, unknown> = {
+        hideSequels, hideInList, autoRename, hideAdult, catchUpMode, catchUpUser, savedFilters,
+      };
+      if (sidebarChoiceMade) {
+        obj.sidebarCollapsed = sidebarCollapsed;
+      } else {
+        // Carry an earlier session's explicit choice through untouched rather
+        // than dropping it — this function rewrites the whole blob.
+        const raw = localStorage.getItem(prefsKey(user));
+        const prev = raw ? JSON.parse(raw) : null;
+        if (prev && typeof prev.sidebarCollapsed === 'boolean') {
+          obj.sidebarCollapsed = prev.sidebarCollapsed;
+        }
+      }
       localStorage.setItem(prefsKey(user), JSON.stringify(obj));
     } catch {}
   }

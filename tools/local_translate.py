@@ -205,7 +205,7 @@ def next_season_info() -> tuple:
 def get_seasons_to_process() -> list:
     """Return [(season, year), ...] covering prev, current-displayed, and next season.
 
-    The app defaults to showing the upcoming season 76 days before it starts,
+    The app defaults to showing the upcoming season 50 days before it starts,
     so users browse 3 seasons of content. This ensures all of them are cached.
     """
     current, year = next_season_info()

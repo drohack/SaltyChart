@@ -29,8 +29,11 @@ export interface DatedEpisode {
  * Season 0 is skipped: specials' dates cluster around the seasons they ship
  * with and would otherwise win ties against the real episode.
  *
- * Ties go to the *earlier* episode — a same-day double premiere should start at
- * the first of the two, not whichever the list happened to yield last.
+ * Ties go to the *earlier* episode by (season, episode) number — enforced here,
+ * not assumed of the input, because Jellyfin's episode order is not a contract
+ * (the tier-2 picker in routes/jellyfin.ts has always sorted before trusting
+ * it) and a same-day double premiere would otherwise open Watch on whichever
+ * episode the response happened to list first.
  */
 export function closestDatedEpisode<T extends DatedEpisode>(
   episodes: T[],
@@ -43,12 +46,20 @@ export function closestDatedEpisode<T extends DatedEpisode>(
     const t = Date.parse(e.PremiereDate);
     if (Number.isNaN(t)) continue;
     const delta = Math.abs(t - airDateMs);
-    if (delta < bestDelta) {
+    if (delta < bestDelta || (delta === bestDelta && best !== null && earlier(e, best))) {
       best = e;
       bestDelta = delta;
     }
   }
   return best ? { episode: best, deltaMs: bestDelta } : null;
+}
+
+/** Strictly earlier by (season, episode) number. */
+function earlier(a: DatedEpisode, b: DatedEpisode): boolean {
+  const sa = a.ParentIndexNumber ?? 0;
+  const sb = b.ParentIndexNumber ?? 0;
+  if (sa !== sb) return sa < sb;
+  return (a.IndexNumber ?? 0) < (b.IndexNumber ?? 0);
 }
 
 /**

@@ -235,7 +235,7 @@ Stored per-user in the Settings table.
 
 **Season default look-ahead**
 - On first load the app now defaults to the *upcoming* season if it starts
-  within 76 days (~2 weeks after the current season's first episode airs),
+  within 50 days (roughly six weeks into the current season),
   so users land on next-season trailers rather than what's already airing.
 - Fixed the "X days until next season" countdown which was miscalculating
   season start dates (was using Mar/Jun/Sep/Dec instead of Apr/Jul/Oct/Jan).

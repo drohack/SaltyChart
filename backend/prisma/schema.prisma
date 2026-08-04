@@ -130,9 +130,12 @@ model SeriesIdentity {
   /// The title the resolver matched against, so a reviewer can judge the
   /// suggestion without repeating the search.
   matchedTitle String?
-  /// JSON array of every candidate the lookup returned, best-first, so the
+  /// JSON array of the lookup's top candidates (five — TMDB orders by
+  /// relevance and the tail is noise; see `searchOne`), best-first, so the
   /// review page can offer alternatives rather than a yes/no on the first hit.
   candidates   String?
+  /// Release year from the source that named the identity. Display only.
+  year      Int?
   note      String?
   updatedAt DateTime @default(now())
 }

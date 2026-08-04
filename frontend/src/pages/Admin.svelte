@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { authToken } from '../stores/auth';
   import { isAdmin } from '../stores/jellyfin';
-  import { apiJson, QUICK } from '../lib/remote';
+  import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
   import AdminTabs from '../components/AdminTabs.svelte';
 
   // ── Jellyfin config ─────────────────────────────────────────────────
@@ -29,10 +29,8 @@
       }
     | null = null;
 
-  /** Shown as the URL placeholder, and used when the box is left blank. */
+  /** Placeholder text only — a blank box means "keep the stored URL", enforced server-side. */
   const DEFAULT_JF_URL = 'http://192.168.1.2:8096';
-  /** Last saved URL, so a blank box can fall back to it rather than clearing. */
-  let jfStoredUrl = '';
 
   /** Set when the saved config couldn't be read — distinct from "nothing saved". */
   let jfLoadError = '';
@@ -46,8 +44,7 @@
     try {
       const data = await apiJson<any>('/api/jellyfin/config', { headers: auth },
                                       { label: 'jellyfin/config', timeoutMs: QUICK });
-      jfStoredUrl = data.url ?? '';
-      jfUrl = jfStoredUrl;
+      jfUrl = data.url ?? '';
       jfKeySet = !!data.apiKeySet;
       jfUserId = data.userId ?? '';
       jfLoadError = '';
@@ -89,18 +86,26 @@
     jfTesting = true;
     jfTestResult = null;
     try {
-      const res = await fetch('/api/jellyfin/config/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-        body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined }),
-      });
-      jfTestResult = await res.json();
+      // apiJson, not bare fetch: this page is the one most likely to face an
+      // unresponsive backend, and the button used to spin forever on one. The
+      // test endpoint always answers 200 with { ok, ... }. 30s sits above the
+      // backend's own probe timeout, so a slow Jellyfin is reported by the
+      // server's answer rather than cut off by our abort.
+      jfTestResult = await apiJson<NonNullable<typeof jfTestResult>>(
+        '/api/jellyfin/config/test',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+          body: JSON.stringify({ url: jfUrl, apiKey: jfKey || undefined }),
+        },
+        { label: 'jellyfin/config-test', timeoutMs: 30_000 }
+      );
       // A green test means the stored credentials can reach the server, so the
       // account list is worth (re)fetching — otherwise you'd have to save and
       // reload the page before the picker had anything in it.
       if (jfTestResult?.ok) await loadUsers();
     } catch {
-      jfTestResult = { ok: false, error: 'Request failed — is the backend up?' };
+      jfTestResult = { ok: false, error: "Couldn't reach the backend to run the test." };
     } finally {
       jfTesting = false;
     }
@@ -111,18 +116,17 @@
     jfSaveMsg = '';
     jfSaveErr = '';
     try {
-      // A blank URL means "I didn't touch this", not "clear it" — saving to
-      // change only the playback account should not wipe the server address.
-      // Fall back to whatever is stored, then to the placeholder default.
-      const url = jfUrl.trim() || jfStoredUrl || DEFAULT_JF_URL;
-      jfUrl = url;
-      const res = await fetch('/api/jellyfin/config', {
+      // A blank URL means "keep the stored one" — enforced SERVER-side, the
+      // same way a blank key is. The old fallback chain here ended at the
+      // hardcoded placeholder, so Save on a form left blank by a failed config
+      // read could overwrite a working address with the default.
+      const res = await apiFetch('/api/jellyfin/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
         // `apiKey: undefined` is the documented "keep the stored key" signal —
         // the key is never sent to the browser, so a blank box means unchanged.
-        body: JSON.stringify({ url, apiKey: jfKey || undefined, userId: jfUserId }),
-      });
+        body: JSON.stringify({ url: jfUrl.trim(), apiKey: jfKey || undefined, userId: jfUserId }),
+      }, { label: 'jellyfin/config-save', timeoutMs: QUICK });
       const data = await res.json();
       if (res.ok) {
         jfSaveMsg = 'Saved.';
@@ -130,14 +134,16 @@
           jfKeySet = true;
           jfKey = '';
         }
-        // Now that the URL/key are stored, /users can actually answer — so the
-        // picker fills in without a page reload and the account can be chosen.
-        await loadUsers();
+        // Re-read the stored config: fills a blank URL box back in with what
+        // the server kept, and refreshes the picker now that /users can answer.
+        await loadConfig();
       } else {
         jfSaveErr = data?.error ?? 'Save failed.';
       }
-    } catch {
-      jfSaveErr = 'Network error.';
+    } catch (e) {
+      jfSaveErr = (e as ApiError)?.unreachable
+        ? "Couldn't reach the backend — nothing was saved."
+        : 'Save failed.';
     } finally {
       jfSaving = false;
     }
@@ -242,7 +248,10 @@
             {#if jfTesting}<span class="loading loading-spinner loading-xs"></span>{/if}
             Test Connection
           </button>
-          <button class="btn btn-primary btn-sm" on:click={jfSave} disabled={jfSaving}>
+          <!-- Saving over a config that couldn't be read is how a placeholder
+               once replaced the real URL; Retry the load first. The server-side
+               keep-on-empty makes this belt-and-braces, not the only guard. -->
+          <button class="btn btn-primary btn-sm" on:click={jfSave} disabled={jfSaving || !!jfLoadError}>
             {#if jfSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
             Save
           </button>

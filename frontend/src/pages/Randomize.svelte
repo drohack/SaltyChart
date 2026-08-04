@@ -178,7 +178,13 @@ $: _lang = $options.titleLanguage;
       );
       if (season !== forSeason || year !== forYear) return;
       const next = new Map(libraryAvailability);
-      for (const [id, info] of results) next.set(id, info.available);
+      // Skip notAired here too, not only in the hide filter below: this map
+      // drives the button's enabled state and tooltip, and recording an
+      // unaired show as `false` lit "Hide Not in Library" on seasons where
+      // nothing had been checked against the library at all.
+      for (const [id, info] of results) {
+        if (!info.notAired) next.set(id, info.available);
+      }
       libraryAvailability = next;
       // Never hide on an inconclusive answer — a timeout must not make
       // shows disappear from the wheel. An `unknown` verdict never reaches
@@ -611,8 +617,10 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
       .then((results) => {
         for (const [mediaId, info] of results) {
           // Only record a definite answer; `unknown` means the server didn't
-          // reply, and must never be read as "not in the library".
-          if (!info.unknown) recordAvailability(mediaId, info.available);
+          // reply, and `notAired` means "can't exist yet" — neither may be read
+          // as "not in the library". Recording notAired as false lit the Hide
+          // button's enabled state on seasons nothing had checked at all.
+          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);
         }
       })
       .catch(() => {});
@@ -1836,7 +1844,7 @@ $: {
             </ul>
           </div>
         {/if}
-        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={selected.title} class="w-56 mx-auto mb-6" />
+        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={getDisplayTitle(selected)} class="w-56 mx-auto mb-6" />
         {#if watchInfo?.available}
           <div class="flex flex-col items-center gap-1 mb-4">
             <!-- The player chunk is ~700 KB (1.6 MB unminified in dev), so on

@@ -23,6 +23,8 @@ export interface MatchableSeries {
   norms: string[];
   /** From the library's own metadata, when it has one. */
   tvdbId?: string | null;
+  /** Display only (the admin lookup shows it); never matched on. */
+  year?: number | null;
   /**
    * Also from the library's metadata. Jellyfin carries `Tmdb` on ~99% of both
    * series and movies, and it is the only usable id for films — TVDB is a *TV*

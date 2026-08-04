@@ -254,6 +254,60 @@ export function anilistTvdbMapSize(): number {
 }
 
 /** Test seam: populate the maps without a 7.5 MB download. */
+/** What a cross-walk resolves to: the same identity named in both id spaces. */
+export interface CrosswalkResult {
+  tvdbId: string | null;
+  tmdbId: string | null;
+  tmdbKind: 'tv' | 'movie' | null;
+}
+
+/**
+ * Join tvdb↔tmdb THROUGH the anilist key.
+ *
+ * Jellyfin's remote search returns TMDB ids only on this deployment (measured:
+ * every stored resolver candidate), while corrections sometimes arrive as
+ * pasted TVDB ids — this and the library's own metadata are the two free
+ * translations between the spaces. Several anilist rows can share one TVDB id
+ * (seasons of one series), so the scan continues until a row actually carries
+ * the missing sibling rather than trusting whichever row sorts first. Linear
+ * over ~7k entries — admin-endpoint traffic only, never the viewer path.
+ */
+export function crosswalkIds(input: {
+  tvdbId?: string | null;
+  tmdbId?: string | null;
+  tmdbKind?: 'tv' | 'movie' | null;
+}): CrosswalkResult | null {
+  const wantTvdb = input.tvdbId ? String(input.tvdbId) : null;
+  const wantTmdb = input.tmdbId ? String(input.tmdbId) : null;
+
+  if (wantTvdb) {
+    let known = false;
+    for (const [anilistId, tvdb] of Object.entries(_map)) {
+      if (tvdb !== wantTvdb) continue;
+      known = true;
+      const ref = tmdbRefForAnilist(anilistId);
+      if (ref) return { tvdbId: wantTvdb, tmdbId: ref.id, tmdbKind: ref.kind };
+    }
+    return known ? { tvdbId: wantTvdb, tmdbId: null, tmdbKind: null } : null;
+  }
+
+  if (wantTmdb) {
+    let hit: CrosswalkResult | null = null;
+    for (const anilistId of Object.keys(_tmdb)) {
+      const ref = tmdbRefForAnilist(anilistId);
+      if (!ref || ref.id !== wantTmdb) continue;
+      // TMDB numbers films and shows independently — never cross namespaces.
+      if (input.tmdbKind && ref.kind !== input.tmdbKind) continue;
+      const tvdbId = _map[anilistId] ?? null;
+      hit = { tvdbId, tmdbId: wantTmdb, tmdbKind: ref.kind };
+      if (tvdbId) return hit;
+    }
+    return hit;
+  }
+
+  return null;
+}
+
 export function __setMapsForTest(
   tvdb: Record<string, string>,
   tmdb: Record<string, string>

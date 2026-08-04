@@ -96,6 +96,15 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+    # Sweep out the previous runs' throwaway users before creating this run's.
+    # Left alone they accumulate (~90 at one point), and every one shows up
+    # auto-checked in Randomize's "Nicknames from" panel like a real person.
+    try:
+        import cleanup_users
+        cleanup_users.cleanup()
+    except Exception as e:
+        print(f"cleanup_users: skipped ({e})", flush=True)
+
     # Warm the season cache first. Several checks below read `/api/anime`, and
     # a cold key is 8-12 AniList requests against a 30/min per-IP limit — start
     # cold and the run can trip the limiter before its first assertion.
