@@ -122,7 +122,12 @@ if (typeof localStorage !== 'undefined') {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch current season/year from AniList GraphQL (once per session)
+// Fetch current season/year from AniList GraphQL (once per session).
+//
+// ⚠ Calls graphql.anilist.co DIRECTLY from the browser — invisible to every
+// backend rate-limit control, because the backend never sees it. It currently
+// has no callers. Don't wire it up; route it through /api/anime if the need
+// returns.
 // ---------------------------------------------------------------------------
 
 let _apiPromise: Promise<{ season: Season; seasonYear: number }> | null = null;

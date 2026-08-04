@@ -136,17 +136,13 @@ export function verdictFor(input: {
   premiereDeltaMs: number | null;
   /**
    * |nearest TVDB SEASON premiere − entry premiere| for the candidate, from
-   * skyhook's schedule (seasonPremiereDelta). Episode evidence for seasons we
-   * do NOT hold — which is why it sits above the held-library check: held
-   * episodes are naturally stale for a season nobody has grabbed yet, and
-   * that staleness rejected Ranma S3's correct parent at 287d while TVDB had
-   * S3E1 on the entry's premiere day.
+   * skyhook's schedule (seasonPremiereDelta) — why it outranks the
+   * held-library check is at rung B0 below.
    */
   tvdbSeasonDeltaMs: number | null;
   /**
-   * TVDB lists a season newer than its newest dated one (Frieren S3 before
-   * scheduling). A held-library rejection is premature while this is true —
-   * the entry is probably that very season.
+   * The Frieren-S3 shape — see hasUndatedFutureSeason in skyhookIdentity.
+   * A held-library rejection is premature while this is true.
    */
   tvdbHasUndatedFutureSeason: boolean;
 }): { verdict: Verdict; rung: string | null } {
@@ -175,8 +171,7 @@ export function verdictFor(input: {
   // B/C: we hold it, so the entry's own episode is datable — and it decides.
   // Above the premiere rungs on purpose: a held sequel's SERIES premiere is
   // years off (Bananya), but its episode lands within a day. The one soften:
-  // while TVDB lists an undated future season, "no held episode is near the
-  // premiere" is exactly what a not-yet-grabbed new season looks like, so it
+  // an undated future season (hasUndatedFutureSeason in skyhookIdentity)
   // queues for a human instead of rejecting (Frieren S3 at 553d) — One Piece
   // Fan Letter (329d) and Babylon 5 (9,441d) carry no such season and still
   // reject.
@@ -211,22 +206,18 @@ export function verdictFor(input: {
 
 /**
  * NOTE: there was an `isRelation` guard here, rejecting any result whose title
- * equalled a work AniList calls related (PARENT/PREQUEL/...). **It was wrong and
- * was removed**, and the reason is worth keeping.
- *
- * It was built from four eyeballed samples. Measured properly against the real
- * library, mapping a sequel to its *parent series* is CORRECT — TVDB and TMDB
- * both put seasons inside one series entry — and the air-date tier then picks
- * the episode. The guard rejected "Bananya Around the World" -> Bananya, which
- * lands on S3E1, one day from its premiere. The genuinely wrong cases it caught
- * (both One Piece) are caught anyway by air date, at 329 and 343 days.
+ * equalled a work AniList calls related (PARENT/PREQUEL/...). **It was wrong
+ * and was removed.** It was built from four eyeballed samples; measured
+ * properly, mapping a sequel to its *parent series* is CORRECT and the guard
+ * rejected right answers while air date already caught the wrong ones — see
+ * the ladder table above.
  *
  * Relation type does not separate right from wrong here. Air date does, by three
  * orders of magnitude. Do not reintroduce a title/relation heuristic without
  * re-measuring.
  */
 
-/** Search results carry PremiereDate more reliably than ProductionYear. */
+/** ProductionYear when present; PremiereDate is the fallback that fills the rest. */
 function yearOf(r: any): number | null {
   if (typeof r?.ProductionYear === 'number') return r.ProductionYear;
   const t = r?.PremiereDate ? Date.parse(r.PremiereDate) : NaN;
@@ -382,15 +373,6 @@ export async function lookupByProviderId(
   return null;
 }
 
-/**
- * Resolve one entry against Jellyfin's metadata providers.
- *
- * **Both search kinds are tried**, because AniList's `format` does not predict
- * how TMDB files a work: a SPECIAL may be a theatrical short, an OVA may be a
- * film, and a MOVIE may exist only inside a series entry. The format picks which
- * to ask *first*, nothing more — and the second call is skipped when the first
- * already returned an exact title match, so the common case stays one request.
- */
 export interface RemoteResult {
   /** The candidate we would act on. */
   chosen: RemoteCandidate;
@@ -417,9 +399,9 @@ export interface TvdbEvidence {
 /**
  * TVDB-native candidates for a series entry, via skyhook — with schedule
  * evidence for the top matches. Series-first on purpose: TVDB ids are what
- * Sonarr acts on, and the cross-walk from a TMDB-only result is exactly what
- * failed for the 125 stored rows this closes. Bounded per row: one search per
- * title variant, episodes for the top two related candidates only.
+ * Sonarr acts on (the measurements are in skyhookIdentity.ts's header).
+ * Bounded per row: one search per title variant, episodes for the top two
+ * related candidates only.
  */
 async function searchSkyhookCandidates(
   q: RemoteQuery
@@ -466,9 +448,8 @@ async function searchSkyhookCandidates(
     });
   }
   // A candidate whose season premiere lands within tolerance is the strongest
-  // evidence in the list — front it so the fallback pick takes it (a sequel's
-  // parent is never "exact" and its firstAired is years off, so none of
-  // pickCandidate's dated/exact ranks would otherwise catch it).
+  // evidence in the list — front it so the fallback pick takes it (why
+  // pickCandidate's ranks would miss it: see `settled` in resolveRemoteIdentity).
   const within = (c: RemoteCandidate) => {
     const ev = evidence.get(c.tvdbId ?? '');
     return ev?.seasonDeltaMs != null && ev.seasonDeltaMs <= AIR_DATE_TOLERANCE_MS ? 0 : 1;
@@ -477,6 +458,18 @@ async function searchSkyhookCandidates(
   return { cands, evidence };
 }
 
+/**
+ * Resolve one entry against the remote metadata sources.
+ *
+ * Series go to skyhook/TVDB first (see searchSkyhookCandidates) — 1-3 searches
+ * whose evidence can settle the entry outright. Only then does the
+ * Jellyfin/TMDB fallback run, where **both search kinds are tried**, because
+ * AniList's `format` does not predict how TMDB files a work: a SPECIAL may be
+ * a theatrical short, an OVA may be a film, and a MOVIE may exist only inside
+ * a series entry. The format picks which to ask *first*, nothing more — and
+ * within that fallback the search stops early on an exact title match the
+ * premiere date doesn't refute.
+ */
 export async function resolveRemoteIdentity(
   api: Api,
   q: RemoteQuery
@@ -683,12 +676,6 @@ interface CachedShow {
   relations?: { edges?: { node?: { title?: Record<string, string | null> } }[] } | null;
 }
 
-/**
- * Try to give an id to every cached entry that hasn't got one.
- *
- * Never throws: this is background work, and a failure must leave matching
- * exactly as it was.
- */
 /** A lookup term the way Sonarr reads one: a name, or a prefixed provider id. */
 export type LookupTerm =
   | { kind: 'name'; name: string }
@@ -792,10 +779,9 @@ async function saveSweepStatus(s: SweepStatus): Promise<void> {
 /**
  * TVDB schedule evidence for the candidate being judged. The resolver's own
  * map answers when the candidate came from skyhook; otherwise it is fetched
- * lazily — and only for the reject-shaped held case, because that is the one
- * place the schedule changes a verdict (a held series whose newest held
- * episode is stale for the entry's premiere is what a not-yet-grabbed new
- * season looks like). Memoised inside skyhookEpisodes, degrades to nothing.
+ * lazily — and only for the reject-shaped held case, the one place the
+ * schedule changes a verdict (see hasUndatedFutureSeason in skyhookIdentity).
+ * Memoised inside skyhookEpisodes, degrades to nothing.
  */
 async function tvdbEvidenceFor(
   fromResolver: Map<string, TvdbEvidence> | undefined,
@@ -943,8 +929,8 @@ export async function regradeStoredRows(
 
 /**
  * Fill the TVDB half of rows the remote search could only give TMDB for —
- * the population a Sonarr request flow needs (125 rows when this shipped;
- * measured: skyhook date-verifies 37 of them and exact-titles 18 more).
+ * the population a Sonarr request flow needs (the 125-row measurement lives
+ * in skyhookIdentity.ts's header).
  *
  * Self-throttling without a marker: every attempt bumps `updatedAt`, and rows
  * younger than `retryAfterFor` are skipped — the same schedule the main sweep
@@ -982,7 +968,7 @@ export async function fillTvdbGaps(
     const exactHit = sky.cands.find((c) => c.exact);
     const hit = seasonHit ?? firstHit ?? exactHit ?? null;
 
-    // Merge the TVDB candidates into the stored picker list either way.
+    // Merged either way — the TVDB fill must not lose the stored picker list.
     const stored = ex.candidates ?? [];
     const have = new Set(stored.map((c) => c.tvdbId).filter(Boolean));
     const mergedCands = [...stored, ...sky.cands.filter((c) => c.tvdbId && !have.has(c.tvdbId))].slice(0, 8);
@@ -1021,6 +1007,12 @@ export async function fillTvdbGaps(
   return { tried, filled, verified };
 }
 
+/**
+ * Try to give an id to every cached entry that hasn't got one.
+ *
+ * Never throws: this is background work, and a failure must leave matching
+ * exactly as it was.
+ */
 export async function runRemoteIdentitySweep(
   api: Api | null,
   library: MatchableSeries[]
@@ -1106,10 +1098,10 @@ export async function runRemoteIdentitySweep(
 
     // Backfill rows written before ids were completed at write time: a stored
     // remote row missing one id space gains its sibling once the library or
-    // the community map has learned it (a Sonarr user expects series rows to
-    // carry TVDB ids, and the remote search only ever supplied TMDB). Pure
-    // in-memory joins — cheap, idempotent, and the merge preserves the row's
-    // provenance while the identity-change hook busts any cached verdict.
+    // the community map has learned it — complete the ids (see
+    // completeIdentityIds). Pure in-memory joins — cheap, idempotent, and the
+    // merge preserves the row's provenance while the identity-change hook
+    // busts any cached verdict.
     let backfilled = 0;
     const stored = await prisma.seriesIdentity.findMany({
       where: { source: 'remote' },
@@ -1180,8 +1172,6 @@ export async function runRemoteIdentitySweep(
       console.log(`[identity] dated ${dated} legacy row(s) via remote lookup`);
     }
 
-    // Re-grade rows stored before candidates carried premiere dates — capped
-    // and self-terminating like the passes above.
     const rg = await regradeStoredRows(api, library, entryById, MAX_PER_RUN);
     if (rg.regraded) {
       console.log(
@@ -1190,7 +1180,6 @@ export async function runRemoteIdentitySweep(
       );
     }
 
-    // Fill the TVDB half of TMDB-only rows from skyhook — capped, retry-tiered.
     const gaps = await fillTvdbGaps(entryById, MAX_PER_RUN);
     if (gaps.tried) {
       console.log(
@@ -1232,8 +1221,8 @@ export async function runRemoteIdentitySweep(
         });
         if (verdict === 'reject') {
           // We hold this series and its episodes are nowhere near the entry's
-          // premiere, so the candidate is a different work. Record only that we
-          // looked, so the next sweep spends its budget elsewhere.
+          // premiere, so the candidate is a different work. Record only that
+          // we looked.
           rejected++;
           await setIdentityOverride({
             anilistId: q.anilistId, tvdbId: null, tmdbId: null, tmdbKind: null,
@@ -1243,9 +1232,7 @@ export async function runRemoteIdentitySweep(
           await new Promise((r) => setTimeout(r, PACE_MS));
           continue;
         }
-        // Complete the ids before storing: the search returned TMDB only, but
-        // the library item (when held) and the community map both know the
-        // TVDB sibling — a Sonarr user expects series rows to carry it.
+        // Complete the ids before storing (see completeIdentityIds).
         const full = completeIdentityIds(hit, inLib ?? null);
         await setIdentityOverride({
           anilistId: q.anilistId,

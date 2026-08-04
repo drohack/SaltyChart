@@ -130,7 +130,9 @@ app.use(generalLimiter);
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dev-only helper: ensure `WatchList` table exists.
+// Runtime schema bootstrap — all environments. Production does NOT run
+// `prisma migrate`; this raw-SQL path creates tables, adds missing columns,
+// builds indexes and drops retired tables idempotently on every startup.
 // ─────────────────────────────────────────────────────────────────────────────
 async function ensureDatabaseSchema() {
   // Re-use the singleton Prisma instance so we keep a single connection pool
@@ -196,11 +198,6 @@ async function ensureDatabaseSchema() {
           FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
         );
       `);
-
-      // ────────────────────────────────────────────────────────────
-      // Schema upgrade: add `customName` column if missing
-      // ────────────────────────────────────────────────────────────
-      // (Column migration handled globally below)
 
       await prisma.$executeRawUnsafe(`
         CREATE UNIQUE INDEX IF NOT EXISTS "WatchList_userId_season_year_mediaId" 
@@ -336,10 +333,14 @@ async function ensureDatabaseSchema() {
     }
     // ----------------------- SubtitleCache table -------------------------
     // Caches translated subtitles and English-subtitle check results per YouTube video.
-    // - hasEnglishSubs: cached result of /check (null = not checked)
+    // - hasEnglishSubs: cached result of /check (null = not checked); negatives
+    //   re-checked after 7 days via lastEnCheckAt (added below)
     // - segments: JSON array of {start, end, text} objects (null = not translated)
-    // - modelName: Whisper model used, for cache invalidation if model changes
-    // - subtitlesDisabled: true if a user dismissed our subtitles (e.g. burned-in subs)
+    // - modelName: Whisper model that produced the segments — drives the
+    //   rank-based upgrade in routes/translate.ts (uploads only ever upgrade)
+    // - subtitlesDisabled: true if a user dismissed our subtitles
+    // - hasBurnedInSubs: OCR-detected burned-in subs (added below); frontend
+    //   defaults the overlay off for those
     const subtitleCacheRows: Array<{ name: string }> = await prisma.$queryRaw`
       SELECT name FROM sqlite_master WHERE type='table' AND name='SubtitleCache' LIMIT 1;
     `;
@@ -688,7 +689,7 @@ ensureDatabaseSchema().then(() => {
   // then hourly after that.
   setTimeout(checkBatchSchedule, 10_000); // 10s after startup
   setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
-  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, 50 days before season, current season only)');
+  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, within 50 days of the NEXT season; batch covers the displayed season)');
 
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];

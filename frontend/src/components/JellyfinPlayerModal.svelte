@@ -5,7 +5,6 @@
   import {
     api,
     defaultSubtitleIndex,
-    isAss as isAssTrack,
     castReady,
     loadVideoJs,
     playbackInfo,
@@ -82,10 +81,6 @@
   function sourceUrl(): string {
     return api(`/stream${transcodingUrl.replace(/^\/+/, '/')}`);
   }
-
-  // Track choice and ASS detection live in the prewarm module so the pop-up
-  // warms exactly the track the player will end up showing.
-  const isAss = (index: number) => isAssTrack(subStreams, index);
 
   function trackLabel(s: SubStream): string {
     const name = s.displayTitle || s.title || s.language || 'Unknown';
@@ -389,17 +384,6 @@
   }
 
   /**
-   * Rebuild the stream around a fresh session, keeping the viewer's position.
-   *
-   * Jellyfin restarts its ffmpeg wherever an out-of-range segment is asked for,
-   * which is why seeking needs no client-side machinery — but on a
-   * remux/direct-stream job that repositioning races its own segment cleanup
-   * (jellyfin#16608), and a run of quick scrubs can leave the session serving
-   * nothing at any offset. VHS will retry that playlist forever, so the picture
-   * simply stays black until someone closes the modal. Asking for a new
-   * playSessionId costs one round trip and gets the viewer moving again.
-   */
-  /**
    * Tell Jellyfin to tear a transcode down.
    *
    * Needed on two paths, and it is the same call for both: closing the modal,
@@ -419,6 +403,10 @@
     }).catch(() => {});
   }
 
+  /**
+   * Rebuild the stream around a fresh playSessionId at the viewer's position —
+   * why a wedged session needs this is in the stall-detection block above.
+   */
   async function restartStream(reason = 'no progress') {
     if (recovering || destroyed || !player) return;
     recovering = true;
@@ -514,16 +502,8 @@
     }
   }
 
-  /**
-   * Offer casting only if it is *already* possible.
-   *
-   * The Cast sender SDK comes from gstatic.com and only initialises in a secure
-   * context — and SaltyChart is served over plain http on the LAN, so the
-   * button usually cannot appear at all. It is warmed on the Randomize page and
-   * merely checked here: nothing about starting playback should ever wait on a
-   * third party's CDN. Measured, awaiting it sat between the Watch click and
-   * the first manifest request.
-   */
+  /** Offer casting only if it is *already* possible — why the Cast SDK is
+   * warmed elsewhere and never awaited is on `loadCastSdk` in jellyfinPrewarm.ts. */
   async function setupChromecast(videojs: any): Promise<boolean> {
     if (!window.isSecureContext || !castReady()) return false;
     try {
@@ -558,7 +538,8 @@
 
     player = videojs(videoEl, {
       controls: true,
-      // Playback is started by hand once subtitles are in — see below.
+      // Playback is started by hand so video.js never sits showing its big
+      // play button during the 1-30s Jellyfin spends on the first segment.
       autoplay: false,
       preload: 'auto',
       fluid: true,
@@ -625,7 +606,10 @@
       reportActivity(event);
     };
 
-    // Caption styling defaults, applied only until the viewer sets their own.
+    // Caption-styling defaults for video.js's text-track renderer, which never
+    // has a track here (subtitles are burned in). Inert for local playback;
+    // seeded — only until the viewer sets their own — in case a future
+    // receiver or text track ever appears.
     if (!localStorage.getItem('vjs-text-track-settings') && player.textTrackSettings) {
       player.textTrackSettings.setValues({
         backgroundOpacity: '0',
@@ -656,7 +640,7 @@
       if (typeof r === 'number') rate = r;
     });
 
-    // The session id, subtitle tracks and embedded fonts — normally already
+    // The session id and subtitle tracks — normally already
     // resolved, because the show pop-up asked for them when it opened.
     // The first call tells us which tracks exist; the chosen one then has to
     // be baked into the stream, so the request we actually play is the second.
@@ -809,11 +793,11 @@
   /*
    * No big play button while we are starting playback ourselves.
    *
-   * `autoplay` is off because playback waits for subtitles, so video.js sits in
-   * its not-yet-started state for however long Jellyfin takes to build the
-   * first segment (1-30s) and puts a large play button over it — offering the
-   * viewer an action that is already under way. The loading spinner is the
-   * honest indicator during that wait.
+   * `autoplay` is off (playback is started by hand), so video.js sits in its
+   * not-yet-started state for however long Jellyfin takes to build the first
+   * segment (1-30s) and puts a large play button over it — offering the viewer
+   * an action that is already under way. The loading spinner is the honest
+   * indicator during that wait.
    *
    * It comes back if play() is rejected, which is the only time clicking is
    * actually required of the viewer.
@@ -847,8 +831,10 @@
   :global(.video-js .vjs-control-bar .vjs-duration) {
     display: block;
   }
-  /* Keep WebVTT captions clear of the control bar; video.js otherwise drops
-     them to 1em while the bar is hidden, so they hop as it slides in and out. */
+  /* Keep WebVTT captions clear of the control bar (video.js otherwise drops
+     them to 1em while the bar is hidden, so they hop as it slides in and out).
+     Inert for local playback — subtitles are burned in, so no text track ever
+     renders — kept in case a future receiver or text track appears. */
   :global(.video-js .vjs-text-track-display) {
     bottom: 3em !important;
   }

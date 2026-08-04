@@ -298,25 +298,9 @@ router.get('/', async (req, res) => {
     // the constraint intact and still distinguishes it from real format
     // strings such as 'TV'.
     const cacheKeyFormat: string = format ? format.toUpperCase() : '';
-    // -------------------------------------------------------------------
-    // Cache lookup
-    // -------------------------------------------------------------------
-    // The `updatedAt` column is stored using SQLite's `datetime('now')` which
-    // yields the non-ISO format "YYYY-MM-DD HH:MM:SS". Date parsing that
-    // string directly is implementation-defined. To avoid any ambiguity we
-    // request that SQLite converts the value to a Unix timestamp (seconds)
-    // using `strftime('%s', …)`.  Working with the raw epoch lets us calculate
-    // ages with simple integer math and guarantees consistent behaviour across
-    // platforms.
-
-    // Build cache lookup SQL depending on whether a "format" filter is used.
-    // When format is null/undefined we need to compare against NULL with "IS
-    // NULL"; when it's present we use a normal equality comparison.  Mixing
-    // the two in a single parameterised clause (e.g. "format IS ?") can yield
-    // unexpected results because "IS" only treats NULL specially – for normal
-    // values it behaves like "=", but some SQLite/driver versions optimise it
-    // differently.  Splitting the query removes all doubt.
-
+    // `updatedAt` is stored via SQLite's `datetime('now')`, a non-ISO string
+    // whose direct Date-parse is implementation-defined — so SQLite converts
+    // it to a Unix epoch (`strftime('%s', …)`) and age math stays integer.
     const cached = await prisma.$queryRawUnsafe(
       `SELECT data, strftime('%s', updatedAt) AS updatedEpoch
        FROM   "SeasonCache"

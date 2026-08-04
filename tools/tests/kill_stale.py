@@ -6,8 +6,13 @@ Run before starting fresh dev servers / smoke tests to ensure:
   - Frontend port 5173 is free (strictPort=true, so will fail to start otherwise)
   - SQLite DB file isn't locked by a leftover process
 
-Safe on Windows + Linux/macOS. Only kills processes that were started by
-ts-node-dev, npm run dev, or vite — leaves your editor / shell node alone.
+Works on Windows + Linux/macOS. It kills whatever is LISTENING on ports 3000
+and 5173 — it does not inspect command lines, so anything else parked on those
+ports goes too. In practice that is only ever a stale ts-node-dev or vite, but
+don't run it while something you care about holds either port. Note it frees
+the *ports* only: ts-node-dev pairs from old sessions that aren't listening
+survive it (and can still hold the Prisma engine DLL — see CLAUDE.md
+Troubleshooting).
 
 Usage:
   py -3.13 tools/tests/kill_stale.py

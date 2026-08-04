@@ -197,7 +197,7 @@ $: _lang = $options.titleLanguage;
       // wrong series, which the popup warns about, not vanishing from the wheel.
       //
       // `notAired` is also `available: false`, but it means "can't exist yet",
-      // not "we looked and it's missing". On the default season that is every
+      // not "we looked and it's missing". On an unaired season that is every
       // entry, so hiding on it would empty the wheel in one click.
       const missing = visible.filter((it) => {
         const info = results.get(it.id);
@@ -221,20 +221,19 @@ $: _lang = $options.titleLanguage;
   /**
    * Toggle the `hidden` flag for a single item.
    *
-   * We update the local `watchList` optimistically so the UI responds
-   * instantly, then fire-and-forget the PATCH request.  Any failure will be
-   * logged to the console and the list will be refreshed on the next full
-   * fetch, keeping the code simple while delivering snappy UX.
+   * Optimistic: the local `watchList` updates immediately and the PATCH is
+   * fire-and-forget. This is the one hide path that does NOT roll back on
+   * failure — the bulk paths (Hide All / Hide Not in Library) revert via
+   * writeHidden/revertHidden. That is a known gap, not a design goal: on a
+   * failed write the screen and the server disagree until the next full fetch.
    */
   function toggleHide(item: any) {
     if (!$authToken) return;
 
-    // --- Optimistic local update (no awaiting network) -------------------
     watchList = watchList.map((w) =>
       w.mediaId === item.id ? { ...w, hidden: !item.hidden } : w
     );
 
-    // Background persistence – we don't await the result to keep the UI fast
     fetch('/api/list/hidden', {
       method: 'PATCH',
       headers: {
@@ -248,9 +247,8 @@ $: _lang = $options.titleLanguage;
         hidden: !item.hidden
       })
     }).catch((err) => {
-      // Note: If the request fails the UI might become out-of-sync until the
-      // next list refresh, which is acceptable and still better than blocking
-      // every click for 2 seconds in production.
+      // No rollback here (see the gap noted above) — the failure is only
+      // logged, and the next full list fetch resyncs the screen.
       console.error('Failed to toggle hidden', err);
     });
   }
@@ -288,11 +286,8 @@ $: _lang = $options.titleLanguage;
         if (selected?.id !== id) return;
         watchInfo = info;
         // This pop-up stays open while its synopsis is read, so spend that time
-        // on what the player will want: the video.js chunk and the episode's
-        // PlaybackInfo. Pressing Watch then costs only the stream start.
-        // Deliberately client-side — pre-starting the stream would have
-        // Jellyfin transcode a whole episode to disk for a pop-up nobody
-        // plays.
+        // on what the player will want — what is warmed, and why nothing ever
+        // touches the HLS manifest, is jellyfinPrewarm.ts's module header.
         if (info.available && info.itemId && info.mediaSourceId) {
           loadPlayerModal();
           prewarm(info.itemId, info.mediaSourceId);
@@ -313,7 +308,7 @@ $: _lang = $options.titleLanguage;
       .catch(() => {});
   }
 
-  /** The player chunk carries video.js (~690 KB), so it is fetched early. */
+  /** The player chunk is fetched early — its weight and why are on `warmPlayerAssets` below. */
   let playerModalPromise: Promise<any> | null = null;
 
   function loadPlayerModal(): Promise<any> {
@@ -590,8 +585,6 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
   }
 
   /**
-   * Ask about every wheel item in one request.
-   *
    * Extracted from the reactive block below so the Retry button can call it.
    * Previously the only thing that could trigger a lookup was `wheelItems`
    * changing, so a failed check stayed failed for as long as the page was open
@@ -599,8 +592,6 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
    */
   function refreshLibraryAvailability() {
     if (!wheelItems.length) return;
-    // `checkAvailabilityMany` fills the same cache the pop-up's single-show
-    // path reads, so opening one afterwards is still instant.
     checkAvailabilityMany(
       wheelItems.map((item) => ({
         mediaId: item.id,
@@ -616,10 +607,8 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     )
       .then((results) => {
         for (const [mediaId, info] of results) {
-          // Only record a definite answer; `unknown` means the server didn't
-          // reply, and `notAired` means "can't exist yet" — neither may be read
-          // as "not in the library". Recording notAired as false lit the Hide
-          // button's enabled state on seasons nothing had checked at all.
+          // Definite answers only — the unknown/notAired invariant is spelled
+          // out on the hide path above.
           if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);
         }
       })
@@ -630,8 +619,6 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     refreshLibraryAvailability();
   }
 
-  // One request for the whole wheel, not one per show — a 50-item wheel used to
-  // fire 50 POSTs on every page load.
   $: if (wheelItems.length) refreshLibraryAvailability();
 
   // Only enabled while there's actually something to hide, so the button
@@ -938,7 +925,7 @@ const sliceWorker: Worker = new SliceWorker();
   }
 
   // radial distance for label (in SVG units, radius is 50)
-  const LABEL_R_OUTER = 48; // near rim (SVG units, radius is 50)
+  const LABEL_R_OUTER = 48; // near rim
   const LABEL_CHAR_LIMIT = 24;
 
   function spin() {
@@ -1015,12 +1002,6 @@ const sliceWorker: Worker = new SliceWorker();
 
   let showModal = false;
 
-/**
- * Handle keydown events inside the modal so that pressing the <Enter> key is
- * equivalent to clicking the “Mark as watched” button.  We purposefully scope
- * the listener to the dialog element to avoid catching unrelated key presses
- * elsewhere in the page.
- */
 // Global key handler (attached while modal is open) so the Enter key triggers
 // the same action irrespective of which element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
@@ -1097,9 +1078,6 @@ $: {
     }
   }
 
-  /**
-   * Handle file upload for spin button image
-   */
   function handleSpinImageFile(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -1112,9 +1090,6 @@ $: {
     reader.readAsDataURL(file);
   }
 
-  /**
-   * Handle file upload for background image
-   */
   function handleBackgroundImageFile(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -1127,9 +1102,6 @@ $: {
     reader.readAsDataURL(file);
   }
 
-  /**
-   * Handle drag-and-drop for spin button image
-   */
   function handleSpinImageDrop(e: DragEvent) {
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
@@ -1145,9 +1117,6 @@ $: {
     reader.readAsDataURL(file);
   }
 
-  /**
-   * Handle drag-and-drop for background image
-   */
   function handleBackgroundImageDrop(e: DragEvent) {
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
@@ -1311,9 +1280,6 @@ $: {
     return `M ${cx} ${cy} L ${startPt.x} ${startPt.y} A ${r} ${r} 0 ${large} 1 ${endPt.x} ${endPt.y} Z`;
   }
 
-  /**
-   * Get display title based on preference, truncating for wheel labels.
-   */
   function getDisplayTitle(item: any): string {
     if (item.customName) return item.customName;
     const lang = $options.titleLanguage;
@@ -1321,36 +1287,24 @@ $: {
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  /**
-   * Get original title based on preference, ignoring any customName.
-   */
+  // Like getDisplayTitle, but ignores any customName.
   function getBaseTitle(item: any): string {
     const lang = $options.titleLanguage;
     if (lang === 'ROMAJI') return item.title?.romaji || item.title?.english || item.title?.native || '';
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  /**
-   * Get English title specifically (for modal display, ignoring user preference).
-   */
+  // For modal display — ignores the user's title-language preference.
   function getEnglishTitle(item: any): string {
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  /**
-   * Get Romaji title specifically (for modal display, ignoring user preference).
-   */
+  // For modal display — ignores the user's title-language preference.
   function getRomajiTitle(item: any): string {
     return item.title?.romaji || item.title?.english || item.title?.native || '';
   }
-  /**
-   * Normalize string for comparison (lowercase, remove spaces and special characters).
-   */
   function normalizeTitle(title: string): string {
     return title.toLowerCase().replace(/[\s\W_]+/g, '');
   }
-  /**
-   * Check if Romaji and English titles are essentially the same.
-   */
   function titlesAreSame(item: any): boolean {
     const english = normalizeTitle(getEnglishTitle(item));
     const romaji = normalizeTitle(getRomajiTitle(item));
@@ -1847,7 +1801,7 @@ $: {
         <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={getDisplayTitle(selected)} class="w-56 mx-auto mb-6" />
         {#if watchInfo?.available}
           <div class="flex flex-col items-center gap-1 mb-4">
-            <!-- The player chunk is ~700 KB (1.6 MB unminified in dev), so on
+            <!-- The player chunk is heavy (weight on `warmPlayerAssets`), so on
                  anything but localhost there is a real gap between the click
                  and the modal. Without this the button looks broken. -->
             <button

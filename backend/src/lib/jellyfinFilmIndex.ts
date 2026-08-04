@@ -76,13 +76,6 @@ let _fetch = fetchFilmIndex;
 let _load = loadPersisted;
 let _save = savePersisted;
 
-/**
- * TMDB film id → the item in the library, cached and persisted.
- *
- * Persisted for the same reason as the series library: the load it avoids is
- * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
- * needed. Serves stale while refreshing behind, like everything else here.
- */
 /** Read the persisted copy at most once per process, coalesced. */
 function restoreOnce(): Promise<void> {
   if (!_restore) {
@@ -130,6 +123,13 @@ function startRefresh(api: Api): Promise<Record<string, FilmEntry>> {
   return _filmsInFlight;
 }
 
+/**
+ * TMDB film id → the item in the library, cached and persisted.
+ *
+ * Persisted for the same reason as the series library: the load it avoids is
+ * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
+ * needed. Serves stale while refreshing behind, like everything else here.
+ */
 export async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>> {
   if (_films && _films.expires > Date.now()) return _films.byTmdb;
   if (!_films) await restoreOnce();

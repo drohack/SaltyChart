@@ -21,9 +21,21 @@ It reuses the real-trailer corpus + scoring from benchmark_whisper_settings.py
 (tools/benchmark_data/<vid>/audio.wav + cc_segments.json). Run `--download` there
 first if the corpus is missing.
 
-IMPORTANT: run this ON THE UNRAID SERVER (during a quiet Plex window) for numbers
-that reflect production hardware — the i5-10400 CPU differs from a dev box. Use a
-dev machine only to iterate on the harness itself.
+IMPORTANT: benchmark on the DEV PC, not the server — the server runs prod and
+can't be tested on. This PC's CPU is faster per-core than the i5-10400 and isn't
+Plex-contended, so treat absolute numbers as optimistic and prefer RELATIVE
+ranking + low thread counts; quality numbers transfer exactly. It loads a fresh
+model per video (timing excludes load; also dodges the base+VAD poisoning quirk
+— see translate_daemon.py).
+
+Finding (suite `live_cpu`, 2026-06): `small` wins on both axes — keep it.
+tiny/base are SLOWER in total wall-clock (they hallucinate into repetition
+loops) and far worse quality (tiny 86-93% halluc = garbage, base 63% vs small
+47%). Transcription is not the bottleneck either: small at 1 thread runs at
+xRT ≈ 0.13 (≈8× faster than playback), so thread count only shifts TTFS 1-2 s
+while doubling cpu_s per extra thread — the latency the viewer feels is the
+audio download, which this bench excludes. `word_timestamps` stays on despite
+a ~10-20% cost: it trims the pre-speech lead-in and playback is never waiting.
 
 Usage:
   py -3.13 -u tools/bench_live_cpu.py                       # default grid

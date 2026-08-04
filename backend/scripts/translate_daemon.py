@@ -18,6 +18,32 @@ Protocol (stdin JSON lines → stdout JSON lines):
 Concurrency limited to MAX_WORKERS (2) via semaphore. Auto-exits
 gracefully after IDLE_TIMEOUT seconds of inactivity, waiting for
 in-flight requests to finish.
+
+Tuning — this path is CPU-only and shares the Unraid box with Plex (~5 GB RAM
+free, Plex transcoding most of the time), so cheap-and-neighbourly beats fast:
+
+- `os.nice(10)` at startup (Linux) so Whisper yields CPU to Plex.
+- Env knobs (apply bench winners without code changes): WHISPER_LIVE_MODEL
+  (default `small`), WHISPER_LIVE_THREADS (CTranslate2 cpu_threads; default 2 —
+  benchmarked sweet spot, 0 = CT2 default), WHISPER_LIVE_WORKERS (default 2),
+  WHISPER_LIVE_IDLE (idle-exit seconds), WHISPER_LIVE_NICE.
+- Single ffmpeg pass: `download_audio(..., as_wav=False)` keeps the native
+  audio (no whole-file WAV transcode); `extract_chunk` slices 16 kHz-mono
+  chunks straight from it with `-threads 1`. (Batch still uses as_wav=True for
+  its full-audio pass.)
+- Playhead start: /api/translate/stream?start=<sec> begins transcription at
+  the viewer's position (`generate_chunks(duration, start)`) instead of second
+  0. The frontend sends `start` only when the playhead is >3 s in; start>0
+  runs are partial and NOT cached (the batch produces the complete version) —
+  gated by the `cache` flag on `pendingSegments` in routes/translate.ts.
+- A per-request timing line goes to stderr (→ backend console):
+  `[daemon] <vid> model=… thr=… start=…s dur=…s dl=…s ttfs=…s total=…s segs=…`
+  so live latency is observable and comparable across pipeline changes.
+- faster-whisper 1.2.1 quirk: a vad_filter pass that finds no speech (common
+  on a trailer's silent first 5 s) can poison LATER transcriptions on the same
+  `base`-model instance; `small` recovers, so this daemon is safe as shipped.
+  If WHISPER_LIVE_MODEL is ever set to base/tiny, the daemon needs a fresh
+  model per request (bench_live_cpu.py loads fresh per video for this reason).
 """
 
 import sys

@@ -19,7 +19,30 @@ with subtitles on and off; step 9 covers the stream restart that a quality
 or track change costs.
 
 So this drives the real thing: pop-up → Watch → playing, and asserts the
-parts that can regress silently.
+parts that can regress silently. The steps: pop-up pre-warm fires (no stream
+starts early, no libass/font requests come back), playback advances, exactly
+one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with
+the control bar hidden, burned-in subtitles verified in the pixels (12 frames
+sampled with subtitles on and off), the quality menu reaching 480p in exactly
+one restart, Escape stopping the transcode.
+
+Three structural rules, each learned the hard way:
+
+- Steps 1, 2, 3 and 5 ALWAYS run — they open the player, and every later step
+  operates on what they create. Nesting any of them inside a `want()` block
+  makes `--only-steps` skip setup and the run dies before asserting; six
+  mutation-audit rows were once vacuous exactly this way.
+- Step 8 RELOADS THE PAGE before sampling with subtitles off. Both passes seek
+  to the same twelve timestamps, so the first pass leaves the browser holding
+  subtitled segments at each — restarting in place doesn't evict them, and the
+  comparison then reads its own frames back byte-identical, reporting "not
+  burned in" against healthy code.
+- Step 9 STUBS `play()` to reject once with `AbortError` while the real play
+  proceeds. That is the condition the guard exists for, and waiting for it to
+  happen naturally does not work: `play()` runs inside `one('loadedmetadata')`
+  after a `currentTime()` seek, so nothing interrupts it. It also pins the
+  seek bar as rendered geometry per animation frame, never `style.width` (see
+  BAR_FRACTION below).
 
 Skips itself when Jellyfin is unconfigured, or when nothing in the current
 season is actually in the library.

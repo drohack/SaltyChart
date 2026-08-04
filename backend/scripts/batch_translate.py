@@ -10,20 +10,26 @@ transcription (no chunking) for better quality than the on-demand `small` model.
 Videos previously translated with `small` are automatically upgraded to `medium`.
 Will NOT downgrade a `large-v3` translation from the local GPU script.
 
-Fetches the anime list for a given season from AniList, filters to eligible
-shows (TV, TV_SHORT, OVA, ONA, SPECIAL -- skipping 18+, sequels, no-trailer),
-and translates each trailer. Results are saved to SubtitleCache in SQLite
-using a single persistent connection for the entire batch run.
+Fetches the anime list from AniList, filters to eligible shows (TV, TV_SHORT,
+OVA, ONA, SPECIAL -- skipping 18+, sequels, no-trailer), and translates each
+trailer. By default a run covers ONLY the single current-displayed season, so
+it never hits YouTube with more than one season's worth of downloads;
+--all-seasons restores the old prev+current+next sweep. Downloads are
+sequential with a polite gap between trailers (--download-delay, default 5s).
+Results are saved to SubtitleCache in SQLite using a single persistent
+connection for the entire batch run.
 
 The script is resumable: checks SubtitleCache before each video and skips
 already-translated ones (at medium quality or better). Respects a time cutoff
 (default 10am) for safe overnight scheduling. Logs ETA based on rolling average.
 
 Usage:
-  python3 -u batch_translate.py                          # auto-detect next season
+  python3 -u batch_translate.py                          # current-displayed season only
+  python3 -u batch_translate.py --all-seasons            # prev + current + next
   python3 -u batch_translate.py --season SPRING --year 2026
   python3 -u batch_translate.py --dry-run                # list trailers only
   python3 -u batch_translate.py --cutoff 10              # stop by 10am
+  python3 -u batch_translate.py --download-delay 10      # slower / politer to YouTube
 
 Note: use -u flag for unbuffered stdout when spawned as a child process.
 
@@ -200,11 +206,8 @@ def next_season_info() -> tuple:
 
 
 def get_seasons_to_process() -> list:
-    """Return [(season, year), ...] covering prev, current-displayed, and next season.
-
-    The app defaults to showing the upcoming season 50 days before it starts,
-    so users browse 3 seasons of content. This ensures all of them are cached.
-    """
+    """[(season, year), ...] for prev, current-displayed, and next season —
+    rationale at local_translate.get_seasons_to_process."""
     current, year = next_season_info()
     idx = SEASONS.index(current)
 

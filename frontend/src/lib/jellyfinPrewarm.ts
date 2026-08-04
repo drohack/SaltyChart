@@ -210,9 +210,8 @@ export function playbackInfo(
 export function prewarm(itemId: string, mediaSourceId: string, quality = 'auto'): void {
   void (async () => {
     try {
-      // With subtitles burned in there is nothing else to fetch: no wasm, no
-      // fonts, no subtitle body. All this buys is the PlaybackInfo round trip
-      // and Jellyfin's stream URL, so pressing Watch is one less request.
+      // All this buys is the PlaybackInfo round trip and Jellyfin's stream
+      // URL, so pressing Watch is one less request.
       const info = await playbackInfo(itemId, mediaSourceId, { quality });
       if (!info) return;
       const index = defaultSubtitleIndex(info.subtitles);

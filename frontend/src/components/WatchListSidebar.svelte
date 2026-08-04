@@ -241,8 +241,6 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
     } catch (e) {
       console.error('Failed to export list', e);
     } finally {
-      // Nothing to restore on live DOM; we only manipulated the clone.
-      // no need to restore shareBtn visibility on live DOM – only clone was affected
       if (renameLabel) renameLabel.style.display = renameDisplay;
       posters.forEach((p, idx) => (p.style.display = posterDisplay[idx]));
       borderFix?.remove();
@@ -437,9 +435,6 @@ $: {
   }
 </style>
 
-<!-- global wheel handler to allow scrolling while dragging -->
-
-
 <aside
   bind:this={sidebarEl}
   class="fixed z-40 \
@@ -531,8 +526,6 @@ $: {
         <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.03-.47-.09-.7l7.02-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7l-7.02 4.11c-.54-.5-1.25-.81-2.04-.81-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.17c-.05.21-.08.43-.08.65 0 1.72 1.39 3.11 3.11 3.11 1.72 0 3.11-1.39 3.11-3.11s-1.39-3.11-3.11-3.11z"/>
       </svg>
     </button>
-
-    <!-- (button removed: new slide tab added below) -->
 
     <span
       class="tooltip tooltip-left text-left whitespace-pre-line relative z-45"

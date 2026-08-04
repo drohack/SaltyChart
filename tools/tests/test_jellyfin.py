@@ -6,6 +6,47 @@ always tested; the availability/stream/subtitle steps that need a live Jellyfin
 connection are skipped (still exit 0) when the server reports configured=false
 — the URL + API key live in the AppConfig DB table, set via the /admin page.
 
+Coverage, and the trap each step was added for:
+
+- Auth/admin gates, `?token=` paths, availability shape, stream proxy + a
+  manifest credential-leak assertion, subtitle fetch, `Cache-Control` on
+  subtitles/attachments, a well-formed WebVTT header (the `Region:` lift).
+- Two steps exist because a mutation audit proved the old ones missed them:
+  * no credential in `/playback`'s `transcodingUrl` — the manifest guard only
+    inspects response BODIES, so a key leaking here surfaced only as "video
+    never advanced" from an unrelated test;
+  * at least one `matchedBy == "id"` across a 20-series sample — accepting
+    `id` OR `title` passed happily with the id tier entirely dead.
+- Step 11 round-trips the override table, covering two distinct paths because
+  only one was originally tested: pointing an available show at a TVDB id
+  nothing carries must flip it to unavailable, AND so must an outright
+  rejection, which carries no ids at all. The second shipped broken — a
+  rejection fell through to the title tier, so Reject saved its row, dropped
+  the entry from review, and left the wrong Watch button on screen; found by
+  clicking the button in a browser, invisible to types, build, and every test.
+  Also asserted here:
+  * a film we don't hold does NOT fall through to a series title match — the
+    category error that produced `The Last Blossom → House`;
+  * Confirm keeps provenance — a resolver row confirmed without sending
+    `note`/`source` must still read `source:'remote'` with its rung note;
+  * the availability invalidation reaches the PERSISTED blob: waits out the
+    persist debounce so the pre-override verdict is on disk with no timer
+    pending, writes the override, and requires the disk entry to disappear.
+    In-memory deletion alone passed every live check and silently reverted on
+    the next restart — and a pending persist at override time flushes the
+    deletion itself, which is how this assertion's first version passed
+    against the unfixed backend.
+  Assertions are ordered specific-first (the generic "resolved anyway" check
+  once fired first and caught its own mutation for the wrong reason), and
+  cleanup always runs in a `finally` — a stray override would quietly break
+  that show for the live site as well as later runs.
+- Step 12 drives the admin lookup: a name search must offer id-bearing picks —
+  including at least one carrying a TVDB id NATIVELY when skyhook is reachable
+  (skipped, not failed, when it isn't: the merge is designed to degrade) — and
+  a pasted `tvdb:<held id>` must come back NAMED from the library and
+  cross-walked to its TMDB sibling. Unnamed, the lookup is the old raw id box
+  with more steps — watched to fail exactly that way.
+
 Usage:
   py -3.13 -u tools/tests/test_jellyfin.py [--backend http://localhost:3000]
 

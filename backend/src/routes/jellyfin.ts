@@ -61,18 +61,14 @@ import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-field
 import { MediaStreamType } from '@jellyfin/sdk/lib/generated-client/models/media-stream-type';
 
 // ---------------------------------------------------------------------------
-// /api/jellyfin — Jellyfin server configuration.
+// /api/jellyfin — the whole Jellyfin integration: admin config + connection
+// test, library availability (single + batch), the identity override/lookup
+// endpoints behind /admin/matching, playback session setup, the HLS stream
+// proxy, and subtitle/attachment fetches.
 //
-// Currently config only: the admin stores a server URL + API key on the /admin
-// page (AppConfig keys `jellyfinUrl` / `jellyfinApiKey`) so the connection can
-// be set up and verified. The API key NEVER reaches a browser — the same rule
-// as the Plex token: reads return only `apiKeySet`.
-//
-// Why this exists: Plex has no endpoint that serves an embedded subtitle track
-// (`/library/streams/{id}` → 501, and its HLS carries no subtitle renditions),
-// which is why SaltyChart extracts subtitles by reading whole episode files.
-// Jellyfin does expose subtitles as a first-class API, so having the
-// connection configured lets that be measured against the real library.
+// The API key NEVER reaches a browser: config reads return only `apiKeySet`,
+// availability responses carry only ids and display strings, and the stream
+// proxy injects the key server-side (manifests are refused if one leaks in).
 // ---------------------------------------------------------------------------
 
 const router = Router();
@@ -755,14 +751,11 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
 }
 
 /**
- * The library, persisted across restarts.
- *
- * In-memory only, this was refetched in full — the whole library (2271 series)
- * with ProviderIds —
- * every time the process restarted. In production that means the first viewer
- * after every deploy pays for it; in development it fired dozens of times an
- * hour, which is most of what pegged the Jellyfin server. `AppConfig` already
- * carries a cache of this shape for the AniList→TVDB map, so this follows it.
+ * The library, persisted across restarts — the biggest sibling of the
+ * restart-safety rule on `persistMapSoon` above. In-memory only, the whole
+ * library (2271 series, with ProviderIds) was refetched per restart: the first
+ * viewer after every deploy paid for it, and in development it was most of
+ * what pegged the Jellyfin server.
  */
 async function loadPersistedLibrary(): Promise<{ series: JfSeries[]; total: number; at: number } | null> {
   try {
@@ -927,10 +920,6 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
     _libraryInFlight = null;
   }
 }
-
-// Both moved to lib/episodeMatch.ts so the remote id resolver measures "how far
-// off is this" with the exact same arithmetic — two copies would eventually
-// disagree, and the disagreement would be invisible.
 
 /**
  * Which episode does this AniList entry start at?
@@ -1148,8 +1137,7 @@ void (async () => {
   try {
     let dropped = 0;
     for (const [k, v] of await loadPersistedEntries<number, { data: any; expires: number; v?: number }>(AVAILABILITY_KEY)) {
-      // Answers from an older matcher are discarded, not aged out — see
-      // MATCH_ALGO_VERSION. Absent means "written before versioning", i.e. old.
+      // Absent `v` means "written before versioning" — an older matcher either way.
       if (v?.v !== MATCH_ALGO_VERSION) { dropped++; continue; }
       if (v?.expires > now && !v.data?.unknown) availabilityCache.set(Number(k), v);
     }
@@ -1450,11 +1438,6 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
 // ---------------------------------------------------------------------------
 
 /**
- * Everything the player needs to start, in one call: the transcode session
- * id, which media source to stream, and the subtitle tracks with the flags
- * the track picker sorts on.
- */
-/**
  * Quality tiers the player offers. `auto` is resolved per item from the
  * source's own bitrate, because Jellyfin will not encode above it anyway.
  */
@@ -1507,6 +1490,11 @@ async function jellyfinUserId(cfg: JellyfinConfig): Promise<string | null> {
   }
 }
 
+/**
+ * Everything the player needs to start, in one call: the transcode session
+ * id, which media source to stream, and the subtitle tracks with the flags
+ * the track picker sorts on.
+ */
 router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) => {
   const itemId = String(req.params.itemId);
   if (!/^[a-f0-9-]{8,}$/i.test(itemId)) {
@@ -1705,8 +1693,8 @@ const KEY_IN_BODY = /(api_key|ApiKey|X-Emby-Token|MediaBrowser Token)/i;
  * Manifests are buffered rather than piped so they can be checked: Jellyfin
  * embeds the caller's own token into subtitle rendition URIs when asked for
  * HLS subtitles, which would publish the admin key to every viewer. We never
- * request those (subtitles are fetched as files instead), and this makes that
- * a guarantee rather than a convention.
+ * send `subtitleMethod=Hls` (subtitles are burned into the video), and this
+ * check makes that a guarantee rather than a convention.
  */
 router.get('/stream/*', streamLimiter, async (req, res) => {
   const prep = await prepareProxy(req as AuthRequest, res, '/api/jellyfin/stream');
@@ -1784,13 +1772,11 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
 });
 
 /**
- * A subtitle track, converted by Jellyfin on its own box.
+ * A subtitle track, converted by Jellyfin on its own box. `.ass` is a
+ * pass-through of the original (styling, positioning, karaoke intact).
  *
- * `.ass` is a pass-through of the original when the source is ASS — styling,
- * positioning and karaoke intact, and measured at 0.06s. This is the whole
- * reason for the switch: Plex has no endpoint for an embedded track at all,
- * so SaltyChart used to stream the entire ~900MB episode through ffmpeg to
- * get the same bytes.
+ * NOT on the playback path any more — Jellyfin burns subtitles into the video
+ * — but kept and tested: it is the only way to inspect what a release ships.
  */
 router.get('/subtitles', streamLimiter, async (req, res) => {
   const itemId = String(req.query.itemId ?? '');
@@ -1810,7 +1796,11 @@ router.get('/subtitles', streamLimiter, async (req, res) => {
   return subtitleProxy(req as AuthRequest, res, format);
 });
 
-/** Embedded font, so libass renders signs in the typeface the release intended. */
+/**
+ * An embedded font. Off the playback path (Jellyfin burns subtitles in using
+ * the episode's own fonts); kept because it is the only way to see what a
+ * release ships, and test_player asserts nothing requests it during playback.
+ */
 router.get('/attachments', streamLimiter, async (req, res) => {
   const itemId = String(req.query.itemId ?? '');
   const mediaSourceId = String(req.query.mediaSourceId ?? '');
@@ -1827,11 +1817,6 @@ router.get('/attachments', streamLimiter, async (req, res) => {
   return subtitleProxy(req as AuthRequest, res, 'font');
 });
 
-/**
- * Shared fetch for the two small-file endpoints above. Not routed through the
- * `/stream/*` proxy because the path is built here from validated parts
- * rather than taken from the caller.
- */
 /**
  * Jellyfin writes region definitions *after* the blank line that closes the
  * WebVTT header:
@@ -1859,6 +1844,11 @@ function liftVttRegions(data: ArrayBuffer | Buffer): string {
   return m[1] + m[2] + text.slice(m[0].length);
 }
 
+/**
+ * Shared fetch for the two small-file endpoints above. Not routed through the
+ * `/stream/*` proxy because the path is built here from validated parts
+ * rather than taken from the caller.
+ */
 async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
   let token: string | undefined;
   const auth = req.headers.authorization;

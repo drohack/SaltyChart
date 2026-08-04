@@ -6,11 +6,18 @@ This is the cheap half of match validation. The live check
 lookups, so it cannot gate a push; this runs the *same shipping matcher* over
 frozen local fixtures in a couple of seconds with no network and no server.
 
+Scope: the shipping `matchSeries` with community-map ids only. The identity
+layer above it — overrides, the remote resolver, the film index — is covered
+by the unit tests, `test_jellyfin`, and `check_match_corpus.py`, not by this
+replay.
+
 What it protects, specifically: twelve real false positives — each a different
 work matched onto its franchise parent (Pokémon Concierge → Pokémon at
 S20E109, Nanoha EXCEEDS → the 2004 series, SAO Alternative → Sword Art Online).
 They are asserted **by name**, because a summary count moving from 234 to 236
-tells you nothing about whether the Pokémon bug came back.
+tells you nothing about whether the Pokémon bug came back. It also fails if a
+named assertion matches NO corpus entry — an assertion with no subject reads
+as a pass forever, the same way a mutation row whose anchor moved reports SKIP.
 
 **The fixtures are gitignored, not committed.** They are a snapshot of the real
 Jellyfin library — every title plus internal item ids — and this repo is public,
@@ -20,7 +27,8 @@ this test SKIPS on a machine that hasn't built them, which is the right trade:
 the fixture only ever needs to exist where the suite actually runs.
 
 It measures matcher *logic*, not current holdings — the library snapshot ages
-and that is expected. Build and re-baseline deliberately:
+and that is expected. Build and re-baseline deliberately (`--write` refuses to
+bake a known-bad pair into the baseline):
 
     py -3.13 -u tools/tests/build_match_fixtures.py      # needs backend + DB
     cd backend && TS_NODE_PROJECT=tsconfig.json \\
@@ -44,10 +52,9 @@ def main() -> int:
     missing = [f for f in ("library.json", "entries.json", "ids.json", "baseline.json")
                if not (FIXTURES / f).exists()]
     if missing:
-        # SKIP, not fail. The fixtures are a snapshot of the real Jellyfin
-        # library — every title plus internal item ids — and this repo is
-        # public, so they are gitignored rather than committed. A fresh clone
-        # legitimately has none, and that must not read as a broken suite.
+        # SKIP, not fail. The fixtures are gitignored (why: module docstring),
+        # so a fresh clone legitimately has none — that must not read as a
+        # broken suite.
         print(f"[1/1 match-replay] SKIP — no fixtures ({', '.join(missing)})", flush=True)
         print("  Build them once on a machine with the backend running:", flush=True)
         print("    py -3.13 -u tools/tests/build_match_fixtures.py", flush=True)

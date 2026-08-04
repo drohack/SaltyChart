@@ -24,13 +24,13 @@ let daemonReady = false;
 let readyResolvers: Array<() => void> = [];
 let daemonBuffer = '';
 
-// Map of request ID → SSE response (for stream requests)
 const pendingStreams = new Map<string, Response>();
-// Map of request ID → { resolve } (for check requests)
 const pendingChecks = new Map<string, { resolve: (data: any) => void }>();
-// Map of request ID → collected segments (for caching after translation completes)
+// Segments collected per request, cached to the DB when translation completes
+// (`cache: false` for partial start>0 runs — the batch makes the full version).
 const pendingSegments = new Map<string, { videoId: string; mediaId: number | null; segments: any[]; cache: boolean }>();
-// Track in-flight translations by videoId to deduplicate concurrent requests
+// In-flight translations by videoId, so concurrent requests for the same
+// uncached video share one run instead of translating twice.
 const inFlightTranslations = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 
 function getDaemonScriptPath(): string {
@@ -49,7 +49,6 @@ function handleDaemonLine(line: string): void {
     return;
   }
 
-  // Daemon ready signal
   if (data.ready) {
     daemonReady = true;
     for (const resolve of readyResolvers) resolve();
@@ -67,7 +66,6 @@ function handleDaemonLine(line: string): void {
   const rid = data.rid;
   if (!rid) return;
 
-  // Route to check handler
   const check = pendingChecks.get(rid);
   if (check) {
     pendingChecks.delete(rid);
@@ -183,13 +181,13 @@ function cleanupDaemon(): void {
   daemonReady = false;
   daemonBuffer = '';
 
-  // Reject all pending checks
+  // Pending checks resolve WITH an error (not reject) — callers treat any
+  // shape without hasEnglish as "unknown" and move on.
   for (const [rid, check] of pendingChecks) {
     check.resolve({ error: 'Daemon exited' });
   }
   pendingChecks.clear();
 
-  // End all pending streams
   for (const [rid, res] of pendingStreams) {
     try {
       res.write(`data: ${JSON.stringify({ error: 'Translation daemon exited' })}\n\n`);
@@ -220,7 +218,6 @@ function ensureDaemon(): Promise<void> {
     return new Promise<void>((resolve) => readyResolvers.push(resolve));
   }
 
-  // Spawn new daemon
   return new Promise<void>((resolve, reject) => {
     console.log('[translate/daemon] Spawning persistent daemon...');
     daemon = spawn(PYTHON, [getDaemonScriptPath()], {
@@ -262,7 +259,6 @@ function sendCommand(cmd: object): void {
   }
 }
 
-// Kill daemon on server shutdown
 process.on('SIGTERM', () => {
   if (daemon && !daemon.killed) {
     daemon.kill('SIGTERM');
@@ -281,9 +277,8 @@ process.on('SIGINT', () => {
 /**
  * GET /check-batch?videoIds=id1,id2,...
  * Lightweight bulk lookup: returns which videoIds have confirmed English subs
- * (hasEnglishSubs=1 in DB). Only reads the DB — never spawns Python.
- * Also queues background Python checks for IDs not yet in the DB so that
- * subsequent /check calls hit the cache.
+ * (hasEnglishSubs=1 in DB). The response itself is DB-only (~5 ms); uncached
+ * IDs are queued as background daemon checks so later /check calls hit cache.
  */
 router.get('/check-batch', async (req: Request, res: Response) => {
   const raw = (req.query.videoIds as string) || '';
@@ -362,7 +357,6 @@ router.get('/check', async (req: Request, res: Response) => {
   }
   const mediaId = req.query.mediaId ? parseInt(req.query.mediaId as string, 10) : null;
 
-  // Check cache first
   // cachedExtra preserves subtitlesDisabled/hasBurnedInSubs even when we fall
   // through to re-run the Python check (e.g. when hasEnglishSubs was cached wrong).
   let cachedExtra = { subtitlesDisabled: false, hasBurnedInSubs: false, hasCachedSegments: false, modelName: null as string | null };
@@ -402,7 +396,6 @@ router.get('/check', async (req: Request, res: Response) => {
     console.error('[translate/cache] Check lookup failed:', err);
   }
 
-  // Cache miss — perform the check
   let result: any;
 
   if (daemon && daemonReady) {
@@ -499,7 +492,6 @@ router.get('/stream', async (req: Request, res: Response) => {
   res.flushHeaders();
   res.write(':ok\n\n');
 
-  // Check cache first
   try {
     const cached: any[] = await prisma.$queryRawUnsafe(
       `SELECT "segments" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,

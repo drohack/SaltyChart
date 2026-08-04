@@ -446,8 +446,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     }
   }
 
-  // Remove automatic reactive fetch upon selection; we trigger fetch manually
-
   // restore previous comparison target from localStorage and seed the dropdown
   onMount(async () => {
     const prev = localStorage.getItem('compare-other');
@@ -606,7 +604,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   let rows: RankedItem[] = [];
 
   // Reactive block: rebuild rows when lists, animeData, or sortMode change
-  // Reactive block: rebuild rows when lists, animeData, or sortMode change
   $: {
     // Re-run when title language changes as well
     const lang = $options.titleLanguage;
@@ -640,7 +637,6 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     const hue = 145 - ratio * 145; // 145=green to 0=red
     return `hsl(${hue} 70% 45%)`;
   }
-  // determines text color for contrast over heatmap backgrounds
   /**
    * Choose white or black text for contrast over the heat background.
    */

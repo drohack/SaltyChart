@@ -322,13 +322,11 @@ Rules of thumb:
 - **Warm before a run, and *wait* for it.** `tools/tests/warm_cache.py` fetches
   the previous, current and next season in both format variants; `run_all.py`
   and `mutation_audit.py` both call it before their first test. Warming once
-  carries a whole run, because nothing re-fetches on a restart any more —
-  **provided the run fits inside the 6 h season TTL**. That proviso broke
-  silently once: the audit grew from 18 rows (~35 min, inside the old 1 h TTL)
-  to 57 (~90 min, outside it), and its last half hour re-fired a stale refresh
-  on every restart. A test run must never provoke a live AniList 429 — the
-  429/backoff logic is unit-tested (`anilistRateLimit`), off the network.
-  It **retries rather than shrugging** — honouring `Retry-After`, up to
+  carries a whole run — **provided the run fits inside the 6 h season TTL**
+  (the proviso broke silently once as the audit grew; story at the TTL bullet
+  below). A test run must never provoke a live AniList 429 — the 429/backoff
+  logic is unit-tested (`anilistRateLimit`), off the network. warm_cache
+  **retries rather than shrugging** — honouring `Retry-After`, up to
   `PER_KEY_BUDGET_S` (8 min) per key — and if a key still can't be fetched,
   **both runners refuse to start**. That is deliberate: a missing season doesn't
   make the suite fail, it makes it *pass vacuously*, because every fixture joins
@@ -364,11 +362,12 @@ Rules of thumb:
   season for *days* on the grounds that it "cannot change" is a guess about
   AniList's data that is not ours to make — entries do get added and corrected
   after a season ends. But the original flat *hour* set the background-refresh
-  frequency that fed every 429 storm here: a ~90-minute audit outgrew it and
-  re-fired a stale refresh on each of its ~114 backend restarts. Serve-stale
-  means the TTL adds no viewer latency at any value — it only sets how often
-  AniList gets asked — so 6h buys ~6× less upstream traffic for one visible
-  cost: a newly added show takes up to ~6h to appear.
+  frequency that fed every 429 storm here: the mutation audit grew from 18
+  rows (~35 min, inside 1 h) to 57 (~90 min, outside it), and its last half
+  hour re-fired a stale refresh on each of its ~114 backend restarts.
+  Serve-stale means the TTL adds no viewer latency at any value — it only
+  sets how often AniList gets asked — so 6 h buys ~6× less upstream traffic
+  for one visible cost: a newly added show takes up to ~6 h to appear.
 - `stores/season.ts` exports `getCurrentSeasonFromAPI()`, which calls
   `graphql.anilist.co` **directly from the browser** — invisible to every
   control above, because the backend never sees it. It currently has no callers.
@@ -381,13 +380,13 @@ Suite includes:
 | `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
 | `test_api_negative.py` | 11 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates, and a **correctly signed JWT carrying no `id`** — which used to hang the request forever instead of returning 401, so the short timeout *is* the assertion |
 | `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
-| `test_ui_interactions.py` | 24 flows. Nine are button-click smoke (login, search, hide 18+, season, add-to-list, theme, wheel, logout, modal Escape — the Escape step **no longer falls back to a backdrop click**, which is how it passed for months while Escape closed nothing, and it now also asserts the trailer's ✕ button exists). Two came from the exploratory pass: **a no-match search** must render an explicit message rather than a blank page, and **an unaired season must issue zero `/api/jellyfin/availability` calls** — a `NOT_YET_RELEASED` series cannot be in the library, so a lookup can only ever produce a false positive (measured 7/7 wrong before the guard) — and its "Hide Not in Library" control must stay **disabled**: `notAired` is `available:false` with `unknown` falsy, so a writer guarding only `unknown` recorded every unaired show as confirmed-missing and lit a button whose hides could never fire. The rest assert things nothing verified before: **Compare** selects a second user and checks every rank and diff against deliberately different seeded orders — it used to look for the word "Compare" in the body text, which passes on a page with no rows; **/admin** loads with its playback-account picker populated and no API key anywhere in the DOM; **`unknown` never hides a show** — availability is route-intercepted to `{unknown:true}` and the Hide-Not-in-Library control must refuse to act; **share-as-image** produces a real JPEG with more than one colour (an all-blank render is the realistic silent failure); **progressive loading** fails *only* the leftovers fetch and asserts Retry appears while the main grid still renders. Three more cover the failure paths that used to be entirely silent: **an unreachable library is visible** (502 → a message and a working Retry, where before you got a page that looked simply empty), **a backend that never answers is reported rather than spun on** — the route hangs forever and the page must still say something inside the timeout, which is the case nothing in the frontend could survive before `remote.ts`, and **a failed hide write is put back** — every `PATCH /api/list/hidden` is failed, and the page must revert *and* say so; it asserts on the **screen**, not the server, because with all writes failing the server is trivially correct and a check against it would pass with the rollback deleted. The twentieth: **a resolver accept decided on title text alone is listed on /admin/matching** — it seeds a remote-sourced accepted row against an entry the library doesn't hold, then *verifies post-seed that no older filter clause can see it* (a remote id is positive-only, so seeding one revives the title tier, and the first version of this flow picked the Madoka film, which prefix-matched its own franchise series and passed with the clause under test deleted), asserts the row appears (located by the seeded entry's title — a marker in the note text stopped working the day the raw note stopped being rendered), asserts resolver accepts are **absent from the default queue but reachable** via the "+ resolver accepts" filter, exercises the **Sonarr-style match dropdown** (an intercepted search fills the control, the "changed — saves as manual" indicator appears, nothing is written until Confirm, and reset returns to the stored match; a changed Confirm must then write the picked ids as `source:'manual'`), and that an untouched Confirm settles it off the list — *with its provenance intact*: the id boxes are prefilled with the stored ids, so "typed" must mean "changed", and the first handler read any non-empty box as hand-typed and relabelled every confirm as manual. Flows 21-24 are the exploratory pass-1 guards that were claimed and missing for months: **check-batch stays chunked at 100** (asserted against the live season's real >100-trailer id list — the tail used to be silently sliced off server-side); **a failed translation stream is visible on screen** (the stream reports failure IN-BAND as an SSE `{error}` message on a 200, which is what the chip's handler reads — a 503 only triggers EventSource's silent reconnect and tests nothing); **the phone sidebar starts collapsed at 375px** (which found a live regression while being written: the reactive prefs-save persisted the width *default* as though the user chose it, so one desktop visit put the full-screen sidebar back on every later phone load — the suite's own desktop flows running first is what exposes it); and **a guest's options reach localStorage + Compare names a user it can't find** (no Escape after typing — svelte-select clears its filter text on Escape, hiding the very warning under test). Seeds from live season data — the old hardcoded mediaIds had aged out of the season entirely, so every seeded list joined against nothing |
+| `test_ui_interactions.py` | 24 flows: nine button-click smoke (login → modal Escape), then one guard per silent-failure class found by the audits and exploratory passes — Compare ranks checked against seeded orders, no API key in /admin's DOM, `unknown`/`notAired` never hide, share-image has real content, per-section progressive loading, a visible unreachable-library / hung-backend / failed-hide-rollback, the /admin/matching resolver-accept + match-dropdown contract, check-batch chunking, in-band translation errors, the phone sidebar default, guest options. Seeds from live season data. Every flow's history and the trap it was watched to fail on: the file's docstring |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
-| `test_match_replay.py` | Replays the **shipping `matchSeries`** — with community-map ids only; the identity layer above it (overrides, remote resolver, film index) is covered by the unit tests + `test_jellyfin` + `check_match_corpus.py`, not by this replay — over a frozen 8-season corpus (945 real AniList entries × a 2271-series library snapshot) and diffs every verdict against a committed baseline. Seconds, no network, no server — which is the point: the live corpus check makes ~440 real Jellyfin lookups and takes ~7 minutes, so it can't run routinely. **The fixtures are gitignored**, because they are a snapshot of the whole media library — every title and its internal item ids — and this repo is public; the test SKIPS where they haven't been built, which costs nothing since `run_all.py` can't run in CI anyway. Twelve real false positives are asserted **by name**, because "234 → 236 matched" tells you nothing about whether the Pokémon bug came back. It also fails if a named assertion matches **no** corpus entry — an assertion with no subject reads as a pass forever, the same way a mutation row whose anchor moved reports SKIP. Measures matcher *logic*, not current holdings: the snapshot ages and that's expected. Re-baseline deliberately with `build_match_fixtures.py` then `match_replay.ts --write`, which **refuses** to bake a known-bad pair into the baseline |
-| `test_jellyfin.py` | 12 steps. Two exist because a mutation proved the old ones missed them: **no credential in `/playback`'s `transcodingUrl`** (the manifest guard only inspects response *bodies*, so a leak here surfaced only as "video never advanced" from an unrelated test) and **at least one `matchedBy == "id"`** across a 20-series sample (accepting `id` *or* `title` passed happily with the id tier entirely dead). Also: `/api/jellyfin` auth/admin gates, `?token=` paths, availability shape, stream proxy + a manifest credential-leak assertion, subtitle fetch, `Cache-Control` on subtitles/attachments, and a well-formed WebVTT header (the `Region:` lift); live steps auto-skip when Jellyfin is unconfigured. Step 11 is a **round trip through the override table**, and covers two distinct paths because only one of them was originally tested: pointing an available show at a TVDB id nothing carries must flip it to unavailable, **and so must an outright rejection, which carries no ids at all**. The second shipped broken — a rejection fell through to the title tier, so Reject saved its row, dropped the entry from the review list, and left the wrong Watch button on screen. It was found by clicking the button in a browser; no type check, build or existing test saw it. It also asserts that **a film we don't hold does not fall through to a series title match** — the category error that produced `The Last Blossom → House`; that **Confirm keeps provenance** (a resolver row confirmed without sending `note`/`source` must still read `source:'remote'` with its rung note); and that **the invalidation reaches the persisted blob**: it waits out the persist debounce so the pre-override verdict is on disk with no timer pending, writes the override, and requires the disk entry to disappear — in-memory deletion alone passed every live check and silently reverted on the next restart, and a *pending* persist at override time flushes the deletion itself, which is how the first version of this assertion passed against the unfixed backend. Its assertions are ordered specific-first: the generic "resolved anyway" check fired first at one point and caught its own mutation for the wrong reason. Always cleans up in a `finally` — a stray override would quietly break that show for the live site as well as later runs. Step 12 drives the **admin lookup**: a name search must offer id-bearing picks — including at least one carrying a **TVDB id natively** when skyhook is reachable (skipped, not failed, when it isn't: the merge is designed to degrade) — and a pasted `tvdb:<held id>` must come back *named* from the library and cross-walked to its TMDB sibling — unnamed, the lookup is the old raw id box with more steps (watched to fail exactly that way) |
-| `test_player.py` | 10 steps driving the **real player**. Steps 1,2,3,5 always run — they open the player, and every later step operates on what they create; nesting any of them inside a `want()` block makes `--only-steps` skip setup and the run dies before asserting. Step 8 **reloads the page** before sampling with subtitles off: both passes seek to the same twelve timestamps, so the first leaves the browser holding subtitled segments at each, and restarting in place doesn't evict them — the comparison then reads its own frames back, byte-identical, and reports "not being burned in" against healthy code. Step 9 **stubs `play()` to reject once with `AbortError`** while the real play proceeds; that is the condition the guard exists for, and waiting for it to happen naturally does not work, because `play()` runs inside `one('loadedmetadata')` after a `currentTime()` seek so nothing interrupts it. It also pins the **seek bar**, sampled as rendered geometry per animation frame, never `style.width`. Steps: pop-up pre-warm fires (no stream starts early, and no libass/font requests come back), playback advances, exactly one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with the bar hidden, **burned-in subtitles verified in the pixels** (12 frames sampled with subtitles on and off), the quality menu reaching 480p in exactly one restart, Escape stopping the transcode. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
-| `backend npm run test:unit` | Pure helpers via `node --test`. `jellyfinApi`: **a logged error never carries the API key** — an axios error holds its request `config`, so `console.warn('…', err)` printed `Token="…"` into the backend log on any library-refresh timeout. The proxy already refuses to hand a credential to a browser; this was the same secret leaving by a different door, and `jellyfinErrorInfo` is what every catch must log instead. `remoteIdentity`: the acceptance ladder against the **real measured pairs** — Bananya at 1 day accepts, Babylon 5 at 9,441 rejects, an exact-titled "Echo" 1,012 days from the premiere queues instead of blind-accepting (and cocoon at 523d documents why beyond-tolerance queues rather than rejects — it is the correct film with a genuinely differing date), a dated localized title accepts at 0d, a contradicted year rung queues — plus `pickCandidate` (the DIVE IN! pair: 16d beats 167d; Beyond Twilight at 0d beats a same-named exact at 7,003d; the queued fallback prefers the exact title over provider order), `premiereOf`/`premiereDelta` parse defensively, and `baseTitles`, which returns ordered variants — season markers stripped first (subtitle KEPT: `Mission: Yozakura Family Season 2 Part 2` must yield `Mission: Yozakura Family` before `Mission`, because the old subtitle-first order collapsed it straight to `Mission` and TMDB answered with *Mission: Impossible*), separators only where they look like separators (`Re:Zero` must not collapse to `Re`, `5-Oku-nen` not to `5` — the Babylon 5 story), and marker stripping pinned to `Punirunes Puni`, not `Punirunes`, because the probe that first demonstrated it typed the shorter form by hand. `skyhookIdentity`: `titleRelated` refuses a collapsed 2-char base ("Re" must not relate to *Re:Born* — measured false positive), `seasonPremiereDelta` verifies on **season premieres only** (any weekly series has some mid-run episode within days of any date — the first measurement pass "verified" Natsume against a Lego Friends episode), `hasUndatedFutureSeason` tells the Frieren-S3 shape from a fully-dated catalogue, and the client degrades to empty on a dead or malformed skyhook, never a throw. New `verdictFor` rungs proven both ways: a TVDB season premiere beats stale held episodes (Ranma S3 at 287d held / 0d TVDB), and an undated future season softens a held rejection to review while One Piece Fan Letter and Babylon 5 still reject. `episodeMatch`: season 0 skipped, ties to the earlier episode **regardless of response order** (Jellyfin's episode order is not a contract — the tie-break is enforced in the comparison, not assumed of the input), partial AniList dates read as the earliest day. `jellyfinFilmIndex`: concurrent cold callers share one fetch, a persisted copy answers without waiting on the refresh, a failed refresh degrades instead of throwing. `animeMatch`: a guessed id is positive-only while a map id is not. `animeMatch`: Unicode normalisation guards, season parsing, the known false positive. `jellyfinApi`: the auth header carries `DeviceId="saltychart"` (the id `ActiveEncodings` matches on — drift there leaves ffmpeg running silently), the ESM SDK actually loads under CommonJS, and the typed `DeviceProfile` is byte-identical to the hand-written one it replaced. `anilistRateLimit`: `Retry-After` beats `X-RateLimit-Reset`, a reset timestamp in the past floors instead of retrying instantly, a headerless 429 waits the documented 60 s (this one was watched to fail — it returned 15 s), malformed headers never yield `NaN`, and the worst-case total hang stays near one lockout |
+| `test_match_replay.py` | Replays the shipping `matchSeries` (community-map ids only) over a frozen 8-season corpus — 945 real AniList entries × a 2,271-series library snapshot — and diffs every verdict against a committed baseline, in seconds with no network. Twelve real false positives asserted by name, and a named assertion matching no corpus entry is itself a failure. Fixtures are gitignored (they inventory the media library; this repo is public), so the test SKIPs where they haven't been built. Scope, privacy, and the re-baseline procedure: the file's docstring |
+| `test_jellyfin.py` | 12 steps: auth/admin gates, `?token=` paths, availability shape, stream proxy + manifest credential-leak assertion, subtitle fetch and caching headers, no credential in `transcodingUrl`, at least one `matchedBy == "id"` (the id tier proven alive), a two-path round trip through the override table (an unheld id AND an outright rejection both flip a show to unavailable, invalidation proven in the persisted blob), films never falling through to series titles, Confirm keeping provenance, and the admin lookup returning named, cross-walked, natively-TVDB picks. Live steps auto-skip when Jellyfin is unconfigured; cleanup always in a `finally`. Step-by-step history: the file's docstring |
+| `test_player.py` | 10 steps driving the real player: pre-warm without an early stream, playback advances, one subtitle menu with a plain-English default, `[`/`]` speed steps with the bar hidden, burned-in subtitles verified in the pixels, 480p in exactly one restart, Escape stopping the transcode. Steps 1/2/3/5 are unconditional setup, step 8 reloads before the subtitles-off pass, step 9 stubs an `AbortError` — why each rule exists is in the file's docstring. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
+| `backend npm run test:unit` | Pure helpers via `node --test`: `jellyfinApi` (a logged axios error never carries the API key; the auth header's `DeviceId`; the ESM SDK loads under CommonJS; the typed `DeviceProfile` is byte-identical to the hand-written one), `remoteIdentity` (the acceptance ladder and `pickCandidate` against the real measured pairs, `baseTitles` ordering, defensive premiere parsing), `skyhookIdentity` (`titleRelated` floors, season-premiere-only verification, undated-future-season, degrade-to-empty), `episodeMatch`, `jellyfinFilmIndex` (the coalescing raced and was watched to fail), `animeMatch` (Unicode guards, positive-only guessed ids, the removed contains-tier's four pairs), `anilistRateLimit` (the 60 s lockout arithmetic — the headerless rung was watched to fail at 15 s). Every assertion's story is commented at the assertion in its `.test.ts` |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_audit_anchors.py` | Two doc-rot checks, both cheap enough to run on every push. (1) **`EXPLORATORY.md` cites nothing dead** — every referenced file exists, and no `file.ext:NN` line references, which move silently (one did, within an hour of being written). It cannot check the prose, so a pass here does not mean the charter is accurate — see the doc-sync rule above. (2) Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 8 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it. It has already paid for itself twice over: typing an `apiJson<string[]>` call in Compare made it notice that `suggestions` had been declared `string[]` while every write put `{ value, label }` in and every read used `.value` — declaring it honestly cleared the new error *and* the two standing ones |
@@ -483,72 +482,53 @@ Routes inside existing routers:
 
 ### Jellyfin integration routes (`/api/jellyfin`)
 
-Requests go out through the **official `@jellyfin/sdk`** (MPL-2.0, zero deps,
-peer dep axios). `backend/src/lib/jellyfinApi.ts` owns the client: one memoized
-`Api`, one auth header, one `DEVICE_ID`, and the typed `deviceProfile()`. The
-route file keeps the caching, matching and proxying; only the wire calls moved.
+Requests go out through the **official `@jellyfin/sdk`** (MPL-2.0, zero deps).
+`backend/src/lib/jellyfinApi.ts` owns the client: one memoized `Api`, one auth
+header, one `DEVICE_ID`, the typed `deviceProfile()`. The route file keeps
+caching, matching and proxying; only the wire calls moved. Why it was worth
+it: the two costliest bugs here were *guessed fields* — a `DeviceProfile`
+missing `videoBitRate` silently returned a 416x234 stream, and
+`SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]` (the field burn-in
+turns on) was found by poking the API. Both are generated SDK types now; a
+snapshot test asserts the typed profile is byte-identical to the hand-written
+one it replaced.
 
-Why it was worth doing: the two costliest bugs in this integration were both
-*guessed fields*. A `DeviceProfile` missing `videoBitRate` silently returned a
-**416x234** stream, and `SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]`
-— the field the whole burn-in architecture turns on — was found by poking at the
-API. Both are generated types in the SDK; `Method` is a four-value
-`SubtitleDeliveryMethod` enum. A snapshot test asserts the typed profile is
-byte-identical to the hand-written one, so adopting it changed nothing on the
-wire.
-
-Two packaging traps, both load-bearing and neither obvious:
+Two packaging traps, both load-bearing:
 
 - **The backend must use `module: CommonJS` + `moduleResolution: Node10`, not
-  `NodeNext`.** The SDK declares `"type": "module"` but its shipped `.d.ts`
-  files use extensionless relative imports (`from '../models'`), which ESM
-  resolution cannot follow. Under `NodeNext` every nested SDK type degrades to
-  `any` and `skipLibCheck` hides the diagnostics — measured:
-  `SubtitleProfiles: [{ Method: 'nonsense' }]` compiled clean. Under `Node10` it
-  errors, which is the entire point of the dependency. Emit is CommonJS either
-  way.
-- **Importing it is `require()` of an ESM package**, which needs **Node >= 20.19**
-  — hence the `engines` floor in `backend/package.json`. Verified by loading the
-  compiled output on 20.19.2 and 22.16; the production base image is 20.20.2.
+  `NodeNext`.** The SDK's `.d.ts` files use extensionless relative imports,
+  which ESM resolution can't follow — under `NodeNext` every nested SDK type
+  degrades to `any` (measured: `Method: 'nonsense'` compiled clean), which
+  defeats the entire point of the dependency.
+- Importing it is `require()` of an ESM package → **Node >= 20.19** (the
+  `engines` floor in `backend/package.json`; production runs 20.20.2).
 
-**`/stream/*` is deliberately NOT on the SDK.** It replays a URL Jellyfin itself
-chose (`TranscodingUrl`) with the parameters Jellyfin baked in; a typed accessor
-would mean re-deriving them, which is the 416x234 mistake again. It stays a raw
-`http`/`https` proxy for the streaming reasons below too. (`subtitleProxy` stays
-on plain axios for the same reason — it is a byte pipe, not a JSON API.)
+**`/stream/*` is deliberately NOT on the SDK.** It replays the URL Jellyfin
+itself chose (`TranscodingUrl`) with Jellyfin's own parameters; a typed
+accessor would mean re-deriving them — the 416x234 mistake again. It stays a
+raw `http`/`https` proxy (and `subtitleProxy` stays plain axios: byte pipes,
+not JSON APIs).
 
-The admin points SaltyChart at a Jellyfin server (URL + API key) on the
-`/admin` page; both are stored in the `AppConfig` DB table. **The API key
-never reaches a browser** — availability responses carry only ids and display
-strings, and the stream proxy injects the key server-side. Like
-`/api/translate`, this router mounts **before `compression()`** (the stream
-proxy pipes HLS segments, which compression would buffer), so it carries its
-own limiter instances and JSON parser.
+The admin points SaltyChart at Jellyfin (URL + API key) on `/admin`; both live
+in `AppConfig`. **The API key never reaches a browser** — availability
+responses carry only ids and display strings, the stream proxy injects the
+key server-side. This router mounts **before `compression()`** (the proxy
+pipes HLS segments), so it carries its own limiters and JSON parser.
 
-An **API key authenticates every request** — no user login, no per-viewer
-Jellyfin accounts. But an API key does not *identify* a viewer, and Jellyfin
-needs one to apply policy against: PlaybackInfo silently drops the
-`TranscodingUrl` from an otherwise valid response when no user id is sent, which
-reads exactly like the DeviceProfile was rejected. So a **playback account** is
-picked on `/admin` (`jellyfinUserId` in AppConfig) and falls back to an
-administrator when unset.
-
-Use a **dedicated account** — this deployment has one named `SaltyChart`. It
-needs library access and no bitrate or parental-rating limit; it does *not* need
-to be an administrator (verified: the full player suite passes under a non-admin
-account). It keeps playback off a real person's profile and stops a later
-tightening of someone's policy quietly degrading playback for everyone. Nothing
-is written to that account's watch history either way — Jellyfin only records
-progress when a client reports it to `/Sessions/Playing`, and this proxy never
-does, verified against episodes played repeatedly all day that stayed at
-`playCount=0, lastPlayed=never`.
+An API key authenticates but does not *identify* — and Jellyfin needs a user
+to apply policy against: PlaybackInfo **silently drops `TranscodingUrl`** from
+an otherwise-valid response when no user id is sent, which reads exactly like
+a rejected DeviceProfile. So a **playback account** is picked on `/admin`
+(`jellyfinUserId`, falls back to an administrator). Use a dedicated non-admin
+account (this deployment: `SaltyChart` — verified the full player suite passes
+non-admin) with library access and no bitrate/parental limits. Nothing is
+written to its watch history: Jellyfin only records progress a client reports
+to `/Sessions/Playing`, and this proxy never reports (verified:
+`playCount=0, lastPlayed=never` after a day of repeats).
 
 **"Direct stream" still runs ffmpeg and still writes to the transcode cache.**
-This library direct-streams (8/8 sampled episodes: codecs copied, no transcode
-reasons), and it is tempting to read that as "no ffmpeg involved". It is not.
-Browsers cannot play MKV, so every playback is *remuxed* into MPEG-TS segments
-for HLS — cheap on CPU, identical on disk to a real transcode. Three modes,
-and only the first is free:
+Browsers can't play MKV, so every playback is remuxed into MPEG-TS for HLS —
+cheap on CPU, identical on disk to a real transcode:
 
 | mode | ffmpeg | re-encodes video | writes to transcode dir |
 |---|---|---|---|
@@ -556,519 +536,294 @@ and only the first is free:
 | **direct stream (remux)** ← what we do | **yes** | no | **yes** |
 | transcode | yes | yes | yes |
 
-Two consequences that have both bitten:
+Two consequences that have both bitten: Jellyfin's ffmpeg **writes segments
+until the whole file is done regardless of the playhead**, and its cleanup
+timers don't keep up for remux jobs (jellyfin#16608) — an abandoned session
+leaves most of a ~1.4 GB episode on disk, which is why the pop-up pre-warm
+never touches the HLS manifest and why `tools/bench_player.py` must not be
+run casually (nine cold runs once filled the transcode cache and Jellyfin
+served 0-byte segments — indistinguishable from an app bug). And keeping
+subtitles out of the video avoids the third row, not the second.
 
-- Jellyfin's ffmpeg writes segments **until the whole file is done, regardless
-  of the playhead**, and its cleanup timers do not keep up for remux jobs
-  (jellyfin#16608). An abandoned session therefore leaves most of a ~1.4 GB
-  episode on disk. This is why the pop-up pre-warm never touches the HLS
-  manifest — and why `tools/bench_player.py`, which *does* start real sessions,
-  must not be run casually: nine cold runs filled the transcode cache and made
-  Jellyfin serve empty (HTTP 200, 0-byte) segments, which presents as "video
-  never starts" and is indistinguishable from an app bug until you request a
-  segment directly from Jellyfin and see the same thing.
-- Keeping the subtitles *out* of the video avoids the third row, not the
-  second. Burning them in would force a full re-encode of every stream; it
-  would not change how much lands in the transcode cache.
+Routes (contracts here; each guard's story is commented at its code):
 
-- `GET  /api/jellyfin/status`   — `{ configured, isAdmin }` probe (JWT
-  required). `isAdmin` rides along so the header's Admin link doesn't need to
-  probe an admin-only endpoint (which would 403-spam the console for
-  everyone else); `stores/jellyfin.ts` fetches this once per login.
-- `POST /api/jellyfin/availability/batch` — `{ items: [{ mediaId, titles[] }] }`
-  (max 100, mirroring `/api/translate/check-batch`) → `{ [mediaId]: <the same
-  shape as below> }`. Randomize asks about every wheel item, and one request per
-  show meant ~50 POSTs per page load — 40% of this router's own 120/min budget,
-  repeated on every full page load because the browser-side cache doesn't
-  outlive one, and on a cold backend 50 separate library lookups. Shares
-  `resolveAvailability()` with the single route so the matching rules have one
-  definition. Per-entry `unknown` is preserved: one show failing to resolve
-  neither contaminates the others nor gets cached.
-- `POST /api/jellyfin/availability` — `{ mediaId, titles[] }` → is the series
-  in the library + the entry's season's first episode (season parsed from
-  "Nth Season"/「第N期」 markers; missing season = unavailable; no marker =
-  first episode overall, skipping season-0 specials). Returns
-  `{ available, seriesId, itemId, mediaSourceId, episodeTitle, seasonNumber,
-  episodeNumber, libraryTitle, matchedBy }`. Matching is the shared module —
-  see *Matching AniList entries to the library* below. The series list is
-  fetched once and cached 1h, and — like `/api/anime` — an **expired copy is
-  served stale while a refresh runs behind it** (`getSeriesLibraryFresh` is the
-  blocking variant, used only where a caller has asked for `fresh: true`).
-  Expiry used to mean the next viewer waited on a full library fetch, so the
-  cost of the cache lapsing landed on a person rather than a timer; against a
-  2-hour-expired cache the stale path answers in 0.01s.
-  **`Fields=ProviderIds,OriginalTitle` is
-  mandatory** on that query or Jellyfin returns `ProviderIds: null`, which
-  reads exactly like "no ids exist" and silently disables the id tier.
-  Per-mediaId cache: 1h positives, 10min negatives, **persisted** to
-  `AppConfig.jellyfinAvailability` so a restart doesn't re-derive ~50 shows.
-  `fresh: true` means "re-resolve; don't hand me a cached answer" — it bypasses
-  the cache entirely and refetches the library on a match-miss (throttled to
-  one refetch per 30s — every negative asking for its own refetch turned into
-  a stampede that reported everything as missing). It used to bypass *only*
-  negatives, which matched its one caller (the pop-up re-checking an
-  unavailable show) but left no way to force a real resolution. That mattered
-  once the cache started surviving restarts: `test_jellyfin` proves the id tier
-  is alive by checking that some series matched by `id`, and with every answer
-  served from cache it was reading a recording rather than exercising the
-  matcher — a mutation disabling the tier went unnoticed. Widening it costs
-  nothing in production, since the only caller sends it for negatives.
-  Always 200 — server down/unconfigured is `{ available: false, unknown: true }`
-  (never cached). **`unknown` is load-bearing**: it means "couldn't ask", not
-  "not in the library", and every consumer must refuse to hide a show on it,
-  or one slow moment empties the wheel.
-- `GET  /api/jellyfin/playback/:itemId` — one call returning the
-  `playSessionId`, the `mediaSourceId`, the subtitle streams (with the file's
-  own `isDefault`/`isForced`/`isHearingImpaired` flags and codec) and the
-  embedded font attachments.
-- `GET  /api/jellyfin/stream/*` — GET-only streaming proxy (JWT via
-  `Authorization` header or `?token=`). Forwards `Range`, destroys the
-  upstream transfer when the client disconnects. **Manifests are buffered and
-  refused if they contain a credential**: Jellyfin embeds the caller's own key
-  into subtitle rendition URIs when asked for HLS subtitles, so never send
-  `subtitleMethod=Hls` — subtitles are fetched as files instead, and this
-  guard makes "the key never reaches a browser" a guarantee rather than a
-  convention.
-- `GET  /api/jellyfin/subtitles` — `{ itemId, mediaSourceId, index, format }`,
-  proxying Jellyfin's own conversion. `format=ass` on an ASS source is a
-  pass-through of the original (styling, positioning and karaoke intact).
-  `format=vtt` additionally **lifts `Region:` lines into the header**
-  (`liftVttRegions`): Jellyfin emits them *after* the blank line that closes it,
-  and a spec-following parser then reads `Region:` as a cue id and throws —
-  costing a console error and one dropped cue (360 of 361 on a measured
-  episode). Note this does not make regions *work*: vtt.js splits that header
-  line on `:` and ignores it unless there are exactly two parts, so Jellyfin's
-  `id:subtitle width:80% …` is unparseable to it wherever it sits. Costs
-  nothing, because Jellyfin repeats the placement on every cue (`line:90%`).
-- `GET  /api/jellyfin/attachments` — an embedded font. No longer on the playback
-  path (Jellyfin burns subtitles in server-side using the episode's own fonts);
-  kept and tested because it is the only way to inspect what a release ships. **Indices are the file's own stream
-  numbers and do not start at 0** — they must come from `/playback`, or every
-  request 502s.
-- Both of the above send `Cache-Control: private, max-age=86400`. They are
-  immutable for a given item+index (replacing a release changes the item id),
-  so a rewatch never refetches a font pack.
-- `POST /api/jellyfin/playback/stop` — `{ playSessionId }`; tears the
-  transcode down rather than leaving it to time out on a shared box.
-- `GET/PUT /api/jellyfin/config` + `POST /api/jellyfin/config/test` — admin
-  only (`ADMIN_USER_ID`): read config (URL, `apiKeySet`, `userId` — never the
-  key), save (an empty key **and an empty URL** keep the stored ones — the URL
-  used to be written unconditionally, so Save on a form left blank by a failed
-  config read replaced a working address with the frontend's placeholder; an
-  empty `userId` is a real choice and *is* written, meaning "fall back to an
-  administrator"), and test a
-  connection (returns server name, version, library list and the resolved
-  `playbackAccount`, or the error, always as 200 `{ ok, ... }`). The test hits
-  authenticated `/System/Info`, not `/System/Info/Public`, so a green result
-  proves the key works rather than only that the server is reachable.
-- `GET /api/jellyfin/users` — admin only; ids and names for the playback-account
-  picker on `/admin`. Nothing about credentials, and never exposed to viewers.
-- `GET /api/jellyfin/identity` — admin only; every override row.
-- `POST /api/jellyfin/identity/resolve` — admin only; `{ mediaIds[] }` (max 200)
-  → what we currently believe about each and where it came from. Pairs with
-  `/availability/batch` on `/admin/matching`: that endpoint says *whether* a show
-  resolved and how, this one says *which id* produced it and whether a human has
-  confirmed it. The response also carries `sweep` — the last resolver sweep's
-  persisted summary (`AppConfig.remoteSweepStatus`: finishedAt,
-  looked/accepted/queued/rejected, remaining backlog, override-row count, map
-  size), which the page renders as one status line. Written at BOTH sweep exits
-  ("ran and found nothing to ask" is a result, and telling it apart from "never
-  ran" is the whole point); a corrupt row parses to null, never a throw.
-- `PUT /api/jellyfin/identity` — admin only; write an override. `rejected: true`
-  means "not in the library" and suppresses title matching too. **Merged onto
-  the stored row** (`mergeIdentityPatch`): a field the client doesn't send keeps
-  its stored value, so Confirm preserves the resolver's provenance (`source`,
-  `note`, `candidates`) — an explicit value, including null, still changes it.
-  Accepts an optional `source` (`'manual' | 'remote'`) for callers that mean to
-  set provenance; the review page sends `source:'manual', note:null` only for a
-  hand-typed id. Every identity write **invalidates the cached availability for
-  that mediaId, in memory AND in the persisted blob** — via `onIdentityChanged`
-  in `seriesIdentity.ts`, so the daily sweep's writes invalidate too. The
-  persist half matters as much as the delete: without it a restart inside the
-  debounce window restored the pre-correction verdict from disk, silently
-  reverting the fix for up to an hour, and no live check could tell — only the
-  persisted-blob assertion in `test_jellyfin` step 11 sees it.
-- `DELETE /api/jellyfin/identity/:anilistId` — admin only; remove an override.
-  Invalidates the same way.
-- `GET /api/jellyfin/identity/lookup?term=` — admin only; the Sonarr-style
-  lookup behind /admin/matching's search box. A plain `term` searches
-  Jellyfin's remote providers (series then films, deduped, ≤8);
-  `tvdb:12345` / `tmdb:12345` resolves a pasted id — the prefix is required
-  because bare digits are real titles (the anime *86*). A name search is
-  **series-first via skyhook** (Sonarr's TVDB proxy — see the resolver section
-  above), merged and deduped with Jellyfin's TMDB results, so TVDB ids arrive
-  natively; it degrades to the TMDB-only list when skyhook is unreachable.
-  Every result is completed both ways where possible: **this Jellyfin's own
-  remote search returns TMDB ids only** (measured: all 342 stored resolver
-  candidates; no TVDB metadata plugin), so its results take TVDB ids from the
-  two free cross-walks — the library's own metadata (items carry both ids
-  after Jellyfin's deep fetch) and `crosswalkIds` in `anilistTvdbMap.ts`
-  (anilist→tvdb joined to anilist→tmdb through the anilist key). Results carry a `library` tag naming
-  what we hold under those ids, a **year** (the provider's, else the held
-  item's — `MatchableSeries` and `FilmEntry` now cache `ProductionYear`,
-  display-only, absent on blobs persisted before it existed until their next
-  refresh), and an unheld `tmdb:` paste is still named via the
-  identify-by-ProviderIds search (verified live: `tmdb:129` → "Spirited
-  Away"). Never on a viewer's path; reads only the cached library/film index.
+- `GET  /status` — `{ configured, isAdmin }` probe (JWT). `isAdmin` rides
+  along so the header's Admin link doesn't 403-spam an admin-only endpoint;
+  fetched once per login by `stores/jellyfin.ts`.
+- `POST /availability/batch` — `{ items: [{ mediaId, titles[], startDate? }] }`
+  (max 100) → map of the single-route shape. Randomize asks about every wheel
+  item in one request (was ~50 POSTs and 40% of this router's budget per page
+  load). Shares `resolveAvailability()` with the single route; per-entry
+  `unknown` preserved — one failed show neither contaminates others nor gets
+  cached.
+- `POST /availability` — `{ mediaId, titles[] }` → is the series in the
+  library + the entry's season's first episode (season parsed from
+  "Nth Season"/「第N期」; missing season = unavailable). Returns `{ available,
+  seriesId, itemId, mediaSourceId, episodeTitle, seasonNumber, episodeNumber,
+  libraryTitle, matchedBy }`. The series list is cached 1 h and served
+  stale-while-revalidate (`getSeriesLibraryFresh` is the blocking variant for
+  `fresh: true` callers). **`Fields=ProviderIds,OriginalTitle` is mandatory**
+  on that query or Jellyfin returns `ProviderIds: null`, silently disabling
+  the id tier. Per-mediaId cache 1 h positives / 10 min negatives, persisted
+  to `AppConfig.jellyfinAvailability`. `fresh: true` bypasses the cache and
+  re-resolves (library refetch throttled to one per 30 s — per-negative
+  refetches once stampeded); it exists because a cache that survives restarts
+  turned `test_jellyfin`'s id-tier proof into a recording. Always 200 —
+  server down/unconfigured is `{ available: false, unknown: true }` (never
+  cached). **`unknown` is load-bearing**: "couldn't ask", not "not in the
+  library"; every consumer must refuse to hide on it.
+- `GET  /playback/:itemId` — one call: `playSessionId`, `mediaSourceId`,
+  subtitle streams (with the file's own flags + codec), font attachments.
+- `GET  /stream/*` — GET-only streaming proxy (JWT header or `?token=`).
+  Forwards `Range`, destroys upstream on client disconnect. **Manifests are
+  buffered and refused if they contain a credential** — Jellyfin embeds the
+  caller's key into HLS subtitle rendition URIs, so never send
+  `subtitleMethod=Hls`; this guard makes "the key never reaches a browser" a
+  guarantee rather than a convention.
+- `GET  /subtitles` — proxies Jellyfin's own conversion. `format=ass` is a
+  pass-through of the original; `format=vtt` lifts `Region:` lines into the
+  header (`liftVttRegions` — Jellyfin emits them after the header closes,
+  costing a console error and a dropped cue; the lift is cheap because
+  Jellyfin repeats placement on every cue).
+- `GET  /attachments` — an embedded font. Off the playback path since burn-in
+  (kept + tested: it is the only way to inspect what a release ships).
+  **Indices are the file's own stream numbers** — they must come from
+  `/playback` or every request 502s. Both this and `/subtitles` send
+  `Cache-Control: private, max-age=86400` (immutable per item+index).
+- `POST /playback/stop` — `{ playSessionId }`; tears the transcode down
+  rather than leaving it to time out on a shared box.
+- `GET/PUT /config` + `POST /config/test` — admin only. Read returns URL,
+  `apiKeySet`, `userId` — never the key. On save, an empty key **and an empty
+  URL** keep the stored values (the URL was once written unconditionally, so
+  Save on a blank form replaced a working address with the placeholder); an
+  empty `userId` is a real choice ("fall back to an administrator"). Test
+  hits authenticated `/System/Info`, so green proves the key works, not just
+  reachability.
+- `GET /users` — admin only; ids + names for the playback-account picker.
+- `GET /identity` — admin only; every override row.
+- `POST /identity/resolve` — admin only; `{ mediaIds[] }` (max 200) → what we
+  believe about each and where it came from. Pairs with `/availability/batch`
+  on `/admin/matching`: that says *whether* a show resolved, this says *which
+  id* and whether a human confirmed it. Carries `sweep` — the last resolver
+  sweep's persisted summary (`AppConfig.remoteSweepStatus`), written at BOTH
+  sweep exits because "ran and found nothing" must be distinguishable from
+  "never ran"; a corrupt row parses to null, never a throw.
+- `PUT /identity` — admin only; write an override. `rejected: true` means
+  "not in the library" and suppresses title matching too. **Merged onto the
+  stored row** (`mergeIdentityPatch`): an unsent field keeps its stored value
+  (Confirm preserves resolver provenance), an explicit null still clears.
+  Every identity write **invalidates that mediaId's cached availability, in
+  memory AND in the persisted blob** (`onIdentityChanged`) — without the
+  persist half, a restart inside the debounce window restored the
+  pre-correction verdict from disk for up to an hour, and only the
+  persisted-blob assertion in `test_jellyfin` step 11 can see it.
+- `DELETE /identity/:anilistId` — admin only; removes + invalidates the same
+  way.
+- `GET /identity/lookup?term=` — admin only; the Sonarr-style lookup behind
+  /admin/matching's search box. A name searches series-first via skyhook
+  merged with Jellyfin's TMDB results (degrades to TMDB-only when skyhook is
+  down); `tvdb:12345` / `tmdb:12345` resolves a pasted id (prefix required —
+  bare digits are real titles: *86*). Results are completed both ways via the
+  held library and the community-map cross-walk (this Jellyfin's own remote
+  search returns TMDB ids only — measured on all 342 stored candidates),
+  carry a `library` tag and a display `year`, and an unheld `tmdb:` paste is
+  still named via the identify-by-ProviderIds search. Never on a viewer's
+  path; reads only cached data.
 
 ### Matching AniList entries to the library
 
-`backend/src/lib/animeMatch.ts` — pure, no I/O, so it is unit-tested directly
-(`npm run test:unit`) and reusable by anything else that needs to resolve an
-AniList entry (a future Sonarr sync). `backend/src/lib/anilistTvdbMap.ts` does
-the I/O half.
+`backend/src/lib/animeMatch.ts` — pure, no I/O, unit-tested directly and
+reusable. `backend/src/lib/anilistTvdbMap.ts` does the I/O half. The evidence
+behind every rule below is preserved as comments at the guard it justifies —
+this section states the rules and where each lives.
 
 **Identity and availability are different questions**, and conflating them is
 what made this code produce a new false positive every few weeks. Identity —
-*which real series is this?* — is a permanent fact. Availability — *do we hold
-it right now?* — changes on every grab or delete. `lib/seriesIdentity.ts` owns
-the first; `resolveAvailability` owns the second.
+*which real series is this?* — is permanent; availability — *do we hold it
+right now?* — changes on every grab or delete. `lib/seriesIdentity.ts` owns
+the first; `resolveAvailability` (routes/jellyfin.ts) the second.
 
-Resolution order for identity: **our override table → the community map → a
-remote lookup we make ourselves → nothing** (and only then may titles be
-consulted). The override table is an
-*overlay*, not a copy: the map already answers 94% of TV correctly, so
-duplicating its 7,179 rows would add a stale second copy and no reach. Rows exist
-only for corrections, confirmations, and entries the map never covered. They are
-written from `/admin/matching`.
+**Resolution order for identity: our override table → the community map → a
+remote lookup we make ourselves → nothing** — and only then may titles be
+consulted. The override table is an *overlay*, not a copy: the map already
+answers 94% of TV correctly, so rows exist only for corrections,
+confirmations, and entries the map never covered. Written from
+`/admin/matching`; loaded into memory at boot.
 
 **A known id is authoritative in BOTH directions.** If an id is known and no
-library series carries it, that is the answer — `matchSeries` returns null rather
-than falling back to titles. This one rule replaced three weeks of threshold
-tuning, and it is the thing to protect:
-
-- Graded blind against the id tier over 8 seasons / 945 entries, the title tier
-  was **99% precise on exact matches** (205/207) and **60% on prefix** (18/30).
-- All 12 prefix failures were the same shape — a new work matched onto its
-  franchise parent (*Pokémon Concierge* → Pokémon **at S20E109**, *Nanoha
-  EXCEEDS* (2026) → the 2004 series, *SAO Alternative: Gun Gale Online* → *Sword
-  Art Online*).
-- **Every one of the 12 already had a TVDB id the library did not hold.** We knew
-  the answer and let the fuzzy matcher overwrite it. Rejecting costs nothing: the
-  18 correct matches in that bucket were all found by id anyway.
-- Two cheaper ideas were tested and **refuted**: season/episode count of the
-  library series does not separate them (*Bleach*, 26 seasons, is a correct
-  match; *Pokémon*, 23, is wrong; *Mononoke*, 1, is wrong; *Dorohedoro*, 2, is
-  right), and neither does the text — `BLEACH: Thousand-Year Blood War` (right)
-  and `SAO Alternative: Gun Gale Online` (wrong) are the same shape.
-
-Residual risk: a *wrong* id plus the library holding that show under a different
-id would now read as "not in library". Zero such cases in the corpus; an override
-row is the permanent fix when one appears.
+library series carries it, that is the answer — `matchSeries` returns null
+rather than falling back to titles. Graded blind over 8 seasons / 945 entries:
+title-prefix matching was 60% precise, and **all 12 failures were a new work
+matching its franchise parent while its real TVDB id sat unheld** — we knew
+the answer and let the fuzzy matcher overwrite it. Season counts and title
+shape were both tested as separators and refuted (`animeMatch.ts` comments);
+**air date separates right from wrong by three orders of magnitude and
+nothing else does.** Residual risk: a *wrong* id plus the show held under a
+different id reads as "not in library" — zero cases in the corpus, and an
+override row is the permanent fix.
 
 #### Making the links nobody else has — `lib/remoteIdentity.ts`
 
-Measured over 8 seasons (830 SFW entries after excluding 115 adult titles, which
-no mainstream database indexes): the community map answers 94% of TV and **0% of
-the 292-entry gap**. The upstream anime databases (manami, AniDB, MAL, Kitsu)
-know **284 of those 292** — but not one carries a TVDB or TMDB id. The works
-exist; the *link* to the databases Sonarr/Radarr/Jellyfin act on has never been
-made by anyone. **manami is not worth adding** for this: it carries 0 TVDB and 0
-TMDB ids of its own, and Fribb is the layer that derives them from it.
+The community map answers 94% of TV and **0% of the 292-entry gap**; the
+upstream anime databases know 284 of those 292 but none carries a TVDB/TMDB
+id. So we make the links from two keyless sources: **series go to TVDB first**
+via `lib/skyhookIdentity.ts` → `skyhook.sonarr.tv` (Sonarr's own proxy: native
+TVDB ids, plus per-episode air dates for seasons nobody holds yet — the
+evidence class the held-library gate cannot produce); movies and skyhook
+misses use Jellyfin's own TMDB remote search (Radarr's proxy was measured and
+rescued zero movies, so no new dependency). skyhook is someone else's free
+service: calls are paced, bounded per run, degrade to the Jellyfin path, and
+**never appear on a viewer's request path**.
 
-So we make the links, from two keyless sources. **Series go to TVDB first**, via
-`lib/skyhookIdentity.ts` → `skyhook.sonarr.tv` — Sonarr's own metadata proxy, so
-a hit there is by definition a show Sonarr can resolve. It answers with TVDB ids
-*natively* (no cross-walk to hope for) and with **per-episode air dates for
-seasons nobody holds yet** (Frieren's S3 is listed before it airs) — the
-evidence class the held-library air-date gate cannot produce for an unaired
-season. Measured before building: 37 of the 125 TMDB-only stored rows gain a
-date-verified TVDB id this way, 18 more an exact-title one, and the
-rejected-sequel class resolves. Movies (and series skyhook misses) use
-Jellyfin's own `/Items/RemoteSearch/{Series,Movie}` TMDB proxy, unchanged —
-Radarr's public TMDB proxy was measured against the unresolved movies and
-rescued **zero**, so no movie dependency was added. skyhook is someone else's
-free service, run for Sonarr installs: calls are paced (300 ms in the client),
-bounded per run, and every failure degrades to the Jellyfin path — it must
-never appear on a viewer's request path. A sweep runs 90s after boot and daily
-thereafter (same lifecycle as the map refresh), reads entries from
-`SeasonCache` rather than asking AniList, and is bounded at 40 per run (plus a
-same-cap `fillTvdbGaps` pass that backfills the TVDB half of TMDB-only rows on
-the retry schedule).
-
-**Two things make "check again later" actually work, and both were broken at
-first** — invisibly, because nothing looks wrong; the system just silently stops
-improving:
+A sweep runs 90 s after boot and daily, reads entries from `SeasonCache`,
+and is bounded at 40 per run (+ a same-cap `fillTvdbGaps` backfill pass).
+Two selection rules were broken at first, invisibly (the system just silently
+stops improving — both are commented at the code):
 
 - A row recording *"we looked and found nothing"* must **not** shadow the
-  community map. `resolveIdentity` returned any override first, so once a search
-  had failed, a pair added upstream could never take effect. An id-less,
-  unconfirmed, un-rejected row is bookkeeping, not an answer.
-- The sweep must select on **`needsRemoteLookup`**, not on "has an identity row".
-  Filtering on the latter retired an entry the first time a search came back
-  empty — which made the retry tiering below it unreachable, i.e. dead code.
+  community map — an id-less, unconfirmed, un-rejected row is bookkeeping,
+  not an answer (`resolveIdentity`).
+- The sweep selects on **`needsRemoteLookup`**, not "has an identity row" —
+  the latter retired an entry on its first empty search and made the retry
+  tiering dead code.
 
-A human decision (confirmed, or an explicit rejection) *is* an answer and still
-wins over both. Note the consequence: a mistaken Reject is permanent until
-cleared on `/admin/matching`. **Stored rows are completed in both id spaces**
-(`completeIdentityIds`): the remote search supplies TMDB only on this server,
-so the sweep fills the TVDB sibling from the held library item or the
-community-map cross-walk at write time, and each run backfills older
-half-filled rows the same way (measured on the first backfill: 59 of 271
-gained their TVDB id; the rest are gap entries no source we can see has
-linked). A Sonarr user expects series rows to carry TVDB ids — now they do
-wherever the pair is knowable, and the UI leads with TVDB for series, TMDB
-for films. Misses are recorded so they aren't re-searched; the retry interval is
-**tiered by how close the entry is to airing** (2 days within ±1 year, 30 days
-for older), because that is when a TMDB record actually appears.
+A human decision (confirmed or rejected) still wins over everything — so a
+mistaken Reject is permanent until cleared on `/admin/matching`. Stored rows
+are **completed in both id spaces** (`completeIdentityIds`: held item first,
+community-map cross-walk second), because this server's remote search returns
+TMDB only and a Sonarr user expects TVDB on series rows. Misses are recorded
+and retried on a tier keyed to how close the entry is to airing (2 days
+within ±1 year, 30 days older) — that is when records actually appear.
 
-Three rules, each of which cost something to learn:
+Three search rules, each measured (evidence in the module header):
+**both search kinds are tried** (AniList's format does not predict how TMDB
+files a work; +22 and it upgraded wrong matches to right ones); **the base
+title is searched too** (+59 — and it also reaches *Babylon 5*, which is why
+nothing is ever accepted on title alone; `baseTitles` strips season markers
+before subtitles and only treats separator-looking separators as such —
+`Re:Zero` must not collapse to `Re`); and **a guessed id is POSITIVE-ONLY**
+(`idIsAuthoritative: false`) — it may add a Watch button, never remove one,
+because many gap entries resolve by title today and a guess must not delete a
+working match. The UI marks such matches `unverified`.
 
-1. **Both search kinds are tried.** AniList's `format` does not predict how TMDB
-   files a work — a SPECIAL may be theatrical, an OVA may be a film. Trying both
-   took the fill from 130 to 152 and *upgraded wrong matches to right ones*:
-   `cocoon` matched Disney's **Coco** as a series and is an exact hit as a movie.
-2. **The base title is searched too** (subtitle/season marker stripped), worth
-   another +59 — TMDB holds "BanG Dream! It's MyGO!!!!!", not the full
-   "…: Haru no Hidamari, Mayoi Neko". It is also how "5-Oku-nen Button Part 2"
-   reaches *Babylon 5*, which is why nothing is ever accepted on title alone.
-3. **A guessed id is POSITIVE-ONLY** (`idIsAuthoritative: false` on
-   `matchSeries`). It may add a Watch button, never remove one. Many gap entries
-   resolve by *title* today, so granting a guess negative evidence would let it
-   delete a working match — the same failure class as the franchise siblings,
-   from the other side. Only the map and human-confirmed rows end a lookup on a
-   miss. The UI marks such a match `unverified`, which raises the same ⚠ warning
-   a partial title match gets.
+**Acceptance is decided by air date, not title confidence** (`verdictFor` —
+the full ladder, its rungs, and the measured day-distance tables are its
+JSDoc). The shape that matters: correct results land 0–31 days from the
+AniList premiere, wrong ones 62–21,929, with nothing in between — and this
+holds for library air dates, TVDB season premieres, and TMDB premiere dates
+alike. Consequences encoded in the ladder:
 
-**Acceptance is decided by air date, not title confidence** (`verdictFor`). That
-is measured, not preferred — against the real library, correct results land 0–3
-days from the AniList premiere and wrong ones 329 to 11,083 days away, with
-nothing in between:
+- An exact title the premiere date *refutes* is never blind-accepted (the
+  Echo bug: the refuting day sat unread in the same response for months).
+- The TVDB season-premiere rung sits **above** the held-library rung: held
+  episodes are stale by construction for a season nobody has grabbed yet
+  (Ranma S3 rejected at 287 d while TVDB had S3E1 on the entry's premiere day).
+- A held-library rejection softens to queue while TVDB lists an **undated
+  future season** (the Frieren-S3 shape); One Piece Fan Letter and Babylon 5
+  list none and still reject.
+- A dated candidate beyond tolerance **queues, never rejects** (*cocoon* at
+  523 d is the correct film — TMDB dates the theatrical release, AniList the
+  broadcast).
+- The release-year rung is **gated to movie-kind candidates in code** — for a
+  series a ±1 production year is nearly free and an ungated rung wrote
+  coincidental TV siblings in as accepted fact.
+- `pickCandidate` applies the same evidence to title collisions (dated-within
+  exacts by distance first — DIVE IN! shipped its 167 d sibling while the
+  16 d one sat second in TMDB's popularity order).
+- There was an `isRelation` guard rejecting results related to the entry; it
+  was wrong and was removed (sequel→parent is *correct* — TVDB/TMDB put
+  seasons inside one series). Don't reintroduce a title or relation heuristic
+  without re-measuring.
 
-| entry → result | episode | days off |
-|---|---|---|
-| Thunderbolt Fantasy Sword Seekers 4 → Thunderbolt Fantasy | S4E1 | 0 |
-| Bananya Around the World → Bananya | S3E1 | 1 |
-| Frieren …no Mahou Part 3 → Frieren | S2E1 | 3 |
-| ONE PIECE FAN LETTER → One Piece | S21E194 | 329 |
-| Star Wars: Visions Vol 3 → **Star Wars Rebels** | S4E14 | 2,795 |
-| 5-Oku-nen Button Part 2 → **Babylon 5** | S5E22 | 9,441 |
-
-**The search response also carries `PremiereDate` at day precision**, and for
-months only the year was kept — the difference was the Echo bug: an exact-title
-film 1,012 days from the entry's premiere was accepted while the day refuting
-it sat unread in the same response. Measured over all 270 unconfirmed remote
-rows (391 real searches, 224 datable): correct picks land ≤31d from the AniList
-premiere, wrong ones 62–21,929d — the same separation as the library air-date
-tier, available without holding the show. 37/40 exact-title film accepts and
-43/45 TV ones verify; 14 of the 105 queued rows resolve only this way (TMDB
-files them under localized English titles — text can never match, the date is
-a fingerprint).
-
-The ladder (`verdictFor`, which also names the rung so the stored note can
-never drift from it): exact title the premiere date confirms → accept
-(`premiere date Nd`); exact title with no date on either side → accept
-(`exact title`); an exact title the date *refutes* falls through — never a
-blind accept; **a TVDB season premiere within tolerance → accept**
-(`tvdb season premiere Nd`) — checked *before* the held-library rung on
-purpose, because held episodes are stale by construction for a season nobody
-has grabbed yet, and that staleness rejected Ranma S3's correct parent at 287d
-while TVDB had S3E1 on the entry's premiere day; in the library and within
-`AIR_DATE_TOLERANCE_MS` → accept (`air date Nd`); in the library and beyond it
-→ **reject** — softened to queue while TVDB lists an *undated future season*
-(the Frieren-S3 shape: measured, ~14 correct parents per two years were being
-rejected pre-airing, exactly the window a Sonarr request needs the id in; One
-Piece Fan Letter at 329d and Babylon 5 at 9,441d list no such season and still
-reject); any candidate whose premiere lands within tolerance → accept
-(`premiere date Nd`); a dated candidate beyond it → queue — **never reject**,
-because *cocoon* (523d off) is the correct film with TMDB dating the
-theatrical release where AniList dates the broadcast; a film whose release
-year is within ±1 → accept (undated rows only now — the date blocks a year the
-day already refuted); otherwise → queue.
-`pickCandidate` applies the same evidence to title collisions: dated-within
-exacts by distance (DIVE IN! shipped its 167d sibling while the 16d one sat
-second in TMDB's popularity order), then any dated-within candidate, then
-undated exacts tie-broken by year.
-The year rung is **gated to movie-kind candidates in code** (`kind` is a
-required `verdictFor` input, as is `premiereDeltaMs`), because for a series a
-±1 production year is nearly free — TMDB's Year-filtered search hands back
-same-year works — and an ungated rung wrote coincidental TV siblings into the
-identity table as accepted fact. And an accept decided on title text or
-release year alone — the rungs no date ever vouched for — **stays reachable on
-`/admin/matching`** behind the "+ resolver accepts" filter (the admin trusts
-these, so they are deliberately NOT in the default queue; what the audit fixed
-was their being *invisible*, and low-priority-but-reachable is the shape the
-admin asked for). Air-date and premiere-date accepts skip even that view.
-Rows stored before candidates carried premiere dates are re-graded by a capped,
-self-terminating sweep pass (`regradeStoredRows` — the marker is the
-`premiereDate` key's absence from stored candidates); it never touches
-confirmed/rejected/manual rows and flags rather than wipes.
-
-**The top five candidates are kept, not just the winner.** A search returns
-one result most of the time and up to twenty for a franchise name (`Sylvanian
-Families`, `Ahiru no Sora` — whose alternatives include *Yosuga no Sora* and
-*Tsui no Sora*); the alternatives are exactly the rows a human needs to
-disambiguate, and TMDB orders by relevance so the tail past five is noise —
-the cap is deliberate and commented at the `slice` in `searchOne`. (This
-paragraph said "every candidate" while the code kept five; the docs were the
-thing that was wrong.) They are
-stored as JSON on `SeriesIdentity.candidates` and `/admin/matching` renders a
-picker defaulting to the resolver's own choice, so the common case stays one
-click. A row with more than one candidate stays in the review list **even when
-the air-date gate accepted it** — that is the case where the gate is most likely
-to have picked a plausible wrong answer.
-
-Every resolver row shows its provenance — an `our lookup` badge plus the rung
-that accepted it (`exact title`, `air date 3d`, `premiere date 0d`,
-`release year ±0`, `unverified`).
-An id we looked up ourselves is not the same kind of fact as one from the map,
-and the UI must not present it as though it were.
-
-**There was an `isRelation` guard rejecting results that matched a work AniList
-calls related. It was wrong and was removed.** Mapping a sequel to its parent
-series is *correct* — TVDB/TMDB put seasons inside one series — and it rejected
-`Bananya Around the World → Bananya`, which lands 1 day off. Relation type does
-not separate right from wrong; air date does. Don't reintroduce a title or
-relation heuristic without re-measuring.
+**The top five candidates are kept, not just the winner** (TMDB orders by
+relevance; the tail past five is noise — commented at the `slice` in
+`searchOne`), stored as JSON on `SeriesIdentity.candidates`; `/admin/matching`
+renders a picker defaulting to the resolver's choice, and a multi-candidate
+row stays in review even when the air-date gate accepted it. Every resolver
+row shows provenance — an `our lookup` badge plus the rung that accepted it —
+because an id we guessed is not the same kind of fact as one from the map.
+Accepts decided on title text or release year alone stay reachable behind the
+"+ resolver accepts" filter (deliberately not in the default queue; their
+being *invisible* was the audited bug). Rows stored before candidates carried
+premiere dates are re-graded by a capped, self-terminating sweep pass
+(`regradeStoredRows`); it never touches confirmed/rejected/manual rows.
 
 #### Films are resolved against films — `jellyfinFilmIndex`
 
-`getSeriesLibrary` fetches `IncludeItemTypes=Series`, so a film's id could never
-match and the lookup **fell through to title-matching a list of TV shows**.
-Measured over 8 seasons that produced **26 category errors** — `The Last Blossom`
-→ *House*, `ChaO` → *ChäoS;Head*, `Demon Slayer: Infinity Castle` → the
-television series — against exactly **1** case where the fall-through found
-something the air date accepted. It also left **7 films we own** unreachable.
+`getSeriesLibrary` fetches Series only, so a film's id could never match and
+the lookup used to fall through to title-matching TV shows — measured: **26
+category errors** (`The Last Blossom → House`) against 1 lucky hit, and 7
+held films unreachable. A `movie`-kind identity now resolves via a TMDB-id →
+item **index** (`lib/jellyfinFilmIndex.ts` → `AppConfig.jellyfinFilmIndex`,
+6 h TTL, persisted, stale-while-revalidate, warmed at boot). Deliberately an
+index and not a second matchable corpus: films are only ever looked up by id,
+so titles are never compared — the error class is removed, not re-tuned. Its
+cold-path coalescing is unit-tested (check-and-set with nothing awaited
+between; the first shape raced and was watched to fail). **When the film
+isn't there, that is the answer** — no title fallback; `finishEpisode`
+already returns the right shape for a movie item.
 
-So a `movie`-kind identity is looked up in a separate **id index**
-(`backend/src/lib/jellyfinFilmIndex.ts` → `AppConfig.jellyfinFilmIndex`, TMDB id
-→ item, 6 h TTL, persisted and stale-while-revalidate like everything else
-here). Deliberately an index and not a second matchable corpus: films are only
-ever looked up by id — every film we resolve has one — so titles are never
-compared, which removes the entire error class rather than re-tuning it.
-It lives in `lib/` with an injected fetch/persistence seam because its
-coalescing is unit-tested: the in-flight guard's check-and-set must have
-**nothing awaited between them**, or two callers racing through the cold path
-(the availability batch runs a concurrency-5 pool) each start their own
-~6,600-item scan — the first shape did exactly that, and the test was watched
-to fail against it. Warmed **immediately at boot** (not on the sweep's 90 s
-delay): a restart is answered by the persisted copy, and the boot warm closes
-the remaining first-ever-deployment window where a movie lookup paid for the
-whole fetch.
-
-**And when the film isn't there, that is the answer.** No title fallback. A film
-has no business being fuzzy-matched against television. `finishEpisode` already
-returns the right shape for a movie item (its own id, season/episode null), so
-playback needed no changes.
-
-Two tiers, and **both are permanent**:
+#### The two availability tiers — both permanent
 
 1. **id** — AniList id → TVDB id (community map from `Fribb/anime-lists`,
-   ~7.2k pairs, cached in `AppConfig`) → a library series carrying that TVDB id.
-   Exact.
-
-   **Nothing on the request path waits for it.** It is a 7.5 MB download from
-   GitHub, and `resolveAvailability` used to `await` a refresh of it, so the
-   first availability lookup after a restart with an expired map paid for the
-   whole thing — a third party's latency sitting directly between a viewer and
-   the Watch button. It is now refreshed at boot and on a daily timer with
-   `If-None-Match`, which is nearly always a 304 (the map changes rarely, and
-   `touchFetchedAt()` resets the timestamp without re-storing 7.5 MB). Measured:
-   first request after a restart with a 2-hour-stale map went from blocking to
-   **110ms**, with the id tier recovering ~8s later in the background.
-
-   The catch that came with it: a lookup running *before* the map loads matches
-   by title only, and `rememberAvailability` was then caching that answer for an
-   hour — pinning a degraded result long after the map arrived. It now refuses
-   to cache unless `anilistTvdbMapReady()`.
-   **TMDB rides along.** `themoviedb_id` in the map is an object —
-   `{"tv": N}` or `{"movie": N}` (7084 / 1356 rows), never a scalar; parsing it
-   as one stringifies to `"[object Object]"` and yields zero matches while
-   looking like it worked. The kind is stored with the id (`tv:123`) because TMDB
-   numbers films and shows independently, so a film's id could otherwise collide
-   with a series'. Jellyfin carries `Tmdb` on 2252 of 2271 series and 6618 of
-   6638 films. It adds only **3 availability matches out of 945** — TV coverage
-   is near-identical to TVDB's — but it is the only usable id for movies (43 of
-   117 corpus films vs TVDB's 4) and it gives the id tier redundancy: nulling
-   `tvdbId` alone no longer disables the tier, which invalidated a mutation row
-   until it was corrected.
+   ~7.2k pairs, cached in `AppConfig`) → a library series carrying that id.
+   **Nothing on the request path waits for the map**: it is refreshed at boot
+   and daily with `If-None-Match` (usually a 304), never awaited by
+   `resolveAvailability` — a viewer used to pay for the whole 7.5 MB download
+   after a restart (fixed: 110 ms, id tier recovers ~8 s later in the
+   background). `rememberAvailability` refuses to cache until
+   `anilistTvdbMapReady()`, or a title-only answer computed before the map
+   loaded gets pinned for an hour. **TMDB rides along**: `themoviedb_id` in
+   the map is an object (`{"tv": N}` / `{"movie": N}`), never a scalar —
+   parsing it as one stringifies to `"[object Object]"` and silently yields
+   zero — and the kind is stored with the id (`tv:123`) because TMDB numbers
+   films and shows independently. It adds only 3/945 TV matches but is the
+   only usable id for movies, and it makes the id tier redundant to a single
+   nulled column.
 
 2. **title** — the Unicode-aware fuzzy matcher: NFKD, strip diacritics, keep
    letters/digits of **every** script, then exact > prefix with length/ratio
-   guards. Only consulted when **no id is known at all** — 65 of 945 corpus
-   entries, and nothing else could have found them. Do not "simplify" `normalizeTitle` to `[a-z0-9]`: that reduced
-   「転生貴族、鑑定スキルで成り上がる 第3期」 to `"3"`, which then matched
-   *30 Rock*.
+   guards. Consulted only when **no id is known at all** (65 of 945 corpus
+   entries — nothing else could find them). Do not "simplify"
+   `normalizeTitle` to `[a-z0-9]`: that reduced a native-script title to
+   `"3"`, which matched *30 Rock*. **There is no contains-anywhere tier**:
+   the one that existed fired 9 times over 6 seasons and was wrong all 9,
+   structurally (no threshold separates the pairs — evidence and the four
+   fixture pairs live in `animeMatch.test.ts`, watched to fail with the tier
+   restored).
 
-   **There is no contains-anywhere tier, and adding one back needs a
-   measurement, not a threshold.** There was one (`shorter >= 6 && ratio >=
-   0.4`). Measured against the real library across 6 seasons of AniList data
-   (696 shows) it fired **9 times and was wrong all 9** — *Agents of the Four
-   Seasons* → the live-action *The Four Seasons (2025)*, *Record of Ragnarok* →
-   the Norwegian drama *Ragnarok*, *Kingdom Season 6* → *The 10th Kingdom*, plus
-   spin-offs and movies pointed at the TV series they are named after. The
-   failure is structural rather than a bad constant: the *Four Seasons* pair sat
-   at exactly the 0.4 floor while wronger ones sat above it, so no threshold
-   separates them. A short standalone title appearing inside a longer, different
-   one is not evidence. Removing it left exact (157) and prefix (61) untouched.
-   `animeMatch.test.ts` keeps those four pairs as fixtures, and that test was
-   watched to fail with the tier restored.
+The id tier finds a strict **subset** of what titles find; its value is
+**confidence**, not reach. Coverage is uneven by *format*, not season age:
+94% of TV entries have a TVDB id (81% even mid-season) but ONA is 40%,
+TV_SHORT 32%, MOVIE 3%, OVA 1%. The response says `matchedBy`; the pop-up
+marks title-only matches unconfirmed; bulk actions refuse to act on them.
 
-Measured over a full season against the real library, the id tier finds a
-strict **subset** of what titles find (35 vs 45 of 52) — it adds no reach,
-because community id coverage is uneven by *format*, not by season age. Measured
-over 8 seasons: **94% of TV** entries have a TVDB id — even the currently-airing
-season is 81% — but ONA is 40%, TV_SHORT 32%, MOVIE 3% and OVA 1%. An earlier
-note here claimed "~55% two months out"; that was never measured and is wrong.
-Its value is **confidence**: the response
-says `matchedBy`, the pop-up marks title-only matches as unconfirmed, and bulk
-actions refuse to act on them. That matters — fuzzy matching produced a real
-false positive (AniList's 2026 *Mahou Shoujo Lyrical Nanoha EXCEEDS* matching
-the library's 2004 *Magical Girl Lyrical Nanoha*).
+#### Jellyfin identification is controlled by `tvshow.nfo`, not folder names
 
-**Jellyfin's matching is controlled by `tvshow.nfo`, not by folder names.**
-The Anime library reads local metadata first — `LocalMetadataReaderOrder:
-['Nfo']`, always on, no UI toggle (the "Metadata savers" checkbox is the
-opposite thing: it makes Jellyfin *write* NFOs, which would fight Sonarr —
-leave it empty). Its remote fetchers are TheMovieDb/OMDb and
-`EnableInternetProviders` is false, so the NFO is effectively the only source
-of truth for identification.
+The Anime library reads local metadata first (`LocalMetadataReaderOrder:
+['Nfo']`, always on — the "Metadata savers" checkbox is the *opposite* thing:
+it makes Jellyfin WRITE NFOs, which fights Sonarr; leave it empty), and its
+remote fetchers are disabled, so the NFO is effectively the only source of
+identification. Sonarr → Settings → Metadata → **Kodi (XBMC) / Emby** writes
+those files and refreshes them on its daily scan; Radarr ditto for movies.
+Enabling it + Refresh Series backfilled 833/836 anime folders and dropped
+stored-id/NFO disagreements from 46 to 0, fixing shows matched to entirely
+wrong series. No folder renaming, no watched state touched.
 
-Sonarr → Settings → Metadata → **Kodi (XBMC) / Emby** writes those files, and
-refreshes them on its daily scan, so this stays true for new series without
-anyone doing anything. Radarr does the same for movies. Enabling it and
-running System → Tasks → Refresh Series backfilled 833/836 anime folders;
-Jellyfin's realtime monitor then re-read them on its own and **46 series whose
-stored id disagreed with their NFO dropped to 0**, correcting shows that had
-been matched to entirely the wrong series (`Demon Lord 2099` → *How Not to
-Summon a Demon Lord*, a long `The 100 Girlfriends…` folder → *The Mentalist*)
-and identifying ones it had given up on. No folder renaming, no watched state
-touched in either server.
+Folder-name id tags are a red herring here, but the syntax differs by server
+and is worth knowing: **Plex** reads `{tvdb-12345}` (curly, no `id`) plus
+`.plexmatch`; **Jellyfin** reads `[tvdbid-12345]` (square, with `id`) and
+ignores `.plexmatch`. This library's folders mostly carry `[tvdb-12345]`,
+which matches *neither* — those tags do nothing on either server.
 
-Folder-name id tags are a red herring here, but the syntax is worth knowing
-because the two servers disagree: **Plex** reads `{tvdb-12345}` (curly, no
-`id`) plus `.plexmatch` files, which is what has kept Plex's matching accurate
-— it has one in 835/836 folders. **Jellyfin** reads `[tvdbid-12345]` (square,
-with `id`) and ignores `.plexmatch` entirely. This library's folders mostly
-carry `[tvdb-12345]`, which matches *neither*, so those tags do nothing on
-either server.
-
-**When measuring any of this, compare ids, not names, and scope to the seasons
-the app shows.** Comparing folder names to titles gives a false all-clear (it
-cannot see a folder whose tag says one show and whose stored id says another).
-And a library-wide count is misleading: 59 tag/id disagreements across the
-whole library was 7 within the two-year window the app actually queries, of
-which 2 mattered. `tools/check_match_corpus.py` measures the thing that counts
-— how a real season resolves end to end. Such a tool must mirror the shipping
-logic exactly, fallbacks included; one that measures a simplified version of
-the code reports on a program you don't ship.
-
-**It sends `fresh: true` AND `startDate`, and neither is optional — each one
-cost a wrong conclusion.**
-
-- Without **`fresh`** every answer comes from the per-mediaId availability cache,
-  so the tool grades a recording of an earlier run instead of the matcher: a
-  matching change shows up as a no-op and a fixed false positive is still
-  reported. Same trap `test_jellyfin` fell into once the cache survived restarts.
-- Without **`startDate`** the air-date tier in `getFirstEpisode` never runs — it
-  is gated on `if (airDateMs != null)` — so the guard that rejects a franchise
-  sibling is silently disabled and the tool reports false positives the real
-  frontend never shows. Measured: 20 title-only matches with it off, 12 with it
-  on. `stores/jellyfin.ts` sends it, so anything measuring the matcher must too
-  or it is grading a different program.
-
-The general rule both cases teach: a diagnostic that doesn't send what the real
-caller sends is measuring something you don't ship.
+**When measuring any of this, compare ids (not names), scope to the seasons
+the app shows, and send what the real caller sends.**
+`tools/check_match_corpus.py` measures the thing that counts — how a real
+season resolves end to end — and it sends `fresh: true` AND `startDate`
+because each omission produced a wrong conclusion (the rows in *Measure
+before claiming* above): without `fresh` it grades a recording of an earlier
+run; without `startDate` the air-date tier is silently disabled and it
+reports false positives the real frontend never shows (20 vs 12 measured).
 
 ### Rate limiting
 
@@ -1104,330 +859,134 @@ and may branch on `data.code` for programmatic handling.
 - `POST /api/translate/batch`                   — trigger batch pre-translation; admin only, JWT required
 - `GET /api/translate/batch/status`             — batch job progress/logs; admin only
 
-Both check and stream endpoints query `SubtitleCache` first. On a cache hit,
-`/stream` sends a `{cached: true}` SSE event followed by all segments
-instantly (~50 ms). On a miss, the daemon translates and saves to cache on
-completion. Concurrent requests for the same uncached video are deduplicated
-— the second waits for the first to finish.
+Both check and stream query `SubtitleCache` first. On a hit, `/stream` sends a
+`{cached: true}` SSE event then all segments instantly (~50 ms); on a miss the
+daemon translates and caches on completion, and concurrent requests for the
+same uncached video are deduplicated. `/check` returns `{hasEnglish,
+subtitlesDisabled, hasCachedSegments, modelName}` — the first two hide the
+overlay; the last two tell the local script whether to re-translate. Dismiss
+state comes from the CC toggle and persists for all users.
 
-The `/check` endpoint returns `{hasEnglish, subtitlesDisabled,
-hasCachedSegments, modelName}`. If `hasEnglish` or `subtitlesDisabled` is
-true the frontend hides the translated subtitle overlay. The dismiss state
-is set via the CC toggle button (calls `PATCH /dismiss`) and persists for
-all users. `hasCachedSegments` and `modelName` are used by the local
-translation script to decide whether to re-translate.
+YouTube caption control — three paths in `openModal`
+(`AnimeGridTranslate.svelte`), driven by a page-load pre-fetch: `Home.svelte`
+fires `check-batch` right after the anime list loads (~5 ms, DB-only) into
+`prefetchedSubs` + `prefetchComplete`, passed as props to each grid.
 
-YouTube caption control — three paths in `openModal` (`AnimeGridTranslate.svelte`):
+- **A — confirmed English** (`prefetchedSubs.get(id) === true`): instant, no
+  network; YouTube CC starts in English, translation never runs.
+- **B — batch complete, not in map**: iframe opens immediately, Japanese CC is
+  suppressed, translation starts; `/check` re-fires async and switches to
+  YouTube English CC if Python has since confirmed it.
+- **C — batch not yet complete** (clicked within ~5 ms of load): races
+  `/check` against a 150 ms timeout, then behaves like B.
 
-**Page load pre-fetch:** `Home.svelte` fires `GET /api/translate/check-batch`
-immediately after the anime list loads (~5ms DB-only). Returns all video IDs
-with `hasEnglishSubs=1` and queues background Python checks for uncached IDs.
-Results stored in `prefetchedSubs` (`Map<string, boolean>`) + `prefetchComplete`
-boolean, both passed as props to each `AnimeGrid`.
+`check_subtitles()` uses `ytt.list(videoId).find_transcript(['en'])`, which
+sees manually uploaded, auto-generated AND auto-translatable English CC (the
+old `ytt.fetch(languages=["en"])` found only manual tracks).
+`SubtitleCache.hasEnglishSubs` trusts positives forever and negatives for
+**7 days** (`lastEnCheckAt`), so newly added CC is eventually noticed without
+re-checking every play; a cache write never downgrades a stored true.
+`youtube_transcript_api` must be installed locally (`pip install
+youtube-transcript-api`) — without it every check silently returns false.
 
-**Path A — confirmed English (`prefetchedSubs.get(id) === true`):**
-Instant, no network call. `hasEnglishSubs = true` so `onApiChange` skips
-`unloadModule`; YouTube CC starts in English immediately. Translation never starts.
+On-demand translation is a persistent Python daemon
+(`backend/scripts/translate_daemon.py`, Whisper `small` int8); batch
+pre-translation (`backend/scripts/batch_translate.py`) uses `medium` and
+auto-upgrades videos previously translated with `small`, and also pre-checks
+English subs so first play never spawns Python. The live path is CPU-only and
+shares the box with Plex — **all tuning (nice, env knobs, single-ffmpeg-pass,
+playhead start, the per-request timing line, the base-model VAD-poisoning
+quirk) is documented in the daemon's docstring.**
 
-**Path B — batch complete, video not in map (`prefetchComplete === true`):**
-Iframe opens immediately (no wait). `onApiChange` calls `unloadModule` to
-suppress Japanese CC; translation starts. `/check` fires async in the
-background — if Python has since completed and returns `hasEnglish: true`,
-the frontend calls `loadModule` + `setOption` to switch to English CC and
-hides the overlay. The server deduplicates translations so a video is only
-ever translated once; if cached segments already exist the stream returns
-instantly (~50ms).
+**Benchmark / bake-off harness** — `tools/benchmark_whisper_settings.py`
+composes swappable stages from `tools/bench_pipeline.py` (audio → ASR →
+translate → align) so each layer A/Bs in isolation; suites, the real-CC
+corpus, metrics, result-file conventions, and the Windows environment gotchas
+(torchcodec, qwen2.5, qwen-asr, kotoba) are all in its docstring. Data in
+`tools/benchmark_data/` (gitignored); results consolidate into
+`tools/benchmark_results.txt`, one delimited section per suite.
 
-**Path C — batch not yet complete (user clicked within ~5ms of page load):**
-Races `/check` against a 150ms timeout. If check returns fast (cached positive
-in DB), uses the result; otherwise falls through to the same behavior as path B.
+Findings that drive production settings (details in each bench's docstring):
 
-`check_subtitles()` in `backend/scripts/translate_stream.py` uses
-`ytt.list(videoId).find_transcript(['en'])` which detects manually uploaded,
-auto-generated, and auto-translatable English CC — not just manually uploaded
-ones (the old `ytt.fetch(languages=["en"])` only found manually uploaded tracks).
+- **Decode params**: `beam_size=10 + repetition_penalty=1.2 (+vad_min300)` is
+  the best family for *transcribe*; the same params **hurt** end-to-end
+  translate (e2e SCORE 1.0→−1.6) — they interact with the task, which is why
+  only the fully-stacked run found the champion.
+- **Demucs vocal separation helps** (~+6–8 SCORE, ~5–6 pp less hallucination)
+  — but only from full-quality source audio, never the 16 kHz mono input.
+- **Champion (`split_best`)**: vocals → large-v3 `transcribe` (tuned params) →
+  **qwen3.5:9b** translate via Ollama, SCORE 1.9 vs 1.0 end-to-end, better
+  timing and hallucination, more natural English; residual weakness is
+  mis-heard proper names. (qwen3.5:9b beat text-only qwen3:8b — content 57.3
+  vs 53.6 — so it's kept despite its unused ~1.2 GB vision encoder.)
+- **Japanese-specialised ASR lost on this domain**: kotoba-whisper-v2.0 (51.3)
+  and Qwen3-ASR (52.2) both under large-v3 transcribe (55.8) — clean-speech
+  leaderboard wins don't transfer to stylized trailer audio.
+- **Live CPU** (`bench_live_cpu.py`): `small` wins both axes; tiny/base are
+  slower AND worse. Transcription is ~8× faster than playback at 1 thread —
+  the felt latency is the audio download, hence playhead-start and the
+  single-pass download, not model changes.
+- **Download** (`bench_download.py`): the ~1.2 s `worstaudio` baseline is the
+  floor — every player_client override failed or was slower, and aria2c -x16
+  was ~20–28× SLOWER. The cost is YouTube's extraction handshake, not
+  bandwidth; the bench exists to prove there's nothing to chase.
+- **Player startup** (`bench_player.py`): everything except Jellyfin's first
+  HLS segment is under 0.25 s (segment: median 19.9 s cold, range 1.3–30).
+  Our proxy adds ~nothing (0.02 s), the first stream request leaves the
+  browser ~65 ms after the click, and pre-loading more cannot help. Two fixed
+  non-inherent findings: a 30 s proxy idle-timeout that killed slow-but-working
+  streams, and an `await` on the Cast SDK between click and manifest. Two
+  methodology rules learned here: stop each run's encodings before timing the
+  next (or you measure your own load), and measure the fonts the app actually
+  sends, not the first N attachments.
 
-The cache (`SubtitleCache.hasEnglishSubs`) trusts positives forever (English
-CC doesn't get removed from YouTube videos) and trusts negatives for **7 days**
-via `lastEnCheckAt`. After 7 days, a cached `hasEnglishSubs=0` falls through
-to re-run Python so newly-added YouTube CC eventually gets picked up. This
-balances "don't re-check on every play" (rate-limit risk) with "eventually
-notice when CC is added". The cache write never downgrades a stored true to
-false (transient network failure protection).
+The backend auto-scheduler (`index.ts`) runs the medium batch on Wednesdays
+2–4 am when the next season is within **50 days** (once per Wednesday,
+`--cutoff 10`); the local large-v3 GPU script runs every Sunday and covers all
+3 seasons first, so the Wednesday batch is its fallback. A batch run covers
+**only the displayed season** by default (one season's downloads per run avoids
+the YouTube bot wall; `--all-seasons` restores the old sweep). Downloads are
+sequential with `--download-delay` (default 5 s) and the run **aborts on a
+bot-challenge** (`_is_bot_block`) instead of hammering on.
 
-`youtube_transcript_api` must be installed locally (`pip install youtube-transcript-api`)
-for the English sub detection to work in dev. It is pre-installed in Docker.
+Chunking ramps 5 s, 5 s, 10 s, 10 s, then 20 s from second 0. On-demand uses
+`beam_size=1, condition_on_previous_text=False` for speed; batch `beam_size=5,
+condition_on_previous_text=True` for quality. All calls use
+`word_timestamps=True` and take segment starts from `words[0].start`, which
+kills the pre-speech lead-in. Subtitle timing syncs to the YouTube iframe's
+`currentTime` and respects play/pause.
 
-On-demand translation uses a persistent Python daemon
-(`backend/scripts/translate_daemon.py`) with the `small` Whisper model
-(int8) for fast live results. Batch pre-translation
-(`backend/scripts/batch_translate.py`) uses the `medium` model (int8) for
-higher quality and automatically upgrades videos previously translated with
-`small`. The batch also pre-checks English subtitles and caches
-`hasEnglishSubs` to avoid a Python spawn on first play.
+Python deps: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`, system
+`ffmpeg`. Both `small` and `medium` are pre-downloaded in the Docker image.
 
-**Live path is CPU-only and shares the Unraid box with Plex** (which transcodes
-most of the time, ~5 GB RAM free), so the daemon is tuned to be cheap and a good
-neighbour rather than to max the cores:
+**Local GPU translation** — `tools/local_translate.py` runs the champion split
+pipeline on this PC (requirements, pipeline, Ollama management, and fallback
+behaviour are in its docstring) and uploads as **`large-v3-split`** (rank 6,
+above plain `large-v3`, so older results auto-upgrade on the next run; use
+`--force` to re-do everything). Operational facts that live nowhere else:
 
-- `os.nice(10)` at startup (Linux) so Whisper yields CPU to Plex.
-- Env knobs (apply bench winners without code changes): `WHISPER_LIVE_MODEL`
-  (default `small`), `WHISPER_LIVE_THREADS` (CTranslate2 `cpu_threads`; **default
-  2** — benchmarked sweet spot, `0`=CT2 default), `WHISPER_LIVE_WORKERS`
-  (max concurrent, default 2),
-  `WHISPER_LIVE_IDLE` (idle-exit seconds), `WHISPER_LIVE_NICE`.
-- **Single ffmpeg pass:** the live `download_audio(..., as_wav=False)` keeps the
-  native audio (no whole-file WAV transcode); `extract_chunk` slices 16 kHz-mono
-  chunks straight from it with `-threads 1`. (Batch still uses `as_wav=True` for
-  its full-audio pass — unchanged.)
-- **Playhead start:** `/api/translate/stream?start=<sec>` makes the daemon begin
-  at the viewer's current position (`generate_chunks(duration, start)`) instead of
-  second 0, so it doesn't translate already-watched audio. The frontend
-  (`AnimeGridTranslate.svelte`) sends `start` only when the playhead is >3 s in;
-  the common open-from-start case stays `start=0`. **`start>0` runs are partial
-  and NOT cached** (the batch produces the complete cached version) — gated by the
-  `cache` flag on `pendingSegments` in `translate.ts`.
-- The daemon logs a per-request timing line to stderr (→ backend console):
-  `[daemon] <vid> model=… thr=… start=…s dur=…s dl=…s ttfs=…s total=…s segs=…`,
-  so live latency is observable and comparable across pipeline changes.
-- faster-whisper 1.2.1 quirk: a `vad_filter` pass that finds no speech (common on
-  a trailer's silent first 5 s) can poison **later** transcriptions on the same
-  `base`-model instance; `small` recovers, so the production daemon (small) is
-  safe. If `WHISPER_LIVE_MODEL` is changed to `base`/`tiny`, the daemon would need
-  a fresh model per request (the bench loads fresh per video for this reason).
+- Phase-1 downloads are **serial** with a delay (`--download-delay`, 5 s) —
+  parallel downloads tripped YouTube's bot wall, so `--download-workers` is
+  ignored; a bot-challenge aborts the run. YouTube auth via `--cookies
+  <cookies.txt>` (Netscape format; `--cookies-from-browser` fails on modern
+  Edge/Chrome — App-Bound Encryption, yt-dlp #10927).
+- Seasons process one at a time; long trailers sub-batch in the translator
+  (≤20 lines per Ollama call) and untranslated lines retry.
+- VRAM (10 GB): the season run is **phased** — separate-all (Demucs) →
+  transcribe-all (Whisper, then freed) → translate-all — so only one model is
+  GPU-resident (~6.4 GB peak vs ~9.8 co-resident) and each loads once.
+  `run_phased()` owns this; the legacy per-video fallback path is Whisper-only.
+- `large-v3-turbo` benchmarks comparable content with slightly more
+  hallucination (suite `turbocmp`); it's ~4–8× faster via `--model` if speed
+  ever matters.
 
-`local_translate.py` uses `beam_size=10` (benchmarked on full Summer 2026
-trailers; beam_10 captured most of the quality gain over the default beam_5
-with diminishing returns beyond beam_10 — see the bake-off harness below).
-
-**Benchmark / pipeline bake-off harness.** Data lives in `tools/benchmark_data/`
-(gitignored). All results go to **one consolidated file `tools/benchmark_results.txt`**
-with a delimited section per suite (`@@@ BENCHMARK SUITE: <name> @@@`); each run
-**replaces only its own suite's section** (others left intact — no proliferation of
-ad-hoc result files). `--output` overrides the path. The harness
-`tools/benchmark_whisper_settings.py` composes swappable pipeline stages from
-`tools/bench_pipeline.py` (audio source → ASR → optional translate → optional
-align) so each layer can be A/B'd in isolation. A variant is a *pipeline spec*;
-related variants are grouped into **suites** run via `--suite` (`baseline`,
-`phase1`…`phase4`, `champion`, `qwen38`/`qwen359` translator A/B, `turbocmp`
-large-v3-vs-turbo). ASR outputs are
-cached to `benchmark_data/<vid>/cache/` keyed by audio+model+decode-args, so re-runs
-and translator-only sweeps don't recompute transcription (`--no-cache` to force).
-
-Corpus: 11 Summer 2026 trailers with **real timestamped English CC** fetched via
-`youtube_transcript_api` (`--refetch-cc`) — *not* yt-dlp VTT, which silently
-returned empty files and made the harness fall back to fabricated even-spaced
-timestamps. One video (`OMCPr9YwHdM`) is excluded (auto-generated CC that doesn't
-match its audio). Data-prep flags: `--download` (16 kHz mono for Whisper),
-`--download-hq` (best-quality source for Demucs), `--refetch-cc`,
-`--refetch-cc-ja` (Japanese CC as an alt translation input). Metrics per variant:
-`overlap` (±4 s semantic similarity vs CC), `timing` (mean segment-span IoU),
-`content` (timing-independent best-match similarity — judges text quality when
-timestamps are unreliable), `halluc` (% segments <0.25 sim), `SCORE = overlap −
-halluc`.
-
-**Live CPU benchmark** (`tools/bench_live_cpu.py`, suite section `live_cpu`).
-Separate harness for the on-server live path: sweeps model `{tiny,base,small}` ×
-`cpu_threads {1,2,3,4}` over the same corpus and reports **TTFS** (extract+
-transcribe of the first 5 s chunk — the latency the viewer feels), `total`
-wall-clock, `xRT` (total/audio-len), `cpu_s` (process CPU-seconds = the
-Plex-contention cost, rises with threads), `rss_mb`, plus `content`/`halluc` as a
-quality floor so we don't ship gibberish (`tiny` is ~97% halluc — unusable). It
-loads a **fresh model per video** (timing excludes load; also dodges the
-`base`+VAD poisoning quirk above). **Benchmark on the dev PC, not the server**
-(the server runs prod and can't be tested on) — this PC's CPU is faster per-core
-than the i5-10400 and isn't Plex-contended, so treat absolute numbers as
-optimistic and prefer **relative** ranking + low thread counts; quality numbers
-transfer exactly.
-
-Finding (suite `live_cpu`, 2026-06): **`small` wins on both axes — keep it.**
-`tiny`/`base` are *slower* in total wall-clock (they hallucinate into repetition
-loops) *and* far worse quality (`tiny` 86–93% halluc = garbage, `base` 63% vs
-`small` 47%). There is no faster CPU model to switch to for ja→en. And
-transcription is **not** the bottleneck: `small` at 1 thread already runs at
-xRT ≈ 0.13 (≈8× faster than playback), so thread count only shifts TTFS by ~1–2 s
-while doubling `cpu_s` per extra thread. The latency the viewer feels is the
-**audio download**, which the bench excludes — hence the pipeline changes (native
-single-pass download, playhead `start`) target the right thing, not the model.
-`word_timestamps` is kept on despite a ~10–20% cost: transcription is already far
-ahead of playback, and it trims the pre-speech lead-in (better subtitle timing).
-
-**Download** (suite `download`, `tools/bench_download.py`): the audio download is at
-its floor — **no config beats the ~1.2 s `worstaudio` baseline**, and overriding the
-yt-dlp `player_client` is *risky*: `ios`/`tv`/`web_safari` all failed (6/6 — PO-token
-gated in 2026), `concurrent_fragments` and a specific opus itag were slightly slower,
-and **`aria2c -x16` was ~20–28× slower** (≈32 s vs 1.2 s). Multi-connection is
-pointless on a 0.3–0.6 MB file whose cost is YouTube's extraction handshake, not
-bandwidth. So `download_audio` stays on the plain default client and there's no
-aria2c in the image — the bench exists to prove there's nothing to chase here.
-
-**Player startup** (suite `player_startup`, `tools/bench_player.py`): times every
-stage between pressing Watch and a decoding video, through the SaltyChart proxy
-**and** directly against Jellyfin so the proxy's own cost is separable. It plays
-what `/api/jellyfin/playback` names (`transcodingUrl`) and *follows the
-manifests* rather than hand-building segment URLs — an earlier version assembled
-`?videoCodec=h264&…` itself and ended up benchmarking a stream shape the app no
-longer requests. HLS URIs are relative to their own playlist, so they are
-resolved against it; joining them to the proxy root gives a 404 that reads as an
-empty playlist. Sessions are torn down by `playSessionId` through the app's own
-stop endpoint — killing by `deviceId` would take out every SaltyChart encode on
-the server, including a real viewer's. Findings over 4 cold runs against the
-real library (taken before burn-in; the subtitle and font rows it used to
-measure are gone with the client-side renderer):
-
-| stage | median | range |
-|---|---|---|
-| `/playback` metadata | 0.03 s | 0.03–3.20 |
-| master.m3u8 / main.m3u8 | 0.02 s | — |
-| **first HLS segment** | **19.9 s** | **1.3–30.0 s** |
-| segment 1 (steady state) | 0.06 s | — |
-
-So **everything except the first segment is under 0.25 s**, our proxy adds
-nothing measurable (0.02 s proxied vs 0.05 s direct), and client-side work is
-entirely off the critical path. From the click, the first stream request leaves
-the browser at **~65 ms**; that is the whole of what the app contributes.
-Pre-loading more cannot help. (Taken while subtitles were still rendered in the
-browser, which is why the conclusion is worth keeping: even carrying a wasm
-renderer, a subtitle fetch and its fonts, the client was never the bottleneck —
-those rows sat at 0.01–0.08 s against a 19.9 s first segment.) Two things the bench found that were *not* inherent are
-fixed: a 30 s proxy idle-timeout that aborted slow-but-working streams (Jellyfin
-needs up to 50.5 s for a cold first segment), and an `await` on Google's Cast
-SDK sitting between the click and the manifest.
-
-Two methodology notes, both learned by getting them wrong first: **stop each
-run's encodings before timing the next** (Jellyfin's ffmpeg races ahead writing
-the whole file, so leaving them running turns a startup benchmark into a
-measurement of the load the benchmark itself created — the giveaway was a median
-sitting near the max), and **measure the fonts the app actually sends**, not the
-first N attachments, or the number includes the 23 MB Arial Unicode that
-`fontsFor` deliberately excludes.
-
-Key findings (production still uses large-v3 end-to-end `task=translate`; these
-are not yet promoted):
-- **Decode params** (refreshed on real CC): the `beam_size=10` + `repetition_penalty=1.2`
-  family is best; `beam10_rep120_vadmin300` marginally tops it. `no_vad`,
-  `suppress_blank`, `auto_lang` are no better than baseline. `beam_size=10`
-  remains a reasonable default for `local_translate.py`.
-- **Demucs vocal separation helps** (htdemucs, two-stems) — ~+6–8 SCORE, ~5–6 pp
-  less hallucination. *Must separate from full-quality source audio*, not the
-  16 kHz-mono Whisper input (separating mono upsampled audio actually hurts).
-- **Best overall config (suite `champion`): `split_best`** — vocals + large-v3
-  `task=transcribe` with `beam_size=10, repetition_penalty=1.2,
-  vad_parameters.min_speech_duration_ms=300` → **qwen3.5:9b** translate (Ollama,
-  greedy/temp 0). SCORE **1.9** vs end-to-end translate **1.0**, winning timing
-  (52.7 vs 43.6 IoU) and hallucination (34.5% vs 35.7%), matching content. The
-  tuned decode params *help the transcribe path* (rescued the hallucination-prone
-  clips: Tanya −53→+13, Inept Villainess −29→−1) but *hurt* end-to-end translate
-  (e2e SCORE 1.0→−1.6) — they interact with the task, which is why no single
-  earlier phase found this; only the fully-stacked run did. Splitting translation
-  out of Whisper also yields more natural English; its residual weakness is
-  mis-heard proper names.
-- **Japanese-specialised ASR did NOT help on this domain**: kotoba-whisper-v2.0
-  (content 51.3) and Qwen3-ASR-1.7B (52.2) both *lose* to large-v3 transcribe
-  (55.8) — their clean-speech leaderboard CER wins don't transfer to stylized
-  anime-trailer audio (music/SFX/dramatic delivery/proper nouns).
-
-Bench-environment gotchas (Windows, this machine):
-- **Do not leave `torchcodec` installed** — torchaudio≥2.9 routes through it and it
-  hijacks faster-whisper's decoder (gibberish/crash). `separate_vocals` does audio
-  I/O via the ffmpeg *binary* instead.
-- **qwen2.5 produces multilingual word-salad in this Ollama build** (0.30.6) — use
-  qwen3 / qwen3.5; disable thinking (`think:false`).
-- The `qwen-asr` package downgrades transformers (5.5.3→4.57.6); core (faster-whisper,
-  sentence-transformers) still works but verify after install.
-- kotoba can't emit word-level timestamps (distilled → DTW alignment crash) and its
-  chunk timestamps are coarse; Qwen3-ASR needs a separate `Qwen3-ForcedAligner` for
-  timing. Both make them poor subtitle-timing fits regardless of text quality.
-
-The backend includes an auto-scheduler (in `index.ts`) that runs the batch
-script automatically on Wednesdays between 2–4am when the next anime season
-is within **50 days**. The local large-v3 GPU script runs every Sunday (no
-window gate) and handles all 3 seasons first; this medium batch is the
-fallback for anything large-v3 missed. Runs once per Wednesday max, with
-`--cutoff 10` to stop by 10am. No external cron setup needed.
-
-Each batch run covers **only the current-displayed season** by default — so a run
-never hits YouTube with more than one season's worth of downloads (avoids the bot
-wall). `--all-seasons` restores the old prev+current+next sweep; `--season`/`--year`
-overrides to a specific one. Downloads are **sequential with a `--download-delay`
-(default 5 s)** between trailers, and the run **aborts on a YouTube bot-challenge**
-(`_is_bot_block`) instead of hammering the rest — mirroring `local_translate.py`.
-
-Audio is chunked with a ramp-up strategy (5 s, 5 s, 10 s, 10 s, then 20 s)
-starting from second 0. On-demand uses `beam_size=1` +
-`condition_on_previous_text=False` for speed; batch uses `beam_size=5` +
-`condition_on_previous_text=True` for quality. All transcription calls use
-`word_timestamps=True` — segment start times are taken from `words[0].start`
-rather than `seg.start`, which eliminates the pre-speech lead-in that caused
-subtitles to appear before the person actually spoke. Subtitle timing syncs to
-YouTube's iframe API `currentTime` and respects play/pause state.
-
-Python dependencies: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`,
-and system-level `ffmpeg`. Both `small` and `medium` models are
-pre-downloaded in the Docker image.
-
-**Local GPU translation:** `tools/local_translate.py` runs on your PC with
-GPU support (`large-v3` + `float16` on CUDA) and uploads results via
-`POST /api/translate/upload`. Supports `--video` for single videos,
-`--no-upload` for local-only testing, `--dry-run`, `--season` / `--year`,
-and `-u` / `-p` for login. `tools/translate.bat` is a Windows wrapper with
-no `--within-days` gate — it always runs and covers 3 seasons, skipping
-already-cached videos automatically.
-
-The full-audio (large) path uses the **champion split pipeline** (the bake-off
-winner — see the bake-off harness section above): bestaudio → **Demucs vocal
-separation** → large-v3 `task=transcribe` (ja, `beam_size=10,
-repetition_penalty=1.2, vad_min_speech_300`) → **`qwen3.5:9b` translate via
-Ollama** (greedy, anime-title context). Uploaded as **`modelName=large-v3-split`**
-(rank 6, above plain `large-v3`), so existing `large-v3` subs auto-upgrade on the
-next run. Reuses `bench_pipeline.separate_vocals` / `translate_ollama_qwen`.
-(Translator choice: `qwen3.5:9b` benchmarked clearly better than text-only
-`qwen3:8b` — content 57.3 vs 53.6, halluc 34.5% vs 41.0% (suites `qwen359`/`qwen38`),
-so it's kept despite being the Ollama *vision* build whose ~1.2 GB vision encoder
-sits unused in RAM; the LLM itself runs 100% on GPU. `--translate-model` overrides.)
-- The script **manages Ollama**: starts `ollama serve` if it's down and
-  unloads the model + stops the server when finished (leaves the box clean;
-  `--keep-ollama` to skip). If Ollama is unreachable or the model is missing it
-  **falls back to end-to-end Whisper translate** (tagged `large-v3`) so a run
-  never produces nothing. `--legacy-translate` forces the old e2e path.
-- Extra deps on the local box: `pip install demucs` + Ollama with
-  `ollama pull qwen3.5:9b`. **Do not install `torchcodec`** (torchaudio routes
-  through it and it breaks faster-whisper; audio I/O uses the ffmpeg binary).
-  `qwen2.5` is broken in the local Ollama build (word-salad) — use `qwen3`/`qwen3.5`.
-- Phase 1 **downloads run serially** with a delay between trailers
-  (`--download-delay`, default 5 s) — bursty parallel downloads were what tripped
-  YouTube's "confirm you're not a bot" wall, so parallelism was removed (the
-  `--download-workers` flag is now ignored). yt-dlp also gets `sleep_interval_requests=1.5`.
-  On a bot-challenge the run **aborts immediately** (`BotBlockError`) instead of
-  hammering the rest. YouTube auth via `--cookies <cookies.txt>` (Netscape format;
-  `--cookies-from-browser` exists but fails on modern Edge/Chrome — App-Bound
-  Encryption / DPAPI, yt-dlp #10927 — so a cookies.txt export is the reliable path).
-  Seasons are processed **one at a time** (fetch → phase 1/2/3 → next season). Long
-  trailers are **sub-batched** in the translator (≤20 lines/Ollama call) and any line
-  the model leaves in Japanese is retried — prevents the occasional untranslated line.
-- Transcriber: large-v3 is the default. `large-v3-turbo` benchmarks comparable content
-  (56.6 vs 56.8) but slightly more hallucination (suite `turbocmp`); it's ~4–8× faster
-  and available via `--model large-v3-turbo` if speed ever matters.
-- VRAM (10 GB): the season run is **phased** — separate-all (Demucs) → transcribe-all
-  (Whisper, then `del`+`gc.collect()` to free it) → translate-all (translator stays warm).
-  Only one model is GPU-resident at a time, so measured peak is **~6.4 GB** (vs ~9.8 GB
-  if Whisper + the translator co-resided per-video) and each model loads once (no
-  per-video reloads). All inference is on GPU; easyocr (burned-in OCR) on GPU (~1 GB).
-  `run_phased()` in `local_translate.py` owns this; the legacy/fallback per-video path
-  is Whisper-only.
-- To re-translate the back-catalog with the new pipeline, re-run with `--force`
-  (or rely on the rank-6 auto-upgrade for any still tagged `large-v3`).
-
-**Windows Scheduled Task:** "SaltyChart Translate" (`\SaltyChart Translate`
-in Task Scheduler root) runs `local_translate.py` directly every **Sunday at
-5am** using `py -3.13` with server http://192.168.1.2:8085. Note: the task
-calls `local_translate.py` directly, not through `translate.bat`, so changes
-to `translate.bat` do NOT affect the scheduled run — update task arguments in
-Task Scheduler → SaltyChart Translate → Properties → Actions → Edit (requires
-Windows password). The task was created 2026-04-08 with `LogonType: Password`.
-No `--within-days` flag (removed; the script always runs covering 3 seasons).
-`--within-days` never applied to batch_translate.py or the live daemon.
-The Sunday run ensures large-v3 always completes before Wednesday's medium batch.
+**Windows Scheduled Task:** "SaltyChart Translate" runs `local_translate.py`
+directly (NOT through `translate.bat` — editing the .bat does nothing to the
+schedule) every **Sunday 5 am** via `py -3.13` against http://192.168.1.2:8085,
+covering 3 seasons, skipping already-cached videos. Change args in Task
+Scheduler → Properties → Actions → Edit (needs the Windows password; created
+2026-04-08, LogonType: Password). The Sunday run ensures large-v3 completes
+before Wednesday's medium batch.
 
 ### Database schema
 
@@ -1525,7 +1084,7 @@ Path: `frontend/`
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (produces static assets)
 - Preview: `npm run preview`
-- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare, Admin, AdminMatching (`/admin/matching`). The two admin pages share `components/AdminTabs.svelte` and are both gated to the admin user via the `isAdmin` flag on `/api/jellyfin/status` — `stores/jellyfin.ts`. **`/admin/matching`** lists what needs a human for a season — title-only matches, unverified resolver suggestions, multi-candidate lookups, and resolver accepts decided on title text or release year alone (never date-verified) — with a three-mode filter (**"Needs attention"** — the default work queue: title-only matches, unverified suggestions, multi-candidate rows; **"+ unverified auto-matches"** — adds the trusted-but-unverified title-text accepts after the queue, reachable but never demanding review, which is the invariant that matters; air-date and premiere-date accepts skip even that view; **"Everything"**), a per-row **state column** answering the four questions the page exists for at a glance — is it matched, how well, is it not, why not — as a colored verdict (`Matched` / `Matched?` / `Needs review` / `Not in library` / `Not matched` / `Confirmed` / `Rejected`) over a terse reason derived from the stored acceptance rung, so the column can never contradict what verified the match — a date-verified auto-match reads green like a map id; a title-text accept stays blue-unverified (`community-map id` / `auto-match, air date verified (0d off)` / `auto-match, premiere date verified (0d off)` / `auto-match, TVDB season premiere verified (0d off)` / `auto-match on exact title — unverified` / `auto-search found nothing at TMDB or TVDB` / …), with a highlighted `N possible matches` line when the picker has alternatives. The user-facing word is **auto-match/auto-search**, never "resolver", and a **Sonarr-import-style match control** per row: the button shows what the row currently resolves to (pre-populated), and opens a dropdown with its own search box — a name searches Jellyfin's remote providers (prefilled with the entry's title and searched immediately), `tvdb:12345` / `tmdb:12345` resolves a pasted id through the library + community-map cross-walk — listing the resolver's stored candidates first, then live results, each tagged in-library/film/series. Picking **fills, never saves**; a changed selection shows "Confirm saves this as a manual correction" with a reset, and Confirm is the act of agreement. A changed Confirm writes `source:'manual'`; an untouched one preserves the resolver's provenance — the discriminator is selection-vs-baseline, made explicit after a prefill-comparison version relabelled every id-bearing confirm as manual. An id match verified by air date is left alone: that evidence separates right from wrong by three orders of magnitude, and an entry whose known id the library lacks is rejected outright.
+- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare, Admin, AdminMatching (`/admin/matching`). The two admin pages share `components/AdminTabs.svelte`, gated to the admin user via the `isAdmin` flag on `/api/jellyfin/status` (`stores/jellyfin.ts`). **`/admin/matching`** is the human end of the matching pipeline — what needs review for a season, a per-row state verdict derived from the stored acceptance rung (so it can never contradict what verified the match), and a Sonarr-import-style match control where picking fills and only Confirm saves. Its full UI contract — filter modes, provenance rules, the changed-vs-untouched Confirm discriminator — is the header comment in `pages/AdminMatching.svelte`; the resolution rules it fronts are in *Matching AniList entries to the library* above.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
 #### Reading from the API — `src/lib/remote.ts`
@@ -1574,325 +1133,154 @@ gain tonight but consistency.
 
 ### Additional UI features (grouped by surface)
 
-**Global *Options* modal** (gear icon in header). Persists settings in the
-`options` store and syncs with `/api/options` when authenticated, or
-`localStorage` for guests.
-- Theme: `LIGHT`, `NIGHT`, `SYSTEM`, `HIGH_CONTRAST`
-- Title language: English / Romaji / Native
-- Video autoplay toggle
-- Hide-from-Compare toggle (excludes a user's list from public comparisons)
-- Nickname user picker (choose which users' custom nicknames show up in pop-ups)
+**Global *Options* modal** (gear icon in header). Persists in the `options`
+store + `/api/options` when authenticated, `localStorage` for guests. Theme
+(`LIGHT`/`NIGHT`/`SYSTEM`/`HIGH_CONTRAST`), title language, autoplay,
+hide-from-Compare, nickname user picker.
 
-**Season toolbar** (`SeasonSelect.svelte`)
-- Search box (client-side fuzzy filter)
-- Hide 18+ toggle (adult / pornographic tag)
-- Hide sequels & Hide in "My List" toggles
+**Season toolbar** (`SeasonSelect.svelte`): search box (client-side fuzzy),
+Hide 18+, Hide sequels, Hide in "My List".
 
-**Main Anime grid refinements**
-- Series already in *My List* are no longer 50% opaque; instead they get a
-  subtle border highlight so images remain readable.
-- Adult shows display a small "18+" badge.
-- **Progressive loading** (Home): the current-season fetch and the Leftovers
-  fetch each gate only their own sections — the toolbar/headers render
-  immediately, `SkeletonGrid.svelte` shimmer cards hold each section's slot
-  while its fetch is in flight, and one failed fetch shows a per-section
-  error + Retry without blanking the rest. Covers blur-up: the tiny
-  `coverImage.medium` renders blurred underneath while `large` fades in on
-  load (`fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
+**Main Anime grid refinements**: My-List entries get a border highlight (not
+opacity), 18+ badge, **progressive loading** on Home (each section gates only
+its own fetch — skeleton shimmer per section, per-section error + Retry, one
+failure never blanks the rest), covers blur-up (`coverImage.medium` blurred
+under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
 
 **Randomize page**
-- Wheel spin plays a *tick* sound, shows confetti, and displays a spinner
-  overlay while the list loads.
-- Supports ranking *post-watch* lists via drag-and-drop; ranks are persisted
-  in `WatchList.watchedRank` and exposed in compare/randomize pop-ups.
-- Pop-up shows other users' nickname + rank for the selected show (queried
-  via the nickname endpoints) as well as your own.
-- Individual shows can be *hidden* from the wheel via a context-menu (uses
-  the `/api/list/hidden` endpoint and `WatchList.hidden` DB column). The
-  unwatched column also has **Hide All / Show All / Hide Not in Library** —
-  the last hides every visible unwatched entry the library doesn't have, so
-  the wheel only lands on something watchable (shown only when Jellyfin is
-  configured; uses the prefetched availability cache). It never acts on an
-  `unknown` verdict, and `notAired` verdicts neither trigger it nor light its
-  enabled state — they mean "can't exist yet", and recording them as missing
-  once enabled the button on seasons nothing had checked at all. Title-only
-  matches report `available: true`, so it only ever *keeps* an unconfirmed
-  match rather than hiding it.
+- Wheel spin: tick sound, confetti, spinner overlay while loading. Post-watch
+  ranking via drag-and-drop persists to `WatchList.watchedRank`. Pop-up shows
+  other users' nicknames + ranks (nickname endpoints).
+- Hide controls: per-show context menu, plus **Hide All / Show All / Hide Not
+  in Library** (the last only when Jellyfin is configured, using the batch
+  availability cache). Invariants, each with its story commented in
+  `Randomize.svelte` / `stores/jellyfin.ts`:
+  * an `unknown` verdict is never acted on — it means "couldn't ask", and one
+    slow moment must not empty the wheel;
+  * `notAired` neither triggers hides nor lights the button — "can't exist
+    yet" is not "confirmed missing";
+  * title-only matches report `available: true`, so bulk-hide can only ever
+    *keep* an unconfirmed match;
+  * the library lookup has a visible state (`libraryStatus`: idle / checking /
+    ok / unreachable → "Checking your library…" / "Can't reach the media
+    server" + Retry) — an unreachable server used to render identically to
+    "everything you own is in the library";
+  * a failed hide write is put back (`writeHidden` returns the ids that
+    didn't stick, `revertHidden` restores them and says so) — the one failure
+    here that loses state rather than hiding information.
+- "Nicknames from" panel auto-checks users with entries for the current
+  season (`/api/list/users-with-ratings`), re-runs on season change; manual
+  toggles reset on season change.
+- When Jellyfin is configured, the show pop-up gains **▶ Watch here — SxEy**
+  (`JellyfinPlayerModal.svelte`) plus a "Library: <matched title>" caption so
+  a bad match is visible; title-only matches are marked **⚠ unconfirmed**.
+  Season-aware: a "2nd Season" entry resolves to that season's E1 and is
+  honestly unavailable if the library lacks it. Availability for all wheel
+  items comes from **one `/availability/batch` request** through
+  `checkAvailabilityMany()` (`stores/jellyfin.ts`), which omits any entry it
+  couldn't definitely answer — so `?.available === false` refuses to act on
+  an unanswered show.
 
-  Two things about these buttons that were silent and are not any more:
-  - **The library lookup has a visible state.** `libraryStatus` in
-    `stores/jellyfin.ts` is `idle | checking | ok | unreachable`; the page shows
-    "Checking your library…" while it runs and "Can't reach the media server"
-    with a **Retry** when it fails. Before this, an unreachable Jellyfin
-    presented as a page with no Watch buttons and a greyed Hide control — i.e.
-    identical to "everything you own is already in the library", which is a real
-    state and does happen. The button's tooltip now distinguishes the two.
-  - **A failed hide write is put back.** These are optimistic writes fanned out
-    per show, and they used to end in `.catch(() => {})` — so a failure left the
-    wheel showing shows as hidden that the server never accepted, and a reload
-    silently undid them. This is the only failure here that loses *state* rather
-    than merely hiding information. `writeHidden()` returns the ids that didn't
-    stick and `revertHidden()` puts them back with
-    "Couldn't save N of M changes — put back."
-- "Nicknames from" panel auto-checks users who have any entry for the
-  current season/year. Re-runs whenever season or year changes, via
-  `GET /api/list/users-with-ratings`. Manual toggles persist only within
-  the current season view (they reset on season change).
-- When Jellyfin is configured (see `/api/jellyfin` routes), the show pop-up
-  gains a **▶ Watch here — SxEy** button (`JellyfinPlayerModal.svelte`, a
-  lazy-loaded video.js chunk — HLS comes from video.js's bundled VHS, there
-  is no separate hls.js — streaming through the backend proxy) plus a
-  "Library: <matched title>" caption so a bad match is visible; a title-only
-  match is additionally marked **⚠ unconfirmed match**. When the series (or
-  the entry's specific season) isn't in the library a muted "Not in library"
-  note shows instead. **Season-aware**: a "2nd Season" / 「第2期」 entry
-  resolves to that season's episode 1 and is honestly unavailable if the
-  library lacks that season. Availability is prefetched for **all wheel items
-  in a single `/availability/batch` request** when the list loads, so the button
-  appears instantly. "Hide Not in Library" uses the same one-request path. Both
-  go through `checkAvailabilityMany()` in `stores/jellyfin.ts`, which fills the
-  same client cache the pop-up's single-show lookup reads, and which **omits any
-  entry it couldn't get a definite answer for** — so an unanswered show is simply
-  absent, and the `?.available === false` test refuses to act on it.
-- `JellyfinPlayerModal.svelte` is a **thin wrapper around video.js 8**
-  (Apache-2.0), lazy-loaded in its own chunk — keep it that way. video.js
-  owns the control bar, menus, fullscreen, hotkeys and error handling.
-  The wrapper adds only: the HLS source URL, the play-session lifecycle, the
-  JWT on every request (VHS `xhr.onRequest` hook), ASS rendering (below), and
-  the **`]` / `[` keys that step playback speed by 0.10× across 0.2×–4.0×**
-  with a corner flash — every media server's own player is locked to coarser
-  steps, which is the entire reason this player exists. `playbackRates` feeds
-  video.js's speed menu the same steps so the two can't disagree. The speed
-  keys deliberately don't count as user activity: `player.reportUserActivity`
-  is wrapped and gated for ~600ms after a speed change — every activity path
-  in video.js funnels through it, so clearing `userActive` afterwards just
-  loses the race. Only applies when the bar was already hidden, so mouse
-  users are unaffected.
-- Enabled video.js options: `skipButtons` (±10s), `enableSmoothSeeking`,
-  `experimentalSvgIcons`, `persistTextTrackSettings` (video.js stores the
-  viewer's caption styling in localStorage; SaltyChart only seeds defaults —
-  transparent background, white text, uniform edge — when nothing is stored
-  yet), plus a small `:global` style to un-hide the elapsed/duration
-  readouts the default skin suppresses.
+**The player** (`JellyfinPlayerModal.svelte`) — a thin wrapper around
+video.js 8, lazy-loaded in its own chunk; keep it that way. video.js owns the
+control bar, menus, fullscreen, hotkeys, errors. The wrapper adds only: the
+HLS source, the play-session lifecycle, the JWT on every request, and the
+**`]` / `[` keys stepping playback speed by 0.10× across 0.2×–4.0×** — every
+media server's own player is locked to coarser steps, which is why this
+player exists. Speed keys don't count as user activity (the bar stays
+hidden); `playbackRates` feeds the same steps to video.js's menu. Enabled
+options: `skipButtons` ±10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
+`persistTextTrackSettings` (defaults seeded once).
+
 - **Seeking is the browser's job.** Jellyfin's `main.m3u8` is a complete VOD
-  playlist (`#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST`, generated from
-  runtime metadata in ~40ms without waiting on ffmpeg), and the *server*
-  repositions its own transcoder when an out-of-range segment is requested.
-  So there is no client-side reposition machinery — verified by seeking to
-  400s and back to 30s, both resuming unaided. (The previous Plex integration
-  needed ~115 lines here because Plex only produced segments forward from where
-  a session started; that is gone.)
-  What remains is **recovery, not repositioning**. That server-side
-  repositioning races Jellyfin's own segment cleanup on remux/direct-stream
-  jobs (jellyfin#16608), and a burst of scrubbing can leave a session serving
-  nothing at any offset — permanently, because VHS retries a sole playlist
-  forever. So the player rebuilds the stream around a **fresh `playSessionId`**
-  at the viewer's position, at most twice, logging
-  `[player] <reason> — restarting stream at …`.
-  **Two different failures, and they need two different detectors:**
-  - *The clock stops* — nothing arrives at all. 10s without `currentTime`
-    moving.
-  - *The picture stops while audio keeps going.* Reported from the field
-    (pause → seek a few minutes → resume): the video goes black but
-    `currentTime` advances normally, so a clock-watching watchdog sees a
-    healthy stream and never fires. Decoded frames are what actually stop, so
-    this is caught with `getVideoPlaybackQuality().totalVideoFrames` standing
-    still for 8s. Only armed once frames have been decoded at least once, so
-    audio-only sources and the pre-roll can't trip it.
+  playlist and the server repositions its own transcoder on an out-of-range
+  request — there is no client-side reposition machinery. What remains is
+  **recovery**: scrubbing races Jellyfin's segment cleanup (jellyfin#16608)
+  and can wedge a session permanently, so the player rebuilds around a fresh
+  `playSessionId` at most twice. Two distinct failures need two detectors —
+  a stopped clock (10 s without `currentTime` movement) and a stopped *picture*
+  with the clock running (`totalVideoFrames` frozen 8 s — reported from the
+  field; a clock watchdog can't see it). The four load-bearing details
+  (fresh PlaybackInfo, arm only after progress, reset `recoveries` on decoded
+  frames only, re-baseline the frame count after restart) are commented at
+  the watchdog in the component — each one was learned by watching an
+  uncapped restart loop or a false recovery.
+- **Subtitles are burned in by Jellyfin** (`SubtitleProfiles: [{ Format:
+  'ass', Method: 'Encode' }]`), composited on the GPU with libass and the
+  episode's own fonts. This replaced a client-side renderer whose every
+  failure was silent (an opaque canvas over healthy video, a double-unwrapped
+  `.default` downgrading ASS to WebVTT, empty frames reporting success) —
+  pixels can be *tested*, which is what `test_player` step 8 does. Measured
+  cost: +0.4 s first segment, 2–4× smaller segments, zero client code. What
+  it costs: one re-encode generation, and a **stream restart** on any track
+  or quality change (~1.1 s) — every Jellyfin client behaves that way.
+- **Both control-bar menus restart the stream** (subtitles are in the picture,
+  the tier is baked into the encode). Subtitle selection prefers a plain
+  English dialogue track — `sdh|dubtitle|sign|song` set aside, ASS over SRT,
+  the file's `default` flag only breaking ties (releases ship signs-only
+  tracks marked default). **"Off" must be sent as `subtitleStreamIndex=-1`** —
+  omitting the parameter makes Jellyfin pick a default and burn it back in.
+  Quality: auto (the source's own ceiling, from a probe PlaybackInfo), 1080p,
+  720p, 480p. A rebuild **stops the session it abandons** — before that,
+  every track change left an orphan ffmpeg remuxing ~1 GB for nobody, and
+  `/Sessions` can't reveal it (this proxy never reports playback, which is
+  also what keeps it out of watch history). The two bugs that once made
+  restart a no-op (replaying the same URL; the watchdog firing into the
+  deliberate rebuild — hence `RESTART_GRACE_MS`) are commented at
+  `restartStream()`.
+- **Warm-up is two-staged** (`lib/jellyfinPrewarm.ts`): the video.js chunk on
+  landing at `/random` (idle-callback, skipped on saveData/2G — Home browsers
+  never pay for a player they don't open), and the episode's PlaybackInfo
+  when the pop-up opens, cached by itemId+quality+track. **It never touches
+  the HLS manifest** — a pre-started stream would remux a whole episode to
+  disk for a pop-up nobody plays (jellyfin#16608 again). With both, Watch
+  costs only the stream start (~2.4 s, of which ~1.7 s is Jellyfin's segment
+  0). `loadVideoJs()` must stay shared — a private `import('video.js')`
+  wouldn't be covered by the preload.
+- The Watch button shows an "Opening…" spinner while the chunk loads — test
+  player latency on something other than localhost before judging it.
+  Nothing waits on subtitles any more; the only app-owned wait is the
+  "Switching to…" indicator during a genuine rebuild. video.js's big play
+  button is hidden while Jellyfin builds the first segment and reappears only
+  on **`NotAllowedError`** (a real autoplay block needing a click);
+  `AbortError` is routine interruption during rebuilds and must not show it —
+  details at the `sc-autoplay-blocked` handling in the component.
+- Picture-in-picture is disabled. Chromecast is wired
+  (`@silvermine/videojs-chromecast`) but **cannot work over plain LAN HTTP**
+  — the Cast SDK needs a secure context; serving HTTPS lights it up with no
+  code change. The SDK is warmed on `/random` and never awaited (it is the
+  one asset whose latency is someone else's internet).
+- While the player is open, `handleModalKey` is suppressed so Enter can't
+  mark-watched underneath. Playback runs under the configured playback
+  account, so progress never syncs to a viewer's Jellyfin profile.
 
-  Four details are load-bearing, three of them learned by getting them wrong:
-  - It must ask `playbackInfo(..., { fresh: true })`. The cached entry holds
-    the very session being escaped, so a cached restart rebuilds the stream
-    around the dead session.
-  - It only arms **after playback has progressed once**. `paused` goes false
-    the moment `play()` is called, so without that guard a legitimately slow
-    first segment (measured up to 50s on a cold disk) reads as a stall and gets
-    restarted — discarding the ffmpeg that was about to deliver, then doing it
-    again on the retry.
-  - **`recoveries` resets on decoded frames, never on `timeupdate`.** In the
-    picture-stall case the moving clock *is* the symptom, so resetting the
-    retry counter there defeats the cap and restarts forever.
-  - **After a restart, re-baseline the frame count to what the element reports
-    now, not to zero.** A fresh source reports 0 and climbs; a still-wedged one
-    keeps reporting its old total. Zeroing made any stuck non-zero count look
-    like a recovery and reset the cap again.
-
-  Simulating the signature (pinning the frame counter while the clock runs) is
-  how both of those were found — the real failure is intermittent and was not
-  reproducible on demand, and an uncapped restart loop is worse than the black
-  screen it was meant to fix.
-- Picture-in-picture is deliberately disabled. Chromecast is wired up via
-  `@silvermine/videojs-chromecast` (MIT) but **cannot work as deployed**:
-  Google's Cast sender SDK only initialises in a secure context (HTTPS or
-  localhost), and SaltyChart is served over plain HTTP on the LAN, so
-  `window.chrome.cast` never exists and the button never renders. Serving the
-  app over HTTPS lights it up with no code change.
-  **The SDK is never waited on.** It is fetched from gstatic.com — the one
-  asset here whose latency is someone else's internet rather than the LAN — and
-  the player used to `await` it before constructing itself, putting a third
-  party between the Watch click and the first byte of video. It is warmed on
-  the Randomize page (`loadCastSdk()`) and the player only offers casting if
-  `castReady()` is already true.
-- **Subtitles are burned into the video by Jellyfin**, not rendered in the
-  browser. The stream request carries `SubtitleProfiles: [{ Format: 'ass',
-  Method: 'Encode' }]` plus the chosen `SubtitleStreamIndex`, and Jellyfin
-  composites them **on the GPU**: `-hwaccel vaapi` → `subtitles=…:fontsdir=…`
-  → `hwupload=derive_device=qsv` → `overlay_qsv` → `h264_qsv`. It renders with
-  **libass and the episode's own extracted fonts**, so positioning, styling and
-  karaoke survive exactly as they would client-side.
-
-  This replaced a client-side libass renderer (`jassub`), and the reason was
-  reliability rather than bandwidth. Every failure that path had was **silent**:
-  a canvas that painted itself opaque over a healthy video (audio and subtitles
-  fine, picture gone, no error logged anywhere, not reproducible on demand), a
-  double-unwrapped `.default` that downgraded every ASS release to WebVTT, and a
-  missing fallback font that drew empty frames while reporting success.
-  Burned-in subtitles are pixels in the video, so none of those failure modes
-  exist — and for the first time a test can *see* them, which is what
-  `test_player.py` step 8 does by comparing the same frames with subtitles on
-  and off.
-
-  Measured on the live server (i5-10400, UHD 630, QSV enabled), 8 cold sessions
-  across 4 episodes:
-
-  | | remux (previous) | burn-in |
-  |---|---|---|
-  | first segment | 1.16 s | 1.58 s |
-  | bytes per 6 s | 4.6–10.4 MB | 1.1–3.3 MB |
-  | client-side code | jassub, 2 MB wasm, fonts, canvas | none |
-
-  0.43 s per episode to delete the entire class of failure. What it costs: one
-  generation of re-encode, and a **stream restart** whenever the track or the
-  quality changes (~1.1 s to the first segment at the new tier). Every Jellyfin
-  client behaves that way.
-
-  `/api/jellyfin/subtitles` and `/attachments` still exist and are still tested,
-  but nothing in the player calls them any more.
-- **Two control-bar menus, both of which restart the stream.** The subtitles are
-  inside the picture and the tier is baked into what Jellyfin encodes, so
-  neither can be switched client-side — both call `restartStream()`, which
-  resumes at `currentTime` around a **fresh** `playSessionId`.
-  - *Subtitles* — the player registers its own `MenuButton` and removes
-    video.js's `subsCapsButton`; the built-in one can only list text tracks the
-    player owns, and there are none. Track selection prefers a plain English
-    dialogue track: labels matching `sdh|dubtitle|sign|song` are set aside, ASS
-    is preferred over SRT of the same content, and the file's own `default` flag
-    breaks the tie *within* that set rather than deciding on its own — releases
-    do ship with a signs-only track marked default, and some name their tracks
-    uselessly (`1`, `2`, `final`), so codec and flags are what can be trusted.
-    **"Off" must be sent as Jellyfin's `subtitleStreamIndex=-1`**; omitting the
-    parameter makes Jellyfin pick a default track, which with burn-in puts
-    subtitles back on screen for a viewer who just turned them off.
-  - *Quality* — `auto` (the source's own width and bitrate, read from a probe
-    PlaybackInfo call), 1080p, 720p and 480p. Jellyfin never encodes above the
-    source, so `auto` is an honest ceiling rather than a number we invented.
-
-  A rebuild also **stops the session it abandons** (`stopSession`). Closing the
-  modal only ever stopped the *current* one, so before that every track or
-  quality change left an ffmpeg behind — and Jellyfin's writes segments until
-  the whole episode is done regardless of the playhead (jellyfin#16608), so an
-  orphan remuxes a ~1 GB episode for nobody. Note this cannot be checked via
-  `/Sessions`: that lists only sessions a client has *reported*, and this proxy
-  never reports (which is what keeps playback out of watch history), so it shows
-  zero transcodes even mid-playback.
-
-  Two bugs made this a no-op and are worth not repeating: `restartStream()`
-  fetched playback info **without** the current quality or track and never
-  reassigned `transcodingUrl`, so it replayed the very URL it was changing; and
-  the picture-stall watchdog fired 9 s into the deliberate rebuild — frames
-  genuinely stop while a new ffmpeg spins up — and restarted on top of it, so
-  the two raced. Hence `RESTART_GRACE_MS`: `recovering` is cleared when
-  `player.src()` is called, not when frames resume, so it cannot cover that gap.
-- **Player assets are warmed in two stages**, because they divide cleanly by
-  what they depend on (all in `lib/jellyfinPrewarm.ts`):
-  - *Nothing show-specific* — the video.js chunk (0.66 MB built, **1.6 MB
-    unminified from the dev server**). Warmed on **landing on `/random`**, on
-    `requestIdleCallback` so it never competes with the page's own images, gated
-    on Jellyfin being configured and skipped on `saveData`/2G. Not warmed
-    app-wide: someone browsing trailers on Home should not pay for a player they
-    never open. **`loadVideoJs()` must be shared** — the component's own
-    `import('video.js')` inside `onMount` would not be covered by preloading its
-    chunk, since the bulk is the dependency, not the component.
-  - *Per episode* — the episode's PlaybackInfo, warmed by `prewarm()` when the
-    **show pop-up opens** (the earliest point an itemId exists) and cached by
-    itemId, quality and track so repeated wheel spins reuse it. Burn-in leaves
-    nothing else to warm: no wasm, no fonts, no subtitle body.
-  Together, pressing Watch costs only the stream start.
-- **The Watch button shows an "Opening…" spinner while the chunk loads.**
-  Obvious on localhost that it isn't needed, and wrong everywhere else: over a
-  LAN or the web there is a real gap between the click and the modal, and with
-  no feedback the button reads as broken. Test on something other than
-  localhost before judging player latency. Results are cached by itemId, so repeated wheel spins
-  reuse them. **It deliberately never touches the HLS manifest** — Jellyfin's
-  transcode throttling is deprecated and off by default and its ffmpeg writes
-  segments until the file is done regardless of the playhead, so a pre-started
-  stream would remux a whole ~1 GB episode to disk for a pop-up nobody plays.
-  With that split, a Watch click is ~2.4s, of which ~1.7s is Jellyfin producing
-  segment 0; the manifest itself answers in ~30ms.
-- **Nothing waits on subtitles any more.** They arrive inside the picture, so
-  playback starts as soon as the stream does — the "Loading subtitles…" chip,
-  its Play-anyway button and its 20s cap are all gone, and video.js's own
-  loading spinner is left to say what it always honestly said: the stream has
-  not arrived yet. The only remaining app-owned wait is a small "Switching
-  to…" indicator during a track or quality change, which genuinely is a rebuild.
-- **video.js's big play button is hidden**, because `autoplay: false` leaves the
-  player in its not-yet-started state for the 1–30s Jellyfin spends building the
-  first segment, putting a large play button over a video that is already being
-  started for the viewer. It reappears (via a `sc-autoplay-blocked` class) only
-  if `player.play()` rejects with **`NotAllowedError`** — the browser refusing
-  programmatic playback because the gesture that opened the modal is too old,
-  which is the one case where clicking is genuinely required. **`AbortError` is
-  not that**: `play()` rejects with it whenever a `pause()` or a new `load()`
-  interrupts it, which happens on every deliberate rebuild, and treating it as a
-  block put a play button over a video that was already restarting. The `display:
-  none` also carries `!important`, because `player.src()` clears
-  `vjs-has-started` and video.js's own skin then shows the button at equal
-  specificity — leaving it to stylesheet load order.
-- While the player is open `handleModalKey` is suppressed so Enter can't
-  mark-watched underneath. Caveat: playback runs under the configured Jellyfin
-  playback account rather than the viewer's, so progress doesn't sync to
-  anyone's Jellyfin profile — see the account note in *Jellyfin integration
-  routes* above.
-
-**Compare page** (redesigned; mobile + desktop share the same card layout)
-- One card per anime with cover thumbnail, canonical title (de-emphasised),
-  and a 3-column rank strip `[your rank | diff badge | other rank]`. Custom
-  nicknames are the primary typography (bold, up to 2-line clamp); titles
-  are italic/faded secondary info.
-- Sticky username bar pins `[you | other]` to the viewport top while cards
-  scroll beneath. Implementation requires `html, body { overflow-x: clip }`
-  in `app.css` — `overflow: hidden` would create a scroll container that
-  breaks `position: sticky`.
-- Unified controls: season/year row, then a 2-column grid with
-  `{yourName}:` + pre/post selector on the left, and `2nd user:` + combobox
-  + pre/post on the right (bottom-aligned so the two pre/post dropdowns
-  share a row).
-- Default sort is `rankA` (your ranking), not `diff`.
-- Desktop content caps at `calc(100vw - 50rem)` at the 2cols breakpoint
-  (narrower than Home's `-40rem` so the cards don't feel sprawling).
-- Heatmap legend + Share-as-image button retained on desktop only.
-- Can toggle between *pre-watch* order and *post-watch* rank per user
-  independently (you can compare your pre-watch vs their post-watch).
+**Compare page** (mobile + desktop share the card layout)
+- One card per anime: cover, canonical title de-emphasised, 3-column rank
+  strip `[your rank | diff badge | other rank]`; custom nicknames are the
+  primary typography.
+- Sticky username bar pins `[you | other]` while cards scroll. Requires
+  `html, body { overflow-x: clip }` in `app.css` — `overflow: hidden` creates
+  a scroll container that breaks `position: sticky`.
+- Unified controls: season/year row, then `{yourName}:` + pre/post on the
+  left, `2nd user:` + combobox + pre/post on the right. Default sort is
+  `rankA` (your ranking), not `diff`. Desktop caps content at the same
+  `calc(100vw - 40rem)` 2cols cap as Home (an older note here claimed 50rem —
+  the code says otherwise); heatmap legend + Share-as-image are desktop-only.
+  Pre/post-watch order is toggleable per user independently.
 
 **Misc**
-- The header logo carries a small `?` badge (top-right of "SaltyChart" in
-  `App.svelte`) whose tooltip shows the deployed version — the
-  `YYYYMMDD-<sha>` tag injected by CI as the `APP_VERSION` build-arg →
-  `VITE_APP_VERSION` (frontend Dockerfile). Local/dev builds show `dev`.
-- On first load (or after cache expiry), the default season uses a **50-day
-  look-ahead** (`LOOKAHEAD_DAYS` in `stores/season.ts`): if the next anime
-  season starts within 50 days, that season is shown instead of the current
-  one. It was 76, which flipped the default about two weeks after the current
-  season's premieres — most of a season spent looking at one where nothing had
-  aired; 50 moves the cutover to roughly six weeks in while keeping a month
-  and a half of trailer-browsing lead time.
-  `computeInitialSeason()` in `src/stores/season.ts` owns this logic.
-- The home page shows "X days until [next season]" helper text, derived
-  locally from the browser date (no API call). Season start dates used are
-  Jan 1 / Apr 1 / Jul 1 / Oct 1 (`nextSeasonInfo()` in `season.ts`).
-- Ctrl+Shift+R (or Ctrl+F5) hard-reloads the page and resets the cached
-  season selection back to the computed default.
-- The last selected season/year is remembered across navigations (1-hour TTL).
+- The header logo's `?` badge tooltip shows the deployed version — the
+  `YYYYMMDD-<sha>` tag injected by CI (`APP_VERSION` build-arg →
+  `VITE_APP_VERSION`); local builds show `dev`.
+- First load uses a **50-day look-ahead** (`LOOKAHEAD_DAYS`,
+  `computeInitialSeason()` in `stores/season.ts`): if the next season starts
+  within 50 days it is shown instead. It was 76, which flipped the default
+  two weeks after the current season's premieres — most of a season spent
+  looking at one where nothing had aired.
+- "X days until [next season]" derives locally from the browser date
+  (`nextSeasonInfo()`; season starts Jan/Apr/Jul/Oct 1).
+- Ctrl+Shift+R / Ctrl+F5 hard-reloads and resets the cached season selection;
+  the last selected season/year is otherwise remembered for an hour.
 
 ## Prisma
 

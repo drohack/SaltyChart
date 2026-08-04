@@ -71,6 +71,13 @@ Flags:
   --translate-model  Ollama model for the split translator (default: qwen3.5:9b)
   --ollama-host      Ollama server URL (default: http://127.0.0.1:11434)
   --keep-ollama      Leave Ollama running after the run (default: stop it)
+  --limit N          Cap trailers translated per season (for testing)
+  --vram-log         Interleave GPU VRAM samples with the phase log
+  --download-delay   Seconds between trailer downloads (default: 5)
+  --cookies FILE     Netscape cookies.txt for yt-dlp (YouTube bot wall)
+  --cookies-from-browser BROWSER
+                     Read YouTube cookies from edge/chrome/firefox
+  (see --help for the authoritative full list)
 
 Windows wrapper: tools/translate.bat (uses py -3.13)
 """
@@ -461,9 +468,10 @@ def translate_video(model, video_id: str, use_chunking: bool = True, *,
 # ---------------------------------------------------------------------------
 
 def _download_audio_to_tmp(video_id: str):
-    """Phase-1a unit (parallelizable): download bestaudio into a fresh tmpdir.
-    Pure network I/O — safe to run in parallel threads. Demucs separation runs
-    later in phase 1b (GPU, sequential). Returns (tmpdir, full_audio, video_url)."""
+    """Phase-1a unit: download bestaudio into a fresh tmpdir. Called SERIALLY
+    with a delay between trailers — bursty parallel downloads are what trip
+    YouTube's bot wall (see _run_phased). Demucs separation runs later in
+    phase 1b (GPU, sequential). Returns (tmpdir, full_audio, video_url)."""
     tmpdir = tempfile.mkdtemp()
     full_audio, _duration, video_url = download_audio(video_id, tmpdir)
     return tmpdir, full_audio, video_url
@@ -489,8 +497,8 @@ _sem_model = None
 
 def _get_ocr_reader():
     """Lazy-init singleton easyocr Reader (avoids reloading model per video).
-    Runs on GPU: the phased run keeps peak VRAM ~6.4 GB, so the ~1 GB OCR model
-    fits comfortably (phase-3 total ~7.4 GB), and keeping OCR off the CPU avoids
+    Runs on GPU: the phased run keeps peak VRAM ~6.4 GB (see _run_phased), so
+    the ~1 GB OCR model fits comfortably, and keeping OCR off the CPU avoids
     adding system-RAM / CPU load."""
     global _ocr_reader
     if _ocr_reader is None:
@@ -896,8 +904,8 @@ def run_phased(items, server, token, args, device, compute_type, verbose=False, 
 
 def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbose=False, prefix=""):
     """Run the split pipeline over `items` in three phases so only one model is
-    GPU-resident at a time (peak ~6.2 GB vs ~9.8 GB per-video) and each model
-    loads once. `items`: list of {vid, title, media_id}. `prefix` (e.g.
+    GPU-resident at a time (~6.4 GB peak vs ~9.8 GB if Whisper and the
+    translator co-resided per-video) and each model loads once. `items`: list of {vid, title, media_id}. `prefix` (e.g.
     "SUMMER 2026 (2/3)") is prepended to every progress line so the status bar
     shows overall position + current step. Returns (translated, errors)."""
     n = len(items)
@@ -928,8 +936,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
             print(f"  {tag('download', i + 1, n)} {label}: DOWNLOAD ERROR: {msg[:120]}")
             errors += 1
             if _is_bot_block(msg):
-                # Stop NOW rather than hammering YouTube with the rest (which only
-                # deepens the block). Bubbles up to abort the whole run.
+                # Bubbles up to abort the whole run — rationale on BotBlockError.
                 raise BotBlockError(
                     "YouTube is challenging downloads ('not a bot'). Aborted before "
                     "the remaining trailers. Wait for a cool-down, then re-run with "
@@ -1009,8 +1016,9 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
 
     # Free the translator's VRAM before returning so the NEXT season's Demucs +
     # Whisper don't stack on top of a still-warm qwen3.5 — that cross-season
-    # co-residence (qwen ~7 GB + large-v3 ~3 GB) is what pushed peak VRAM to
-    # ~9.6 GB. qwen reloads at the next season's Phase 3 (one quick reload/season).
+    # co-residence is the ~9.8 GB shape the phasing exists to avoid (see the
+    # _run_phased docstring). qwen reloads at the next season's Phase 3 (one
+    # quick reload/season).
     unload_ollama_model(args.ollama_host, args.translate_model)
 
     return translated, errors
@@ -1362,8 +1370,7 @@ def main():
                     msg = str(e)
                     print(f"  ERROR: {msg}")
                     errors += 1
-                    # Abort on a YouTube bot-challenge instead of hammering the
-                    # rest of the list (which only deepens the block).
+                    # Bot-challenge → abort the run (rationale on BotBlockError).
                     if _is_bot_block(msg):
                         print("\n[local] ABORT: YouTube bot-challenge detected — stopping to avoid deepening the block.")
                         bot_blocked = True

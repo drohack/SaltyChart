@@ -31,7 +31,7 @@ import { nextSeasonInfo } from '../stores/season';
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // Countdown to next season (AniList authoritative schedule)
+  // Countdown to next season (derived from the local clock — see nextSeasonInfo)
   // ──────────────────────────────────────────────────────────────────
 
   let daysUntilNext: number | null = null;

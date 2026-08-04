@@ -114,8 +114,8 @@ export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]>
  * May this search result be date-checked at all?
  *
  * Normalized exact, or a prefix relation where the SHORTER side still carries
- * meaning. The floor originally existed because the old single-form
- * `baseTitle` collapsed "Re:Zero kara ..." to "Re", and a 2-char prefix
+ * meaning. The floor originally existed because an earlier single-form version
+ * of `baseTitles` collapsed "Re:Zero kara ..." to "Re", and a 2-char prefix
  * relates to everything ("Re:Born", in the measurement that shaped this).
  * `baseTitles` no longer produces that collapse — but the floor STAYS, because
  * genuinely short titles arrive regardless ("Q" and "mono" are full titles,

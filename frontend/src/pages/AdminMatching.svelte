@@ -31,6 +31,32 @@
    * whose known id the library lacks is reported missing rather than guessed at.
    * Nothing here is a *gate* — resolver ids are positive-only and already in
    * use, marked unverified. This is a cleanup list, not a queue that blocks.
+   *
+   * UI contract:
+   *
+   *  - Three-mode filter: "Needs attention" (the work queue above),
+   *    "+ unverified auto-matches" (adds the title-text accepts after the
+   *    queue), "Everything". Air-date and premiere-date accepts skip even the
+   *    middle view — a date-verified match needs nobody.
+   *  - The per-row state column answers "is it matched, how well, is it not,
+   *    why not" as a colored verdict over a terse reason DERIVED FROM THE
+   *    STORED ACCEPTANCE RUNG, so the column can never contradict what
+   *    verified the match — a date-verified auto-match reads green like a map
+   *    id; a title-text accept stays blue-unverified. A highlighted
+   *    "N possible matches" line appears when the picker has alternatives.
+   *  - The user-facing word is auto-match / auto-search, never "resolver".
+   *  - The Sonarr-import-style match control: the button shows what the row
+   *    currently resolves to; its dropdown searches by name (Jellyfin remote
+   *    providers, prefilled and searched immediately) or resolves a pasted
+   *    tvdb:/tmdb: id through the library + community-map cross-walk, listing
+   *    stored candidates first, each tagged in-library/film/series. Picking
+   *    FILLS, NEVER SAVES; a changed selection shows "Confirm saves this as a
+   *    manual correction" with a reset, and Confirm is the act of agreement.
+   *  - A changed Confirm writes source:'manual'; an untouched one preserves
+   *    the resolver's provenance. The discriminator is selection-vs-baseline —
+   *    made explicit after a prefill-comparison version relabelled every
+   *    id-bearing confirm as manual (the boxes are prefilled with the stored
+   *    ids, so "typed" must mean "changed").
    */
 
   const SEASONS = ['WINTER', 'SPRING', 'SUMMER', 'FALL'] as const;
@@ -78,13 +104,7 @@
   let status: 'idle' | 'loading' | 'ok' | 'failed' = 'idle';
   let error = '';
   let saving = new Set<number>();
-  /**
-   * What the list shows. "Needs attention" is the work queue; resolver
-   * accepts are trusted-but-unverified, so they are reachable (second option,
-   * listed last) rather than mixed into the queue — the admin asked for them
-   * to be low-priority, and the invariant that matters is that they can be
-   * reviewed at all, not that they demand it.
-   */
+  /** What the list shows — the queue/accepts split is in the header's UI contract. */
   let filterMode: 'attention' | 'attention+accepts' | 'all' = 'attention';
   /**
    * The Sonarr-style lookup: one field per row takes a name, `tvdb:12345`, or
@@ -386,28 +406,16 @@
     }
   }
 
-  // What needs a human, and each looks different:
-  //  - a title-only match, which resolved but can't be verified from an id
-  //  - a *pending* suggestion from the remote resolver — its ids are already
-  //    in use (positive-only), pending marks that nothing could verify them
-  //  - more than one plausible candidate, even when the air-date gate accepted
-  //    one — that is exactly where a picker earns its keep
-  // A pending row with no ids is a recorded *miss* — the resolver searched and
-  // found nothing. It exists so the next sweep doesn't ask again, not because
-  // anyone should look at it, so it stays out of the queue.
+  // The "Needs attention" queue — the three row kinds are in the header doc.
+  // A pending row with NO ids is a recorded *miss* (the resolver searched and
+  // found nothing), so it stays out of the queue.
   const needsAttention = (r: Row) =>
     (r.pending && !!(r.tvdbId || r.tmdbId)) ||
     (!r.confirmed && (r.candidates?.length ?? 0) > 1) ||
     (!r.pending && r.matchedBy === 'title' && !r.confirmed);
 
-  // Accepted by our own lookup on title text or release year alone — never
-  // air-date-verified, never seen by a human. The admin trusts these, so they
-  // are NOT in the default queue; what matters is that they stay *reachable*
-  // (second filter option, listed after the queue), because before that a
-  // wrong exact-title collision (two works genuinely sharing a name) was
-  // permanent and invisible. Air-date and premiere-date accepts stay out of
-  // even that view: date evidence separates right from wrong by three orders
-  // of magnitude.
+  // Title-text / release-year accepts: reachable but never demanding review —
+  // the rationale is the "resolver accepts" bullet in the header doc.
   const dateVerified = (r: Row) => {
     const n = r.note ?? '';
     return n.startsWith('remote: air date') || n.startsWith('remote: premiere date')
@@ -425,14 +433,8 @@
         ? [...rows.filter(needsAttention), ...rows.filter(resolverAccept)]
         : rows.filter(needsAttention);
 
-  /**
-   * The state column: a verdict to scan down the page, and the how/why under
-   * it — in plain words, no jargon. For auto-matched rows the reason comes
-   * from the stored acceptance rung (the note), so the column never
-   * contradicts what actually verified the match: an air-date-verified
-   * auto-match is as trustworthy as a map id and reads green, while a
-   * title-text accept stays blue-unverified.
-   */
+  /** The state column: verdict + reason, derived from the stored acceptance
+   * rung so it can't contradict it — see the header's UI contract. */
   function statusOf(r: Row): { verdict: string; detail: string; cls: string; options: number | null } {
     const options = (r.candidates?.length ?? 0) > 1 && !r.confirmed ? (r.candidates?.length ?? 0) : null;
     const rung = (r.note ?? '').replace(/^remote:\s*/, '');
@@ -621,11 +623,8 @@
               {/if}
             </div>
             <div class="relative flex-1 min-w-[24rem] max-w-2xl flex flex-col gap-0.5" data-match-cell>
-              <!-- Sonarr-import-style match control: the button shows what the
-                   row currently resolves to (pre-populated), the dropdown has
-                   its own search box (name / tvdb: / tmdb:) listing the
-                   resolver's stored suggestions first, then live results.
-                   Picking FILLS, never saves — Confirm is the agreement. -->
+              <!-- Sonarr-import-style match control — behaviour (picking FILLS,
+                   never saves; Confirm agrees) is in the header's UI contract. -->
               <button type="button"
                 class="btn btn-sm btn-outline w-full justify-start normal-case font-normal overflow-hidden flex-nowrap gap-2"
                 data-match-control
@@ -730,12 +729,8 @@
                 disabled={saving.has(r.mediaId)}
                 title="Record this match as correct"
                 on:click={() => {
-                  // The discriminator is the match control: a selection that
-                  // differs from the baseline is a manual correction; an
-                  // untouched Confirm is a sign-off that preserves the
-                  // resolver's provenance. (A prefill-comparison predecessor
-                  // read every id-bearing confirm as hand-typed and wiped
-                  // exactly the provenance the server merge preserves.)
+                  // Selection-vs-baseline decides manual correction vs sign-off
+                  // — the provenance rules are in the header's UI contract.
                   const sel = selected[r.mediaId] ?? null;
                   const changed = !sameIdentity(sel, baseline[r.mediaId] ?? null);
                   save(r, changed && sel

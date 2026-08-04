@@ -18,8 +18,39 @@ Scoring (two metrics, both vs YouTube English CC ground truth):
     CC text within ±4 s of its midpoint (tolerant of paraphrase + loose timing).
   * timing  — mean span IoU of each segment against its best-overlapping CC
     segment (rewards tight timestamps; moves with forced alignment).
+  * content — timing-independent best-match similarity; judges text quality
+    when timestamps are unreliable.
   halluc is the % of segments scoring <0.25 semantic similarity.
   SCORE = overlap - halluc.
+
+Corpus: 11 Summer 2026 trailers with REAL timestamped English CC fetched via
+youtube_transcript_api (`--refetch-cc`) — NOT yt-dlp VTT, which silently
+returned empty files and made the harness fall back to fabricated even-spaced
+timestamps. One video (OMCPr9YwHdM) is excluded: its auto-generated CC doesn't
+match its audio. Data-prep flags: --download (16 kHz mono for Whisper),
+--download-hq (best-quality source for Demucs), --refetch-cc, --refetch-cc-ja
+(Japanese CC as an alt translation input).
+
+Suites (--suite): baseline, phase1..phase4, champion, qwen38/qwen359
+(translator A/B), turbocmp (large-v3 vs turbo). ASR outputs are cached to
+benchmark_data/<vid>/cache/ keyed on audio+model+decode-args, so re-runs and
+translator-only sweeps skip transcription (--no-cache to force). All results
+go to ONE consolidated tools/benchmark_results.txt with a delimited section
+per suite (@@@ BENCHMARK SUITE: <name> @@@); each run replaces only its own
+suite's section — no ad-hoc result files. --output overrides the path.
+
+Environment gotchas (Windows, this machine — each cost a debugging session):
+  * Do NOT leave torchcodec installed: torchaudio>=2.9 routes through it and
+    it hijacks faster-whisper's decoder (gibberish/crash). separate_vocals
+    does audio I/O via the ffmpeg BINARY instead.
+  * qwen2.5 produces multilingual word-salad in this Ollama build (0.30.6) —
+    use qwen3/qwen3.5, and disable thinking (think:false).
+  * The qwen-asr package downgrades transformers (5.5.3→4.57.6); core
+    (faster-whisper, sentence-transformers) still works, verify after install.
+  * kotoba can't emit word-level timestamps (distilled → DTW alignment crash)
+    and its chunk timestamps are coarse; Qwen3-ASR needs a separate
+    Qwen3-ForcedAligner for timing. Both are poor subtitle-timing fits
+    regardless of text quality.
 """
 
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, time

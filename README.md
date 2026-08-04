@@ -62,7 +62,7 @@ If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PI
 ## Feature highlights
 
 SaltyChart is under active development. The list below summarises key
-additions so new contributors are not caught off-guard. Group is rough
+additions so new contributors are not caught off-guard. Grouping is rough
 chronological order; all features listed are live.
 
 **Progressive Home loading**
@@ -277,8 +277,8 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect: "Pre-deploy: 13/13 passed — ready to build"
-   # Skip the GPU test with --skip-burned-in if no CUDA
+   # Expect the final line: "Pre-deploy: 16/16 passed — ready to build"
+   # (15/15 with --skip-burned-in — use it if no CUDA)
    ```
 
 2. **Push to `master`.** The `deploy` workflow

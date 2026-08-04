@@ -84,10 +84,10 @@ export function expandCandidates(candidates: string[]): string[] {
  * direction, e.g. "Frieren" vs "Frieren: Beyond Journey's End").
  * Within a tier the shortest library title wins (least extra noise).
  *
- * Length floors matter: an all-Japanese title normalizes to almost nothing
- * (e.g. 「転生貴族、鑑定スキルで成り上がる 第3期」 → "3"), and a 1-char
- * prefix candidate happily matched "30 Rock". Candidates shorter than 4
- * normalized chars only count for exact matches.
+ * Length floors matter: an all-Japanese title can normalize to almost nothing
+ * — see normalizeTitle — and a 1-char prefix candidate happily matched
+ * "30 Rock", so candidates shorter than 4 normalized chars only count for
+ * exact matches.
  *
  * **There is deliberately no contains-anywhere tier.** There was one, guarded
  * by `shorter >= 6 && ratio >= 0.4`, and measured against the real library

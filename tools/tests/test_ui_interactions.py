@@ -1,13 +1,92 @@
 """
-Pre-deploy smoke test: frontend UI interactions.
+Pre-deploy smoke test: frontend UI interactions — 24 flows.
 
-Beyond `test_frontend_smoke.py` (which only checks pages render), this
-tests that clicking buttons actually triggers the right behavior — login
-flow, search filter, season change, add-to-list, theme dropdown, logout,
-hide 18+, trailer modal Escape close.
+Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
+that clicking buttons triggers the right behavior — and that every failure
+path found by an audit or exploratory pass stays VISIBLE on screen. Catches
+the regression class where a button renders but its handler is broken, and
+the worse one where a failure renders exactly like a healthy page.
 
-Catches the class of regression where a button is rendered but its click
-handler is broken or the reactive state isn't wired correctly.
+The flows, and the trap each was watched to fail on:
+
+Button-click smoke (1–9): login, search filter, hide 18+, season change,
+add-to-list, theme, wheel spin, logout, trailer-modal Escape. The Escape step
+must NOT fall back to a backdrop click — that fallback is how it passed for
+months while Escape closed nothing — and it also asserts the trailer's ✕
+button exists.
+
+Correctness the old assertions never checked:
+- Compare (10): picks a second user and checks every rank and diff against
+  deliberately different seeded orders. It used to look for the word
+  "Compare" in the body text, which passes on a page with no rows.
+- /admin (11): playback-account picker populated; no API key in the DOM.
+- unknown never hides (12): availability route-intercepted to {unknown:true};
+  the Hide-Not-in-Library control must refuse to act.
+- share-as-image (13): the JPEG must have more than one colour — an all-blank
+  render is the realistic silent failure.
+- progressive loading (14): only the leftovers fetch fails; Retry appears
+  while the main grid still renders.
+
+From the exploratory pass:
+- no-match search (15): an explicit message, never a blank page.
+- unaired season (16): ZERO /api/jellyfin/availability calls — a
+  NOT_YET_RELEASED series cannot be in the library, so a lookup can only
+  produce a false positive (measured 7/7 wrong before the guard); and Hide
+  Not in Library stays disabled. `notAired` is available:false with `unknown`
+  falsy, so a writer guarding only `unknown` recorded every unaired show as
+  confirmed-missing and lit a button whose hides could never fire.
+
+Silent-failure paths (17–19):
+- library unreachable (17): 502 on every lookup → a message and a working
+  Retry, where before the page just looked empty. Its skip decision asks
+  /api/jellyfin/status directly — inferring "unconfigured" from an empty DOM
+  read a slow or partial render as not-applicable, and the mutation audit
+  watched this test survive its mutation exactly that way.
+- hung backend (18): the route hangs forever; the page must say something
+  inside the timeout — the case nothing in the frontend could survive before
+  remote.ts existed.
+- failed hide write (19): every PATCH /api/list/hidden fails; the page must
+  revert AND say so. Asserts on the SCREEN, not the server — with all writes
+  failing the server is trivially correct, so a server check would pass with
+  the rollback deleted.
+
+/admin/matching contract (20): a resolver accept decided on title text alone
+is listed. Seeds a remote-sourced accepted row against an entry the library
+doesn't hold, then verifies post-seed that no older filter clause can see it
+— a remote id is positive-only, so seeding one revives the title tier; the
+first version picked the Madoka film, which prefix-matched its own franchise
+series and passed with the clause under test deleted. Locates the row by the
+seeded entry's title (a marker in the note text stopped working the day the
+raw note stopped being rendered). Asserts resolver accepts are absent from
+the default queue but reachable via "+ resolver accepts"; drives the
+Sonarr-style match dropdown (an intercepted search fills the control, the
+"changed — saves as manual" indicator appears, nothing writes until Confirm,
+reset returns to the stored match, and a changed Confirm writes
+source:'manual'); an untouched Confirm settles the row off the list with
+provenance intact — the id boxes are prefilled with the stored ids, so
+"typed" must mean "changed": the first handler read any non-empty box as
+hand-typed and relabelled every confirm as manual.
+
+Exploratory pass-1 guards that were claimed and missing for months (21–24):
+- check-batch stays chunked at 100 (21), asserted against the live season's
+  real >100-trailer id list — the tail used to be silently sliced off
+  server-side.
+- a failed translation stream is visible (22): the stream reports failure
+  IN-BAND as an SSE {error} event on a 200, which is what the chip's handler
+  reads — a 503 only triggers EventSource's silent reconnect and tests
+  nothing.
+- the phone sidebar starts collapsed at 375px (23). Writing this found a live
+  regression: the reactive prefs-save persisted the width DEFAULT as though
+  the user chose it, so one desktop visit put the full-screen sidebar back on
+  every later phone load — the suite's own desktop flows running first is
+  what exposes it.
+- guest options reach localStorage + Compare names a user it can't find (24).
+  No Escape after typing: svelte-select clears its filter text on Escape,
+  hiding the very warning under test.
+
+Seeds from live season data — the old hardcoded mediaIds aged out of the
+season entirely, so every seeded list joined against zero shows and the
+looser assertions passed anyway.
 
 Usage:
   pip install playwright

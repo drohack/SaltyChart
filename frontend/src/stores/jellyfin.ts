@@ -259,8 +259,8 @@ export async function checkAvailabilityMany(
 
   const missing: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }> = [];
   for (const e of entries) {
-    // Unaired entries are answered locally and never sent — on the default
-    // (unaired) season this is the whole list, so it also removes ~83 library
+    // Unaired entries are answered locally and never sent — on an unaired
+    // season this is the whole list, so it also removes ~83 library
     // lookups per page load. Not cached, for the reason in `checkAvailability`.
     if (isUnaired(e.airing)) { out.set(e.mediaId, NOT_AIRED); continue; }
     const cached = _availabilityCache.get(e.mediaId);

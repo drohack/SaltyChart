@@ -54,7 +54,7 @@ export interface Identity {
   pending: boolean;
   /** What the resolver matched against, so a reviewer needn't re-search. */
   matchedTitle: string | null;
-  /** The lookup's top candidates (five), best-first. Drives the review picker. */
+  /** The lookup's top candidates (up to eight), best-first. Drives the review picker. */
   candidates: RemoteChoice[] | null;
   /** How the id was arrived at, e.g. "remote: air date 3d". Shown when reviewing. */
   note: string | null;
@@ -169,10 +169,8 @@ export async function loadIdentityOverrides(): Promise<void> {
  */
 export function resolveIdentity(anilistId: number): Identity {
   const override = _overrides.get(anilistId);
-  // Pending rows are returned too, and that is deliberate. They used to be
-  // withheld because an unreviewed id could suppress a working match — but that
-  // risk now lives where it belongs: `matchSeries` treats a `remote` id as
-  // positive-only, so it can add a Watch button and never take one away.
+  // Pending rows are returned too, and that is deliberate: a remote id is
+  // positive-only — see `pending` on Identity above.
   //
   // A row with NO ids is different, and must not win. The resolver writes one
   // to record "we looked and found nothing", so it doesn't re-search the same

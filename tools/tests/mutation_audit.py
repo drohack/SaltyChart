@@ -1,7 +1,7 @@
 """
 Is the pre-deploy suite load-bearing, or does it just pass?
 
-`Pre-deploy: 12/12 passed — ready to build` is the sentence the whole deploy
+`Pre-deploy: 15/15 passed — ready to build` is the sentence the whole deploy
 rests on, and a passing suite says nothing about what it would *catch*. This
 breaks one invariant at a time and checks that the test guarding it actually
 fails. A mutation that survives is a coverage hole, reported as one.

@@ -51,6 +51,14 @@ export interface TmdbRef {
   kind: 'tv' | 'movie';
 }
 
+/** Sentinel: upstream says our copy is current, so there is nothing to parse. */
+const UNCHANGED = Symbol('unchanged');
+
+interface Pairs {
+  tvdb: Record<string, string>;
+  tmdb: Record<string, string>;
+}
+
 /**
  * Pull the list from GitHub and reduce it to id pairs.
  *
@@ -62,14 +70,6 @@ export interface TmdbRef {
  * stringifies to `"[object Object]"` and yields zero matches while looking like
  * it worked; that cost two wrong measurements before it was spotted.
  */
-/** Sentinel: upstream says our copy is current, so there is nothing to parse. */
-const UNCHANGED = Symbol('unchanged');
-
-interface Pairs {
-  tvdb: Record<string, string>;
-  tmdb: Record<string, string>;
-}
-
 async function fetchPairs(etag?: string | null): Promise<Pairs | typeof UNCHANGED> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
@@ -253,7 +253,6 @@ export function anilistTvdbMapSize(): number {
   return Object.keys(_map).length;
 }
 
-/** Test seam: populate the maps without a 7.5 MB download. */
 /** What a cross-walk resolves to: the same identity named in both id spaces. */
 export interface CrosswalkResult {
   tvdbId: string | null;
@@ -308,6 +307,7 @@ export function crosswalkIds(input: {
   return null;
 }
 
+/** Test seam: populate the maps without a 7.5 MB download. */
 export function __setMapsForTest(
   tvdb: Record<string, string>,
   tmdb: Record<string, string>

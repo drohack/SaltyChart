@@ -3,7 +3,7 @@ Pre-deploy test runner.
 
 Runs every check in dependency order, stops on first failure, and prints
 self-contained progress so the status bar shows where we are at any moment:
-  [3/5 pre-deploy] running test_api_smoke.py ...
+  [12/15 pre-deploy] running test_frontend_smoke.py ...
 
 Usage:
   py -3.13 -u tools/tests/run_all.py [--skip-burned-in]
@@ -144,12 +144,12 @@ def main():
         # production-mode backend on a spare port to prove they actually limit.
         ("rate limits",      ["py", "-3.13", "-u", str(TESTS / "test_rate_limits.py")], None, 180),
         # A mutation-audit row that no longer matches its source SKIPs, which is
-        # easy to lose in a 35-minute run and means that invariant is quietly
+        # easy to lose in a ~90-minute run and means that invariant is quietly
         # unaudited. Catching it costs a second and no servers, so it belongs on
         # every push rather than waiting for the next audit.
         ("audit anchors",    ["py", "-3.13", "-u", str(TESTS / "test_audit_anchors.py")], None, 30),
-        # The live corpus check makes ~440 real Jellyfin lookups and takes ~7
-        # minutes, so it can't gate a push. This replays the same shipping
+        # The live corpus check is too slow to gate a push (numbers in
+        # test_match_replay.py's docstring). This replays the same shipping
         # matcher over frozen fixtures in seconds, and asserts twelve real
         # false positives BY NAME rather than by a summary count.
         ("match replay",     ["py", "-3.13", "-u", str(TESTS / "test_match_replay.py")], None, 120),

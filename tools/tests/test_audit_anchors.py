@@ -2,7 +2,7 @@
 
 `mutation_audit.py` breaks one invariant at a time by finding an exact string
 in a source file and replacing it. When the code moves, that string stops
-matching and the row reports `SKIP` — which is easy to miss in a 35-minute run
+matching and the row reports `SKIP` — which is easy to miss in a ~90-minute run
 and means the invariant has silently stopped being audited.
 
 That is not hypothetical. Batching the availability lookups moved the

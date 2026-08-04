@@ -18,8 +18,8 @@ Jellyfin REPOSITION the transcoder (that is how seeking works), which would
 both corrupt the measurement and thrash the box. We fetch 0,1,2,... as they
 become available, exactly like a player pulling as fast as it can.
 
-Sessions are stopped by playSessionId — an orphaned session remuxes a ~1.4 GB
-episode for nobody.
+Sessions are stopped by playSessionId, registered the moment they exist — see
+the atexit note in run_condition.
 """
 import argparse
 import atexit
@@ -83,13 +83,9 @@ def stop_session(backend: str, token: str, psid: str) -> None:
 
 
 def follow(playlist_path: str, text: str) -> str | None:
-    """First URI in a playlist, resolved against the playlist's own path.
-
-    Jellyfin writes bare relative URIs ("main.m3u8?…", "hls1/main/0.ts?…");
-    joining them to the proxy root instead of the playlist's directory gives a
-    404 that looks like an empty playlist — bench_player learned this, and the
-    first version of this script relearned it the hard way.
-    """
+    """First URI in a playlist, resolved against the playlist's own path —
+    never the proxy root, or the 404 reads as an empty playlist (the full
+    lesson is on bench_player.follow; this script relearned it once)."""
     for line in text.splitlines():
         line = line.strip()
         if line and not line.startswith("#"):

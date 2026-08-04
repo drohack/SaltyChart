@@ -117,7 +117,6 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
       return res.json({ created: true });
     }
 
-    // updated.count indicates how many rows modified
     return res.json({ updated: updated.count });
   } catch (err) {
     console.error(err);
@@ -164,7 +163,6 @@ router.patch('/rank', requireAuth, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
-  // Build update promises assigning watchedRank based on position
   const numericYear = Number(year);
 
   const tx = ids.map((mediaId, idx) =>
@@ -260,14 +258,14 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
 export default router;
 
 // ---------------------------------------------------------------------------
-// New endpoints for nickname feature
+// Public (unauthenticated) endpoints — nickname + ratings lookups, all behind
+// publicListLimiter. Registered after the export; Express routes attach fine.
 // ---------------------------------------------------------------------------
 
 // Returns array of user names that have at least one customName in any watch
 // list entry.  Used by Randomize page to populate the "nickname picker" UI.
 router.get('/users-with-nicknames', publicListLimiter, async (_req, res) => {
   try {
-    // Query watchList for rows with customName, then collect unique userIds
     const rows = await prisma.watchList.findMany({
       where: { customName: { not: null } },
       select: { userId: true }
@@ -372,7 +370,6 @@ router.get('/nicknames', publicListLimiter, async (req, res) => {
       select: { id: true, username: true }
     });
 
-    // Map userId → display name for quick lookup
     const idToName = new Map<number, string>();
     users.forEach((u) => {
       const display = u.username ?? `User-${String(u.id).slice(0, 6)}`;

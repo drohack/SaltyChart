@@ -11,7 +11,7 @@ Usage:
 
 Exits 0 if all steps pass, 1 on any failure. Each progress line is
 self-contained per the global CLAUDE.md convention:
-  [k/10 API-smoke] step name — detail
+  [k/13 API-smoke] step name — detail
 """
 import argparse
 import sys

@@ -8,12 +8,9 @@
 //   availability : which episode should Watch open?
 //   resolver     : is this candidate id even the right series?
 //
-// Both answers turn on the same measurement, and the second only works because
-// of what the first revealed: across every non-exact match tested against the
-// real library, correct results land 0-3 days from the AniList premiere and
-// wrong ones land 329 to 11,083 days away. There is no middle. Two copies of
-// that arithmetic would eventually disagree, and the disagreement would be
-// invisible.
+// Both answers turn on the same measurement — the one recorded on
+// AIR_DATE_TOLERANCE_MS below. Two copies of that arithmetic would eventually
+// disagree, and the disagreement would be invisible.
 // ---------------------------------------------------------------------------
 
 /** Anything with the fields Jellyfin returns by default on /Shows/{id}/Episodes. */
@@ -31,7 +28,7 @@ export interface DatedEpisode {
  *
  * Ties go to the *earlier* episode by (season, episode) number — enforced here,
  * not assumed of the input, because Jellyfin's episode order is not a contract
- * (the tier-2 picker in routes/jellyfin.ts has always sorted before trusting
+ * (the episode picker in routes/jellyfin.ts has always sorted before trusting
  * it) and a same-day double premiere would otherwise open Watch on whichever
  * episode the response happened to list first.
  */
@@ -54,7 +51,6 @@ export function closestDatedEpisode<T extends DatedEpisode>(
   return best ? { episode: best, deltaMs: bestDelta } : null;
 }
 
-/** Strictly earlier by (season, episode) number. */
 function earlier(a: DatedEpisode, b: DatedEpisode): boolean {
   const sa = a.ParentIndexNumber ?? 0;
   const sb = b.ParentIndexNumber ?? 0;
@@ -71,7 +67,9 @@ function earlier(a: DatedEpisode, b: DatedEpisode): boolean {
  * away, ~90 days.
  *
  * Measured against the real library, the separation is far larger than the
- * tolerance: correct matches land 0-3 days out, wrong ones 329+.
+ * tolerance: across every non-exact match tested, correct results land 0-3
+ * days from the AniList premiere and wrong ones land 329 to 11,083 days away.
+ * There is no middle.
  */
 export const AIR_DATE_TOLERANCE_MS = 31 * 24 * 60 * 60 * 1000;
 
