@@ -1313,6 +1313,26 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             assert after.get("tvdbId") == "424242" and after.get("source") == "manual", (
                 "a looked-up Confirm did not write the picked identity as a manual "
                 f"correction (tvdbId={after.get('tvdbId')!r}, source={after.get('source')!r})")
+
+            # Last, because it rewrites the row: the state column must never
+            # name a rung that didn't fire. A row stored as `remote: unverified`
+            # was told it matched "on exact title" — 81 rows saying so against
+            # the 13 that used that rung. Seeded pending, which is the branch a
+            # suggestion nothing verified actually renders through.
+            requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                         json={"anilistId": mid, "tvdbId": "99999998", "source": "remote",
+                               "pending": True, "note": "remote: unverified"})
+            page.goto(f"{frontend}/admin/matching")
+            page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
+            page.wait_for_timeout(1000)
+            unv = (page.locator("[data-matching-list] li", has_text=seed_title)
+                   .first.text_content() or "").lower()
+            assert "exact title" not in unv, (
+                "a row nothing could verify still claims it matched on an exact "
+                f"title — the state column is naming a rung that never fired: {unv[:160]!r}")
+            assert "nothing could verify it" in unv, (
+                "an unverifiable suggestion gives no reason at all — the reviewer "
+                f"is asked to judge it with no evidence on screen: {unv[:160]!r}")
         finally:
             page.unroute(LOOKUP_ROUTE)
     finally:

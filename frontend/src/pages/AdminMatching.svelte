@@ -93,6 +93,8 @@
      * same values across every cached season.
      */
     tier?: 'id' | 'title' | 'notHeld' | 'noMatch' | null;
+    /** The entry's own premiere, so an unverified reason can name the gap. */
+    startDateMs?: number | null;
     /**
      * Where an unmatched row stands with the auto-search: never searched,
      * cooling down until nextRetryAt, or retired (aired >2 y ago). null on
@@ -507,6 +509,9 @@
           note: i.note ?? null,
           retry: i.retry ?? null,
           tier: i.tier ?? null,
+          startDateMs: s.startDate?.year
+            ? Date.UTC(s.startDate.year, (s.startDate.month ?? 1) - 1, s.startDate.day ?? 1)
+            : null,
         };
       });
       // By display title — the API returns AniList's default (media id
@@ -576,6 +581,31 @@
         ? [...rows.filter(needsAttention), ...rows.filter(resolverAccept)]
         : rows.filter(needsAttention);
 
+  /**
+   * Why a suggestion couldn't be verified, in the terms a reviewer judges it
+   * on: how far the match's own premiere is from this entry's.
+   *
+   * Derived from the stored candidate, so it says nothing when the evidence
+   * isn't there rather than inventing a reason — which is the bug this
+   * replaced.
+   */
+  function unverifiedBecause(r: Row): string {
+    const chosen = (r.candidates ?? []).find((c) => c.matchedTitle === r.matchedTitle);
+    const prem = (chosen as { premiereDate?: string | null } | undefined)?.premiereDate;
+    if (prem && r.startDateMs != null) {
+      const days = Math.round(Math.abs(Date.parse(prem) - r.startDateMs) / 86_400_000);
+      if (Number.isFinite(days)) {
+        return `nothing could verify it — the match premiered ${prem}, ${days.toLocaleString()} days off`;
+      }
+    }
+    const y = chosen?.year ?? r.year;
+    const mine = r.startDateMs != null ? new Date(r.startDateMs).getUTCFullYear() : null;
+    if (y && mine && y !== mine) {
+      return `nothing could verify it — the match is from ${y}, this premieres ${mine}`;
+    }
+    return 'nothing could verify it — no date to check against';
+  }
+
   /** The state column: verdict + reason, derived from the stored acceptance
    * rung so it can't contradict it — see the header's UI contract. */
   function statusOf(r: Row): { verdict: string; detail: string; cls: string; options: number | null } {
@@ -604,7 +634,16 @@
           if (rung.startsWith('release year')) {
             return { verdict: 'Matched', detail: `auto-match, release year ${rung.replace('release year ', '')}`, cls: 'badge-info', options };
           }
-          return { verdict: 'Matched', detail: 'auto-match on exact title — unverified', cls: 'badge-info', options };
+          // `exact title` is a real rung and keeps its name. Everything else
+          // reaching here accepted on NO rung at all (`remote: unverified`),
+          // and claiming a rung it didn't use broke this page's own contract:
+          // measured on the dev deployment, 81 rows read "on exact title"
+          // against 13 that genuinely used it — and Bananya's candidate was
+          // not even an exact match.
+          if (rung.startsWith('exact title')) {
+            return { verdict: 'Matched', detail: 'auto-match on exact title — no date could confirm it', cls: 'badge-info', options };
+          }
+          return { verdict: 'Matched', detail: `auto-match, ${unverifiedBecause(r)}`, cls: 'badge-info', options };
         }
         return {
           verdict: 'Matched',
@@ -620,7 +659,7 @@
       return { verdict: 'Matched', detail: `→ ${r.libraryTitle}`, cls: 'badge-success', options };
     }
     if (r.pending && (r.tvdbId || r.tmdbId)) {
-      return { verdict: 'Needs review', detail: 'auto-search found a likely match — unverified', cls: 'badge-warning', options };
+      return { verdict: 'Needs review', detail: `auto-search found a likely match — ${unverifiedBecause(r)}`, cls: 'badge-warning', options };
     }
     if (r.tvdbId || r.tmdbId) {
       const from = r.source === 'map' ? 'community map' : r.source === 'remote' ? 'auto-search' : 'stored';

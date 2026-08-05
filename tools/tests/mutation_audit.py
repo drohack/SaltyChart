@@ -571,6 +571,25 @@ MUTATIONS: list[Mutation] = [
                "retry that (per the page) never arrives",
     ),
     Mutation(
+        name="an unverifiable suggestion gives no reason on screen",
+        path=ADMIN_MATCHING,
+        # The reviewer is asked to judge a match with the evidence that decided
+        # it. Dropping the reason restores the bare word "unverified", which is
+        # what the page said while 81 rows were ALSO being told, wrongly, that
+        # they matched on an exact title.
+        #
+        # This guards the branch the harness can reach: an unheld pending row.
+        # The sibling wording on HELD rows (the Bananya case) renders only for
+        # a row whose id the library carries, which this test cannot seed —
+        # stated so the gap isn't mistaken for coverage.
+        find="      return { verdict: 'Needs review', detail: `auto-search found a likely match — ${unverifiedBecause(r)}`, cls: 'badge-warning', options };",
+        replace="      return { verdict: 'Needs review', detail: 'auto-search found a likely match — unverified', cls: 'badge-warning', options };",
+        test=T_UI,
+        expect="gives no reason at all",
+        guards="the page states a reason the match never used, which is the one "
+               "thing its state column promises never to do",
+    ),
+    Mutation(
         name="the stats block silently disappears",
         path=ADMIN_MATCHING,
         # The tiles are the page's answer to "how much of this season is
@@ -1226,7 +1245,7 @@ def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", type=int, help="run a single mutation by number")
+    ap.add_argument("--only", help="run selected mutations by number: 3, or 3,7,12")
     ap.add_argument("--list", action="store_true", help="show the table and exit")
     args = ap.parse_args()
 
@@ -1237,10 +1256,26 @@ def main() -> int:
 
     # A mutation is reverted with `git checkout --`, which would also throw away
     # uncommitted work in the same file. Refuse rather than risk it.
-    chosen = [MUTATIONS[args.only - 1]] if args.only else MUTATIONS
-    if args.only and not (1 <= args.only <= len(MUTATIONS)):
-        say(f"--only must be 1..{len(MUTATIONS)}")
-        return 2
+    #
+    # A LIST, not one number: the documented workflow is "--only N for the
+    # affected rows" after touching code a row anchors to, and a change that
+    # lands across several modules affects dozens. One row per invocation meant
+    # re-warming the season cache and re-checking the tree for each, so the
+    # practical choice became "one row or all 68". Validate before indexing —
+    # the single-int version raised IndexError on an out-of-range number
+    # before its own bounds check ran.
+    chosen = MUTATIONS
+    if args.only:
+        try:
+            idxs = [int(x) for x in args.only.split(",") if x.strip()]
+        except ValueError:
+            say("--only takes numbers: 3, or 3,7,12")
+            return 2
+        bad = [i for i in idxs if not (1 <= i <= len(MUTATIONS))]
+        if bad or not idxs:
+            say(f"--only must be 1..{len(MUTATIONS)} (got {bad or 'nothing'})")
+            return 2
+        chosen = [MUTATIONS[i - 1] for i in idxs]
 
     # Only the files this run will actually revert. Checking every row's target
     # blocked `--only 9` because some unrelated file had edits in it, which is a
