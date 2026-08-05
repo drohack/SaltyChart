@@ -829,6 +829,22 @@ MUTATIONS: list[Mutation] = [
                "just a missing message",
     ),
     Mutation(
+        name="a failed single-show hide stops reverting",
+        path="frontend/src/pages/Randomize.svelte",
+        # The per-row eye toggle had its own fire-and-forget fetch for months
+        # after the bulk paths gained the rollback — one shared revert helper
+        # is not one shared guarantee, so this path gets its own row. The
+        # mutant is type-valid on purpose (see row: half-filled identities —
+        # a mutant that fails to compile audits the compiler).
+        find="""    const failed = await writeHidden([item.id], targetHidden);
+    if (failed.length) revertHidden(failed, !targetHidden, 1);""",
+        replace="    void writeHidden([item.id], targetHidden); /* mutation: no single revert */",
+        test=T_UI,
+        expect="single-show hide left applied",
+        guards="hiding one show from the list or pop-up looks applied, the server "
+               "never saved it, and the next reload silently undoes it",
+    ),
+    Mutation(
         name="a failed library lookup goes back to being silent",
         path="frontend/src/stores/jellyfin.ts",
         find="  libraryStatus.set(failedChunks ? 'unreachable' : 'ok');",

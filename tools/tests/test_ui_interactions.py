@@ -950,8 +950,15 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     Hide All updated the list locally then fired the writes with
     `.catch(() => {})`. A failure left the screen showing shows as hidden while
     the server disagreed — reload and they were all back. Silent data loss.
+
+    Step 4 covers the SINGLE-show toggle separately, because it was a separate
+    hole: the bulk paths were fixed after the exploratory pass while the
+    per-row eye toggle kept its own fire-and-forget fetch, found months later
+    by a comment audit (the comment called it "keeping the code simple").
+    One shared rollback isn't enough to assert once — the toggle used to
+    bypass it entirely.
     """
-    step(19, "step 1/3: seeding a visible list")
+    step(19, "step 1/4: seeding a visible list")
     ids = season_ids(backend, 3)
     seed_list(backend, token, ids)
     page.goto(frontend)
@@ -959,7 +966,7 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     page.goto(f"{frontend}/random")
     page.wait_for_timeout(6000)
 
-    step(19, "step 2/3: failing every hide write, then pressing Hide All")
+    step(19, "step 2/4: failing every hide write, then pressing Hide All")
     page.route("**/api/list/hidden**",
                lambda route: route.fulfill(status=502, body="bad gateway"))
     try:
@@ -973,7 +980,7 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     finally:
         page.unroute("**/api/list/hidden**")
 
-    step(19, "step 3/3: the screen must agree with the server, not just the server")
+    step(19, "step 3/4: the screen must agree with the server, not just the server")
     # Assert on the *UI*. The server is trivially correct here — the writes
     # failed, so nothing is hidden there no matter what the page does. The whole
     # bug is the page believing something the server never accepted, so checking
@@ -987,7 +994,31 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
         "the page still shows items as hidden after every write failed — UI and "
         "server have diverged, and a reload will silently undo what was just done"
     )
-    step(19, "PASS — failed writes reverted and reported")
+
+    step(19, "step 4/4: a single-show hide must revert the same way")
+    # Wait out the bulk step's message so step 4 detects its own, not a leftover.
+    page.wait_for_selector("[data-hide-write-error]", state="detached", timeout=15_000)
+    page.route("**/api/list/hidden**",
+               lambda route: route.fulfill(status=502, body="bad gateway"))
+    try:
+        eye = page.locator("button[title='Hide from Randomize']")
+        assert eye.count(), "no per-row hide toggle found in the unwatched list"
+        eye.first.click()
+        try:
+            page.wait_for_selector("[data-hide-write-error]", timeout=20_000)
+        except Exception:
+            raise AssertionError(
+                "single-show hide left applied after a failed write — the eye "
+                "toggle is the one hide path that used to skip the rollback, and "
+                "a reload will silently undo what the user just did"
+            )
+        assert show_all.first.is_disabled(), (
+            "single-show hide left applied after a failed write — the message "
+            "showed but the item stayed hidden"
+        )
+    finally:
+        page.unroute("**/api/list/hidden**")
+    step(19, "PASS — failed writes reverted and reported, bulk and single")
 
 
 def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):

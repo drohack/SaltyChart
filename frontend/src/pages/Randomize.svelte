@@ -221,36 +221,22 @@ $: _lang = $options.titleLanguage;
   /**
    * Toggle the `hidden` flag for a single item.
    *
-   * Optimistic: the local `watchList` updates immediately and the PATCH is
-   * fire-and-forget. This is the one hide path that does NOT roll back on
-   * failure — the bulk paths (Hide All / Hide Not in Library) revert via
-   * writeHidden/revertHidden. That is a known gap, not a design goal: on a
-   * failed write the screen and the server disagree until the next full fetch.
+   * Optimistic, with the same failure contract as the bulk paths: the write
+   * goes through writeHidden, and one the server refuses is put back and
+   * announced via hideWriteError. This used to be the one hide path that
+   * ignored failure — the show looked hidden, the server never saved it, and
+   * the next reload quietly undid it.
    */
-  function toggleHide(item: any) {
+  async function toggleHide(item: any) {
     if (!$authToken) return;
+    const targetHidden = !item.hidden;
 
     watchList = watchList.map((w) =>
-      w.mediaId === item.id ? { ...w, hidden: !item.hidden } : w
+      w.mediaId === item.id ? { ...w, hidden: targetHidden } : w
     );
 
-    fetch('/api/list/hidden', {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${$authToken}`
-      },
-      body: JSON.stringify({
-        season,
-        year,
-        mediaId: item.id,
-        hidden: !item.hidden
-      })
-    }).catch((err) => {
-      // No rollback here (see the gap noted above) — the failure is only
-      // logged, and the next full list fetch resyncs the screen.
-      console.error('Failed to toggle hidden', err);
-    });
+    const failed = await writeHidden([item.id], targetHidden);
+    if (failed.length) revertHidden(failed, !targetHidden, 1);
   }
 
   // Fetch nickname list whenever modal opens (and selected differs)
@@ -1584,6 +1570,7 @@ $: {
               <!-- Eye toggle -->
               <button
                 type="button"
+                title={item.hidden ? 'Show in Randomize' : 'Hide from Randomize'}
                 class={`shrink-0 ml-auto mr-2 relative p-4 -m-3 rounded-full hover:bg-base-300 transition \
                   ${item.hidden ? '' : 'opacity-0 group-hover:opacity-100'}`}
                 on:click|stopPropagation={() => toggleHide(item)}

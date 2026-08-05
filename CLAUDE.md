@@ -283,7 +283,7 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin — an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~110 times (two per row, 55 rows) and starts real transcodes, which is not something to do
+backend ~116 times (two per row, 58 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -1167,7 +1167,10 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
     "everything you own is in the library";
   * a failed hide write is put back (`writeHidden` returns the ids that
     didn't stick, `revertHidden` restores them and says so) — the one failure
-    here that loses state rather than hiding information.
+    here that loses state rather than hiding information. This covers every
+    hide path: the per-row eye toggle kept its own fire-and-forget fetch for
+    months after the bulk paths were fixed, which is why the shared helper is
+    asserted per-path, not once.
 - "Nicknames from" panel auto-checks users with entries for the current
   season (`/api/list/users-with-ratings`), re-runs on season change; manual
   toggles reset on season change.
