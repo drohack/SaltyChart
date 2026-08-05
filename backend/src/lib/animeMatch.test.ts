@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyMatch,
   detectSeasonNumber,
   expandCandidates,
   matchByTitle,
@@ -197,4 +198,44 @@ test('a tmdb id resolves when tvdb is absent — the movie case', () => {
 test('nothing in the library means no match, not a wrong one', () => {
   const library = [series('x', 'Completely Different Show')];
   assert.equal(matchSeries({ tvdbId: '371310', titles: ['Mushoku Tensei III'] }, library), null);
+});
+
+test('classifyMatch partitions entries the way the admin panel reports them', () => {
+  // One definition shared by the per-season view and the all-seasons sweep
+  // tally. Before it existed the two were computed from different sources, so
+  // the panel's two rows could disagree and neither could be checked against
+  // the other.
+  const library: MatchableSeries[] = [
+    { id: 'lib-1', title: 'Bananya', norms: [normalizeTitle('Bananya')], tvdbId: '313676' },
+    { id: 'lib-2', title: 'One Piece', norms: [normalizeTitle('One Piece')], tvdbId: '81797' },
+  ];
+  const heldFilms = new Set(['550']); // one film we hold, by TMDB id
+
+  assert.equal(
+    classifyMatch({ tvdbId: '313676', titles: ['Bananya'] }, library, heldFilms), 'id',
+    'a known id the library carries is the id tier');
+  assert.equal(
+    classifyMatch({ tvdbId: '999999', titles: ['Bananya'] }, library, heldFilms), 'notHeld',
+    'an authoritative id the library lacks is NOT in the library — it must not fall through to titles');
+  assert.equal(
+    classifyMatch({ titles: ['One Piece'] }, library, heldFilms), 'title',
+    'no id at all still matches by title — 65 corpus entries resolve only this way');
+  assert.equal(
+    classifyMatch({ titles: ['Nothing Like This Exists'] }, library, heldFilms), 'noMatch',
+    'nothing found by id or title is its own bucket, not "not in library"');
+  assert.equal(
+    classifyMatch({ tvdbId: '313676', titles: ['Bananya'], rejected: true }, library, heldFilms),
+    'notHeld',
+    'a human rejection short-circuits before matching, exactly as availability does');
+  // The dangerous one first, deliberately: both film assertions break together
+  // if the film branch goes, and whichever fires first is what the mutation
+  // audit reads. It must name the category error, not the happy path.
+  assert.equal(
+    classifyMatch({ tmdbId: '551', tmdbKind: 'movie', titles: ['One Piece'] }, library, heldFilms),
+    'notHeld',
+    'an unheld film must NOT title-match the series list — that is the House category error');
+  assert.equal(
+    classifyMatch({ tmdbId: '550', tmdbKind: 'movie', titles: ['Some Film'] }, library, heldFilms),
+    'id',
+    'a held film resolves by its TMDB id through the film index');
 });

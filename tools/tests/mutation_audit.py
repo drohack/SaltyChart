@@ -474,6 +474,73 @@ MUTATIONS: list[Mutation] = [
                "and the status line's retired count silently reads zero",
     ),
     Mutation(
+        name="candidates merge on a matching title instead of an id cross-reference",
+        path=BACKEND_REMOTE,
+        # The guard, not the feature: merging the same show found in both
+        # providers is right, but only on skyhook's own tmdbId cross-reference.
+        # Collapsing same-titled candidates would fuse Echo's three different
+        # films into one entity and destroy the date evidence that picks the
+        # right one.
+        find="""    const xref = c.tvdbId && !c.tmdbId ? tmdbForTvdb.get(String(c.tvdbId)) : undefined;
+    if (!xref) {
+      out.push(c);
+      return;
+    }
+    const j = cands.findIndex(
+      (o, k) => k !== i && !absorbed.has(k) && !o.tvdbId && o.tmdbId && String(o.tmdbId) === xref
+    );""",
+        replace="""    const j = cands.findIndex(
+      (o, k) => k !== i && !absorbed.has(k) && o.matchedTitle === c.matchedTitle
+    ); /* mutation: merge on title text */""",
+        test=T_UNIT,
+        expect="different works and must all survive",
+        guards="two different works that share a title are fused into one "
+               "candidate, taking the wrong id and the wrong date with it",
+    ),
+    Mutation(
+        name="an unheld film falls back to title-matching TV series",
+        path=BACKEND_MATCH,
+        # classifyMatch is the one definition the admin panel's per-season row
+        # and the sweep's all-seasons tally both count. Letting a film fall
+        # through to the series list is the "The Last Blossom -> House"
+        # category error, measured at 26 wrong matches against 1 right one.
+        find="""  if (entry.tmdbKind === 'movie' && entry.tmdbId) {
+    return heldFilmTmdbIds.has(String(entry.tmdbId)) ? 'id' : 'notHeld';
+  }""",
+        replace="  /* mutation: films fall through to the series list */",
+        test=T_UNIT,
+        expect="that is the House category error",
+        guards="a film we don't hold is counted as a title match against an "
+               "unrelated TV series, in both scopes of the admin panel",
+    ),
+    Mutation(
+        name="provider popularity decides which candidate is offered",
+        path=BACKEND_REMOTE,
+        # The last rung of pickCandidate. Without date ordering here, TMDB's
+        # popularity ranking picks the suggestion a human reviews — which is
+        # how Echo was offered its 2023 namesake 1,012 days from the premiere
+        # while the 2026 film 46 days away sat third in the list.
+        find="    const dated = exacts.filter((c) => delta(c) != null).sort(byDelta);\n    return dated[0] ?? exacts[0];",
+        replace="    return exacts[0]; /* mutation: provider order decides */",
+        test=T_UNIT,
+        expect="days from the premiere must be offered",
+        guards="the review queue suggests whichever same-titled work is most "
+               "popular rather than the one that could actually be it",
+    ),
+    Mutation(
+        name="the manual drain obeys retry cooldowns like a scheduled run",
+        path=BACKEND_REMOTE,
+        # planSweep's one override: a human pressing Run sweep now is not the
+        # daily budget. Without it the button is a no-op on exactly the state
+        # it exists for — a backlog whose rows were all asked about recently.
+        find="    cooldown++;\n    return !!opts?.ignoreCooldown;",
+        replace="    cooldown++;\n    return false; /* mutation: drain obeys cooldown */",
+        test=T_UNIT,
+        expect="an admin pressing the button is not the daily budget",
+        guards="the drain button silently skips every cooling entry, which after "
+               "one sweep is the whole queue",
+    ),
+    Mutation(
         name="a retry cooldown never expires",
         path=BACKEND_REMOTE,
         # retryStateFor drives the per-row captions and the stats tiles on
@@ -494,7 +561,7 @@ MUTATIONS: list[Mutation] = [
         # The tiles are the page's answer to "how much of this season is
         # actually handled" — a markup regression that drops them leaves the
         # page functional-looking and the question unanswerable.
-        find='<div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-2" data-matching-stats>',
+        find='<div class="overflow-x-auto -my-1" data-matching-stats>',
         replace='<div class="hidden" data-matching-stats-mutated>',
         test=T_UI,
         expect="no stats block",

@@ -57,10 +57,26 @@ export function __setSkyhookFetchForTest(f: Fetcher | null): void {
   _fetch = f ?? defaultFetch;
 }
 
-/** Episodes per series, memoised — a sweep run asks about the same parent repeatedly. */
-const _episodeCache = new Map<string, SkyhookEpisode[]>();
+/**
+ * One show record: the episodes AND the TMDB id skyhook already hands us.
+ *
+ * The `tmdbId` was being downloaded and thrown away. It is the only *id-based*
+ * cross-reference between the two providers available for free here, and
+ * without it the same show found in TVDB and in TMDB stays two separate
+ * candidates that look ambiguous but aren't. Merging them on matching titles
+ * instead would be actively wrong — Echo's three candidates are all titled
+ * exactly "Echo" and are three different films.
+ */
+export interface SkyhookShow {
+  episodes: SkyhookEpisode[];
+  /** TVDB's own TMDB cross-reference, when it has one. */
+  tmdbId: string | null;
+}
+
+/** Per series, memoised — a sweep run asks about the same parent repeatedly. */
+const _showCache = new Map<string, SkyhookShow>();
 export function __clearSkyhookCachesForTest(): void {
-  _episodeCache.clear();
+  _showCache.clear();
 }
 
 function dateStr(v: unknown): string | null {
@@ -87,27 +103,38 @@ export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
   }
 }
 
-export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]> {
-  const hit = _episodeCache.get(tvdbId);
+export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
+  const hit = _showCache.get(tvdbId);
   if (hit) return hit;
-  let eps: SkyhookEpisode[] = [];
+  let show: SkyhookShow = { episodes: [], tmdbId: null };
   try {
     const data = await _fetch(`${BASE}/shows/en/${encodeURIComponent(tvdbId)}`);
     const raw = data?.episodes;
-    if (Array.isArray(raw)) {
-      eps = raw
-        .filter((e: any) => e && typeof e.seasonNumber === 'number' && typeof e.episodeNumber === 'number')
-        .map((e: any) => ({
-          seasonNumber: e.seasonNumber,
-          episodeNumber: e.episodeNumber,
-          airDate: dateStr(e.airDate),
-        }));
-    }
+    const eps: SkyhookEpisode[] = Array.isArray(raw)
+      ? raw
+          .filter((e: any) => e && typeof e.seasonNumber === 'number' && typeof e.episodeNumber === 'number')
+          .map((e: any) => ({
+            seasonNumber: e.seasonNumber,
+            episodeNumber: e.episodeNumber,
+            airDate: dateStr(e.airDate),
+          }))
+      : [];
+    show = { episodes: eps, tmdbId: data?.tmdbId != null ? String(data.tmdbId) : null };
   } catch {
-    eps = [];
+    show = { episodes: [], tmdbId: null };
   }
-  _episodeCache.set(tvdbId, eps);
-  return eps;
+  _showCache.set(tvdbId, show);
+  return show;
+}
+
+/** Kept for callers that only want dates — one fetch either way. */
+export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]> {
+  return (await skyhookShow(tvdbId)).episodes;
+}
+
+/** TVDB's own TMDB cross-reference — the evidence a candidate merge needs. */
+export async function skyhookTmdbId(tvdbId: string): Promise<string | null> {
+  return (await skyhookShow(tvdbId)).tmdbId;
 }
 
 /**

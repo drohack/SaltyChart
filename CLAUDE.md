@@ -283,7 +283,7 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin — an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~126 times (two per row, 63 rows) and starts real transcodes, which is not something to do
+backend ~134 times (two per row, 67 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -386,7 +386,7 @@ Suite includes:
 | `test_match_replay.py` | Replays the shipping `matchSeries` (community-map ids only) over a frozen 8-season corpus — 945 real AniList entries × a 2,271-series library snapshot — and diffs every verdict against a committed baseline, in seconds with no network. Twelve real false positives asserted by name, and a named assertion matching no corpus entry is itself a failure. Fixtures are gitignored (they inventory the media library; this repo is public), so the test SKIPs where they haven't been built. Scope, privacy, and the re-baseline procedure: the file's docstring |
 | `test_jellyfin.py` | 12 steps: auth/admin gates, `?token=` paths, availability shape, stream proxy + manifest credential-leak assertion, subtitle fetch and caching headers, no credential in `transcodingUrl`, at least one `matchedBy == "id"` (the id tier proven alive), a two-path round trip through the override table (an unheld id AND an outright rejection both flip a show to unavailable, invalidation proven in the persisted blob), films never falling through to series titles, Confirm keeping provenance, and the admin lookup returning named, cross-walked, natively-TVDB picks. Live steps auto-skip when Jellyfin is unconfigured; cleanup always in a `finally`. Step-by-step history: the file's docstring |
 | `test_player.py` | 10 steps driving the real player: pre-warm without an early stream, playback advances, one subtitle menu with a plain-English default, `[`/`]` speed steps with the bar hidden, burned-in subtitles verified in the pixels, 480p in exactly one restart, Escape stopping the transcode. Steps 1/2/3/5 are unconditional setup, step 8 reloads before the subtitles-off pass, step 9 stubs an `AbortError` — why each rule exists is in the file's docstring. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
-| `backend npm run test:unit` | Pure helpers via `node --test`: `jellyfinApi` (a logged axios error never carries the API key; the auth header's `DeviceId`; the ESM SDK loads under CommonJS; the typed `DeviceProfile` is byte-identical to the hand-written one), `remoteIdentity` (the acceptance ladder and `pickCandidate` against the real measured pairs, `baseTitles` ordering, defensive premiere parsing, the miss-retry tiers incl. the >2y retirement, `retryStateFor`'s cooldown flip), `skyhookIdentity` (`titleRelated` floors, season-premiere-only verification, undated-future-season, degrade-to-empty), `episodeMatch`, `jellyfinFilmIndex` (the coalescing raced and was watched to fail), `animeMatch` (Unicode guards, positive-only guessed ids, the removed contains-tier's four pairs), `anilistRateLimit` (the 60 s lockout arithmetic — the headerless rung was watched to fail at 15 s). Every assertion's story is commented at the assertion in its `.test.ts` |
+| `backend npm run test:unit` | Pure helpers via `node --test`: `jellyfinApi` (a logged axios error never carries the API key; the auth header's `DeviceId`; the ESM SDK loads under CommonJS; the typed `DeviceProfile` is byte-identical to the hand-written one), `remoteIdentity` (the acceptance ladder and `pickCandidate` against the real measured pairs, `baseTitles` ordering, defensive premiere parsing, the miss-retry tiers incl. the >2y retirement, `retryStateFor`'s cooldown flip, `planSweep`'s cap/cooldown/retired selection incl. the drain override), `skyhookIdentity` (`titleRelated` floors, season-premiere-only verification, undated-future-season, degrade-to-empty), the cross-provider candidate merge (id reference only — the title-merge mutant was watched to fuse two of Echo's three films), `episodeMatch`, `jellyfinFilmIndex` (the coalescing raced and was watched to fail), `animeMatch` (Unicode guards, positive-only guessed ids, the removed contains-tier's four pairs, `classifyMatch`'s four-way partition incl. the unheld-film category error), `anilistRateLimit` (the 60 s lockout arithmetic — the headerless rung was watched to fail at 15 s). Every assertion's story is commented at the assertion in its `.test.ts` |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_audit_anchors.py` | Two doc-rot checks, both cheap enough to run on every push. (1) **`EXPLORATORY.md` cites nothing dead** — every referenced file exists, and no `file.ext:NN` line references, which move silently (one did, within an hour of being written). It cannot check the prose, so a pass here does not mean the charter is accurate — see the doc-sync rule above. (2) Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 8 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it. It has already paid for itself twice over: typing an `apiJson<string[]>` call in Compare made it notice that `suggestions` had been declared `string[]` while every write put `{ value, label }` in and every read used `.value` — declaring it honestly cleared the new error *and* the two standing ones |
@@ -601,22 +601,25 @@ Routes (contracts here; each guard's story is commented at its code):
   reachability.
 - `GET /users` — admin only; ids + names for the playback-account picker.
 - `GET /identity` — admin only; every override row.
-- `POST /identity/resolve` — admin only; `{ mediaIds[], years? }` (max 200) →
+- `POST /identity/resolve` — admin only; `{ mediaIds[], years?, titles? }` (max 200) →
   what we believe about each and where it came from. Pairs with
   `/availability/batch` on `/admin/matching`: that says *whether* a show
   resolved, this says *which id* and whether a human confirmed it. Unmatched
   rows carry `retry` (`eligible` / `cooldown` + `nextRetryAt` / `retired`,
-  from `retryStateFor` — the tier arithmetic's one home); `years` is the
-  optional mediaId→premiere-year map that computation needs, sent by the page
-  because nothing stored on a miss row records it. Carries `sweep` — the last resolver
+  from `retryStateFor` — the tier arithmetic's one home) and `tier` from
+  `classifyMatch` (`id`/`title`/`notHeld`/`noMatch`, the sweep's own
+  classifier, so the admin panel's per-season and all-seasons rows agree by
+  construction). `years` and `titles` are the optional mediaId-keyed maps those
+  two computations need, sent by the page because nothing stored on a miss row
+  records them. Carries `sweep` — the last resolver
   sweep's persisted summary (`AppConfig.remoteSweepStatus`), written at BOTH
   sweep exits because "ran and found nothing" must be distinguishable from
   "never ran"; a corrupt row parses to null, never a throw. `remaining` counts
   what future runs will actually process (cooldown and retired rows excluded —
   the first shape counted every unmatched entry, so it could never reach 0);
   `retired` counts old misses no longer re-asked.
-- `POST /identity/sweep` — admin only; starts a **drain** sweep (the per-run
-  cap removed, pacing kept) and returns `202 { started, running }`
+- `POST /identity/sweep` — admin only; starts a **drain** sweep (per-run cap
+  *and* retry cooldowns dropped, pacing kept) and returns `202 { started, running }`
   immediately — a drain over a cold-start backlog runs for minutes, so
   nothing awaits it; `_running` in `remoteIdentity.ts` is the concurrency
   guard, and progress lands in the `sweep` summary above. 503
@@ -698,9 +701,15 @@ a season rollover clears in one run. The three maintenance passes
 (legacy-row dating, `regradeStoredRows`, `fillTvdbGaps`) keep a smaller
 40-per-run cap; they groom already-stored rows and nothing an admin waits on
 depends on them. `POST /identity/sweep` (the *Run sweep now* button on
-`/admin/matching`) runs the same sweep with the truncation removed — a drain
-for cold starts, which once took eight container restarts at the old cap of
-40; pacing still applies. Two selection rules were broken at first, invisibly
+`/admin/matching`) runs the same sweep with **both the cap and the retry
+cooldowns dropped** (`planSweep`'s `ignoreCooldown`) — a human pressing it is
+not the daily budget, and without the override the button is a no-op on
+exactly the state it exists for, since one sweep leaves every row cooling.
+Retirement is *not* overridable: those entries aired years ago and no upstream
+source has ever heard of them, so re-asking on every press is the churn
+retirement removed. Pacing still applies; drain removes the truncation, not
+the politeness. Cold starts once took eight container restarts at the old cap
+of 40 — measured after: one click, 375 lookups, 11.5 min. Two selection rules were broken at first, invisibly
 (the system just silently stops improving — both are commented at the code):
 
 - A row recording *"we looked and found nothing"* must **not** shadow the
@@ -734,6 +743,21 @@ before subtitles and only treats separator-looking separators as such —
 because many gap entries resolve by title today and a guess must not delete a
 working match. The UI marks such matches `unverified`.
 
+**Which candidate is offered is decided by air date too, not provider
+relevance.** `pickCandidate`'s last rung sorts *exact* titles by premiere
+distance rather than taking TMDB's first: Echo (premiering 2026-07-19) was
+offered its 2023 namesake 1,012 days away while the 2026 film 46 days away sat
+third in the list. Only the suggestion changes — nothing within tolerance
+means the ladder still queues the row for review.
+
+**A ladder or ranking change does NOT re-rank rows already stored.** The sweep
+selects on `needsRemoteLookup`, so an entry that already carries an id is never
+re-asked; `regradeStoredRows` re-resolves only rows whose candidates predate
+`premiereDate`. Improving the ranking therefore fixes new lookups and leaves
+old suggestions as they were — clearing the row (or `/admin/matching`) is the
+only way to re-ask today. A `resolverVersion` stamp would generalise the
+`premiereDate` trick and make this self-healing on deploy.
+
 **Acceptance is decided by air date, not title confidence** (`verdictFor` —
 the full ladder, its rungs, and the measured day-distance tables are its
 JSDoc). The shape that matters: correct results land 0–31 days from the
@@ -762,6 +786,22 @@ alike. Consequences encoded in the ladder:
   was wrong and was removed (sequel→parent is *correct* — TVDB/TMDB put
   seasons inside one series). Don't reintroduce a title or relation heuristic
   without re-measuring.
+
+**The same show found in both providers becomes ONE candidate, merged on an
+id cross-reference — never on a title.** TVDB and TMDB answer the search
+separately, so a work both know arrived as two identical-looking options and
+only one id was ever stored (`Chikyuu Daisuki! Kikkun`: TVDB undated, TMDB
+dated on the entry's premiere day). skyhook's *show* record carries TVDB's own
+`tmdbId`, and that request is already made for the season-premiere check — the
+field was simply being discarded. `mergeCrossReferencedCandidates` collapses a
+TVDB-only candidate into a TMDB-only one only when that reference points at it,
+keeping the TVDB side as the base and taking the date. Measured after: Chikyuu
+stores both ids, drops from two candidates to one, and leaves the review queue.
+**Merging on matching titles would be actively wrong** — Echo's three
+candidates are all titled exactly "Echo" and are three different films — and
+the guard is a mutation row. A duplicate *within* one provider (Cyborg 009:
+Nemesis exists twice in TVDB, one copy undated) is NOT merged: nothing proves
+the two are the same show, so it stays in review.
 
 **The top five candidates are kept, not just the winner** (TMDB orders by
 relevance; the tail past five is noise — commented at the `slice` in
@@ -1050,8 +1090,13 @@ Tables / columns:
   resolver run, and what did it do" must survive the restart that follows a
   deploy, which is exactly when someone wonders; its `remaining` counts only
   what future runs will actually process, `retired` the old misses no longer
-  re-asked, and `tracked`/`unmatched`/`cooldown` the whole-cache counts behind
-  the admin page's all-seasons tiles). Everything in this table that
+  re-asked, and `tracked`/`unmatched`/`cooldown`/`never`/`ready` plus `tiers`
+  the whole-cache counts behind the admin page's all-seasons row. `tiers`
+  (`id`/`title`/`notHeld`/`noMatch`) comes from `classifyMatch`, the *same*
+  classifier `/identity/resolve` reports per row — so the panel's two scopes
+  reconcile instead of being two computations that drift. It costs no provider
+  calls: the library, the film index and the id maps are all in memory by the
+  time the sweep runs). Everything in this table that
   caches an upstream answer is persisted for the same reason as the library:
   the load it guards against is *caused* by restarts, so an in-memory-only copy
   is empty exactly when it is needed most.
@@ -1115,7 +1160,7 @@ Path: `frontend/`
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (produces static assets)
 - Preview: `npm run preview`
-- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare, Admin, AdminMatching (`/admin/matching`). The two admin pages share `components/AdminTabs.svelte`, gated to the admin user via the `isAdmin` flag on `/api/jellyfin/status` (`stores/jellyfin.ts`). **`/admin/matching`** is the human end of the matching pipeline — what needs review for a season, a per-row state verdict derived from the stored acceptance rung (so it can never contradict what verified the match), and a Sonarr-import-style match control where picking fills and only Confirm saves. Rows sort by display title (the API returns AniList id order, which reads as arbitrary), a *Run sweep now* button fires `POST /identity/sweep` and polls the sweep summary until the run finishes (status line only — rows never reload out from under a review), and the sweep status line reports `remaining`/`retired` honestly. One stat-tile row summarises at a glance: all cached seasons on the left (tracked / no id / on cooldown / retired, from the persisted sweep status — hidden until a sweep has run on this deployment) and the on-screen season on the right (entries / by id / by title / not in library / no id, which deliberately sum to `entries` — unexplained arithmetic reads as a bug). Each unmatched row also captions its own standing ("auto-searched 2 d ago — retries in ~5 h"). Its full UI contract — filter modes, provenance rules, the changed-vs-untouched Confirm discriminator — is the header comment in `pages/AdminMatching.svelte`; the resolution rules it fronts are in *Matching AniList entries to the library* above.
+- Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword, Randomize, Compare, Admin, AdminMatching (`/admin/matching`). The two admin pages share `components/AdminTabs.svelte`, gated to the admin user via the `isAdmin` flag on `/api/jellyfin/status` (`stores/jellyfin.ts`). **`/admin/matching`** is the human end of the matching pipeline — what needs review for a season, a per-row state verdict derived from the stored acceptance rung (so it can never contradict what verified the match), and a Sonarr-import-style match control where picking fills and only Confirm saves. Rows sort by display title (the API returns AniList id order, which reads as arbitrary), a *Run sweep now* button fires `POST /identity/sweep` and polls the sweep summary until the run finishes (status line only — rows never reload out from under a review), and the sweep status line reports `remaining`/`retired` honestly. A two-row table summarises at a glance — the season on screen and every cached season, sharing columns so the scopes are read by comparison and the numbers align by construction (two earlier tile layouts drifted out of alignment the moment one group gained a line the other lacked). Two header tiers because the data is two levels deep: `by id + by title + not in library + no match = entries`, and `never searched + ready to retry + on cooldown + retired = queued`. **`queued` is not a slice of the first four** — an entry with no id can title-match today and still be owed a lookup — and the legend under the table says so, because a reader asked which numbers were subsets of which and flat columns couldn't answer. Each unmatched row also captions its own standing ("auto-searched 2 d ago — retries in ~5 h"). Its full UI contract — filter modes, provenance rules, the changed-vs-untouched Confirm discriminator — is the header comment in `pages/AdminMatching.svelte`; the resolution rules it fronts are in *Matching AniList entries to the library* above.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
 #### Reading from the API — `src/lib/remote.ts`

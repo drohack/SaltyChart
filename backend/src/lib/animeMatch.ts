@@ -245,3 +245,66 @@ export function matchSeries(
   const fuzzy = matchByTitle(entry.titles, library);
   return fuzzy ? { series: fuzzy.series, confidence: 'title', tier: fuzzy.tier } : null;
 }
+
+/**
+ * Which bucket does one entry fall in — the single definition of "how did this
+ * match", used by BOTH the per-season view and the all-seasons sweep tally.
+ *
+ * It exists because the two were about to be computed twice: the admin page
+ * derived buckets from `resolveAvailability`'s `matchedBy`, and a sweep-side
+ * tally would have had to re-derive them. Two implementations of the same
+ * question drift, and a reader comparing the rows sees numbers that don't
+ * reconcile — which is exactly the confusion this whole panel was added to
+ * remove.
+ *
+ * Pure and I/O-free on purpose: the library and the held-film ids are both
+ * already in memory, so classifying all ~950 cached entries costs no provider
+ * calls at all. Availability's extra step — *which episode* plays — is the part
+ * that needs Jellyfin, and no count here depends on it.
+ *
+ * The four values partition entries exactly once. `noMatch` means "nothing
+ * found by id or title", which is NOT the same population as "still owed an
+ * auto-search": an entry with no id can title-match today and still be queued
+ * for a lookup, so the queue is reported alongside these, never as a subset.
+ */
+export type MatchTier = 'id' | 'title' | 'notHeld' | 'noMatch';
+
+export function classifyMatch(
+  entry: {
+    tvdbId?: string | null;
+    tmdbId?: string | null;
+    tmdbKind?: 'tv' | 'movie' | null;
+    titles: string[];
+    idIsAuthoritative?: boolean;
+    /** A human said outright it is not in the library. */
+    rejected?: boolean;
+  },
+  library: MatchableSeries[],
+  heldFilmTmdbIds: ReadonlySet<string>
+): MatchTier {
+  // A rejection short-circuits before matching, for the same reason it does in
+  // resolveAvailability: it carries no ids and would otherwise fall through to
+  // the very title match being rejected.
+  if (entry.rejected) return 'notHeld';
+  // A film is resolved against films, never against the series list — matching
+  // a movie's id against TV series could only hit by coincidence, and title
+  // matching one against them is the category error that produced
+  // "The Last Blossom" -> *House*.
+  if (entry.tmdbKind === 'movie' && entry.tmdbId) {
+    return heldFilmTmdbIds.has(String(entry.tmdbId)) ? 'id' : 'notHeld';
+  }
+  const hit = matchSeries(
+    {
+      tvdbId: entry.tvdbId,
+      // Only a TV-namespaced TMDB id can mean anything against a Series list.
+      tmdbId: entry.tmdbKind === 'movie' ? null : entry.tmdbId,
+      titles: entry.titles,
+      idIsAuthoritative: entry.idIsAuthoritative,
+    },
+    library
+  );
+  if (hit) return hit.confidence === 'id' ? 'id' : 'title';
+  // An id we know that the library doesn't carry is a different fact from
+  // never having had an id at all, and the panel reports them apart.
+  return entry.tvdbId || entry.tmdbId ? 'notHeld' : 'noMatch';
+}

@@ -88,6 +88,12 @@
     /** Every option the lookup returned, best-first. */
     candidates?: Choice[] | null;
     /**
+     * How this row resolves against the library, from the backend's shared
+     * classifier — the season tiles count these, and the sweep tallies the
+     * same values across every cached season.
+     */
+    tier?: 'id' | 'title' | 'notHeld' | 'noMatch' | null;
+    /**
      * Where an unmatched row stands with the auto-search: never searched,
      * cooling down until nextRetryAt, or retired (aired >2 y ago). null on
      * settled rows — there is nothing to retry.
@@ -291,6 +297,8 @@
     finishedAt: number; looked: number; accepted: number; queued: number;
     rejected: number; remaining: number; retired?: number;
     tracked?: number; unmatched?: number; cooldown?: number;
+    never?: number; ready?: number;
+    tiers?: { id: number; title: number; notHeld: number; noMatch: number };
     overrides: number; mapSize: number;
   } | null = null;
 
@@ -387,17 +395,21 @@
   $: stats = (() => {
     const un = rows.filter((r) => r.retry);
     const cooling = un.filter((r) => r.retry!.state === 'cooldown');
-    const byId = rows.filter((r) => r.matchedBy === 'id').length;
-    const byTitle = rows.filter((r) => r.matchedBy === 'title').length;
+    // From the backend's classifier, so these four partition `entries` exactly
+    // once. Deriving them from availability's `matchedBy` could not: an unheld
+    // film reported 'id' while an unheld series reported nothing, and the
+    // fourth bucket was a subtraction that quietly absorbed the difference.
+    const tier = (t: string) => rows.filter((r) => r.tier === t).length;
     return {
       total: rows.length,
-      byId,
-      byTitle,
-      // The tiles must sum to `entries` or the block reads as broken: this is
-      // the rows whose id IS known but points at nothing we hold (including
-      // human rejections) — honestly not in the library.
-      notInLib: rows.length - byId - byTitle - un.length,
-      noId: un.length,
+      byId: tier('id'),
+      byTitle: tier('title'),
+      notInLib: tier('notHeld'),
+      noMatch: tier('noMatch'),
+      // The auto-search queue is NOT a subset of the above: an entry with no id
+      // can title-match today and still be owed a lookup, so it is counted
+      // separately and never presented as a slice of one bucket.
+      queued: un.length,
       never: un.filter((r) => r.retry!.state === 'eligible' && r.retry!.lastLookupAt == null).length,
       ready: un.filter((r) => r.retry!.state === 'eligible' && r.retry!.lastLookupAt != null).length,
       cooldown: cooling.length,
@@ -456,6 +468,10 @@
                 years: Object.fromEntries(
                   slice.filter((x) => x.startDate?.year).map((x) => [x.mediaId, x.startDate.year])
                 ),
+                // Titles let the backend report each row's match tier with the
+                // same classifier the sweep tallies with, so the panel's two
+                // scopes can't disagree.
+                titles: Object.fromEntries(slice.map((x) => [x.mediaId, x.titles])),
               }) },
             { label: 'admin/identity', timeoutMs: QUICK }
           ),
@@ -490,6 +506,7 @@
           candidates: Array.isArray(i.candidates) ? i.candidates : null,
           note: i.note ?? null,
           retry: i.retry ?? null,
+          tier: i.tier ?? null,
         };
       });
       // By display title — the API returns AniList's default (media id
@@ -680,7 +697,7 @@
       </button>
       <button class="btn btn-sm btn-outline normal-case ml-auto" data-run-sweep on:click={runSweep}
         disabled={status === 'loading' || sweepRun !== 'idle'}
-        title="Look up every entry still missing an id, now, instead of waiting for the daily run">
+        title="Look up every entry still missing an id right now — including ones on a retry cooldown — instead of waiting for the daily run">
         {#if sweepRun !== 'idle'}<span class="loading loading-spinner loading-xs"></span>{/if}
         Run sweep now
       </button>
@@ -694,96 +711,152 @@
     {/if}
 
     {#if status === 'ok' && rows.length}
-      <!-- One row, two anchored groups: every cached season on the left (from
-           the persisted sweep status — the only thing that walks them all),
-           the season on screen on the right. The season tiles sum to
-           `entries`; the first cut didn't, and unexplained arithmetic reads
-           as a bug even when each number is individually right. -->
-      <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-2" data-matching-stats>
-        <div class="flex flex-col gap-1">
-          <span class="text-[11px] opacity-60 uppercase tracking-wide"
-            title="Everything in the season cache, all years — numbers are from the last auto-search sweep">
-            all seasons — auto-search queue {#if sweep}&middot; as of {ago(sweep.finishedAt)}{/if}
-          </span>
-          {#if sweep?.tracked != null}
-            <div class="stats stats-horizontal bg-base-200">
-              <div class="stat py-1 px-3">
-                <div class="stat-title text-[11px]">tracked</div>
-                <div class="stat-value text-xl">{sweep.tracked}</div>
-              </div>
-              <div class="stat py-1 px-3">
-                <div class="stat-title text-[11px]">no id yet</div>
-                <div class="stat-value text-xl">{sweep.unmatched ?? '—'}</div>
-              </div>
-              <div class="stat py-1 px-3">
-                <div class="stat-title text-[11px]">on cooldown</div>
-                <div class="stat-value text-xl">{sweep.cooldown ?? '—'}</div>
-              </div>
-              <div class="stat py-1 px-3">
-                <div class="stat-title text-[11px]" title="Aired >2 years ago and still unknown upstream — no longer re-asked">
-                  retired
-                </div>
-                <div class="stat-value text-xl">{sweep.retired ?? '—'}</div>
-              </div>
-            </div>
+      <!-- A table, not two tile groups: the same columns for the season on
+           screen and for every cached season, so the two scopes are read by
+           comparison and the numbers line up BY CONSTRUCTION. Two earlier
+           tile layouts drifted out of alignment the moment one group gained
+           a line the other lacked, and a prose "of those: …" caption below
+           them read as applying to every column instead of one.
+           `entries` = by id + by title + not in library + no id yet, and the
+           row is ordered that way — unexplained arithmetic reads as a bug
+           even when each number is individually right. All-seasons cells the
+           sweep can't know are an em-dash, never a zero. -->
+      <!-- One panel, two halves: the counts on the left (aligned to the same
+           left edge as every other element on this page — a centred table
+           would float free of that spine) and, on the right, WHEN they were
+           measured. The provenance used to sit in its own paragraph below,
+           where it both repeated the queue numbers and left the table alone
+           in a 1600px container looking unfinished. -->
+      <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3
+                  flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
+        <div class="overflow-x-auto -my-1" data-matching-stats>
+          <table class="table table-xs w-auto [&_td]:py-1 [&_th]:py-1">
+          <!-- Two header tiers, because the data is two levels deep and a flat
+               row of eight numbers hid it: columns 1–4 partition `entries`,
+               and the last four partition `no id yet`. Group rules mark both
+               boundaries. Flat columns had a reader asking which numbers were
+               subsets of which — that is the structure failing to say
+               something true about the content. -->
+          <thead>
+            <tr class="text-[10px] uppercase tracking-wider opacity-40">
+              <th class="font-normal"></th>
+              <th class="font-normal"></th>
+              <th class="font-normal text-center border-l border-base-300" colspan="4">
+                how it resolves against your library
+              </th>
+              <th class="font-normal text-center border-l border-base-300" colspan="5">
+                still owed an auto-search
+              </th>
+            </tr>
+            <tr class="text-[11px] opacity-60">
+              <th class="font-normal"></th>
+              <th class="font-normal text-right">entries</th>
+              <th class="font-normal text-right border-l border-base-300">by id</th>
+              <th class="font-normal text-right">by title</th>
+              <th class="font-normal text-right"
+                title="Id known, but it points at nothing the library holds (includes rejections)">not in library</th>
+              <th class="font-normal text-right" title="Nothing found by id or by title">no match</th>
+              <th class="font-normal text-right border-l border-base-300"
+                title="Entries with no known id that the auto-search still owes an answer for — some of these DO match by title today, so this is not a slice of the four columns to the left">queued</th>
+              <th class="font-normal text-right border-l border-base-300">never searched</th>
+              <th class="font-normal text-right"
+                title="Searched before and past its retry window — the next sweep picks these up">ready to retry</th>
+              <th class="font-normal text-right">on cooldown</th>
+              <th class="font-normal text-right"
+                title="Aired more than 2 years ago and still unknown upstream — no longer re-asked automatically">retired</th>
+            </tr>
+          </thead>
+          <tbody class="[&_td]:tabular-nums [&_td]:text-right [&_td]:text-base">
+            <tr>
+              <th class="text-[11px] font-normal opacity-60 uppercase tracking-wide text-left whitespace-nowrap">
+                {season} {year}
+              </th>
+              <td class="font-semibold">{stats.total}</td>
+              <td class="border-l border-base-300">{stats.byId}</td>
+              <td>{stats.byTitle}</td>
+              <td>{stats.notInLib}</td>
+              <td>{stats.noMatch}</td>
+              <td class="font-semibold border-l border-base-300">{stats.queued}</td>
+              <td class="border-l border-base-300">{stats.never}</td>
+              <td>{stats.ready}</td>
+              <!-- The next-retry time is a tooltip, never inline: any extra
+                   glyph in a right-aligned numeric cell shoves the digit out
+                   of its column, which is the whole reason this is a table. -->
+              <td title={stats.nextRetryAt ? `next retry ${inAbout(stats.nextRetryAt)}` : undefined}>
+                {stats.cooldown}
+              </td>
+              <td>{stats.retired}</td>
+            </tr>
+            <tr>
+              <th class="text-[11px] font-normal opacity-60 uppercase tracking-wide text-left whitespace-nowrap"
+                title="Every season in the cache, all years — from the last auto-search sweep">
+                <!-- No timestamp here: the provenance beside the table already
+                     dates these numbers, and saying it twice invites the two
+                     copies to disagree. -->
+                all seasons
+              </th>
+              {#if sweep?.tracked != null}
+                <td class="font-semibold">{sweep.tracked}</td>
+                {#if sweep.tiers}
+                  <td class="border-l border-base-300">{sweep.tiers.id}</td>
+                  <td>{sweep.tiers.title}</td>
+                  <td>{sweep.tiers.notHeld}</td>
+                  <td>{sweep.tiers.noMatch}</td>
+                {:else}
+                  <!-- Only rows written before the sweep counted tiers. One run
+                       fills them; it needs no provider calls. -->
+                  <td class="opacity-25 font-normal border-l border-base-300" colspan="4"
+                    title="Counted from the next sweep onwards">after the next sweep</td>
+                {/if}
+                <td class="font-semibold border-l border-base-300">{sweep.unmatched ?? '—'}</td>
+                <td class="border-l border-base-300">{sweep.never ?? '—'}</td>
+                <td>{sweep.ready ?? '—'}</td>
+                <td>{sweep.cooldown ?? '—'}</td>
+                <td>{sweep.retired ?? '—'}</td>
+              {:else}
+                <td colspan="9" class="text-left text-xs opacity-60 font-normal">
+                  Appears after the next sweep — press Run sweep now.
+                </td>
+              {/if}
+            </tr>
+            </tbody>
+          </table>
+          <!-- The arithmetic, stated once for the whole table: a reader asked
+               which numbers were subsets of which, and a legend answers that
+               far more directly than a tooltip nobody hovers. -->
+          <p class="text-[10px] opacity-40 mt-1">
+            entries = by id + by title + not in library + no match &nbsp;·&nbsp;
+            queued = never searched + ready to retry + on cooldown + retired
+            <span class="opacity-70">(queued counts entries with no known id, so it overlaps
+            &ldquo;by title&rdquo; &mdash; it is not a slice of the four)</span>
+          </p>
+        </div>
+        <!-- The daily resolver had no admin-visible trace at all — a background
+             system that "silently stops improving" is this codebase's
+             most-repeated failure class, and its only signal was a backend
+             console line. This says what the last run DID; the table beside it
+             says what the state IS. -->
+        <div class="text-[11px] leading-relaxed opacity-70 sm:text-right" data-sweep-status>
+          {#if sweepRun !== 'idle'}
+            <span class="loading loading-spinner loading-xs align-middle"></span>
+            Sweep running now — these numbers update when it finishes
+          {:else if sweep}
+            Last sweep {ago(sweep.finishedAt)}: looked up {sweep.looked},
+            matched {sweep.accepted}, queued {sweep.queued} for review,
+            ruled out {sweep.rejected} on air date
           {:else}
-            <p class="text-xs opacity-60 py-2">Appears after the next sweep — run one above.</p>
+            No sweep has finished yet. One runs 90 s after the server starts and
+            daily after that — or press Run sweep now.
+          {/if}
+          {#if sweep}
+            <br />
+            <span class="opacity-70">
+              {sweep.overrides.toLocaleString()} saved match{sweep.overrides === 1 ? '' : 'es'}
+              · community map {sweep.mapSize.toLocaleString()} pairs
+            </span>
           {/if}
         </div>
-        <div class="flex flex-col gap-1 items-end">
-          <span class="text-[11px] opacity-60 uppercase tracking-wide">{season} {year}</span>
-          <div class="stats stats-horizontal bg-base-200">
-            <div class="stat py-1 px-3">
-              <div class="stat-title text-[11px]">entries</div>
-              <div class="stat-value text-xl">{stats.total}</div>
-            </div>
-            <div class="stat py-1 px-3">
-              <div class="stat-title text-[11px]">by id</div>
-              <div class="stat-value text-xl">{stats.byId}</div>
-            </div>
-            <div class="stat py-1 px-3">
-              <div class="stat-title text-[11px]">by title</div>
-              <div class="stat-value text-xl">{stats.byTitle}</div>
-            </div>
-            <div class="stat py-1 px-3">
-              <div class="stat-title text-[11px]" title="Id known, but it points at nothing the library holds (includes rejections)">
-                not in library
-              </div>
-              <div class="stat-value text-xl">{stats.notInLib}</div>
-            </div>
-            <div class="stat py-1 px-3">
-              <div class="stat-title text-[11px]">no id yet</div>
-              <div class="stat-value text-xl">{stats.noId}</div>
-              {#if stats.noId}
-                <div class="stat-desc text-[10px]">
-                  {stats.never} never · {stats.cooldown} cooling{#if stats.retired} · {stats.retired} retired{/if}{#if stats.nextRetryAt} · next {inAbout(stats.nextRetryAt)}{/if}
-                </div>
-              {/if}
-            </div>
-          </div>
-        </div>
       </div>
-    {/if}
-
-    <!-- The daily resolver had no admin-visible trace at all — a background
-         system that "silently stops improving" is this codebase's most-repeated
-         failure class, and its only signal was a backend console line. -->
-    {#if sweep}
-      <p class="text-xs opacity-70" data-sweep-status>
-        Last auto-match sweep {ago(sweep.finishedAt)} — {sweep.looked} looked up,
-        {sweep.accepted} accepted, {sweep.queued} queued for review,
-        {sweep.rejected} rejected on air date, {sweep.remaining} still waiting{#if sweep.retired},
-        {sweep.retired} retired (aired years ago, unknown upstream — no longer re-asked){/if}
-        · {sweep.overrides} override row{sweep.overrides === 1 ? '' : 's'}
-        · map {sweep.mapSize.toLocaleString()} pairs
-        {#if sweepRun !== 'idle'}· a sweep is running now — this line updates when it finishes{/if}
-      </p>
-    {:else if status === 'ok'}
-      <p class="text-xs opacity-70" data-sweep-status>
-        {#if sweepRun !== 'idle'}A sweep is running now — this line updates when it finishes.
-        {:else}The auto-match sweep hasn't completed a run yet — it runs 90 s after boot
-        and daily after that, or on Run sweep now above.{/if}
-      </p>
     {/if}
 
     {#if status === 'loading'}

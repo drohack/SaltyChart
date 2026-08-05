@@ -11,6 +11,8 @@ import {
   completeIdentityIds,
   retryAfterFor,
   retryStateFor,
+  planSweep,
+  mergeCrossReferencedCandidates,
   type RemoteCandidate,
 } from './remoteIdentity';
 import { __setMapsForTest } from './anilistTvdbMap';
@@ -438,6 +440,114 @@ test('retryStateFor names each unmatched row honestly: eligible, cooldown, retir
   assert.deepEqual(retryStateFor(null, y - 10, now),
     { state: 'eligible', lastLookupAt: null, nextRetryAt: null },
     'retirement applies to misses, never to a first look — even a decade back');
+});
+
+test('candidates from two providers merge on an id cross-reference, never on a title', () => {
+  // Chikyuu Daisuki! Kikkun, verbatim: TVDB knows it (undated) and TMDB knows
+  // it (dated 2026-07-01, the entry's premiere day). Two candidates that look
+  // ambiguous in the picker and are the same show — provably, because
+  // skyhook's own show record for tvdb 479768 names tmdbId 326697.
+  const chikyuu: RemoteCandidate[] = [
+    { matchedTitle: 'Chikyuu Daisuki! Kikkun', year: null, premiereDate: null, tvdbId: '479768', tmdbId: null, tmdbKind: null, exact: true, image: null },
+    { matchedTitle: 'Chikyuu Daisuki! Kikkun', year: 2026, premiereDate: '2026-07-01', tvdbId: null, tmdbId: '326697', tmdbKind: 'tv', exact: true, image: null },
+  ];
+  const merged = mergeCrossReferencedCandidates(chikyuu, new Map([['479768', '326697']]));
+  assert.equal(merged.length, 1, 'one show must be one option, not two');
+  assert.equal(merged[0].tvdbId, '479768', 'the merged option keeps the TVDB id');
+  assert.equal(merged[0].tmdbId, '326697', 'and gains the TMDB id — the pair a Sonarr flow needs');
+  assert.equal(merged[0].tmdbKind, 'tv');
+  assert.equal(merged[0].premiereDate, '2026-07-01',
+    'the date must survive the merge — it is the only thing that can verify the match');
+  assert.equal(merged[0].year, 2026);
+
+  // The guard that matters: same exact title is NOT evidence. Echo's three
+  // candidates are all titled "Echo" and are three different films; with no
+  // cross-reference between them, nothing may be collapsed.
+  const echo: RemoteCandidate[] = [
+    { matchedTitle: 'Echo', year: 2023, premiereDate: '2023-10-11', tvdbId: null, tmdbId: '1187349', tmdbKind: 'movie', exact: true, image: null },
+    { matchedTitle: 'echo', year: 2026, premiereDate: '2026-06-03', tvdbId: null, tmdbId: '1631232', tmdbKind: 'movie', exact: true, image: null },
+    { matchedTitle: 'Echo', year: 2026, premiereDate: '2026-02-05', tvdbId: null, tmdbId: '1614268', tmdbKind: 'movie', exact: true, image: null },
+  ];
+  // The map must be NON-EMPTY or this asserts nothing: an empty one hits the
+  // early return and the merge logic never runs. (It didn't, at first — the
+  // title-merge mutant sailed through a green test.) These references exist
+  // and simply don't apply to any candidate here.
+  const unrelatedXrefs = new Map([['399042', '69346'], ['479768', '326697']]);
+  assert.equal(mergeCrossReferencedCandidates(echo, unrelatedXrefs).length, 3,
+    'identical titles with no id cross-reference are different works and must all survive');
+
+  // A cross-reference pointing at a candidate we do not have changes nothing.
+  const lone: RemoteCandidate[] = [
+    { matchedTitle: 'Youjo Shenki', year: 2017, premiereDate: '2017-01-10', tvdbId: '399042', tmdbId: null, tmdbKind: null, exact: false, image: null },
+  ];
+  assert.deepEqual(mergeCrossReferencedCandidates(lone, new Map([['399042', '999999']])), lone,
+    'a cross-reference with nothing to merge into must leave the list untouched');
+});
+
+test('pickCandidate: outside tolerance, the closest premiere still wins over provider order', () => {
+  // Echo (AniList 214068, premieres 2026-07-19), verbatim from the resolver's
+  // stored candidates. Three exact-title matches, none inside the 31-day
+  // tolerance, so every dated rung falls through — and the old last line took
+  // "the first exact in provider order", i.e. TMDB's popularity ranking, which
+  // put the 2023 film (1,012 d away) ahead of the 2026 one 46 d away. The
+  // verdict was always right (it queues for review either way); what was wrong
+  // was the suggestion a human is asked to judge.
+  const airDate = Date.UTC(2026, 6, 19);
+  const echo: RemoteCandidate[] = [
+    { matchedTitle: 'Echo Boomers', year: 2020, premiereDate: '2020-11-13', tmdbId: '558574', tmdbKind: 'movie', tvdbId: null, exact: false, image: null },
+    { matchedTitle: 'Echo', year: 2023, premiereDate: '2023-10-11', tmdbId: '1187349', tmdbKind: 'movie', tvdbId: null, exact: true, image: null },
+    { matchedTitle: 'echo', year: 2026, premiereDate: '2026-06-03', tmdbId: '1631232', tmdbKind: 'movie', tvdbId: null, exact: true, image: null },
+    { matchedTitle: 'Echo', year: 2026, premiereDate: '2026-02-05', tmdbId: '1614268', tmdbKind: 'movie', tvdbId: null, exact: true, image: null },
+  ];
+  assert.equal(pickCandidate(echo, airDate)?.tmdbId, '1631232',
+    'the exact title 46 days from the premiere must be offered, not the one 1,012 days away');
+
+  // No exact title anywhere: nothing has been measured to beat provider
+  // relevance there, so it must stay untouched.
+  const noExact: RemoteCandidate[] = [
+    { matchedTitle: 'Something Else', year: 2019, premiereDate: '2019-01-01', tmdbId: '11', tmdbKind: 'tv', tvdbId: null, exact: false, image: null },
+    { matchedTitle: 'Closer By Date', year: 2026, premiereDate: '2026-06-01', tmdbId: '22', tmdbKind: 'tv', tvdbId: null, exact: false, image: null },
+  ];
+  assert.equal(pickCandidate(noExact, airDate)?.tmdbId, '11',
+    'with no exact title, provider order is still the only evidence there is');
+});
+
+test('planSweep: scheduled runs respect cooldowns, a manual drain overrides them', () => {
+  // The selection half of the sweep, extracted so it can be tested at all —
+  // it used to live inside runRemoteIdentitySweep, which needs Prisma and a
+  // Jellyfin Api, so the rules that decide WHAT gets looked up were the least
+  // covered part of the most consequential loop.
+  const now = 1_000_000_000_000;
+  const y = new Date(now).getFullYear();
+  const todo = [
+    { anilistId: 1, year: y },       // never asked
+    { anilistId: 2, year: y },       // asked yesterday — cooling (2 d tier)
+    { anilistId: 3, year: y },       // asked 3 days ago — window passed
+    { anilistId: 4, year: y - 5 },   // asked yesterday, aired 5 y ago — retired
+    { anilistId: 5, year: y },       // never asked
+  ];
+  const askedAt = new Map([[2, now - DAY], [3, now - 3 * DAY], [4, now - DAY]]);
+
+  const scheduled = planSweep(todo, askedAt, { max: 10, now });
+  assert.deepEqual(scheduled.batch.map((q) => q.anilistId), [1, 3, 5],
+    'a scheduled run takes never-asked and window-passed entries, never the cooling ones');
+  assert.equal(scheduled.cooldown, 1, 'the cooling entry is counted, not silently dropped');
+  assert.equal(scheduled.retired, 1, 'the >2 y miss is counted as retired');
+  assert.equal(scheduled.eligible, 3, 'eligible excludes both cooldown and retired');
+
+  // The cap bounds the batch but must NOT shrink the queue figure the admin
+  // page reports — that conflation is what made `remaining` unable to reach 0.
+  const capped = planSweep(todo, askedAt, { max: 2, now });
+  assert.deepEqual(capped.batch.map((q) => q.anilistId), [1, 3],
+    'the cap truncates the batch in queue order');
+  assert.equal(capped.eligible, 3, 'the cap must not change how many are eligible');
+
+  // The manual button's contract: everything we still owe an answer for, now.
+  const drain = planSweep(todo, askedAt, { max: Infinity, ignoreCooldown: true, now });
+  assert.deepEqual(drain.batch.map((q) => q.anilistId), [1, 2, 3, 5],
+    'a drain must include the cooling entry — an admin pressing the button is not the daily budget');
+  assert.ok(!drain.batch.some((q) => q.anilistId === 4),
+    'a drain still skips retired entries — upstream has never heard of them and re-asking forever is the churn retirement removed');
 });
 
 test('the tolerance is far tighter than the gap to a neighbouring season', () => {

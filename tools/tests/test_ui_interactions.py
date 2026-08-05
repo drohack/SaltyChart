@@ -1180,9 +1180,11 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         assert stats_el.count(), (
             "no stats block on /admin/matching — the season's match health and "
             "the auto-search queue are invisible again")
-        stats_text = stats_el.text_content() or ""
-        assert "entries" in stats_text and "auto-search queue" in stats_text, (
-            f"stats block is missing a group (got: {stats_text[:120]!r})")
+        stats_text = (stats_el.text_content() or "").lower()
+        # Both scopes must render: the season on screen and the all-seasons
+        # row the sweep status feeds. One without the other is half a summary.
+        assert "entries" in stats_text and "all seasons" in stats_text, (
+            f"stats block is missing a scope row (got: {stats_text[:120]!r})")
         # The Run-sweep button must visibly enter a running state on click —
         # a button that fires and changes nothing is this page's version of
         # the fire-and-forget hide toggle. The POST is stubbed: a real drain

@@ -2,7 +2,7 @@ import type { Api } from '@jellyfin/sdk';
 import { getTvShowsApi } from '@jellyfin/sdk/lib/utils/api/tv-shows-api';
 import { getItemLookupApi } from '@jellyfin/sdk/lib/utils/api/item-lookup-api';
 import prisma from '../db';
-import { normalizeTitle, MatchableSeries } from './animeMatch';
+import { normalizeTitle, classifyMatch, MatchableSeries } from './animeMatch';
 import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './episodeMatch';
 import {
   needsRemoteLookup,
@@ -10,12 +10,14 @@ import {
   identityReady,
   identityOverrideCount,
   rawIdentityOverride,
+  resolveIdentity,
   mergeIdentityPatch,
 } from './seriesIdentity';
 import { anilistTvdbMapSize, crosswalkIds } from './anilistTvdbMap';
 import {
   skyhookSearch,
   skyhookEpisodes,
+  skyhookShow,
   titleRelated,
   seasonPremiereDelta,
   hasUndatedFutureSeason,
@@ -405,7 +407,12 @@ export interface TvdbEvidence {
  */
 async function searchSkyhookCandidates(
   q: RemoteQuery
-): Promise<{ cands: RemoteCandidate[]; evidence: Map<string, TvdbEvidence> }> {
+): Promise<{
+  cands: RemoteCandidate[];
+  evidence: Map<string, TvdbEvidence>;
+  /** TVDB id -> TMDB id, from the show records skyhook already gave us. */
+  tmdbForTvdb: Map<string, string>;
+}> {
   const titles = q.titles.filter(Boolean).slice(0, 3);
   const bases = [...new Set(titles.flatMap(baseTitles))].filter((b) => !titles.includes(b));
   const searched = [...titles, ...new Set(bases)];
@@ -424,14 +431,19 @@ async function searchSkyhookCandidates(
     if (related.length >= 4) break;
   }
   const evidence = new Map<string, TvdbEvidence>();
+  const tmdbForTvdb = new Map<string, string>();
   const cands: RemoteCandidate[] = [];
   for (const [i, s] of related.slice(0, 4).entries()) {
     if (i < 2) {
-      const eps = await skyhookEpisodes(s.tvdbId);
-      if (eps.length) {
+      // One request serves both: the schedule evidence AND TVDB's own TMDB
+      // cross-reference, which is what lets the same show found in both
+      // providers become one candidate carrying both ids.
+      const show = await skyhookShow(s.tvdbId);
+      if (show.tmdbId) tmdbForTvdb.set(s.tvdbId, show.tmdbId);
+      if (show.episodes.length) {
         evidence.set(s.tvdbId, {
-          seasonDeltaMs: seasonPremiereDelta(eps, q.airDateMs ?? null),
-          undatedFutureSeason: hasUndatedFutureSeason(eps),
+          seasonDeltaMs: seasonPremiereDelta(show.episodes, q.airDateMs ?? null),
+          undatedFutureSeason: hasUndatedFutureSeason(show.episodes),
         });
       }
     }
@@ -455,7 +467,7 @@ async function searchSkyhookCandidates(
     return ev?.seasonDeltaMs != null && ev.seasonDeltaMs <= AIR_DATE_TOLERANCE_MS ? 0 : 1;
   };
   cands.sort((a, b) => within(a) - within(b));
-  return { cands, evidence };
+  return { cands, evidence, tmdbForTvdb };
 }
 
 /**
@@ -506,9 +518,14 @@ export async function resolveRemoteIdentity(
   // hold. When its evidence already settles the entry, the TMDB pass is
   // skipped entirely; otherwise both candidate lists merge for the picker.
   let tvdbEvidence: Map<string, TvdbEvidence> | undefined;
+  // TVDB->TMDB cross-references gathered along the way; they turn "the same
+  // show found twice" into one candidate carrying both ids (see
+  // mergeCrossReferencedCandidates).
+  let tmdbForTvdb: ReadonlyMap<string, string> = new Map();
   if (q.format !== 'MOVIE') {
     const sky = await searchSkyhookCandidates(q);
     tvdbEvidence = sky.evidence;
+    tmdbForTvdb = sky.tmdbForTvdb;
     add(sky.cands);
     const settled = sky.cands.find((c) => {
       const ev = sky.evidence.get(c.tvdbId ?? '');
@@ -520,7 +537,18 @@ export async function resolveRemoteIdentity(
       // `settled` itself, not pickCandidate: a sequel's verified parent is
       // never "exact" and its firstAired is years off, so no dated/exact rank
       // would choose it over other noise.
-      return { chosen: settled, candidates: all, tvdbEvidence };
+      //
+      // Nothing to merge yet (the TMDB pass hasn't run), but the cross-
+      // reference still completes the pair here — this is the population the
+      // module header measured as carrying a TVDB id and no TMDB one.
+      const xref = settled.tvdbId ? tmdbForTvdb.get(String(settled.tvdbId)) : undefined;
+      const withXref: RemoteCandidate =
+        xref && !settled.tmdbId ? { ...settled, tmdbId: xref, tmdbKind: 'tv' } : settled;
+      return {
+        chosen: withXref,
+        candidates: all.map((c) => (c === settled ? withXref : c)),
+        tvdbEvidence,
+      };
     }
   }
 
@@ -537,13 +565,21 @@ export async function resolveRemoteIdentity(
           const d = premiereDelta(c.premiereDate, q.airDateMs ?? null);
           return d == null || d <= AIR_DATE_TOLERANCE_MS;
         });
-        if (exact) return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all, tvdbEvidence };
+        if (exact) {
+          const merged = mergeCrossReferencedCandidates(all, tmdbForTvdb);
+          return {
+            chosen: pickCandidate(merged, q.airDateMs ?? null)!,
+            candidates: merged,
+            tvdbEvidence,
+          };
+        }
       }
     }
     if (all.length) break;
   }
   if (!all.length) return null;
-  return { chosen: pickCandidate(all, q.airDateMs ?? null)!, candidates: all, tvdbEvidence };
+  const merged = mergeCrossReferencedCandidates(all, tmdbForTvdb);
+  return { chosen: pickCandidate(merged, q.airDateMs ?? null)!, candidates: merged, tvdbEvidence };
 }
 
 /**
@@ -558,6 +594,63 @@ export async function resolveRemoteIdentity(
  * year distance when both sides know one → first candidate, exactly as before,
  * which the ladder then queues if a date refuted it.
  */
+/**
+ * Collapse candidates that provably describe the same show.
+ *
+ * TVDB and TMDB each answer the search separately, so a work both know arrives
+ * as two candidates — identical in the picker, ambiguous-looking, and only one
+ * of the two ids ever gets stored. `Chikyuu Daisuki! Kikkun` is the case: TVDB
+ * knows it undated, TMDB knows it dated on the entry's premiere day.
+ *
+ * The evidence is an **id cross-reference** — skyhook's show record names
+ * TVDB's own `tmdbId` — and it must never be a title. Echo's three candidates
+ * are all titled exactly "Echo" and are three different films; collapsing on
+ * text would fabricate one entity and destroy the date evidence that picks the
+ * right one. So this merges a TVDB-only candidate with a TMDB-only candidate
+ * ONLY when the former's record points at the latter's id.
+ *
+ * The TVDB side is kept as the base (a series row should carry the id Sonarr
+ * uses) and gains whatever the TMDB side knew: dates outrank everything
+ * downstream, so losing the date here would undo the merge's own value.
+ */
+export function mergeCrossReferencedCandidates(
+  cands: RemoteCandidate[],
+  tmdbForTvdb: ReadonlyMap<string, string>
+): RemoteCandidate[] {
+  if (cands.length < 2 || tmdbForTvdb.size === 0) return cands;
+  const absorbed = new Set<number>();
+  const out: RemoteCandidate[] = [];
+  cands.forEach((c, i) => {
+    if (absorbed.has(i)) return;
+    const xref = c.tvdbId && !c.tmdbId ? tmdbForTvdb.get(String(c.tvdbId)) : undefined;
+    if (!xref) {
+      out.push(c);
+      return;
+    }
+    const j = cands.findIndex(
+      (o, k) => k !== i && !absorbed.has(k) && !o.tvdbId && o.tmdbId && String(o.tmdbId) === xref
+    );
+    if (j < 0) {
+      out.push(c);
+      return;
+    }
+    const other = cands[j];
+    absorbed.add(j);
+    out.push({
+      ...c,
+      tmdbId: other.tmdbId,
+      tmdbKind: other.tmdbKind ?? c.tmdbKind,
+      premiereDate: c.premiereDate ?? other.premiereDate,
+      year: c.year ?? other.year,
+      image: c.image ?? other.image,
+      // Either side matching the title exactly makes the show an exact hit.
+      exact: c.exact || other.exact,
+      matchedTitle: c.exact ? c.matchedTitle : other.exact ? other.matchedTitle : c.matchedTitle,
+    });
+  });
+  return out;
+}
+
 export function pickCandidate(all: RemoteCandidate[], airDateMs: number | null): RemoteCandidate | null {
   if (!all.length) return null;
   const delta = (c: RemoteCandidate) => premiereDelta(c.premiereDate, airDateMs);
@@ -583,10 +676,20 @@ export function pickCandidate(all: RemoteCandidate[], airDateMs: number | null):
     }
     return undatedExact[0];
   }
-  // Nothing a date vouches for: keep the exact title as the stored best-guess
-  // (the ladder queues it anyway) rather than whatever TMDB ranked first —
-  // the Echo re-grade stored "Echo Boomers" over the exact-titled "Echo".
-  return all.find((c) => c.exact) ?? all[0];
+  // Nothing a date vouches for — but among exact titles the premiere distance
+  // is still the best evidence available, and it must order them here for the
+  // same reason it orders the rung above. Taking "the first exact in provider
+  // order" meant TMDB's popularity ranking decided: Echo (premiering
+  // 2026-07-19) was offered its 2023 namesake, 1,012 days away, while the
+  // 2026 film 46 days away sat third in the list. The verdict is unaffected —
+  // nothing here is inside tolerance, so the ladder still queues the row for
+  // review; what changes is which candidate a human is asked to judge.
+  const exacts = all.filter((c) => c.exact);
+  if (exacts.length) {
+    const dated = exacts.filter((c) => delta(c) != null).sort(byDelta);
+    return dated[0] ?? exacts[0];
+  }
+  return all[0];
 }
 
 /**
@@ -684,6 +787,66 @@ export function retryAfterFor(
   if (Math.abs(startYear - thisYear) <= 1) return 2 * DAY;
   if (startYear < thisYear - 2) return Infinity;
   return 30 * DAY;
+}
+
+/**
+ * Decide what a run looks up, and count what it deliberately doesn't.
+ *
+ * Extracted from `runRemoteIdentitySweep` so these rules are testable at all:
+ * the body needs Prisma and a Jellyfin `Api`, which left the decision of WHAT
+ * to look up as the least-covered part of the most consequential loop.
+ *
+ * `ignoreCooldown` is the manual button's contract — an admin pressing *Run
+ * sweep now* means "ask about everything we still owe an answer for", and a
+ * cooldown exists to pace the *automatic* budget, not to overrule a human.
+ * Retirement is NOT overridable: those entries aired years ago and remain
+ * unknown to every upstream source, so re-asking them on every press is
+ * exactly the churn retirement was added to remove.
+ *
+ * `eligible` counts the queue independently of `max`, because conflating the
+ * two is what made the admin page's `remaining` unable to reach zero.
+ */
+export function planSweep<T extends { anilistId: number; year?: number | null }>(
+  todo: T[],
+  askedAt: Map<number, number>,
+  opts?: { max?: number; ignoreCooldown?: boolean; now?: number }
+): { batch: T[]; eligible: number; cooldown: number; retired: number; never: number; ready: number } {
+  const now = opts?.now ?? Date.now();
+  const thisYear = new Date(now).getFullYear();
+  let cooldown = 0;
+  let retired = 0;
+  let never = 0;
+  let ready = 0;
+  const eligible = todo.filter((q) => {
+    const at = askedAt.get(q.anilistId);
+    if (at == null) {
+      never++;
+      return true; // first-ever lookup — unconditional at any age
+    }
+    const wait = retryAfterFor(q.year, thisYear);
+    if (wait === Infinity) {
+      retired++;
+      return false;
+    }
+    if (now - at >= wait) {
+      ready++;
+      return true;
+    }
+    cooldown++;
+    return !!opts?.ignoreCooldown;
+  });
+  // `cooldown` counts what IS cooling, whether or not this run overrides it —
+  // the number describes the queue, not the run's mood.
+  return {
+    batch: eligible.slice(0, opts?.max ?? MAX_PER_RUN),
+    eligible: eligible.length,
+    cooldown,
+    retired,
+    // Reported so the admin panel's all-seasons row can be as complete as its
+    // per-season row: never = no lookup on record, ready = past its window.
+    never,
+    ready,
+  };
 }
 
 /** One unmatched row's standing with the sweep, ready for the admin page. */
@@ -807,6 +970,19 @@ export interface SweepStatus {
   unmatched?: number;
   /** Recorded misses inside their retry window at the time of the run. */
   cooldown?: number;
+  /** Tracked entries with no lookup on record at all. */
+  never?: number;
+  /** Recorded misses past their retry window — the next run takes these. */
+  ready?: number;
+  /**
+   * How every tracked entry resolves against the library, by the same
+   * `classifyMatch` the admin page uses per season — so its two rows are the
+   * same question asked at two scopes, and reconcile. Counted here because the
+   * sweep is the only thing that walks every cached season, and it costs no
+   * provider calls: the library, the film index and the id maps are all in
+   * memory by the time it runs.
+   */
+  tiers?: { id: number; title: number; notHeld: number; noMatch: number };
   /** Override rows in memory, and the community map size, for scale. */
   overrides: number;
   mapSize: number;
@@ -1092,7 +1268,7 @@ export async function fillTvdbGaps(
 export async function runRemoteIdentitySweep(
   api: Api | null,
   library: MatchableSeries[],
-  opts?: { max?: number }
+  opts?: { max?: number; ignoreCooldown?: boolean; heldFilmTmdbIds?: ReadonlySet<string> }
 ): Promise<void> {
   if (!api || _running) return;
   // Without the map loaded, "no id" means "we haven't read the map yet" rather
@@ -1156,27 +1332,48 @@ export async function runRemoteIdentitySweep(
       select: { anilistId: true, updatedAt: true },
     });
     const askedAt = new Map(asked.map((r) => [r.anilistId, r.updatedAt.getTime()]));
-    let retired = 0;
-    const skip = new Set(
-      todo
-        .filter((q) => {
-          const at = askedAt.get(q.anilistId);
-          if (at == null) return false; // first-ever lookup — always eligible
-          const wait = retryAfterFor(q.year);
-          if (wait === Infinity) {
-            retired++;
-            return true;
-          }
-          return Date.now() - at < wait;
-        })
-        .map((q) => q.anilistId)
-    );
-    // `eligible` is what future runs will actually process — cooldown and
-    // retired rows excluded. `remaining` reports against THIS, not `todo`: the
-    // old `todo`-based figure counted rows no run would touch, so the admin
-    // page's queue number could never reach zero.
-    const eligible = todo.filter((t) => !skip.has(t.anilistId));
-    const batch = eligible.slice(0, opts?.max ?? MAX_PER_RUN);
+    // See planSweep for the rules; `eligible` there is what FUTURE runs will
+    // process, which is what `remaining` reports against — the old
+    // todo-based figure counted rows no run would touch, so the admin page's
+    // queue number could never reach zero.
+    const plan = planSweep(todo, askedAt, {
+      max: opts?.max,
+      ignoreCooldown: opts?.ignoreCooldown,
+    });
+    const { batch, retired, cooldown, never, ready } = plan;
+
+    /**
+     * How every tracked entry resolves against the library right now.
+     *
+     * Called at each exit rather than up front, so it reflects what this run
+     * just learned. No provider calls: `classifyMatch` is pure, and the library
+     * plus the film ids are already in hand — measured at well under a second
+     * for ~950 entries, because an entry with an authoritative id short-circuits
+     * before the title loop.
+     */
+    const tallyTiers = () => {
+      const t = { id: 0, title: 0, notHeld: 0, noMatch: 0 };
+      const films = opts?.heldFilmTmdbIds ?? new Set<string>();
+      for (const [anilistId, q] of entryById) {
+        const ident = resolveIdentity(anilistId);
+        t[
+          classifyMatch(
+            {
+              tvdbId: ident.tvdbId,
+              tmdbId: ident.tmdbId,
+              tmdbKind: ident.tmdbKind,
+              titles: q.titles,
+              // Same rule as the viewer path: a resolver guess is positive-only.
+              idIsAuthoritative: ident.source !== 'remote' || ident.confirmed,
+              rejected: ident.rejected,
+            },
+            library,
+            films
+          )
+        ]++;
+      }
+      return t;
+    };
 
     const byTvdb = new Map<string, MatchableSeries>();
     const byTmdb = new Map<string, MatchableSeries>();
@@ -1282,10 +1479,11 @@ export async function runRemoteIdentitySweep(
       // point of the status is telling that apart from "never ran".
       await saveSweepStatus({
         finishedAt: Date.now(), looked: 0, accepted: 0, queued: 0, rejected: 0,
-        remaining: eligible.length, retired, overrides: identityOverrideCount(),
+        remaining: plan.eligible, retired, cooldown,
+        overrides: identityOverrideCount(),
         mapSize: anilistTvdbMapSize(),
-        tracked: entryById.size, unmatched: todo.length,
-        cooldown: skip.size - retired,
+        tracked: entryById.size, unmatched: todo.length, tiers: tallyTiers(),
+        never, ready,
       });
       return;
     }
@@ -1359,19 +1557,19 @@ export async function runRemoteIdentitySweep(
     console.log(
       `[identity] remote sweep: ${looked} looked up, ${accepted} accepted, ` +
         `${queued} queued, ${rejected} rejected on air date, ` +
-        `${eligible.length - batch.length} left for next run, ${retired} retired ` +
+        `${plan.eligible - batch.length} left for next run, ${retired} retired ` +
         `(${((Date.now() - started) / 1000).toFixed(1)}s)`
     );
     await saveSweepStatus({
       finishedAt: Date.now(), looked, accepted, queued, rejected,
-      remaining: eligible.length - batch.length, retired,
+      remaining: plan.eligible - batch.length, retired,
       overrides: identityOverrideCount(),
       mapSize: anilistTvdbMapSize(),
       // Pre-run counts — the batch just processed may have shrunk `unmatched`,
       // but these are a glance ("as of last sweep"), not live truth, and the
       // page timestamps them.
-      tracked: entryById.size, unmatched: todo.length,
-      cooldown: skip.size - retired,
+      tracked: entryById.size, unmatched: todo.length, cooldown,
+      never, ready, tiers: tallyTiers(),
     });
   } catch (err: any) {
     console.warn('[identity] remote sweep failed:', err?.message ?? err);

@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit';
 import prisma from '../db';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import {
+  classifyMatch,
   detectSeasonNumber,
   matchSeries,
   normalizeTitle,
@@ -191,6 +192,10 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   // on a miss row records.
   const years: Record<string, unknown> =
     req.body?.years && typeof req.body.years === 'object' ? req.body.years : {};
+  // Titles feed the match tier below; without them the title tier can't be
+  // evaluated, so the tier is reported as null rather than guessed at.
+  const titlesFor: Record<string, unknown> =
+    req.body?.titles && typeof req.body.titles === 'object' ? req.body.titles : {};
   // updatedAt for recorded misses among these ids. The in-memory override rows
   // carry no timestamps, and <=200 ids is one indexed SQLite read on an
   // admin-only page. Degrades to empty: retry states then read as 'eligible',
@@ -213,11 +218,33 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   // mutations: `rawIdentityOverride` returns the live in-memory row.
   let yearFor: (c: { tvdbId?: string | null; tmdbId?: string | null; tmdbKind?: string | null }) => number | null =
     () => null;
+  // How each entry resolves against the library, by the SAME classifier the
+  // sweep tallies with — so the admin panel's per-season row and its
+  // all-seasons row are one question asked at two scopes instead of two
+  // computations that can disagree. Pure and in-memory; the viewer's
+  // availability path is untouched.
+  let tierFor: (id: number) => string | null = () => null;
   try {
     const cfg = await getJellyfinConfig();
     if (cfg) {
       const api = await jellyfinApi(cfg);
       const [series, films] = await Promise.all([getSeriesLibrary(api), getFilmIndex(api)]);
+      const heldFilmTmdbIds = new Set(Object.keys(films));
+      tierFor = (id) => {
+        const t = titlesFor[String(id)];
+        if (!Array.isArray(t) || !t.length) return null; // no titles sent — say nothing
+        const i = resolveIdentity(id);
+        return classifyMatch(
+          {
+            tvdbId: i.tvdbId, tmdbId: i.tmdbId, tmdbKind: i.tmdbKind,
+            titles: t.filter((x): x is string => typeof x === 'string'),
+            idIsAuthoritative: i.source !== 'remote' || i.confirmed,
+            rejected: i.rejected,
+          },
+          series,
+          heldFilmTmdbIds
+        );
+      };
       const byTvdb = new Map<string, number>();
       const byTmdb = new Map<string, number>();
       for (const s of series) {
@@ -252,6 +279,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
       candidates: ident?.candidates?.length
         ? ident.candidates.map((c) => (c.year != null ? c : { ...c, year: yearFor(c) }))
         : ident?.candidates ?? null,
+      tier: tierFor(id),
       // A row with no ids and no human decision is what the sweep still owes
       // an answer for — say where it stands (eligible / cooldown / retired).
       // Settled rows get null, not 'eligible': there is nothing to retry.
@@ -270,9 +298,10 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
 
 /**
  * Start an identity sweep, shared by the boot/daily timers (index.ts) and the
- * manual endpoint below. `scheduled` keeps the per-run cap; `drain` removes it
- * so one admin click clears a whole backlog (pacing still applies — drain
- * removes the truncation, not the politeness).
+ * manual endpoint below. `scheduled` keeps the per-run cap and the retry
+ * cooldowns; `drain` drops both, so one admin click asks about everything we
+ * still owe an answer for (pacing still applies — drain removes the
+ * truncation, not the politeness; retired entries stay out, see planSweep).
  *
  * The sweep itself is fired WITHOUT await: a drain over a cold-start backlog
  * runs for many minutes, far past any HTTP timeout. Its body is one
@@ -289,8 +318,16 @@ export async function triggerSweep(
   if (sweepRunning()) return 'already-running';
   const api = await jellyfinApi(cfg);
   const library = await getSeriesLibrary(api);
+  // The film index feeds the sweep's match tally — a film is only ever resolved
+  // by id, so without it every held film would be counted "not in library".
+  // Cached and persisted, so this is a memory read on all but the first call.
+  const films = await getFilmIndex(api).catch(() => ({} as Record<string, unknown>));
+  const heldFilmTmdbIds = new Set(Object.keys(films));
   if (sweepRunning()) return 'already-running'; // the daily timer won the race
-  void runRemoteIdentitySweep(api, library, mode === 'drain' ? { max: Infinity } : undefined);
+  void runRemoteIdentitySweep(api, library, {
+    heldFilmTmdbIds,
+    ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true } : {}),
+  });
   return sweepRunning() ? 'started' : 'not-ready';
 }
 
