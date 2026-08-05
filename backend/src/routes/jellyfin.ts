@@ -17,6 +17,9 @@ import { ensureAnilistTvdbMap, crosswalkIds } from '../lib/anilistTvdbMap';
 import { getFilmIndex } from '../lib/jellyfinFilmIndex';
 import {
   sweepStatus,
+  sweepRunning,
+  runRemoteIdentitySweep,
+  retryStateFor,
   parseLookupTerm,
   searchBothKinds,
   lookupByProviderId,
@@ -182,6 +185,27 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   if (!Array.isArray(ids) || ids.length > 200) {
     return res.status(400).json({ error: 'mediaIds must be an array of at most 200', code: 'BAD_REQUEST' });
   }
+  // Optional mediaId -> premiere year, sent by the page (it holds startDate
+  // anyway for the availability batch). Only consulted for the per-row retry
+  // state — the tier arithmetic needs the entry's year, which nothing stored
+  // on a miss row records.
+  const years: Record<string, unknown> =
+    req.body?.years && typeof req.body.years === 'object' ? req.body.years : {};
+  // updatedAt for recorded misses among these ids. The in-memory override rows
+  // carry no timestamps, and <=200 ids is one indexed SQLite read on an
+  // admin-only page. Degrades to empty: retry states then read as 'eligible',
+  // which under-promises (the sweep will skip what's cooling down) rather
+  // than inventing a cooldown.
+  const askedAt = new Map<number, number>();
+  try {
+    const rows = await prisma.seriesIdentity.findMany({
+      where: { anilistId: { in: ids.map(Number).filter(Number.isFinite) }, source: 'remote' },
+      select: { anilistId: true, updatedAt: true },
+    });
+    for (const r of rows) askedAt.set(r.anilistId, r.updatedAt.getTime());
+  } catch {
+    /* see above — absence of a timestamp is honest-by-default */
+  }
   // Candidates stored before the sweep kept years have `year: null` forever —
   // but when we HOLD the candidate, its year is sitting in the library caches.
   // Enrich at read time (display only, storage untouched); the maps are the
@@ -228,6 +252,13 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
       candidates: ident?.candidates?.length
         ? ident.candidates.map((c) => (c.year != null ? c : { ...c, year: yearFor(c) }))
         : ident?.candidates ?? null,
+      // A row with no ids and no human decision is what the sweep still owes
+      // an answer for — say where it stands (eligible / cooldown / retired).
+      // Settled rows get null, not 'eligible': there is nothing to retry.
+      retry:
+        !ident?.tvdbId && !ident?.tmdbId && !ident?.confirmed && !ident?.rejected
+          ? retryStateFor(askedAt.get(id) ?? null, Number(years[String(id)]) || null)
+          : null,
     };
   }
   // The sweep summary rides along so /admin/matching can say when the daily
@@ -235,6 +266,56 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   // stops improving" is this codebase's most-repeated failure class, and until
   // now its only trace was a backend console line nobody watches.
   res.json({ identities: out, ready: identityReady(), sweep: await sweepStatus() });
+});
+
+/**
+ * Start an identity sweep, shared by the boot/daily timers (index.ts) and the
+ * manual endpoint below. `scheduled` keeps the per-run cap; `drain` removes it
+ * so one admin click clears a whole backlog (pacing still applies — drain
+ * removes the truncation, not the politeness).
+ *
+ * The sweep itself is fired WITHOUT await: a drain over a cold-start backlog
+ * runs for many minutes, far past any HTTP timeout. Its body is one
+ * try/catch/finally, so the dangling promise never rejects; and `_running` is
+ * set synchronously before its first await, so `sweepRunning()` read
+ * immediately afterwards is truthful — it distinguishes "started" from "the
+ * identity map isn't loaded yet" (the sweep's own silent-refusal case).
+ */
+export async function triggerSweep(
+  mode: 'scheduled' | 'drain'
+): Promise<'started' | 'already-running' | 'not-configured' | 'not-ready'> {
+  const cfg = await getJellyfinConfig();
+  if (!cfg) return 'not-configured';
+  if (sweepRunning()) return 'already-running';
+  const api = await jellyfinApi(cfg);
+  const library = await getSeriesLibrary(api);
+  if (sweepRunning()) return 'already-running'; // the daily timer won the race
+  void runRemoteIdentitySweep(api, library, mode === 'drain' ? { max: Infinity } : undefined);
+  return sweepRunning() ? 'started' : 'not-ready';
+}
+
+// Manual trigger for the sweep the timers otherwise own — a cold start used to
+// mean restarting the container once per capped run (eight bounces, one
+// evening). Returns immediately; progress lands in the persisted sweep status
+// that /identity/resolve already carries.
+router.post('/identity/sweep', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const result = await triggerSweep('drain');
+    if (result === 'not-configured') {
+      return res.status(503).json({ error: 'Jellyfin is not configured', code: 'NOT_CONFIGURED' });
+    }
+    if (result === 'not-ready') {
+      return res
+        .status(503)
+        .json({ error: 'Identity data is still loading — try again shortly', code: 'IDENTITY_NOT_READY' });
+    }
+    // 202 either way: a sweep is running now. `started` says whether this
+    // request is the one that kicked it off.
+    return res.status(202).json({ started: result === 'started', running: true });
+  } catch (err) {
+    console.warn('[identity] manual sweep trigger failed:', jellyfinErrorInfo(err));
+    return res.status(502).json({ error: 'Could not reach the media server', code: 'UPSTREAM_ERROR' });
+  }
 });
 
 router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {

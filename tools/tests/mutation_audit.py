@@ -87,6 +87,7 @@ BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
 BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
+ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 
 PY = ["py", "-3.13", "-u"]
 T_JELLYFIN = PY + [str(TESTS / "test_jellyfin.py")]
@@ -458,6 +459,75 @@ MUTATIONS: list[Mutation] = [
         expect="a non-object must read as no-status",
         guards="a hand-edited or half-written cache row renders as a nonsense "
                "status line instead of the honest 'hasn't run yet'",
+    ),
+    Mutation(
+        name="a two-year-old miss is retried forever",
+        path=BACKEND_REMOTE,
+        # The retirement rung: an entry that aired >2 years ago and is still
+        # unknown upstream has been unknown its whole life — without this line
+        # every permanent residue entry burns a lookup a month, forever.
+        find="  if (startYear < thisYear - 2) return Infinity;",
+        replace="  /* mutation: never retire */",
+        test=T_UNIT,
+        expect="must be retired",
+        guards="the sweep budget is spent re-asking about lost causes monthly, "
+               "and the status line's retired count silently reads zero",
+    ),
+    Mutation(
+        name="a retry cooldown never expires",
+        path=BACKEND_REMOTE,
+        # retryStateFor drives the per-row captions and the stats tiles on
+        # /admin/matching. A cooldown that sticks reads as "the sweep will
+        # never come back for this" on every miss, forever.
+        find="""  return now < nextRetryAt
+    ? { state: 'cooldown', lastLookupAt, nextRetryAt }
+    : { state: 'eligible', lastLookupAt, nextRetryAt: null };""",
+        replace="  return { state: 'cooldown', lastLookupAt, nextRetryAt }; /* mutation: cooldown never expires */",
+        test=T_UNIT,
+        expect="cooldown must expire, not stick",
+        guards="the admin page tells the admin every miss is waiting on a "
+               "retry that (per the page) never arrives",
+    ),
+    Mutation(
+        name="the stats block silently disappears",
+        path=ADMIN_MATCHING,
+        # The tiles are the page's answer to "how much of this season is
+        # actually handled" — a markup regression that drops them leaves the
+        # page functional-looking and the question unanswerable.
+        find='<div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-2" data-matching-stats>',
+        replace='<div class="hidden" data-matching-stats-mutated>',
+        test=T_UI,
+        expect="no stats block",
+        guards="the season-health and auto-search-queue tiles can vanish "
+               "without any test noticing",
+    ),
+    Mutation(
+        name="the sweep trigger endpoint loses its admin gate",
+        path=BACKEND_JF,
+        # The manual sweep starts real provider traffic (skyhook + TMDB via
+        # Jellyfin) — ungated, any logged-in user can drain someone else's
+        # budget. NOTE: the mutant run really does 202 a sweep on the dev
+        # backend; the revert's restart kills it within seconds, and the dev
+        # DB's eligible queue is near-empty, so the leaked traffic is a few
+        # calls at most.
+        find="router.post('/identity/sweep', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {",
+        replace="router.post('/identity/sweep', jellyfinLimiter, requireAuth, async (_req, res) => { /* mutation */",
+        test=T_JELLYFIN,
+        expect="ADMIN_REQUIRED",
+        guards="any signed-up user can trigger unbounded drain sweeps against "
+               "the shared providers",
+    ),
+    Mutation(
+        name="the Run-sweep button silently does nothing",
+        path=ADMIN_MATCHING,
+        # The page's version of the fire-and-forget hide toggle: a click that
+        # changes nothing on screen is indistinguishable from a working one.
+        find="on:click={runSweep}",
+        replace="on:click={() => {}}",
+        test=T_UI,
+        expect="did not enter its running state",
+        guards="the admin's only manual sweep control can break without any "
+               "test noticing — a dead button still looks clickable",
     ),
     Mutation(
         name="the release-year rung accepts TV candidates again",

@@ -76,8 +76,7 @@ import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
-import { runRemoteIdentitySweep } from './lib/remoteIdentity';
-import { getJellyfinConfig, getSeriesLibrary } from './routes/jellyfin';
+import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
 import { getFilmIndex } from './lib/jellyfinFilmIndex';
 import { jellyfinApi } from './lib/jellyfinApi';
 import prisma from './db';
@@ -589,23 +588,20 @@ ensureDatabaseSchema().then(() => {
     // Fill in the ids no community map has, by asking Jellyfin's own metadata
     // providers. On a timer for the same reason as the map refresh: an id is a
     // permanent fact, so finding one shouldn't wait for someone to press a
-    // button. Delayed at boot so it never competes with the first page load,
-    // and bounded per run — see `runRemoteIdentitySweep`.
+    // button (though /admin/matching now HAS the button, for draining a
+    // backlog — triggerSweep in routes/jellyfin.ts is the shared entry).
+    // Delayed at boot so it never competes with the first page load, and
+    // bounded per run — see `runRemoteIdentitySweep`.
     const sweep = async () => {
       try {
         const cfg = await getJellyfinConfig();
         if (!cfg) return;
-        const api = await jellyfinApi(cfg);
         // Re-warm the film index daily (6h TTL, so the sweep's run refreshes
         // it off the request path). The boot-time warm above covers a fresh
         // process; this keeps a long-running one from ever refreshing under a
         // viewer's request.
-        await getFilmIndex(api).catch(() => undefined);
-        // The library is what makes the air-date gate possible: a candidate we
-        // hold can have its episodes dated against the AniList premiere, which
-        // is the only signal that separates a correct sequel→parent match from
-        // "5-Oku-nen Button Part 2 → Babylon 5".
-        await runRemoteIdentitySweep(api, await getSeriesLibrary(api));
+        await getFilmIndex(await jellyfinApi(cfg)).catch(() => undefined);
+        await triggerSweep('scheduled');
       } catch (err: any) {
         console.warn('[identity] sweep could not start:', err?.message ?? err);
       }

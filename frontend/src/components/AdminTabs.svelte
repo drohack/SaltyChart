@@ -20,7 +20,9 @@
   }
 </script>
 
-<div role="tablist" class="tabs tabs-bordered mb-4">
+<!-- No own margin: both admin pages lay children out with a flex gap, and
+     mb-4 on top of that read as a hole under the tabs. -->
+<div role="tablist" class="tabs tabs-bordered">
   {#each TABS as t}
     <button
       role="tab"

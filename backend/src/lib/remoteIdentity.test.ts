@@ -9,6 +9,8 @@ import {
   parseSweepStatus,
   parseLookupTerm,
   completeIdentityIds,
+  retryAfterFor,
+  retryStateFor,
   type RemoteCandidate,
 } from './remoteIdentity';
 import { __setMapsForTest } from './anilistTvdbMap';
@@ -385,6 +387,57 @@ test('a malformed sweep status degrades to null, never a throw', () => {
     remaining: 2, overrides: 3, mapSize: 7000,
   }));
   assert.equal(s?.looked, 1, 'a valid status must round-trip');
+});
+
+test('miss retries tier by air-date distance, and a two-year-old miss is retired', () => {
+  // The tiers exist because TMDB gains records as a show approaches airing —
+  // and stops gaining them once it is long past. The Infinity rung is the
+  // retirement rule: an entry that aired more than two years ago and is STILL
+  // unknown upstream has been unknown for its whole life; re-asking monthly
+  // forever is budget spent on lost causes (measured: the 2024 leftovers in
+  // the dev cache are exactly these). First-ever lookups are unaffected — the
+  // sweep consults this only for entries that already have a recorded miss.
+  const y = new Date().getFullYear();
+  assert.equal(retryAfterFor(null), 14 * DAY, 'unknown year: the flat fortnight');
+  assert.equal(retryAfterFor(undefined), 14 * DAY);
+  assert.equal(retryAfterFor(y), 2 * DAY, 'current year: records appear within days');
+  assert.equal(retryAfterFor(y - 1), 2 * DAY);
+  assert.equal(retryAfterFor(y + 1), 2 * DAY);
+  assert.equal(retryAfterFor(y - 2), 30 * DAY, 'two years back still gets the slow lane');
+  assert.equal(retryAfterFor(y + 2), 30 * DAY, 'far-future announcements are not retired');
+  assert.equal(retryAfterFor(y - 3), Infinity,
+    'a miss more than two years old must be retired — never re-asked');
+  assert.equal(retryAfterFor(1998), Infinity,
+    'a decades-old miss must be retired — never re-asked');
+});
+
+test('retryStateFor names each unmatched row honestly: eligible, cooldown, retired', () => {
+  // The admin page shows this verbatim ("searched 2 d ago — retries in ~5 h" /
+  // "retired" / "never searched"). It is retryAfterFor read from a single
+  // row's point of view, so the tier arithmetic stays in one module — the
+  // first sketch had the frontend re-deriving it, which rots the day a tier
+  // changes. `now` is a parameter because a state that flips with the wall
+  // clock cannot be table-tested otherwise.
+  const now = 1_000_000_000_000; // fixed; only differences matter
+  const y = new Date(now).getFullYear();
+
+  assert.deepEqual(retryStateFor(null, y, now), { state: 'eligible', lastLookupAt: null, nextRetryAt: null },
+    'never searched must be eligible — a first lookup is unconditional at any age');
+  assert.deepEqual(retryStateFor(now - DAY, y, now),
+    { state: 'cooldown', lastLookupAt: now - DAY, nextRetryAt: now - DAY + 2 * DAY },
+    'a fresh miss on a current-year entry cools down until lastLookup + 2 days');
+  assert.deepEqual(retryStateFor(now - 3 * DAY, y, now),
+    { state: 'eligible', lastLookupAt: now - 3 * DAY, nextRetryAt: null },
+    'a miss past its window is eligible again — cooldown must expire, not stick');
+  assert.deepEqual(retryStateFor(now - DAY, y - 2, now),
+    { state: 'cooldown', lastLookupAt: now - DAY, nextRetryAt: now - DAY + 30 * DAY },
+    'two years back is the slow lane, not retirement');
+  assert.deepEqual(retryStateFor(now - DAY, y - 3, now),
+    { state: 'retired', lastLookupAt: now - DAY, nextRetryAt: null },
+    'a miss on an entry that aired >2 years ago is retired — never re-asked');
+  assert.deepEqual(retryStateFor(null, y - 10, now),
+    { state: 'eligible', lastLookupAt: null, nextRetryAt: null },
+    'retirement applies to misses, never to a first look — even a decade back');
 });
 
 test('the tolerance is far tighter than the gap to a neighbouring season', () => {

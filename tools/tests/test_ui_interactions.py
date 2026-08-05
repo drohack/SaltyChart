@@ -65,7 +65,12 @@ reset returns to the stored match, and a changed Confirm writes
 source:'manual'); an untouched Confirm settles the row off the list with
 provenance intact — the id boxes are prefilled with the stored ids, so
 "typed" must mean "changed": the first handler read any non-empty box as
-hand-typed and relabelled every confirm as manual.
+hand-typed and relabelled every confirm as manual. Also clicks Run sweep now
+(POST stubbed — a real drain would hammer skyhook/TMDB for minutes) and
+asserts the button visibly enters its running state: a click that changes
+nothing on screen is this page's fire-and-forget hide toggle. And asserts the
+stats tiles render with both groups (season match health + auto-search
+queue) — presence and labels only; the numbers are live season data.
 
 Exploratory pass-1 guards that were claimed and missing for months (21–24):
 - check-batch stays chunked at 100 (21), asserted against the live season's
@@ -1168,6 +1173,42 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         assert page.locator("[data-sweep-status]").count(), (
             "no resolver-sweep status line on /admin/matching — the daily sweep is "
             "invisible to the admin again")
+        # The stats tiles: season match health + the auto-search queue's
+        # standing (never searched / cooldown / retired). Presence + both
+        # group labels — the numbers are live season data and not stable.
+        stats_el = page.locator("[data-matching-stats]")
+        assert stats_el.count(), (
+            "no stats block on /admin/matching — the season's match health and "
+            "the auto-search queue are invisible again")
+        stats_text = stats_el.text_content() or ""
+        assert "entries" in stats_text and "auto-search queue" in stats_text, (
+            f"stats block is missing a group (got: {stats_text[:120]!r})")
+        # The Run-sweep button must visibly enter a running state on click —
+        # a button that fires and changes nothing is this page's version of
+        # the fire-and-forget hide toggle. The POST is stubbed: a real drain
+        # sweep from a test would hammer skyhook/TMDB for minutes.
+        SWEEP_ROUTE = "**/api/jellyfin/identity/sweep"
+        page.route(SWEEP_ROUTE, lambda rt: rt.fulfill(
+            status=202, content_type="application/json",
+            body=json.dumps({"started": True, "running": True})))
+        try:
+            btn = page.locator("[data-run-sweep]")
+            assert btn.count(), "no Run-sweep button on /admin/matching"
+            btn.click()
+            page.wait_for_timeout(300)
+            assert btn.is_disabled(), (
+                "Run sweep now did not enter its running state after the click — "
+                "the admin can't tell a triggered sweep from a dead button")
+        finally:
+            page.unroute(SWEEP_ROUTE)
+            # Stop the completion poll the click started (it would tick against
+            # the real backend for the rest of the file) — navigation destroys
+            # the component and its interval.
+            page.goto(f"{frontend}/admin/matching")
+            page.wait_for_selector(
+                "[data-matching-list], [data-matching-empty], [data-matching-error]",
+                timeout=30_000)
+            page.wait_for_timeout(500)
         # The admin trusts resolver accepts: the default queue must NOT hold
         # them (low priority was the ask), and the second filter option is
         # where they live — reachable, never invisible.

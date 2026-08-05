@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { authToken } from '../stores/auth';
   import { isAdmin } from '../stores/jellyfin';
   import { apiJson, QUICK, SEASON, ApiError } from '../lib/remote';
@@ -87,6 +87,16 @@
     matchedTitle?: string | null;
     /** Every option the lookup returned, best-first. */
     candidates?: Choice[] | null;
+    /**
+     * Where an unmatched row stands with the auto-search: never searched,
+     * cooling down until nextRetryAt, or retired (aired >2 y ago). null on
+     * settled rows — there is nothing to retry.
+     */
+    retry?: {
+      state: 'eligible' | 'cooldown' | 'retired';
+      lastLookupAt: number | null;
+      nextRetryAt: number | null;
+    } | null;
     /** How this id was arrived at, verbatim from the resolver. */
     note?: string | null;
   };
@@ -279,8 +289,66 @@
   /** The last resolver sweep's summary, from `/identity/resolve`. */
   let sweep: {
     finishedAt: number; looked: number; accepted: number; queued: number;
-    rejected: number; remaining: number; overrides: number; mapSize: number;
+    rejected: number; remaining: number; retired?: number;
+    tracked?: number; unmatched?: number; cooldown?: number;
+    overrides: number; mapSize: number;
   } | null = null;
+
+  /**
+   * The manual sweep trigger. POST starts a drain run on the server and
+   * returns immediately (a cold-start drain runs for minutes); completion is
+   * detected by polling the sweep summary — via `/identity/resolve` with an
+   * empty `mediaIds`, which skips the identity work and returns just the
+   * status — until `finishedAt` advances past the run we started from.
+   * Completion updates the status line only: reloading the rows out from
+   * under an admin mid-review is worse than a stale list, so Reload stays a
+   * deliberate click.
+   */
+  let sweepRun: 'idle' | 'running' = 'idle';
+  let sweepPoll: ReturnType<typeof setInterval> | null = null;
+  const stopSweepPoll = () => {
+    if (sweepPoll) clearInterval(sweepPoll);
+    sweepPoll = null;
+    sweepRun = 'idle';
+  };
+  onDestroy(stopSweepPoll);
+
+  async function runSweep() {
+    if (sweepRun !== 'idle') return;
+    sweepRun = 'running';
+    const before = sweep?.finishedAt ?? 0;
+    try {
+      await apiJson(
+        '/api/jellyfin/identity/sweep',
+        { method: 'POST', headers: auth() },
+        { label: 'admin/sweep', timeoutMs: QUICK }
+      );
+    } catch {
+      // 503 (not configured / identity still loading) or unreachable — either
+      // way nothing is running; don't sit polling for a run that never began.
+      stopSweepPoll();
+      return;
+    }
+    const startedAt = Date.now();
+    sweepPoll = setInterval(async () => {
+      // A drain over a big cold start is long, but not an hour long.
+      if (Date.now() - startedAt > 60 * 60_000) return stopSweepPoll();
+      try {
+        const r = await apiJson<{ sweep?: typeof sweep }>(
+          '/api/jellyfin/identity/resolve',
+          { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
+            body: JSON.stringify({ mediaIds: [] }) },
+          { label: 'admin/sweep-poll', timeoutMs: QUICK, retries: 0 }
+        );
+        if (r?.sweep && r.sweep.finishedAt > before) {
+          sweep = r.sweep;
+          stopSweepPoll();
+        }
+      } catch {
+        /* one missed poll is fine — the next tick asks again */
+      }
+    }, 10_000);
+  }
 
   function ago(ms: number): string {
     const m = Math.round((Date.now() - ms) / 60_000);
@@ -290,6 +358,53 @@
     if (h < 48) return `${h} h ago`;
     return `${Math.round(h / 24)} d ago`;
   }
+
+  /** ago()'s forward twin, for "retries in ~…". */
+  function inAbout(ms: number): string {
+    const m = Math.round((ms - Date.now()) / 60_000);
+    if (m < 60) return `in ~${Math.max(1, m)} min`;
+    const h = Math.round(m / 60);
+    if (h < 48) return `in ~${h} h`;
+    return `in ~${Math.round(h / 24)} d`;
+  }
+
+  /** The per-row caption beside an unmatched match control. */
+  function retryText(r: NonNullable<Row['retry']>): string {
+    if (r.state === 'retired') return 'retired — aired years ago and still unknown upstream; not re-asked';
+    if (r.state === 'cooldown') return `auto-searched ${ago(r.lastLookupAt!)} — retries ${inAbout(r.nextRetryAt!)}`;
+    return r.lastLookupAt == null
+      ? 'never auto-searched — eligible for the next sweep'
+      : `auto-searched ${ago(r.lastLookupAt)} — retries on the next sweep`;
+  }
+
+  /**
+   * The at-a-glance tiles. Two groups on purpose: what the season resolved to
+   * (already fine) and where the auto-search queue stands (work remaining) —
+   * blended into one line these read as noise, which is what the user said
+   * about the first sketch. Title-matched rows appear in BOTH groups when
+   * they carry no id: the sweep still owes them a lookup.
+   */
+  $: stats = (() => {
+    const un = rows.filter((r) => r.retry);
+    const cooling = un.filter((r) => r.retry!.state === 'cooldown');
+    const byId = rows.filter((r) => r.matchedBy === 'id').length;
+    const byTitle = rows.filter((r) => r.matchedBy === 'title').length;
+    return {
+      total: rows.length,
+      byId,
+      byTitle,
+      // The tiles must sum to `entries` or the block reads as broken: this is
+      // the rows whose id IS known but points at nothing we hold (including
+      // human rejections) — honestly not in the library.
+      notInLib: rows.length - byId - byTitle - un.length,
+      noId: un.length,
+      never: un.filter((r) => r.retry!.state === 'eligible' && r.retry!.lastLookupAt == null).length,
+      ready: un.filter((r) => r.retry!.state === 'eligible' && r.retry!.lastLookupAt != null).length,
+      cooldown: cooling.length,
+      nextRetryAt: cooling.length ? Math.min(...cooling.map((r) => r.retry!.nextRetryAt!)) : null,
+      retired: un.filter((r) => r.retry!.state === 'retired').length,
+    };
+  })();
 
   const auth = () => ({ Authorization: `Bearer ${$authToken}` });
 
@@ -334,7 +449,14 @@
           apiJson<{ identities: Record<string, any>; sweep?: typeof sweep }>(
             '/api/jellyfin/identity/resolve',
             { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
-              body: JSON.stringify({ mediaIds: slice.map((x) => x.mediaId) }) },
+              // years feed the per-row retry state — the tier arithmetic
+              // lives on the backend, but only this page knows the premiere.
+              body: JSON.stringify({
+                mediaIds: slice.map((x) => x.mediaId),
+                years: Object.fromEntries(
+                  slice.filter((x) => x.startDate?.year).map((x) => [x.mediaId, x.startDate.year])
+                ),
+              }) },
             { label: 'admin/identity', timeoutMs: QUICK }
           ),
         ]);
@@ -367,8 +489,12 @@
           matchedTitle: i.matchedTitle ?? null,
           candidates: Array.isArray(i.candidates) ? i.candidates : null,
           note: i.note ?? null,
+          retry: i.retry ?? null,
         };
       });
+      // By display title — the API returns AniList's default (media id
+      // ascending, i.e. entry-creation order), which reads as arbitrary here.
+      rows.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
       // Pre-populate every match control with what the row currently
       // resolves to — the admin changes it only when it looks wrong.
       selected = {};
@@ -533,11 +659,8 @@
     <div class="alert alert-warning"><span>This page is only available to the site admin.</span></div>
   {:else}
     <p class="text-sm opacity-70">
-      Entries matched to the library <em>by title</em>, which is the only case a
-      human can settle: an id match is exact, and an entry whose id the library
-      doesn't have is now reported as missing rather than guessed at. Confirming
-      one records it permanently, so the answer survives every future cache
-      expiry and matcher change.
+      Review how this season matched the library — Confirm or correct a match to
+      record it permanently.
     </p>
 
     <div class="flex flex-wrap items-end gap-2">
@@ -555,12 +678,90 @@
         {#if status === 'loading'}<span class="loading loading-spinner loading-xs"></span>{/if}
         Reload
       </button>
+      <button class="btn btn-sm btn-outline normal-case ml-auto" data-run-sweep on:click={runSweep}
+        disabled={status === 'loading' || sweepRun !== 'idle'}
+        title="Look up every entry still missing an id, now, instead of waiting for the daily run">
+        {#if sweepRun !== 'idle'}<span class="loading loading-spinner loading-xs"></span>{/if}
+        Run sweep now
+      </button>
     </div>
 
     {#if error}
       <div class="alert alert-warning text-sm" data-matching-error>
         <span>{error}</span>
         <button class="btn btn-xs btn-outline normal-case" on:click={load}>Retry</button>
+      </div>
+    {/if}
+
+    {#if status === 'ok' && rows.length}
+      <!-- One row, two anchored groups: every cached season on the left (from
+           the persisted sweep status — the only thing that walks them all),
+           the season on screen on the right. The season tiles sum to
+           `entries`; the first cut didn't, and unexplained arithmetic reads
+           as a bug even when each number is individually right. -->
+      <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-2" data-matching-stats>
+        <div class="flex flex-col gap-1">
+          <span class="text-[11px] opacity-60 uppercase tracking-wide"
+            title="Everything in the season cache, all years — numbers are from the last auto-search sweep">
+            all seasons — auto-search queue {#if sweep}&middot; as of {ago(sweep.finishedAt)}{/if}
+          </span>
+          {#if sweep?.tracked != null}
+            <div class="stats stats-horizontal bg-base-200">
+              <div class="stat py-1 px-3">
+                <div class="stat-title text-[11px]">tracked</div>
+                <div class="stat-value text-xl">{sweep.tracked}</div>
+              </div>
+              <div class="stat py-1 px-3">
+                <div class="stat-title text-[11px]">no id yet</div>
+                <div class="stat-value text-xl">{sweep.unmatched ?? '—'}</div>
+              </div>
+              <div class="stat py-1 px-3">
+                <div class="stat-title text-[11px]">on cooldown</div>
+                <div class="stat-value text-xl">{sweep.cooldown ?? '—'}</div>
+              </div>
+              <div class="stat py-1 px-3">
+                <div class="stat-title text-[11px]" title="Aired >2 years ago and still unknown upstream — no longer re-asked">
+                  retired
+                </div>
+                <div class="stat-value text-xl">{sweep.retired ?? '—'}</div>
+              </div>
+            </div>
+          {:else}
+            <p class="text-xs opacity-60 py-2">Appears after the next sweep — run one above.</p>
+          {/if}
+        </div>
+        <div class="flex flex-col gap-1 items-end">
+          <span class="text-[11px] opacity-60 uppercase tracking-wide">{season} {year}</span>
+          <div class="stats stats-horizontal bg-base-200">
+            <div class="stat py-1 px-3">
+              <div class="stat-title text-[11px]">entries</div>
+              <div class="stat-value text-xl">{stats.total}</div>
+            </div>
+            <div class="stat py-1 px-3">
+              <div class="stat-title text-[11px]">by id</div>
+              <div class="stat-value text-xl">{stats.byId}</div>
+            </div>
+            <div class="stat py-1 px-3">
+              <div class="stat-title text-[11px]">by title</div>
+              <div class="stat-value text-xl">{stats.byTitle}</div>
+            </div>
+            <div class="stat py-1 px-3">
+              <div class="stat-title text-[11px]" title="Id known, but it points at nothing the library holds (includes rejections)">
+                not in library
+              </div>
+              <div class="stat-value text-xl">{stats.notInLib}</div>
+            </div>
+            <div class="stat py-1 px-3">
+              <div class="stat-title text-[11px]">no id yet</div>
+              <div class="stat-value text-xl">{stats.noId}</div>
+              {#if stats.noId}
+                <div class="stat-desc text-[10px]">
+                  {stats.never} never · {stats.cooldown} cooling{#if stats.retired} · {stats.retired} retired{/if}{#if stats.nextRetryAt} · next {inAbout(stats.nextRetryAt)}{/if}
+                </div>
+              {/if}
+            </div>
+          </div>
+        </div>
       </div>
     {/if}
 
@@ -571,14 +772,17 @@
       <p class="text-xs opacity-70" data-sweep-status>
         Last auto-match sweep {ago(sweep.finishedAt)} — {sweep.looked} looked up,
         {sweep.accepted} accepted, {sweep.queued} queued for review,
-        {sweep.rejected} rejected on air date, {sweep.remaining} still waiting
+        {sweep.rejected} rejected on air date, {sweep.remaining} still waiting{#if sweep.retired},
+        {sweep.retired} retired (aired years ago, unknown upstream — no longer re-asked){/if}
         · {sweep.overrides} override row{sweep.overrides === 1 ? '' : 's'}
         · map {sweep.mapSize.toLocaleString()} pairs
+        {#if sweepRun !== 'idle'}· a sweep is running now — this line updates when it finishes{/if}
       </p>
     {:else if status === 'ok'}
       <p class="text-xs opacity-70" data-sweep-status>
-        The auto-match sweep hasn't completed a run yet — it runs 90 s after boot
-        and daily after that.
+        {#if sweepRun !== 'idle'}A sweep is running now — this line updates when it finishes.
+        {:else}The auto-match sweep hasn't completed a run yet — it runs 90 s after boot
+        and daily after that, or on Run sweep now above.{/if}
       </p>
     {/if}
 
@@ -653,6 +857,9 @@
                   <span class="opacity-60">No match — search…</span>
                 {/if}
               </button>
+              {#if r.retry}
+                <span class="text-[11px] opacity-60" data-retry-state>{retryText(r.retry)}</span>
+              {/if}
               {#if !sameIdentity(selected[r.mediaId] ?? null, baseline[r.mediaId] ?? null)}
                 <p class="text-xs text-info" data-match-changed>
                   changed — Confirm saves this as a manual correction

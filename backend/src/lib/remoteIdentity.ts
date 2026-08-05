@@ -642,8 +642,21 @@ export function baseTitles(t: string): string[] {
 // viewer.
 // ---------------------------------------------------------------------------
 
-/** Bounded per run so a first sweep can't sit on Jellyfin for an hour. */
-const MAX_PER_RUN = 40;
+/**
+ * Bounded per run so a sweep can't sit on Jellyfin for an hour. Sized at ~one
+ * year's worth of gap entries (measured on the dev cache: ~150/yr of a season's
+ * ~470 entries lack any community-map id), so a season rollover clears in one
+ * scheduled run. The manual admin trigger passes `max: Infinity` instead — an
+ * admin pressing the button means "deal with the backlog", and the politeness
+ * lives in PACE_MS, not the truncation.
+ */
+const MAX_PER_RUN = 150;
+/**
+ * The three maintenance passes (legacy-row dating, re-grades, TVDB gap fill)
+ * keep the smaller cap: they groom already-stored rows, so nothing an admin is
+ * waiting on ever depends on them — steady drain beats a big burst.
+ */
+const MAINTENANCE_PER_RUN = 40;
 /** Small gap between searches; each one is a live TMDB call made on our behalf. */
 const PACE_MS = 150;
 
@@ -655,17 +668,64 @@ const PACE_MS = 150;
  * gains one within days, while a 2024 title that is still missing has been
  * missing for a year. A flat fortnight was wrong in both directions — too slow
  * for the seasons people are looking at, and needless churn on old ones.
+ *
+ * Infinity is retirement: an entry that aired more than two years ago and is
+ * STILL unknown upstream has been unknown its whole life — re-asking monthly
+ * forever is budget spent on lost causes. Only recorded misses ever consult
+ * this; a first-ever lookup is made unconditionally regardless of age.
  */
 const DAY = 24 * 60 * 60 * 1000;
-function retryAfterFor(startYear: number | null | undefined): number {
+export function retryAfterFor(
+  startYear: number | null | undefined,
+  thisYear: number = new Date().getFullYear()
+): number {
   if (!startYear) return 14 * DAY;
-  const thisYear = new Date().getFullYear();
   // Previous, current and next season all fall inside a ±1 year window.
   if (Math.abs(startYear - thisYear) <= 1) return 2 * DAY;
+  if (startYear < thisYear - 2) return Infinity;
   return 30 * DAY;
 }
 
+/** One unmatched row's standing with the sweep, ready for the admin page. */
+export interface RetryState {
+  state: 'eligible' | 'cooldown' | 'retired';
+  lastLookupAt: number | null;
+  nextRetryAt: number | null;
+}
+
+/**
+ * retryAfterFor read from a single row's point of view — what /admin/matching
+ * renders beside an unmatched row and aggregates into its stats tiles. Kept
+ * here so the tier arithmetic has exactly one home; the first sketch had the
+ * frontend re-deriving it from a raw timestamp, which rots the day a tier
+ * changes. `now` is a parameter so the flip from cooldown to eligible can be
+ * table-tested instead of depending on the wall clock.
+ */
+export function retryStateFor(
+  lastLookupAt: number | null,
+  year: number | null | undefined,
+  now: number = Date.now()
+): RetryState {
+  // No recorded lookup: a first look is unconditional at any age.
+  if (lastLookupAt == null) return { state: 'eligible', lastLookupAt: null, nextRetryAt: null };
+  const wait = retryAfterFor(year, new Date(now).getFullYear());
+  if (wait === Infinity) return { state: 'retired', lastLookupAt, nextRetryAt: null };
+  const nextRetryAt = lastLookupAt + wait;
+  return now < nextRetryAt
+    ? { state: 'cooldown', lastLookupAt, nextRetryAt }
+    : { state: 'eligible', lastLookupAt, nextRetryAt: null };
+}
+
 let _running = false;
+
+/**
+ * Whether a sweep is in flight right now. `_running` is set synchronously
+ * before the sweep's first await, so a caller that fires the sweep without
+ * awaiting it can read this immediately to tell "started" from "refused".
+ */
+export function sweepRunning(): boolean {
+  return _running;
+}
 
 interface CachedShow {
   id: number;
@@ -729,8 +789,24 @@ export interface SweepStatus {
   accepted: number;
   queued: number;
   rejected: number;
-  /** Entries still needing a lookup after this bounded run. */
+  /**
+   * Entries a future run will actually process — cooldown and retired rows
+   * excluded. (The first shape counted every unmatched entry, so the number
+   * could never reach zero and over-stated the queue all night.)
+   */
   remaining: number;
+  /**
+   * Recorded misses old enough that they are never re-asked (aired >2 years
+   * ago and still unknown upstream). Optional: statuses persisted before this
+   * field existed parse without it.
+   */
+  retired?: number;
+  /** Non-adult entries across every cached season — the whole tracked set. */
+  tracked?: number;
+  /** Of those, how many still have no id from any source (pre-run count). */
+  unmatched?: number;
+  /** Recorded misses inside their retry window at the time of the run. */
+  cooldown?: number;
   /** Override rows in memory, and the community map size, for scale. */
   overrides: number;
   mapSize: number;
@@ -1015,7 +1091,8 @@ export async function fillTvdbGaps(
  */
 export async function runRemoteIdentitySweep(
   api: Api | null,
-  library: MatchableSeries[]
+  library: MatchableSeries[],
+  opts?: { max?: number }
 ): Promise<void> {
   if (!api || _running) return;
   // Without the map loaded, "no id" means "we haven't read the map yet" rather
@@ -1079,15 +1156,27 @@ export async function runRemoteIdentitySweep(
       select: { anilistId: true, updatedAt: true },
     });
     const askedAt = new Map(asked.map((r) => [r.anilistId, r.updatedAt.getTime()]));
+    let retired = 0;
     const skip = new Set(
       todo
         .filter((q) => {
           const at = askedAt.get(q.anilistId);
-          return at != null && Date.now() - at < retryAfterFor(q.year);
+          if (at == null) return false; // first-ever lookup — always eligible
+          const wait = retryAfterFor(q.year);
+          if (wait === Infinity) {
+            retired++;
+            return true;
+          }
+          return Date.now() - at < wait;
         })
         .map((q) => q.anilistId)
     );
-    const batch = todo.filter((t) => !skip.has(t.anilistId)).slice(0, MAX_PER_RUN);
+    // `eligible` is what future runs will actually process — cooldown and
+    // retired rows excluded. `remaining` reports against THIS, not `todo`: the
+    // old `todo`-based figure counted rows no run would touch, so the admin
+    // page's queue number could never reach zero.
+    const eligible = todo.filter((t) => !skip.has(t.anilistId));
+    const batch = eligible.slice(0, opts?.max ?? MAX_PER_RUN);
 
     const byTvdb = new Map<string, MatchableSeries>();
     const byTmdb = new Map<string, MatchableSeries>();
@@ -1149,7 +1238,7 @@ export async function runRemoteIdentitySweep(
       where: { source: 'remote', year: null, tmdbId: { not: null } },
       select: { anilistId: true },
       orderBy: { updatedAt: 'asc' },
-      take: MAX_PER_RUN,
+      take: MAINTENANCE_PER_RUN,
     });
     for (const row of undatedRows) {
       const ex = rawIdentityOverride(row.anilistId);
@@ -1172,7 +1261,7 @@ export async function runRemoteIdentitySweep(
       console.log(`[identity] dated ${dated} legacy row(s) via remote lookup`);
     }
 
-    const rg = await regradeStoredRows(api, library, entryById, MAX_PER_RUN);
+    const rg = await regradeStoredRows(api, library, entryById, MAINTENANCE_PER_RUN);
     if (rg.regraded) {
       console.log(
         `[identity] re-graded ${rg.regraded} stored row(s) with premiere dates ` +
@@ -1180,7 +1269,7 @@ export async function runRemoteIdentitySweep(
       );
     }
 
-    const gaps = await fillTvdbGaps(entryById, MAX_PER_RUN);
+    const gaps = await fillTvdbGaps(entryById, MAINTENANCE_PER_RUN);
     if (gaps.tried) {
       console.log(
         `[identity] tvdb gap fill: ${gaps.tried} searched, ${gaps.filled} filled ` +
@@ -1193,8 +1282,10 @@ export async function runRemoteIdentitySweep(
       // point of the status is telling that apart from "never ran".
       await saveSweepStatus({
         finishedAt: Date.now(), looked: 0, accepted: 0, queued: 0, rejected: 0,
-        remaining: todo.length, overrides: identityOverrideCount(),
+        remaining: eligible.length, retired, overrides: identityOverrideCount(),
         mapSize: anilistTvdbMapSize(),
+        tracked: entryById.size, unmatched: todo.length,
+        cooldown: skip.size - retired,
       });
       return;
     }
@@ -1268,13 +1359,19 @@ export async function runRemoteIdentitySweep(
     console.log(
       `[identity] remote sweep: ${looked} looked up, ${accepted} accepted, ` +
         `${queued} queued, ${rejected} rejected on air date, ` +
-        `${todo.length - batch.length} left for next run ` +
+        `${eligible.length - batch.length} left for next run, ${retired} retired ` +
         `(${((Date.now() - started) / 1000).toFixed(1)}s)`
     );
     await saveSweepStatus({
       finishedAt: Date.now(), looked, accepted, queued, rejected,
-      remaining: todo.length - batch.length, overrides: identityOverrideCount(),
+      remaining: eligible.length - batch.length, retired,
+      overrides: identityOverrideCount(),
       mapSize: anilistTvdbMapSize(),
+      // Pre-run counts — the batch just processed may have shrunk `unmatched`,
+      // but these are a glance ("as of last sweep"), not live truth, and the
+      // page timestamps them.
+      tracked: entryById.size, unmatched: todo.length,
+      cooldown: skip.size - retired,
     });
   } catch (err: any) {
     console.warn('[identity] remote sweep failed:', err?.message ?? err);

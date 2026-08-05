@@ -197,12 +197,16 @@ def main():
         ("GET", "/api/jellyfin/identity/lookup?term=x", None),
         ("PUT", "/api/jellyfin/config", {"url": "http://example.invalid"}),
         ("POST", "/api/jellyfin/config/test", {"url": "http://example.invalid"}),
+        # The sweep trigger starts real provider traffic (skyhook + TMDB via
+        # Jellyfin) — a non-admin reaching it is a resource-abuse hole, not
+        # just an information one.
+        ("POST", "/api/jellyfin/identity/sweep", {}),
     ]
     for method, path, payload in checks:
         r = requests.request(method, f"{backend}{path}", headers=auth, json=payload, timeout=5)
         if r.status_code != 403 or r.json().get("code") != "ADMIN_REQUIRED":
             fail(3, f"{method} {path}: expected 403 ADMIN_REQUIRED, got {r.status_code} {r.text[:160]}")
-    step(3, "PASS — all four admin endpoints gated")
+    step(3, "PASS — all five admin endpoints gated")
 
     # ───────── 4/8  Status shape ─────────
     step(4, "GET /api/jellyfin/status")
