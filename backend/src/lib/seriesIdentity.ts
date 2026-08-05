@@ -60,6 +60,16 @@ export interface Identity {
   note: string | null;
   /** Release year from whatever source named the identity. Display only. */
   year: number | null;
+  /**
+   * Which resolver wrote this row (see RESOLVER_VERSION).
+   *
+   * Absent or null on rows stored before the stamp existed, and on identities
+   * the community map supplied (nothing stored, nothing to re-grade). It is
+   * what lets a matcher improvement reach rows already decided: the sweep skips
+   * any entry that carries an id, so without this a better ladder fixed only
+   * NEW lookups.
+   */
+  resolverVersion?: number | null;
 }
 
 /** One option the remote lookup returned. Mirrors `RemoteCandidate`. */
@@ -92,6 +102,7 @@ const NONE: Identity = {
   candidates: null,
   note: null,
   year: null,
+  resolverVersion: null,
 };
 
 /**
@@ -148,6 +159,7 @@ export async function loadIdentityOverrides(): Promise<void> {
         candidates: parseCandidates(r.candidates),
         note: r.note ?? null,
         year: r.year ?? null,
+        resolverVersion: (r as { resolverVersion?: number | null }).resolverVersion ?? null,
       });
     }
     _overrides = next;
@@ -198,6 +210,8 @@ export function resolveIdentity(anilistId: number): Identity {
     candidates: null,
     note: null,
     year: null,
+    // The map isn't a stored decision, so there is nothing to re-grade.
+    resolverVersion: null,
   };
 }
 
@@ -253,6 +267,9 @@ export async function setIdentityOverride(input: {
     candidates: input.candidates ? JSON.stringify(input.candidates) : null,
     note: input.note ?? null,
     year: input.year ?? null,
+    // Stamped on every write, so "which resolver decided this" is never a
+    // guess and the regrade pass can select on it.
+    resolverVersion: RESOLVER_VERSION,
     updatedAt: new Date(),
   };
   await prisma.seriesIdentity.upsert({
@@ -272,6 +289,7 @@ export async function setIdentityOverride(input: {
     candidates: input.candidates ?? null,
     note: data.note,
     year: data.year,
+    resolverVersion: data.resolverVersion,
   };
   _overrides.set(input.anilistId, identity);
   notifyIdentityChanged(input.anilistId);
@@ -346,6 +364,41 @@ export function identityOverrideCount(): number {
  */
 export function rawIdentityOverride(anilistId: number): Identity | null {
   return _overrides.get(anilistId) ?? null;
+}
+
+/**
+ * The resolver's own version. **Bump it whenever a change would decide an
+ * already-stored row differently** — a new/changed acceptance rung, a change to
+ * how candidates are ranked or merged. Rows stamped below it are re-resolved by
+ * `regradeStoredRows`, which stamps them current, so the pass drains and stops.
+ *
+ * History, so a reader can tell what a stamp means:
+ *   1 — first stamped resolver: air-date ladder, premiere-date ranking outside
+ *       tolerance, cross-provider candidate merge on an id reference.
+ */
+export const RESOLVER_VERSION = 1;
+
+/**
+ * Is this stored row from an older resolver, and safe to re-decide?
+ *
+ * Only rows the machine decided and that carry an id: a human decision is
+ * permanent, and an id-less bookkeeping row is already re-asked by the main
+ * sweep on its retry tier (regrading it too would spend the budget twice).
+ */
+export function needsRegrade(
+  row: {
+    source: string;
+    confirmed: boolean;
+    rejected: boolean;
+    tvdbId: string | null;
+    tmdbId: string | null;
+    resolverVersion?: number | null;
+  },
+  currentVersion: number = RESOLVER_VERSION
+): boolean {
+  if (row.source !== 'remote' || row.confirmed || row.rejected) return false;
+  if (!row.tvdbId && !row.tmdbId) return false;
+  return (row.resolverVersion ?? 0) < currentVersion;
 }
 
 /**

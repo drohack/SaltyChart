@@ -326,7 +326,10 @@ export async function triggerSweep(
   if (sweepRunning()) return 'already-running'; // the daily timer won the race
   void runRemoteIdentitySweep(api, library, {
     heldFilmTmdbIds,
-    ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true } : {}),
+    // A drain drops every bound the schedule exists to enforce: the lookup cap,
+    // the retry cooldowns, and the re-grade cap — an admin pressing the button
+    // after a deploy means "propagate everything now".
+    ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true, regradeMax: Infinity } : {}),
   });
   return sweepRunning() ? 'started' : 'not-ready';
 }

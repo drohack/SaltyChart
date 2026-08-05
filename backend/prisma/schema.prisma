@@ -127,6 +127,12 @@ model SeriesIdentity {
   /// positive-only, so it can add a Watch button and never remove one — but the
   /// match is marked unverified in the UI and listed on /admin/matching.
   pending      Boolean @default(false)
+  /// Which resolver decided this row (RESOLVER_VERSION in seriesIdentity.ts).
+  /// Rows below the current version are re-resolved by regradeStoredRows, which
+  /// is how a ladder or ranking change reaches rows already stored — the main
+  /// sweep skips any entry that already carries an id. Null on rows written
+  /// before the stamp existed.
+  resolverVersion Int?
   /// The title the resolver matched against, so a reviewer can judge the
   /// suggestion without repeating the search.
   matchedTitle String?

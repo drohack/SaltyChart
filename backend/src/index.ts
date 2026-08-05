@@ -470,6 +470,18 @@ async function ensureDatabaseSchema() {
     } catch {
       /* already present */
     }
+    // Which resolver decided the row. Rows stamped below RESOLVER_VERSION are
+    // re-resolved by the sweep's regrade pass, which is how a matcher change
+    // reaches rows already stored: the main sweep never re-asks an entry that
+    // already carries an id, so before this a better ladder fixed only NEW
+    // lookups and left every old suggestion exactly as it was.
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "SeriesIdentity" ADD COLUMN "resolverVersion" INTEGER`
+      );
+    } catch {
+      /* already present */
+    }
     // What the resolver saw, so a reviewer can judge without re-searching.
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "SeriesIdentity" ADD COLUMN "matchedTitle" TEXT`);

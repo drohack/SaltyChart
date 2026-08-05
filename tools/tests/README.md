@@ -108,7 +108,7 @@ anything it finds twice should graduate into this suite with a
 `mutation_audit.py` row. Read its *Traps* section before starting; several
 plausible-looking "bugs" there are measurement artifacts.
 
-The mutation audit itself is 67 rows and takes ~105 minutes — it warms the
+The mutation audit itself is 68 rows and takes ~110 minutes — it warms the
 season cache once at the start, so a full run has to fit inside the 6 h
 `SeasonCache` TTL or its later rows re-fetch against AniList mid-audit.
 

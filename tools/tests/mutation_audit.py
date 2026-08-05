@@ -474,6 +474,21 @@ MUTATIONS: list[Mutation] = [
                "and the status line's retired count silently reads zero",
     ),
     Mutation(
+        name="a stored row is re-graded forever, or never",
+        path=BACKEND_IDENTITY,
+        # The version stamp is what makes a matcher fix reach rows already
+        # decided AND stop once it has. Dropping the comparison re-resolves
+        # every row on every sweep — unbounded provider traffic that never
+        # converges — and is indistinguishable from working, since the rows do
+        # get re-graded.
+        find="  return (row.resolverVersion ?? 0) < currentVersion;",
+        replace="  return true; /* mutation: always stale */",
+        test=T_UNIT,
+        expect="that is what makes the pass self-terminating",
+        guards="every stored row is re-resolved on every sweep, forever, "
+               "spending the whole budget re-deciding settled entries",
+    ),
+    Mutation(
         name="candidates merge on a matching title instead of an id cross-reference",
         path=BACKEND_REMOTE,
         # The guard, not the feature: merging the same show found in both

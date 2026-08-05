@@ -6,6 +6,7 @@ import { normalizeTitle, classifyMatch, MatchableSeries } from './animeMatch';
 import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './episodeMatch';
 import {
   needsRemoteLookup,
+  needsRegrade,
   setIdentityOverride,
   identityReady,
   identityOverrideCount,
@@ -760,6 +761,16 @@ const MAX_PER_RUN = 150;
  * waiting on ever depends on them — steady drain beats a big burst.
  */
 const MAINTENANCE_PER_RUN = 40;
+/**
+ * The re-grade pass is capped separately, and higher.
+ *
+ * It shared the 40 above while it healed exactly one migration and was nearly
+ * dead code. It is now how a matcher change reaches rows already stored — the
+ * main sweep never re-asks an entry that carries an id — so 40/day would take
+ * over a week to propagate a fix across a few hundred rows. Same size as the
+ * main batch; a manual drain removes it entirely.
+ */
+const REGRADE_PER_RUN = MAX_PER_RUN;
 /** Small gap between searches; each one is a live TMDB call made on our behalf. */
 const PACE_MS = 150;
 
@@ -1104,9 +1115,19 @@ export async function regradeStoredRows(
     if (s.tvdbId) byTvdb.set(String(s.tvdbId), s);
     if (s.tmdbId) byTmdb.set(String(s.tmdbId), s);
   }
+  // Any machine-decided row carrying an id, written by an older resolver. The
+  // version stamp replaced a check for candidates lacking `premiereDate`, which
+  // only ever healed that one migration; `needsRegrade` generalises it, so every
+  // future ladder or ranking change reaches stored rows on its own. Oldest
+  // first, so a capped run works through the backlog instead of resampling.
   const stored = await prisma.seriesIdentity.findMany({
-    where: { source: 'remote', confirmed: false, rejected: false, tmdbId: { not: null } },
-    select: { anilistId: true },
+    where: {
+      source: 'remote',
+      confirmed: false,
+      rejected: false,
+      OR: [{ tvdbId: { not: null } }, { tmdbId: { not: null } }],
+    },
+    select: { anilistId: true, resolverVersion: true },
     orderBy: { updatedAt: 'asc' },
   });
   let regraded = 0;
@@ -1116,9 +1137,12 @@ export async function regradeStoredRows(
   for (const row of stored) {
     if (regraded >= max) break;
     const ex = rawIdentityOverride(row.anilistId);
-    if (!ex || ex.source !== 'remote' || ex.confirmed || ex.rejected) continue;
-    const cands = ex.candidates;
-    if (!cands?.length || cands.every((c) => 'premiereDate' in c)) continue;
+    if (!ex) continue;
+    if (!needsRegrade({
+      source: ex.source, confirmed: ex.confirmed, rejected: ex.rejected,
+      tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, resolverVersion: ex.resolverVersion,
+    })) continue;
+    const cands = ex.candidates ?? [];
     const entry = entryById.get(row.anilistId);
     if (!entry) {
       // Aged out of the season cache — nothing to grade against. Stamp the key
@@ -1268,7 +1292,13 @@ export async function fillTvdbGaps(
 export async function runRemoteIdentitySweep(
   api: Api | null,
   library: MatchableSeries[],
-  opts?: { max?: number; ignoreCooldown?: boolean; heldFilmTmdbIds?: ReadonlySet<string> }
+  opts?: {
+    max?: number;
+    ignoreCooldown?: boolean;
+    /** Uncapped on a manual drain — see REGRADE_PER_RUN. */
+    regradeMax?: number;
+    heldFilmTmdbIds?: ReadonlySet<string>;
+  }
 ): Promise<void> {
   if (!api || _running) return;
   // Without the map loaded, "no id" means "we haven't read the map yet" rather
@@ -1458,7 +1488,7 @@ export async function runRemoteIdentitySweep(
       console.log(`[identity] dated ${dated} legacy row(s) via remote lookup`);
     }
 
-    const rg = await regradeStoredRows(api, library, entryById, MAINTENANCE_PER_RUN);
+    const rg = await regradeStoredRows(api, library, entryById, opts?.regradeMax ?? REGRADE_PER_RUN);
     if (rg.regraded) {
       console.log(
         `[identity] re-graded ${rg.regraded} stored row(s) with premiere dates ` +

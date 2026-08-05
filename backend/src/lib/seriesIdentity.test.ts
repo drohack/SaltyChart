@@ -4,6 +4,8 @@ import {
   __setOverridesForTest,
   resolveIdentity,
   needsRemoteLookup,
+  needsRegrade,
+  RESOLVER_VERSION,
   mergeIdentityPatch,
   type Identity,
 } from './seriesIdentity';
@@ -136,4 +138,37 @@ test('with no stored row a patch behaves like a plain write', () => {
   assert.equal(merged.source ?? 'manual', 'manual');
   assert.equal(merged.note ?? null, null);
   assert.equal(merged.candidates ?? null, null);
+});
+
+
+test('needsRegrade: a ladder change reaches stored rows, but never human ones', () => {
+  // The self-healing half of a matcher improvement. The sweep skips any entry
+  // that already carries an id (needsRemoteLookup is false for it), so before
+  // this a better ladder or ranking fixed only NEW lookups and left every old
+  // suggestion exactly as it was — Echo kept offering its 2023 namesake until
+  // its row was deleted by hand. A stamped version is what makes "re-ask about
+  // everything decided by an older resolver" expressible, and self-terminating.
+  const stale = { source: 'remote' as const, confirmed: false, rejected: false,
+                  tvdbId: '123', tmdbId: null, resolverVersion: RESOLVER_VERSION - 1 };
+
+  assert.equal(needsRegrade(stale), true, 'a row from an older resolver must be re-asked');
+  assert.equal(
+    needsRegrade({ ...stale, resolverVersion: null }), true,
+    'a row stamped before versioning existed is stale by definition');
+  assert.equal(
+    needsRegrade({ ...stale, resolverVersion: RESOLVER_VERSION }), false,
+    'a current row must NOT recycle — that is what makes the pass self-terminating');
+
+  // Human decisions are permanent; re-grading one would overwrite the answer a
+  // person gave with a machine's guess.
+  assert.equal(needsRegrade({ ...stale, confirmed: true }), false, 'a confirmed row is settled');
+  assert.equal(needsRegrade({ ...stale, rejected: true }), false, 'a rejection is settled');
+  assert.equal(needsRegrade({ ...stale, source: 'manual' }), false, 'a manual row is settled');
+
+  // An id-less bookkeeping row ("we looked, found nothing") is already re-asked
+  // by the main sweep on its retry tier; regrading it too would spend the
+  // budget twice on the same entry.
+  assert.equal(
+    needsRegrade({ ...stale, tvdbId: null, tmdbId: null }), false,
+    'a row with no ids belongs to the main sweep, not the regrade pass');
 });
