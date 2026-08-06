@@ -1,5 +1,5 @@
 #!/bin/bash
-# SaltyChart DB restore — reference copy of the Unraid User Script
+# SaltyChart DB restore - reference copy of the Unraid User Script
 # "restore_saltychart_db". Run from a terminal (it prompts for confirmation).
 #
 #   bash .../restore_saltychart_db/script                     # newest backup

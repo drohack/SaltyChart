@@ -4,7 +4,7 @@ Pre-deploy smoke test: Jellyfin integration endpoints (/api/jellyfin/*).
 Runs against http://localhost:3000. Auth gates and the unconfigured shape are
 always tested; the availability/stream/subtitle steps that need a live Jellyfin
 connection are skipped (still exit 0) when the server reports configured=false
-— the URL + API key live in the AppConfig DB table, set via the /admin page.
+- the URL + API key live in the AppConfig DB table, set via the /admin page.
 
 Coverage, and the trap each step was added for:
 
@@ -12,40 +12,40 @@ Coverage, and the trap each step was added for:
   manifest credential-leak assertion, subtitle fetch, `Cache-Control` on
   subtitles/attachments, a well-formed WebVTT header (the `Region:` lift).
 - Two steps exist because a mutation audit proved the old ones missed them:
-  * no credential in `/playback`'s `transcodingUrl` — the manifest guard only
+  * no credential in `/playback`'s `transcodingUrl` - the manifest guard only
     inspects response BODIES, so a key leaking here surfaced only as "video
     never advanced" from an unrelated test;
-  * at least one `matchedBy == "id"` across a 20-series sample — accepting
+  * at least one `matchedBy == "id"` across a 20-series sample - accepting
     `id` OR `title` passed happily with the id tier entirely dead.
 - Step 11 round-trips the override table, covering two distinct paths because
   only one was originally tested: pointing an available show at a TVDB id
   nothing carries must flip it to unavailable, AND so must an outright
-  rejection, which carries no ids at all. The second shipped broken — a
+  rejection, which carries no ids at all. The second shipped broken - a
   rejection fell through to the title tier, so Reject saved its row, dropped
   the entry from review, and left the wrong Watch button on screen; found by
   clicking the button in a browser, invisible to types, build, and every test.
   Also asserted here:
-  * a film we don't hold does NOT fall through to a series title match — the
-    category error that produced `The Last Blossom → House`;
-  * Confirm keeps provenance — a resolver row confirmed without sending
+  * a film we don't hold does NOT fall through to a series title match - the
+    category error that produced `The Last Blossom -> House`;
+  * Confirm keeps provenance - a resolver row confirmed without sending
     `note`/`source` must still read `source:'remote'` with its rung note;
   * the availability invalidation reaches the PERSISTED blob: waits out the
     persist debounce so the pre-override verdict is on disk with no timer
     pending, writes the override, and requires the disk entry to disappear.
     In-memory deletion alone passed every live check and silently reverted on
-    the next restart — and a pending persist at override time flushes the
+    the next restart - and a pending persist at override time flushes the
     deletion itself, which is how this assertion's first version passed
     against the unfixed backend.
   Assertions are ordered specific-first (the generic "resolved anyway" check
   once fired first and caught its own mutation for the wrong reason), and
-  cleanup always runs in a `finally` — a stray override would quietly break
+  cleanup always runs in a `finally` - a stray override would quietly break
   that show for the live site as well as later runs.
-- Step 12 drives the admin lookup: a name search must offer id-bearing picks —
+- Step 12 drives the admin lookup: a name search must offer id-bearing picks -
   including at least one carrying a TVDB id NATIVELY when skyhook is reachable
-  (skipped, not failed, when it isn't: the merge is designed to degrade) — and
+  (skipped, not failed, when it isn't: the merge is designed to degrade) - and
   a pasted `tvdb:<held id>` must come back NAMED from the library and
   cross-walked to its TMDB sibling. Unnamed, the lookup is the old raw id box
-  with more steps — watched to fail exactly that way.
+  with more steps - watched to fail exactly that way.
 
 Usage:
   py -3.13 -u tools/tests/test_jellyfin.py [--backend http://localhost:3000]
@@ -53,7 +53,7 @@ Usage:
 Exits 0 if all steps pass (or the configured-only steps were skipped),
 1 on any failure. Each progress line is self-contained per the global
 CLAUDE.md convention:
-  [k/13 Jellyfin] step name — detail
+  [k/13 Jellyfin] step name - detail
 """
 import argparse
 import atexit
@@ -72,7 +72,7 @@ def step(n: int, msg: str) -> None:
 
 
 def fail(n: int, msg: str) -> None:
-    print(f"[{n}/{TOTAL_STEPS} Jellyfin] FAIL — {msg}", flush=True)
+    print(f"[{n}/{TOTAL_STEPS} Jellyfin] FAIL - {msg}", flush=True)
     sys.exit(1)
 
 
@@ -84,7 +84,7 @@ def admin_token() -> str:
 
     The identity endpoints are admin-gated and the fixture user here never is,
     so without minting one they can't be exercised at all. Same helper as
-    `test_ui_interactions.admin_token` — signed through node so the suite gains
+    `test_ui_interactions.admin_token` - signed through node so the suite gains
     no dependency and signs exactly the way the app does.
     """
     script = ("require('dotenv').config();"
@@ -139,7 +139,7 @@ def persisted_verdict(mid: int):
 
 
 def wait_for(cond, timeout_s: float) -> bool:
-    """Poll once a second — the backend's persist writes are debounced (~5s)."""
+    """Poll once a second - the backend's persist writes are debounced (~5s)."""
     import time
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -164,9 +164,9 @@ def main():
     username = "jf_test_fixture"
     password = "jf_pw_123"
 
-    print(f"Jellyfin smoke test — backend={backend}", flush=True)
+    print(f"Jellyfin smoke test - backend={backend}", flush=True)
 
-    # ───────── 1/8  Fixture user (signup first run, login after) ─────────
+    # --------- 1/8  Fixture user (signup first run, login after) ---------
     step(1, f"auth as {username}")
     r = requests.post(f"{backend}/api/auth/signup",
                       json={"username": username, "password": password}, timeout=5)
@@ -177,10 +177,10 @@ def main():
         fail(1, f"could not authenticate: {r.status_code} {r.text[:200]}")
     token = r.json()["token"]
     auth = {"Authorization": f"Bearer {token}"}
-    step(1, "PASS — got JWT")
+    step(1, "PASS - got JWT")
 
-    # ───────── 2/8  Auth gates ─────────
-    step(2, "unauthenticated /status + /availability — expect 401")
+    # --------- 2/8  Auth gates ---------
+    step(2, "unauthenticated /status + /availability - expect 401")
     r = requests.get(f"{backend}/api/jellyfin/status", timeout=5)
     if r.status_code != 401:
         fail(2, f"/status without token: expected 401, got {r.status_code}")
@@ -188,7 +188,7 @@ def main():
                       json={"mediaId": 1, "titles": ["x"]}, timeout=5)
     if r.status_code != 401:
         fail(2, f"/availability without token: expected 401, got {r.status_code}")
-    # The viewer pick routes are the only identity endpoints NOT admin-gated —
+    # The viewer pick routes are the only identity endpoints NOT admin-gated -
     # deliberately, since the pop-up is where a bad match is noticed. They must
     # still refuse an anonymous caller, or anyone on the network could rewrite
     # matching for everyone.
@@ -203,22 +203,22 @@ def main():
                       json={"mediaId": 1}, timeout=5)
     if r.status_code != 401:
         fail(2, f"/identity/unpick without token: expected 401, got {r.status_code}")
-    # The poster proxy takes ?token= because <img> cannot send a header — the
+    # The poster proxy takes ?token= because <img> cannot send a header - the
     # same door the stream proxy opens, so it gets the same check.
     r = requests.get(f"{backend}/api/jellyfin/library/image/abcdef0123456789", timeout=5)
     if r.status_code != 401:
         fail(2, f"/library/image without token: expected 401, got {r.status_code}")
-    step(2, "PASS — all six 401")
+    step(2, "PASS - all six 401")
 
-    # ───────── 3/8  Admin gates ─────────
-    step(3, "config endpoints as non-admin — expect 403 ADMIN_REQUIRED")
+    # --------- 3/8  Admin gates ---------
+    step(3, "config endpoints as non-admin - expect 403 ADMIN_REQUIRED")
     checks = [
         ("GET", "/api/jellyfin/config", None),
         ("GET", "/api/jellyfin/identity/lookup?term=x", None),
         ("PUT", "/api/jellyfin/config", {"url": "http://example.invalid"}),
         ("POST", "/api/jellyfin/config/test", {"url": "http://example.invalid"}),
         # The sweep trigger starts real provider traffic (skyhook + TMDB via
-        # Jellyfin) — a non-admin reaching it is a resource-abuse hole, not
+        # Jellyfin) - a non-admin reaching it is a resource-abuse hole, not
         # just an information one.
         ("POST", "/api/jellyfin/identity/sweep", {}),
     ]
@@ -226,9 +226,9 @@ def main():
         r = requests.request(method, f"{backend}{path}", headers=auth, json=payload, timeout=5)
         if r.status_code != 403 or r.json().get("code") != "ADMIN_REQUIRED":
             fail(3, f"{method} {path}: expected 403 ADMIN_REQUIRED, got {r.status_code} {r.text[:160]}")
-    step(3, "PASS — all five admin endpoints gated")
+    step(3, "PASS - all five admin endpoints gated")
 
-    # ───────── 4/8  Status shape ─────────
+    # --------- 4/8  Status shape ---------
     step(4, "GET /api/jellyfin/status")
     r = requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=5)
     body = r.json() if r.status_code == 200 else {}
@@ -238,16 +238,16 @@ def main():
     if body["isAdmin"]:
         fail(4, "fixture user unexpectedly reported as admin")
     configured = body["configured"]
-    step(4, f"PASS — configured={configured}, isAdmin=False")
+    step(4, f"PASS - configured={configured}, isAdmin=False")
 
-    # ───────── 5/8  Validation + the ?token= paths ─────────
+    # --------- 5/8  Validation + the ?token= paths ---------
     step(5, "malformed bodies and query-token gates")
     r = requests.post(f"{backend}/api/jellyfin/availability",
                       headers=auth, json={"mediaId": "nope"}, timeout=5)
     if r.status_code != 400 or r.json().get("code") != "BAD_REQUEST":
         fail(5, f"expected 400 BAD_REQUEST, got {r.status_code} {r.text[:200]}")
     # `<track src>` and libass fetches authenticate via ?token=, which bypasses
-    # requireAuth and is hand-rolled — the riskiest auth code in the router.
+    # requireAuth and is hand-rolled - the riskiest auth code in the router.
     for label, url in (
         ("no token", f"{backend}/api/jellyfin/subtitles?itemId=abcdef123456&mediaSourceId=abcdef123456&index=0"),
         ("bad token", f"{backend}/api/jellyfin/subtitles?itemId=abcdef123456&mediaSourceId=abcdef123456&index=0&token=not.a.jwt"),
@@ -257,24 +257,24 @@ def main():
         r = requests.get(url, timeout=5)
         if r.status_code != 401:
             fail(5, f"{label} on {url.split('?')[0]}: expected 401, got {r.status_code}")
-    step(5, "PASS — 400 on bad body, 401 on every ?token= path")
+    step(5, "PASS - 400 on bad body, 401 on every ?token= path")
 
     if not configured:
         for n in (6, 7, 8):
-            step(n, "SKIP — Jellyfin not configured (set URL+key on /admin to enable)")
-        print("Jellyfin: 5/8 passed, 3 skipped (unconfigured) — OK", flush=True)
+            step(n, "SKIP - Jellyfin not configured (set URL+key on /admin to enable)")
+        print("Jellyfin: 5/8 passed, 3 skipped (unconfigured) - OK", flush=True)
         return
 
-    # ───────── 6/8  Availability (live Jellyfin) ─────────
+    # --------- 6/8  Availability (live Jellyfin) ---------
     season, year = current_season_year()
-    step(6, f"availability: nonsense title → available=false (corpus: {season} {year})")
+    step(6, f"availability: nonsense title -> available=false (corpus: {season} {year})")
     r = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
                       json={"mediaId": 999999901, "titles": ["zzz no such show xyz 42"]},
                       timeout=90)
     body = r.json() if r.status_code == 200 else {}
     if r.status_code != 200 or body.get("available") is not False:
         fail(6, f"expected available=false, got {r.status_code} {r.text[:200]}")
-    # A dead Jellyfin answers available=false too — but with unknown=true.
+    # A dead Jellyfin answers available=false too - but with unknown=true.
     # Without this the step passes while the integration is entirely broken.
     if body.get("unknown"):
         fail(6, f"Jellyfin reported configured but the lookup failed: {body}")
@@ -300,7 +300,7 @@ def main():
 
     # The id tier has to be shown to still fire. Accepting `matchedBy in
     # ("id", "title")` above is satisfied by a build where the AniList->TVDB
-    # chain is completely dead and every match fell back to fuzzy titles — a
+    # chain is completely dead and every match fell back to fuzzy titles - a
     # regression that is invisible here, degrades silently, and has already
     # produced a real false positive (2026 "Nanoha EXCEEDS" -> 2004 "Nanoha").
     # Measured against this library a season resolves ~35 of 52 by id, so a
@@ -309,7 +309,7 @@ def main():
     # Eight, not twenty: each lookup makes Jellyfin resolve a series and its
     # episode list, and this test runs on every suite pass and every mutation
     # audit row. Twenty was a meaningful share of the load that pegged the
-    # server, and buys nothing — ~15 of 20 matched by id, so the floor of one is
+    # server, and buys nothing - ~15 of 20 matched by id, so the floor of one is
     # never close either way.
     tiers = {"id": 0, "title": 0, "missing": 0}
     for s in requests.get(f"{backend}/api/anime?season={season}&year={year}&format=TV",
@@ -319,7 +319,7 @@ def main():
             continue
         # `fresh` is mandatory here, not a nicety. This step exists to prove the
         # AniList->TVDB id tier still fires, and the availability cache now
-        # survives a restart — so without it the sample reads back a previous
+        # survives a restart - so without it the sample reads back a previous
         # run's `matchedBy` values and passes happily against a build where the
         # tier is entirely dead. A mutation audit caught exactly that: disabling
         # the tier changed nothing, because nothing re-resolved.
@@ -331,17 +331,17 @@ def main():
         tiers[av["matchedBy"] if av.get("available") else "missing"] += 1
     matched = tiers["id"] + tiers["title"]
     if not matched:
-        step(6, f"PASS — availability well-formed (nothing from {season} {year} "
+        step(6, f"PASS - availability well-formed (nothing from {season} {year} "
                 f"is in the library, so the match tiers can't be checked)")
     else:
         if not tiers["id"]:
-            fail(6, f"{matched} of the sampled series matched, but NONE by id — the "
+            fail(6, f"{matched} of the sampled series matched, but NONE by id - the "
                     f"AniList->TVDB tier is dead and everything is falling back to "
                     f"fuzzy titles: {tiers}")
-        step(6, f"PASS — availability well-formed; match tiers {tiers['id']} by id, "
+        step(6, f"PASS - availability well-formed; match tiers {tiers['id']} by id, "
                 f"{tiers['title']} by title, {tiers['missing']} missing")
 
-    # ───────── 7/8  Stream proxy + no credential in the manifest ─────────
+    # --------- 7/8  Stream proxy + no credential in the manifest ---------
     step(7, "stream proxy reaches Jellyfin, and manifests carry no API key")
     r = requests.get(f"{backend}/api/jellyfin/stream/System/Info", headers=auth, timeout=20)
     if r.status_code != 200 or b"ServerName" not in r.content:
@@ -362,7 +362,7 @@ def main():
             playable = av
             break
     if not playable:
-        step(7, "PASS — proxy reached Jellyfin (no playable episode in this season to check a manifest)")
+        step(7, "PASS - proxy reached Jellyfin (no playable episode in this season to check a manifest)")
     else:
         pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
                           f"?mediaSourceId={playable['mediaSourceId']}", headers=auth, timeout=30)
@@ -377,11 +377,11 @@ def main():
         for leak in ("api_key", "apikey", "x-emby-token"):
             if leak in turl.lower():
                 fail(7, f"/playback returned a transcodingUrl containing a credential "
-                        f"({leak}) — it would be handed to every viewer")
+                        f"({leak}) - it would be handed to every viewer")
         psid = pb.json()["playSessionId"]
         # Registered before the stream is started, not after the assertions.
         # `fail()` exits via SystemExit, so on any failure below the stop call at
-        # the end of this step never ran and the encode was left going — which
+        # the end of this step never ran and the encode was left going - which
         # is precisely what happens on every mutation-audit row.
         atexit.register(lambda: requests.post(
             f"{backend}/api/jellyfin/playback/stop", headers=auth,
@@ -395,25 +395,25 @@ def main():
             fail(7, f"master.m3u8 through the proxy: {m.status_code} {m.content[:200]!r}")
         # Jellyfin embeds the caller's API key in subtitle rendition URIs when
         # asked for HLS subtitles. We never ask, and the proxy refuses such a
-        # manifest — this asserts the key genuinely never reaches a browser.
+        # manifest - this asserts the key genuinely never reaches a browser.
         lowered = m.text.lower()
         for leak in ("api_key", "apikey", "x-emby-token", "mediabrowser token"):
             if leak in lowered:
-                fail(7, f"manifest contains a credential ({leak}) — it would reach the browser")
+                fail(7, f"manifest contains a credential ({leak}) - it would reach the browser")
         requests.post(f"{backend}/api/jellyfin/playback/stop", headers=auth,
                       json={"playSessionId": psid}, timeout=20)
-        step(7, "PASS — proxy works, manifest carries no credential")
+        step(7, "PASS - proxy works, manifest carries no credential")
 
-    # ───────── 8/10  Subtitles ─────────
+    # --------- 8/10  Subtitles ---------
     step(8, "subtitle track fetch")
     if not playable:
-        step(8, "SKIP — no playable episode in this season")
+        step(8, "SKIP - no playable episode in this season")
     else:
         pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
                           f"?mediaSourceId={playable['mediaSourceId']}", headers=auth, timeout=30).json()
         subs = [s for s in pb.get("subtitles", []) if s.get("isTextSubtitle")]
         if not subs:
-            step(8, "SKIP — this episode has no text subtitle tracks")
+            step(8, "SKIP - this episode has no text subtitle tracks")
         else:
             s0 = subs[0]
             fmt = "ass" if s0["codec"] in ("ass", "ssa") else "vtt"
@@ -427,18 +427,18 @@ def main():
                 else head.lstrip("﻿").startswith("WEBVTT")
             if not ok:
                 fail(8, f"subtitle body does not look like {fmt}: {head[:80]!r}")
-            step(8, f"PASS — {fmt} track fetched, {len(r.content):,} bytes")
+            step(8, f"PASS - {fmt} track fetched, {len(r.content):,} bytes")
 
-    # ───────── 9/10  Subtitles and fonts are cacheable ─────────
+    # --------- 9/10  Subtitles and fonts are cacheable ---------
     #
     # A rewatch, or reopening the same episode, must not refetch a font pack.
     # These are immutable for an item+index: replacing the release changes the
     # item id too.
     step(9, "subtitles and attachments are cacheable")
     if not playable:
-        step(9, "SKIP — no playable episode in this season")
+        step(9, "SKIP - no playable episode in this season")
     else:
-        # Indices are the file's own stream numbers — they do NOT start at 0,
+        # Indices are the file's own stream numbers - they do NOT start at 0,
         # so they have to come from the playback info or every request 502s.
         pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
                           f"?mediaSourceId={playable['mediaSourceId']}",
@@ -447,7 +447,7 @@ def main():
                   for s in pb.get("subtitles", [])[:1]]
         wanted += [("attachments", a["index"], {}) for a in pb.get("attachments", [])[:1]]
         if not wanted:
-            step(9, "SKIP — episode has no subtitle tracks or attachments")
+            step(9, "SKIP - episode has no subtitle tracks or attachments")
         else:
             cacheable = []
             for kind, index, extra in wanted:
@@ -460,25 +460,25 @@ def main():
                 if "max-age" not in cc:
                     fail(9, f"/{kind} has no Cache-Control max-age (got {cc!r})")
                 cacheable.append(f"{kind}[{index}]={cc}")
-            step(9, f"PASS — {', '.join(cacheable)}")
+            step(9, f"PASS - {', '.join(cacheable)}")
 
-    # ───────── 10/10  WebVTT header is well-formed ─────────
+    # --------- 10/10  WebVTT header is well-formed ---------
     #
     # Jellyfin emits `Region:` *after* the blank line that closes the WebVTT
     # header. Per spec that blank line ends the header, so a browser parser
     # reads `Region:` as a cue identifier and then throws on the missing
-    # timestamp — costing a console error and one dropped cue. The proxy lifts
+    # timestamp - costing a console error and one dropped cue. The proxy lifts
     # those lines back into the header; this guards that.
     step(10, "WebVTT header: region definitions sit inside the header")
     if not playable:
-        step(10, "SKIP — no playable episode in this season")
+        step(10, "SKIP - no playable episode in this season")
     else:
         pb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
                           f"?mediaSourceId={playable['mediaSourceId']}",
                           headers=auth, timeout=30).json()
         text_subs = [s for s in pb.get("subtitles", []) if s.get("isTextSubtitle")]
         if not text_subs:
-            step(10, "SKIP — no text subtitle tracks on this episode")
+            step(10, "SKIP - no text subtitle tracks on this episode")
         else:
             r = requests.get(f"{backend}/api/jellyfin/subtitles", timeout=120, params={
                 "itemId": playable["itemId"], "mediaSourceId": playable["mediaSourceId"],
@@ -495,30 +495,30 @@ def main():
             if cues < 1:
                 fail(10, "no cues in the converted WebVTT")
             regions = head.count("Region:")
-            step(10, f"PASS — {cues} cues, {regions} region(s) inside the header")
+            step(10, f"PASS - {cues} cues, {regions} region(s) inside the header")
 
-    # ───────── 11/11  An identity override changes the verdict ─────────
+    # --------- 11/11  An identity override changes the verdict ---------
     #
     # The admin matching page's entire promise is that a correction sticks. If
     # the override layer were skipped, the page would report success and change
-    # nothing — worse than not offering the control, because it looks fixed.
+    # nothing - worse than not offering the control, because it looks fixed.
     #
     # Asserted as a round trip against a show the library really has: point its
     # AniList id at a TVDB id nothing carries, and availability must flip to
-    # false. With the negative-evidence rule that is the whole mechanism —
+    # false. With the negative-evidence rule that is the whole mechanism -
     # a known id the library lacks ends the lookup instead of falling back to
     # titles.
     step(11, "an identity override changes the verdict")
     admin = admin_token()
     if not admin:
-        step(11, "SKIP — could not sign an admin token (node or backend/.env missing)")
+        step(11, "SKIP - could not sign an admin token (node or backend/.env missing)")
     elif not playable:
-        step(11, "SKIP — no available show in this season to override")
+        step(11, "SKIP - no available show in this season to override")
     else:
         ah = {"Authorization": f"Bearer {admin}"}
         # An empty URL in a config save must keep the stored one. The form
         # starts blank when the config GET fails, and the URL used to be
-        # written unconditionally — so Save in that state replaced a working
+        # written unconditionally - so Save in that state replaced a working
         # URL with the frontend's placeholder (or nothing), silently breaking
         # playback for everyone. The API key always worked keep-on-empty; the
         # URL must too.
@@ -531,11 +531,11 @@ def main():
         cfg_after = requests.get(f"{backend}/api/jellyfin/config",
                                  headers=ah, timeout=20).json()
         if cfg_after.get("url") != cfg_before.get("url"):
-            # Put the real URL back BEFORE failing — leaving it wiped would
+            # Put the real URL back BEFORE failing - leaving it wiped would
             # break the dev site and every later step of this run.
             requests.put(f"{backend}/api/jellyfin/config", headers=ah, timeout=20,
                          json={"url": cfg_before.get("url") or ""})
-            fail(11, "an empty URL in a config save overwrote the stored one — "
+            fail(11, "an empty URL in a config save overwrote the stored one - "
                      f"{cfg_before.get('url')!r} became {cfg_after.get('url')!r}")
         mid = playable["mediaId"]
         titles = playable["titles"]
@@ -543,23 +543,23 @@ def main():
         before = requests.post(f"{backend}/api/jellyfin/availability",
                                headers=auth, json=body, timeout=60).json()
         if not before.get("available"):
-            step(11, "SKIP — control show is not available to begin with")
+            step(11, "SKIP - control show is not available to begin with")
         else:
             # The `before` lookup cached its positive verdict and scheduled the
             # debounced persist (~5s). Wait that timer OUT before writing the
-            # override — not merely for the entry to appear. Two vacuous passes
+            # override - not merely for the entry to appear. Two vacuous passes
             # hide in anything weaker: an unexpired entry from an earlier run
             # satisfies a presence check instantly, and a persist still pending
             # at override time flushes the in-memory deletion itself, so the
             # blob loses the entry even on code that never persists deletions.
             # (That combination let this assertion pass against the unfixed
             # backend on its first run.) The bug is the override written AFTER
-            # the last persist fired — which is every real admin correction.
+            # the last persist fired - which is every real admin correction.
             import time as _time
             _time.sleep(7)
             if (persisted_verdict(mid) or {}).get("expires", 0) <= _time.time() * 1000:
                 fail(11, "the persisted availability blob never recorded the control show "
-                         "— cannot prove an override's invalidation reaches disk")
+                         "- cannot prove an override's invalidation reaches disk")
             w = requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=20,
                              json={"anilistId": mid, "tvdbId": "99999999", "confirmed": True,
                                    "note": "test_jellyfin step 11"})
@@ -570,13 +570,13 @@ def main():
                 # restart: boot restored the pre-correction verdict from disk and
                 # the just-saved fix silently reverted for up to an hour.
                 if not wait_for(lambda: persisted_verdict(mid) is None, 15):
-                    fail(11, "stale availability verdict survives a restart — the override "
+                    fail(11, "stale availability verdict survives a restart - the override "
                              "busted the in-memory cache but the persisted blob still holds "
                              "the old answer")
                 after = requests.post(f"{backend}/api/jellyfin/availability",
                                       headers=auth, json=body, timeout=60).json()
                 if after.get("available"):
-                    fail(11, "override did not change the verdict — a correction saved on "
+                    fail(11, "override did not change the verdict - a correction saved on "
                              f"/admin/matching has no effect (still {after.get('libraryTitle')!r})")
             finally:
                 # Always put it back: a stray override would quietly break this
@@ -585,12 +585,12 @@ def main():
             restored = requests.post(f"{backend}/api/jellyfin/availability",
                                      headers=auth, json=body, timeout=60).json()
             if not restored.get("available"):
-                fail(11, "removing the override did not restore availability — the row was "
+                fail(11, "removing the override did not restore availability - the row was "
                          "not cleaned up and this show is now broken for everyone")
 
             # The Reject button, which is a DIFFERENT path and shipped broken.
             # A rejection carries no ids at all, so unless it short-circuits
-            # before matching it falls straight through to the title tier — i.e.
+            # before matching it falls straight through to the title tier - i.e.
             # to the very match being rejected. The row saved, the entry left the
             # review list, and the wrong Watch button stayed on screen. Nothing
             # above catches it, because that case writes a bogus id instead.
@@ -604,13 +604,13 @@ def main():
                 rej = requests.post(f"{backend}/api/jellyfin/availability",
                                     headers=auth, json=body, timeout=60).json()
                 if rej.get("available"):
-                    fail(11, "override did not change the verdict — a rejection with no ids "
+                    fail(11, "override did not change the verdict - a rejection with no ids "
                              "fell through to the title tier, so Reject on /admin/matching "
                              f"leaves the Watch button in place ({rej.get('libraryTitle')!r})")
             finally:
                 requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
             # Confirm must not wipe provenance. The PUT merges onto the stored
-            # row — fields the client doesn't send keep their stored values.
+            # row - fields the client doesn't send keep their stored values.
             # Before that, one click of Confirm relabelled a resolver id as
             # 'manual' and nulled the rung note ("remote: exact title"), so the
             # review page destroyed the very evidence it renders.
@@ -629,13 +629,13 @@ def main():
                                     timeout=20, json={"mediaIds": [mid]}).json()
                 row = (got.get("identities") or {}).get(str(mid)) or {}
                 if row.get("source") != "remote" or row.get("note") != "remote: exact title":
-                    fail(11, "Confirm must not wipe provenance — confirming a resolver row "
+                    fail(11, "Confirm must not wipe provenance - confirming a resolver row "
                              f"relabelled it (source={row.get('source')!r}, "
                              f"note={row.get('note')!r})")
             finally:
                 requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
-            # A film id must resolve against FILMS, and — when we don't hold the
-            # film — must NOT fall through to title-matching a list that contains
+            # A film id must resolve against FILMS, and - when we don't hold the
+            # film - must NOT fall through to title-matching a list that contains
             # only TV series. That fall-through is where "The Last Blossom" ->
             # *House*, "ChaO" -> *ChäoS;Head* and "Demon Slayer: Infinity Castle"
             # -> the television show came from: 26 category errors across 8
@@ -651,20 +651,20 @@ def main():
                 # Order matters: check the *specific* symptom first. When the
                 # fall-through is restored the series match is usually available
                 # too, so a generic "resolved anyway" would fire first and the
-                # mutation row would be caught for the wrong reason — red, but
+                # mutation row would be caught for the wrong reason - red, but
                 # naming nothing.
                 if film.get("libraryTitle"):
                     fail(11, "a film we do not hold fell through to a SERIES title match "
-                             f"({film.get('libraryTitle')!r}) — the category error is back")
+                             f"({film.get('libraryTitle')!r}) - the category error is back")
                 if film.get("available"):
-                    fail(11, "override did not change the verdict — a film we do not hold "
+                    fail(11, "override did not change the verdict - a film we do not hold "
                              "resolved anyway")
             finally:
                 requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=20)
-            step(11, "PASS — wrong id, outright rejection and an unheld film all flip the "
+            step(11, "PASS - wrong id, outright rejection and an unheld film all flip the "
                      "verdict, clearing restores, and Confirm keeps provenance")
 
-    # ───────── 12/12  The admin lookup names what an id points at ─────────
+    # --------- 12/12  The admin lookup names what an id points at ---------
     #
     # Jellyfin's remote search returns TMDB ids only on this server (measured:
     # every stored resolver candidate), so the lookup's whole value is the join
@@ -674,9 +674,9 @@ def main():
     # a human keying numbers blind.
     step(12, "the admin lookup names what an id points at")
     if not admin:
-        step(12, "SKIP — could not sign an admin token (node or backend/.env missing)")
+        step(12, "SKIP - could not sign an admin token (node or backend/.env missing)")
     elif not configured or not playable:
-        step(12, "SKIP — Jellyfin unconfigured or nothing in the season is held")
+        step(12, "SKIP - Jellyfin unconfigured or nothing in the season is held")
     else:
         ah = {"Authorization": f"Bearer {admin}"}
         r = requests.get(f"{backend}/api/jellyfin/identity/lookup",
@@ -685,10 +685,10 @@ def main():
             fail(12, f"name lookup errored: {r.status_code} {r.text[:160]}")
         results = r.json().get("results") or []
         if not any(x.get("tmdbId") for x in results):
-            fail(12, "a name search returned no id-bearing results — the lookup "
+            fail(12, "a name search returned no id-bearing results - the lookup "
                      "can only offer picks it can act on")
         # Series-first via skyhook: a name search for a series must ALSO offer
-        # TVDB ids natively (this Jellyfin's own remote search cannot — no
+        # TVDB ids natively (this Jellyfin's own remote search cannot - no
         # TVDB plugin). Skipped, not failed, when skyhook is unreachable: the
         # merge is designed to degrade to the TMDB-only list.
         if not any(x.get("tvdbId") for x in results):
@@ -699,14 +699,14 @@ def main():
                 sky_up = False
             if sky_up:
                 fail(12, "skyhook is reachable but the name search offered no "
-                         "TVDB-bearing result — the series-first merge is dead")
-            step(12, "note — skyhook unreachable, TVDB-bearing assertion skipped")
+                         "TVDB-bearing result - the series-first merge is dead")
+            step(12, "note - skyhook unreachable, TVDB-bearing assertion skipped")
         ident = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
                               timeout=20, json={"mediaIds": [playable["mediaId"]]}).json()
         row = (ident.get("identities") or {}).get(str(playable["mediaId"])) or {}
         tvdb = row.get("tvdbId")
         if not tvdb:
-            step(12, "PASS — name search offers id-bearing picks (the control show "
+            step(12, "PASS - name search offers id-bearing picks (the control show "
                      "has no tvdb id, so the paste path had no subject this run)")
         else:
             r = requests.get(f"{backend}/api/jellyfin/identity/lookup",
@@ -715,26 +715,26 @@ def main():
                 fail(12, f"id lookup errored: {r.status_code} {r.text[:160]}")
             one = ((r.json().get("results") or []) + [{}])[0]
             if not (one.get("library") or {}).get("title"):
-                fail(12, "id paste did not name the library match — the admin is "
+                fail(12, "id paste did not name the library match - the admin is "
                          "agreeing to a bare number again")
             if not one.get("tmdbId"):
-                fail(12, "id paste did not cross-walk to its TMDB sibling — the "
+                fail(12, "id paste did not cross-walk to its TMDB sibling - the "
                          "identity arrives half-filled")
-            step(12, f"PASS — name search offers ids, and tvdb:{tvdb} came back as "
+            step(12, f"PASS - name search offers ids, and tvdb:{tvdb} came back as "
                      f"{(one.get('library') or {}).get('title')!r} with TMDB {one.get('tmdbId')}")
 
-    # ───────── 13/13  A viewer can correct a match, but not a human decision ─────────
+    # --------- 13/13  A viewer can correct a match, but not a human decision ---------
     #
     # The only identity endpoints reachable without admin. Two things matter:
     # a pick actually takes effect for everyone (that is the whole feature), and
-    # it cannot overwrite a row an admin settled — nothing else guards that,
+    # it cannot overwrite a row an admin settled - nothing else guards that,
     # since setIdentityOverride upserts unconditionally and only admin-gating
     # protected confirmed/rejected rows before this existed.
     step(13, "a viewer pick corrects a match, and refuses to overwrite an admin's")
     if not configured or not playable:
-        step(13, "SKIP — Jellyfin unconfigured or nothing in the season is held")
+        step(13, "SKIP - Jellyfin unconfigured or nothing in the season is held")
     elif not admin:
-        step(13, "SKIP — could not sign an admin token (needed to seed the settled row)")
+        step(13, "SKIP - could not sign an admin token (needed to seed the settled row)")
     else:
         ah = {"Authorization": f"Bearer {admin}"}
         mid = playable["mediaId"]
@@ -747,7 +747,7 @@ def main():
             fail(13, f"viewer library search errored: {r.status_code} {r.text[:160]}")
         opts = r.json().get("results") or []
         if not any(o.get("tvdbId") or o.get("tmdbId") for o in opts):
-            fail(13, "the viewer library search offered nothing pinnable — every "
+            fail(13, "the viewer library search offered nothing pinnable - every "
                      "option must carry an id or picking it cannot do anything")
         target = next(o for o in opts if o.get("tvdbId") or o.get("tmdbId"))
         try:
@@ -783,14 +783,14 @@ def main():
             # A viewer pick must NOT read as a settled identity. The picker is
             # hidden for confident rows and the undo lives inside it, so the
             # moment a pick counted as confident the correction became
-            # irreversible — found by auditing this against /admin/matching,
+            # irreversible - found by auditing this against /admin/matching,
             # which queues the very same row for review.
             av = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
                                timeout=90, json={"mediaId": mid, "titles": playable["titles"],
                                                  "fresh": True}).json()
             if av.get("idConfident"):
                 fail(13, "a viewer pick reads as a confident identity, so the picker "
-                         "— and the undo inside it — disappears after one use")
+                         "- and the undo inside it - disappears after one use")
 
             # Undo. A pick a viewer cannot reverse is worse than no pick, and
             # the same human-decision guard applies to taking one back.
@@ -811,17 +811,17 @@ def main():
             if r.status_code != 409:
                 fail(13, f"a viewer cleared an admin's rejection: expected 409, "
                          f"got {r.status_code} {r.text[:160]}")
-            step(13, f"PASS — refused over an admin decision, pinned "
+            step(13, f"PASS - refused over an admin decision, pinned "
                      f"{target['title'][:40]!r} as an unconfirmed viewer row, and undid it")
         finally:
             requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
 
-    print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed — OK", flush=True)
+    print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
     except requests.RequestException as e:
-        print(f"\nJellyfin: FAIL — backend unreachable: {e}", flush=True)
+        print(f"\nJellyfin: FAIL - backend unreachable: {e}", flush=True)
         sys.exit(1)

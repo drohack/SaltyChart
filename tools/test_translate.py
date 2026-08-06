@@ -28,7 +28,7 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(TOOLS_DIR), "backend", "scripts")
 sys.path.insert(0, TOOLS_DIR)
 sys.path.insert(0, SCRIPTS_DIR)
 
-# ── Logging ──────────────────────────────────────────────────
+# -- Logging --------------------------------------------------
 
 LOG_PATH = os.path.join(TOOLS_DIR, "logs", "test_results.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -41,7 +41,7 @@ def log(msg=""):
     _log_file.flush()
 
 
-# ── Test config ──────────────────────────────────────────────
+# -- Test config ----------------------------------------------
 
 MODEL_TEST_VIDEO = "rc17AA0hVI8"  # short 51s video (used for download/chunking unit tests)
 
@@ -108,7 +108,7 @@ def _run_subprocess(label, test_id):
         log(f"  ERROR: {result.stderr.strip()[-200:]}")
 
 
-# ── Server tests (backend/scripts/) ─────────────────────────
+# -- Server tests (backend/scripts/) -------------------------
 
 def test_server_download_audio():
     """Test server's download_audio from translate_stream.py."""
@@ -146,7 +146,7 @@ def test_server_chunking():
 
 
 def test_server_small():
-    """Test server small model (CPU, int8, chunked, beam_size=1) — matches daemon."""
+    """Test server small model (CPU, int8, chunked, beam_size=1) - matches daemon."""
     log("\n--- Test: server small (cpu, chunked, beam=1) ---")
     import tempfile, shutil
     from translate_stream import download_audio, generate_chunks, transcribe_chunks
@@ -202,7 +202,7 @@ def test_server_small():
 
 
 def test_server_medium():
-    """Test server medium model (CPU, int8, full-audio, beam_size=5) — matches batch."""
+    """Test server medium model (CPU, int8, full-audio, beam_size=5) - matches batch."""
     log("\n--- Test: server medium (cpu, full-audio, beam=5) ---")
     import tempfile, shutil
     from translate_stream import download_audio
@@ -244,7 +244,7 @@ def test_server_medium():
     del model
 
 
-# ── Local tests (tools/local_translate.py) ───────────────────
+# -- Local tests (tools/local_translate.py) -------------------
 
 def test_local_download_audio():
     """Test local download_audio (returns video_url too)."""
@@ -323,7 +323,7 @@ def test_burned_in():
     free_gpu()
 
 
-# ── Main ─────────────────────────────────────────────────────
+# -- Main -----------------------------------------------------
 
 def main():
     global passed, failed

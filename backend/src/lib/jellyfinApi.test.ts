@@ -11,8 +11,8 @@ import {
 
 // The device id is a contract between two endpoints that never talk to each
 // other: a stream is started under it, and `DELETE /Videos/ActiveEncodings`
-// matches on it to kill the encode. Nothing errors if they drift — the ffmpeg
-// just survives and keeps writing the episode to the transcode cache — so it is
+// matches on it to kill the encode. Nothing errors if they drift - the ffmpeg
+// just survives and keeps writing the episode to the transcode cache - so it is
 // asserted here rather than left to a convention.
 test('the auth header carries the device id ActiveEncodings matches on', () => {
   const header = jellyfinAuthHeader('deadbeef');
@@ -44,7 +44,7 @@ test('the ESM SDK loads under CommonJS and builds an Api', async () => {
 
 // Captured from the hand-written profile before it was retyped with SDK enums.
 // The SDK's members carry the same strings, so retyping must not have moved a
-// single byte on the wire — which is the whole claim this migration rests on.
+// single byte on the wire - which is the whole claim this migration rests on.
 const PRE_MIGRATION_PROFILE =
   '{"MaxStreamingBitrate":8000000,"MaxStaticBitrate":8000000,"DirectPlayProfiles":[],' +
   '"TranscodingProfiles":[{"Container":"ts","Type":"Video","VideoCodec":"h264","AudioCodec":"aac",' +
@@ -62,19 +62,19 @@ test('the typed DeviceProfile is byte-identical to the hand-written one', () => 
 // Three invariants that are not obvious from the shape, each with a failure mode
 // that is silent rather than loud. Asserted separately from the snapshot so a
 // deliberate future change to some unrelated field can't quietly take one out.
-test('DirectPlayProfiles stays empty — browsers cannot demux MKV', () => {
+test('DirectPlayProfiles stays empty - browsers cannot demux MKV', () => {
   assert.deepEqual(deviceProfile(1280, 4_000_000).DirectPlayProfiles, []);
 });
 
-test('the 8-bit ceiling stays — Chrome cannot decode Hi10P', () => {
+test('the 8-bit ceiling stays - Chrome cannot decode Hi10P', () => {
   const conds = deviceProfile(1280, 4_000_000).CodecProfiles?.[0]?.Conditions ?? [];
   const depth = conds.find((c) => c.Property === 'VideoBitDepth');
-  assert.ok(depth, 'no VideoBitDepth condition — Hi10P releases would play as a black picture');
+  assert.ok(depth, 'no VideoBitDepth condition - Hi10P releases would play as a black picture');
   assert.equal(depth?.Condition, 'LessThanEqual');
   assert.equal(depth?.Value, '8');
 });
 
-test('subtitles stay burned in — this one field is the whole architecture', () => {
+test('subtitles stay burned in - this one field is the whole architecture', () => {
   assert.deepEqual(deviceProfile(854, 1_500_000).SubtitleProfiles, [
     { Format: 'ass', Method: 'Encode' },
   ]);
@@ -90,8 +90,8 @@ test('the quality tiers reach the profile', () => {
 
 test('a logged Jellyfin error never carries the API key', () => {
   // An axios error carries its whole request config, and the config carries the
-  // Authorization header. `console.warn('…', err)` therefore prints the server's
-  // Jellyfin key into the backend log — observed for real when a library refresh
+  // Authorization header. `console.warn('...', err)` therefore prints the server's
+  // Jellyfin key into the backend log - observed for real when a library refresh
   // timed out. The proxy already refuses to hand a credential to a browser;
   // this is the same secret leaving by a different door.
   const key = '36e12d0c65894b03afcee74d7e4e67c6';

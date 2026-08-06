@@ -56,7 +56,7 @@ $: _lang = $options.titleLanguage;
   //
   // `/api/list/nicknames` computes everyone else's as `watchedRank ?? order`,
   // so an unwatched show still shows their pre-watch list position. This used
-  // to require `entry.watched` and return null otherwise — and since the wheel
+  // to require `entry.watched` and return null otherwise - and since the wheel
   // only ever holds *unwatched* shows, that meant your own number was missing
   // from the pop-up essentially always, while everyone else's was right there.
   // Mirror the server's rule instead of being stricter than it.
@@ -66,7 +66,7 @@ $: _lang = $options.titleLanguage;
         if (!entry) return null;
         if (typeof entry.watchedRank === 'number') return entry.watchedRank + 1;
         if (entry.watched) {
-          // Watched but not yet persisted a rank — use the sidebar position.
+          // Watched but not yet persisted a rank - use the sidebar position.
           const idx = watchedRank.findIndex((it) => it.id === selected.id);
           if (idx !== -1) return idx + 1;
         }
@@ -106,7 +106,7 @@ $: _lang = $options.titleLanguage;
 
     // The local change above is optimistic. Until now the write that backs it
     // was fire-and-forget with `.catch(() => {})`, so a failure left the screen
-    // showing shows as hidden while the server disagreed — reload and they were
+    // showing shows as hidden while the server disagreed - reload and they were
     // all back. Silent data loss, and per-show, so a partial failure left the
     // list half-applied with nothing to indicate it. Revert what didn't stick.
     const failed = await writeHidden(targets.map((t) => t.id), targetHidden);
@@ -140,7 +140,7 @@ $: _lang = $options.titleLanguage;
   function revertHidden(ids: number[], back: boolean, attempted: number) {
     const undo = new Set(ids);
     watchList = watchList.map((e) => (undo.has(e.mediaId) ? { ...e, hidden: back } : e));
-    hideWriteError = `Couldn't save ${ids.length} of ${attempted} change${attempted === 1 ? '' : 's'} — put back.`;
+    hideWriteError = `Couldn't save ${ids.length} of ${attempted} change${attempted === 1 ? '' : 's'} - put back.`;
     setTimeout(() => (hideWriteError = ''), 8000);
   }
 
@@ -156,14 +156,14 @@ $: _lang = $options.titleLanguage;
     if (!$authToken || hidingNonLibrary) return;
     hidingNonLibrary = true;
     // The lookups below are awaited, so the season could change underneath us
-    // — writing then would hide the wrong season's shows.
+    // - writing then would hide the wrong season's shows.
     const forSeason = season;
     const forYear = year;
     try {
       const visible = unwatchedDetailed.filter((it) => !it.hidden);
       // One request, not one per show. `checkAvailabilityMany` omits any entry
       // it couldn't get a definite answer for, which is exactly the semantics
-      // this function needs — see the "never hide on unknown" note below.
+      // this function needs - see the "never hide on unknown" note below.
       const results = await checkAvailabilityMany(
         visible.map((it) => ({
           mediaId: it.id,
@@ -186,14 +186,14 @@ $: _lang = $options.titleLanguage;
         if (!info.notAired) next.set(id, info.available);
       }
       libraryAvailability = next;
-      // Never hide on an inconclusive answer — a timeout must not make
+      // Never hide on an inconclusive answer - a timeout must not make
       // shows disappear from the wheel. An `unknown` verdict never reaches
       // `results`, so an unanswered show simply isn't in it, and the explicit
       // `=== false` below refuses to act on an absent entry.
       //
       // Title-only (`matchedBy === 'title'`) matches need no guard here: they
       // report `available: true`, so this only ever *keeps* them. That is the
-      // conservative direction — an unconfirmed match's danger is playing the
+      // conservative direction - an unconfirmed match's danger is playing the
       // wrong series, which the popup warns about, not vanishing from the wheel.
       //
       // `notAired` is also `available: false`, but it means "can't exist yet",
@@ -224,7 +224,7 @@ $: _lang = $options.titleLanguage;
    * Optimistic, with the same failure contract as the bulk paths: the write
    * goes through writeHidden, and one the server refuses is put back and
    * announced via hideWriteError. This used to be the one hide path that
-   * ignored failure — the show looked hidden, the server never saved it, and
+   * ignored failure - the show looked hidden, the server never saved it, and
    * the next reload quietly undid it.
    */
   async function toggleHide(item: any) {
@@ -251,7 +251,7 @@ $: _lang = $options.titleLanguage;
     })();
   }
 
-  // ── Library availability (never blocks the modal) ───────────────────
+  // -- Library availability (never blocks the modal) -------------------
   let watchInfo: MediaAvailability | null = null;
   let showPlayer = false;
   let JellyfinPlayerModal: any = null;
@@ -267,7 +267,7 @@ $: _lang = $options.titleLanguage;
     const airing = { status: selected.status, startDate: selected.startDate };
     watchInfo = null;
     // Reopening a show must not land in the picker someone left open on a
-    // previous one — the state belongs to this pop-up, not the page.
+    // previous one - the state belongs to this pop-up, not the page.
     closePicker();
     checkAvailability(id, titles, false, airing)
       .then((info) => {
@@ -275,13 +275,13 @@ $: _lang = $options.titleLanguage;
         if (selected?.id !== id) return;
         watchInfo = info;
         // This pop-up stays open while its synopsis is read, so spend that time
-        // on what the player will want — what is warmed, and why nothing ever
+        // on what the player will want - what is warmed, and why nothing ever
         // touches the HLS manifest, is jellyfinPrewarm.ts's module header.
         if (info.available && info.itemId && info.mediaSourceId) {
           loadPlayerModal();
           prewarm(info.itemId, info.mediaSourceId);
         }
-        // Cached "not available" → re-check live, so a show downloaded a
+        // Cached "not available" -> re-check live, so a show downloaded a
         // minute ago appears without waiting out the cache TTLs. Skipped for
         // `notAired`: nothing was cached and nothing can be downloaded yet, so
         // this would just re-issue the lookup the gate exists to prevent.
@@ -297,7 +297,7 @@ $: _lang = $options.titleLanguage;
       .catch(() => {});
   }
 
-  /** The player chunk is fetched early — its weight and why are on `warmPlayerAssets` below. */
+  /** The player chunk is fetched early - its weight and why are on `warmPlayerAssets` below. */
   let playerModalPromise: Promise<any> | null = null;
 
   function loadPlayerModal(): Promise<any> {
@@ -331,14 +331,14 @@ $: _lang = $options.titleLanguage;
   // writes `showPlayer` directly (which would drag extra invalidations
   // into that statement).
   /**
-   * "Not the right show?" — let the viewer pin this entry to a library item.
+   * "Not the right show?" - let the viewer pin this entry to a library item.
    *
    * This pop-up is where a wrong match is actually noticed; /admin/matching is
    * where it could be fixed, and nobody goes there. A pick is written as an
    * identity override, so it is remembered FOR EVERYONE and lands in the admin
    * review queue rather than being one person's private workaround.
    *
-   * Options are LIBRARY items only — every one of them can actually play. The
+   * Options are LIBRARY items only - every one of them can actually play. The
    * resolver's stored candidates are mostly things we don't hold, which is
    * usually why a row is unverified in the first place.
    */
@@ -358,7 +358,7 @@ $: _lang = $options.titleLanguage;
   let pickTimer: ReturnType<typeof setTimeout> | null = null;
   let pickReqId = 0;
 
-  /** TVDB titles often embed their own disambiguation year — "ONE PIECE (2023)"
+  /** TVDB titles often embed their own disambiguation year - "ONE PIECE (2023)"
    *  must not render as "(2023) (2023)". Same rule as /admin/matching. */
   function pickLabel(opt: PickOption): string {
     return opt.year == null || opt.title.endsWith(`(${opt.year})`)
@@ -377,7 +377,7 @@ $: _lang = $options.titleLanguage;
     if (!selected) return;
     pickOpen = true;
     pickError = '';
-    // Prefilled with the entry's own title and searched at once — the common
+    // Prefilled with the entry's own title and searched at once - the common
     // case should show options without anyone typing.
     pickTerm = selected.customName || getEnglishTitle(selected) || '';
     void runPickSearch(pickTerm);
@@ -414,7 +414,7 @@ $: _lang = $options.titleLanguage;
     }
   }
 
-  /** Undo — put the entry back to whatever the matcher works out on its own. */
+  /** Undo - put the entry back to whatever the matcher works out on its own. */
   async function clearPick() {
     if (!selected) return;
     const id = selected.id;
@@ -520,14 +520,14 @@ $: _lang = $options.titleLanguage;
    * The player's page-level weight: the video.js chunk (~0.66 MB built, 1.6 MB
    * unminified from the dev server). It doesn't depend on which show is picked,
    * so waiting for a pop-up throws away all the time someone spends choosing
-   * one — and over the web, rather than localhost, that gap is long enough that
+   * one - and over the web, rather than localhost, that gap is long enough that
    * pressing Watch looks broken.
    *
    * Per-episode data (the episode's PlaybackInfo) can't be fetched this early
    * and is warmed when the pop-up opens instead.
    *
    * Only for viewers who can actually play something, on idle so it never
-   * competes with the page's own images, and never on a metered connection —
+   * competes with the page's own images, and never on a metered connection -
    * this is a convenience, not something worth spending someone's data plan on.
    */
   function warmPlayerAssets() {
@@ -608,7 +608,7 @@ $: _lang = $options.titleLanguage;
     if (key !== lastSeasonYearKey) {
       lastSeasonYearKey = key;
       // The wheel's slices are about to be replaced, so the transitionend
-      // that clears `spinning` never arrives — without this the Spin button
+      // that clears `spinning` never arrives - without this the Spin button
       // keeps pointer-events-none and can never be clicked again.
       spinning = false;
       fetchBoth();
@@ -643,7 +643,7 @@ $: _lang = $options.titleLanguage;
   // again whenever season or year changes. Manual toggles persist only until the
   // next season/year change.
   // Bumped per call; a stale response (from a prior season/year) is discarded
-  // when its id no longer matches — prevents rapid season-switch races from
+  // when its id no longer matches - prevents rapid season-switch races from
   // applying the wrong season's selection.
   let _autoSelectReqId = 0;
   async function autoSelectByRatings(s: Season, y: number) {
@@ -654,7 +654,7 @@ $: _lang = $options.titleLanguage;
       const res = await fetch(`/api/list/users-with-ratings?season=${s}&year=${y}`);
       if (reqId !== _autoSelectReqId || !res.ok) return;
       const ratedUsers: string[] = await res.json();
-      if (reqId !== _autoSelectReqId) return; // stale response — discard
+      if (reqId !== _autoSelectReqId) return; // stale response - discard
       const self = get(activeUserName);
       const toSelect = ratedUsers.filter((u) => u !== self && nickUsers.includes(u));
       nicknameSelected.set(new Set(toSelect));
@@ -693,7 +693,7 @@ $: _lang = $options.titleLanguage;
 
   // Separate entries into watched/unwatched for easier handling.
   //  * watchedEntries is needed for the ranking sidebar.
-  //  * We no longer hide watched shows from the left sidebar – that list now
+  //  * We no longer hide watched shows from the left sidebar - that list now
   //    shows *all* items but greys-out the ones already watched.
 
   $: watchedEntries = watchList.filter((w) => w.watched);
@@ -712,7 +712,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
   // list is ready, so the popup's watch row is there instantly instead of
   // popping in ~1s after open. The store dedups + caches per mediaId, so
   // re-runs of this reactive block are no-ops.
-  // mediaId → is it in the library (absent = not checked yet). Drives both
+  // mediaId -> is it in the library (absent = not checked yet). Drives both
   // the popup row and the "Hide Not in Library" button's enabled state.
   let libraryAvailability = new Map<number, boolean>();
 
@@ -723,7 +723,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
    * below: Svelte treats a reactive statement that writes one of its own
    * dependencies as needing "extra invalidations", so every single response
    * marked `watchList`/`anime`/`unwatchedEntries`/`wheelItems` dirty and
-   * re-ran this block — one full recompute of the wheel pipeline per show.
+   * re-ran this block - one full recompute of the wheel pipeline per show.
    */
   function recordAvailability(id: number, available: boolean) {
     if (libraryAvailability.get(id) === available) return;
@@ -734,7 +734,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
    * Extracted from the reactive block below so the Retry button can call it.
    * Previously the only thing that could trigger a lookup was `wheelItems`
    * changing, so a failed check stayed failed for as long as the page was open
-   * — the page had no way back short of a reload.
+   * - the page had no way back short of a reload.
    */
   function refreshLibraryAvailability() {
     if (!wheelItems.length) return;
@@ -753,7 +753,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     )
       .then((results) => {
         for (const [mediaId, info] of results) {
-          // Definite answers only — the unknown/notAired invariant is spelled
+          // Definite answers only - the unknown/notAired invariant is spelled
           // out on the hide path above.
           if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);
         }
@@ -773,7 +773,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     (it) => !it.hidden && libraryAvailability.get(it.id) === false
   );
 
-  // (Watched ranking is handled separately – see watchedRank below)
+  // (Watched ranking is handled separately - see watchedRank below)
 
   // Detailed list used for the left sidebar.  It now shows *all* shows in the
   // watch list (both watched & unwatched) so users can always see the full
@@ -931,7 +931,7 @@ const sliceWorker: Worker = new SliceWorker();
   // Quick, soft click played when the user presses the Spin button.
   function playStartClick() {
     if (!audioCtx) return;
-    // Simple triangle blip – clearer than filtered noise; very short.
+    // Simple triangle blip - clearer than filtered noise; very short.
     playTone(500, 0.04, 'triangle', 0.22);
   }
 
@@ -1060,7 +1060,7 @@ const sliceWorker: Worker = new SliceWorker();
     sliceData = ev.data.sliceData;
   };
 
-  // Only recompute slice angles when item COUNT changes — not on name/visibility updates
+  // Only recompute slice angles when item COUNT changes - not on name/visibility updates
   let _lastWheelCount = -1;
   $: {
     const count = wheelItems.length;
@@ -1077,7 +1077,7 @@ const sliceWorker: Worker = new SliceWorker();
   function spin() {
     if (!wheelItems.length || spinning) return;
 
-    // Drop keyboard focus from whatever was clicked (usually this button) —
+    // Drop keyboard focus from whatever was clicked (usually this button) -
     // a still-focused Spin button re-activates on any later Space/Enter
     // press, which reads as the wheel "spinning by itself".
     (document.activeElement as HTMLElement | null)?.blur?.();
@@ -1151,7 +1151,7 @@ const sliceWorker: Worker = new SliceWorker();
 // Global key handler (attached while modal is open) so the Enter key triggers
 // the same action irrespective of which element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
-  // While the player is open it owns the keyboard (Space/Esc/[/]) —
+  // While the player is open it owns the keyboard (Space/Esc/[/]) -
   // Enter here would mark-watched and close the modal underneath it, and Escape
   // is how you leave the player, not the pop-up behind it.
   if (showPlayer) return;
@@ -1191,7 +1191,7 @@ $: {
   } else {
     window.removeEventListener('keydown', handleModalKey);
     // The player lives outside this dialog, so closing the parent has to tear
-    // it down explicitly — a stuck `showPlayer` would make handleModalKey
+    // it down explicitly - a stuck `showPlayer` would make handleModalKey
     // swallow Enter for every future popup.
     closePlayer();
   }
@@ -1451,11 +1451,11 @@ $: {
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  // For modal display — ignores the user's title-language preference.
+  // For modal display - ignores the user's title-language preference.
   function getEnglishTitle(item: any): string {
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  // For modal display — ignores the user's title-language preference.
+  // For modal display - ignores the user's title-language preference.
   function getRomajiTitle(item: any): string {
     return item.title?.romaji || item.title?.english || item.title?.native || '';
   }
@@ -1469,7 +1469,7 @@ $: {
   }
   function shortTitle(item: any): string {
     const title = getDisplayTitle(item);
-    return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '…' : title;
+    return title.length > LABEL_CHAR_LIMIT ? title.slice(0, LABEL_CHAR_LIMIT - 1) + '...' : title;
 }
 
 
@@ -1516,7 +1516,7 @@ $: {
           id="wheel-wrapper"
           class="relative mx-auto overflow-visible select-none"
           style="
-            /* 52 header + 72 selector + 52 extra + 19 buffer → 195px total */
+            /* 52 header + 72 selector + 52 extra + 19 buffer -> 195px total */
             width: min(95vmin, calc(100dvh - 195px));
             height: min(95vmin, calc(100dvh - 195px));
             margin-bottom: 5px; /* keep a sliver of space below wheel */
@@ -1550,7 +1550,7 @@ $: {
         {#each wheelItems as item, i (item.id)}
           {#key $options.titleLanguage + '-' + item.id}
           <!-- rotate label to centre of slice.
-               Polar helper uses 0° at 12 o’clock, but CSS/SVG rotate() uses 0° at 3 o’clock → offset -90° -->
+               Polar helper uses 0° at 12 o’clock, but CSS/SVG rotate() uses 0° at 3 o’clock -> offset -90° -->
           <g transform={`rotate(${sliceAngle * i + sliceAngle / 2 - 90})`}>
             <text
               fill="white"
@@ -1661,10 +1661,10 @@ $: {
                   title={$libraryStatus === 'unreachable'
                     ? "Can't reach the media server, so nothing is known to be missing"
                     : $libraryStatus === 'checking'
-                    ? 'Still checking which shows the library has…'
+                    ? 'Still checking which shows the library has...'
                     : hasNonLibraryVisible
                     ? "Hide every unwatched show the library doesn't have (confirmed matches only)"
-                    : 'Nothing to hide — every unwatched show is in the library'}
+                    : 'Nothing to hide - every unwatched show is in the library'}
                 >
                   {#if hidingNonLibrary}<span class="loading loading-spinner loading-xs"></span>{/if}
                   Hide Not in Library
@@ -1672,7 +1672,7 @@ $: {
 
                 <!-- Which kind of nothing this is. A disabled button looks the
                      same whether every show is present or the lookup never
-                     answered, and those were indistinguishable on screen — the
+                     answered, and those were indistinguishable on screen - the
                      reason a real outage read as normal operation. -->
                 {#if hideWriteError}
                   <span class="text-xs text-error" data-hide-write-error>{hideWriteError}</span>
@@ -1680,7 +1680,7 @@ $: {
                 {#if $libraryStatus === 'checking'}
                   <span class="text-xs opacity-60 flex items-center gap-1" data-library-status="checking">
                     <span class="loading loading-spinner loading-xs"></span>
-                    Checking your library…
+                    Checking your library...
                   </span>
                 {:else if $libraryStatus === 'unreachable'}
                   <span class="text-xs text-warning flex items-center gap-2" data-library-status="unreachable">
@@ -1958,7 +1958,7 @@ $: {
             </p>
             <!-- svelte-ignore a11y-autofocus -->
             <input class="input input-bordered input-sm w-full" data-pick-input autofocus
-              placeholder="Search your library…" bind:value={pickTerm}
+              placeholder="Search your library..." bind:value={pickTerm}
               on:input={queuePickSearch} />
             {#if pickError}
               <p class="text-sm text-warning" data-pick-error>{pickError}</p>
@@ -1987,12 +1987,12 @@ $: {
               {:else}
                 <li class="opacity-60 p-2 text-sm">
                   {#if pickBusy}
-                    Searching…
+                    Searching...
                   {:else if pickTerm.trim()}
                     <!-- "Nothing matched" reads as a broken search. Name the
                          term and the honest reason: the library really may not
                          have it, and no amount of retyping will change that. -->
-                    No match for “{pickTerm.trim()}” in your library — try a
+                    No match for “{pickTerm.trim()}” in your library - try a
                     shorter word, or the show may simply not be there yet.
                   {:else}
                     Type part of a title to search your library.
@@ -2002,7 +2002,7 @@ $: {
             </ul>
             <div class="flex justify-between items-center gap-2">
               <!-- Reversible by design: a pick a viewer can't undo is worse
-                   than no pick. Always offered — "put it back" is a valid
+                   than no pick. Always offered - "put it back" is a valid
                    answer even when nothing here looks right. -->
               <button class="btn btn-sm btn-outline btn-warning normal-case" data-pick-clear
                 disabled={pickBusy} on:click={clearPick}>
@@ -2062,12 +2062,12 @@ $: {
             >
               {#if openingPlayer}
                 <span class="loading loading-spinner loading-xs"></span>
-                Opening…
+                Opening...
               {:else}
-                ▶ Watch here (via Jellyfin)
+                &#9654; Watch here (via Jellyfin)
               {/if}
               {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
-                — S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
+                - S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
               {/if}
             </button>
             {#if watchInfo.libraryTitle}
@@ -2077,21 +2077,21 @@ $: {
               <span class="text-xs opacity-60">
                 Library: {watchInfo.libraryTitle}
                 {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
-                  · S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
+                  - S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
                 {/if}
                 {#if watchInfo.episodeTitle}
-                  · {watchInfo.episodeTitle}
+                  - {watchInfo.episodeTitle}
                 {/if}
               </span>
               {#if (watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0) || watchInfo.unverified}
                 <!-- Matched on a *partial* title, with no id to confirm it. That
                      is how a 2026 entry once resolved to a 2004 series of
-                     similar name ("Firefly Wedding" → "Firefly"), so say so
+                     similar name ("Firefly Wedding" -> "Firefly"), so say so
                      rather than present it as fact.
-                     Tier 0 — a normalised exact title — is deliberately not
+                     Tier 0 - a normalised exact title - is deliberately not
                      warned about. It used to be, which meant the common and
-                     entirely correct case ("Mebius Dust" → "Mebius Dust", whose
-                     only sin is that the community AniList→TVDB map hasn't
+                     entirely correct case ("Mebius Dust" -> "Mebius Dust", whose
+                     only sin is that the community AniList->TVDB map hasn't
                      caught up with a three-week-old show) carried the same
                      warning as the genuinely dangerous prefix hits. A warning
                      that fires on the ordinary case is a warning nobody reads. -->
@@ -2101,13 +2101,13 @@ $: {
                     ? 'Matched by an id we looked up ourselves rather than one from the community map, and nobody has confirmed it yet. Check the title above is really the show you meant.'
                     : 'Matched on a partial title, and no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant.'}
                 >
-                  ⚠ unconfirmed match
+                  &#9888; unconfirmed match
                 </span>
               {/if}
             {/if}
           </div>
         {:else if $mediaConfigured && watchInfo?.unknown}
-          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server — try again shortly</p>
+          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server - try again shortly</p>
         {:else if $mediaConfigured && watchInfo?.notAired}
           <!-- Never looked up: an unaired series can't be in the library, and
                asking only ever produced false positives. -->
@@ -2120,14 +2120,14 @@ $: {
           </p>
         {/if}
         {#if $mediaConfigured && $authToken && watchInfo && !watchInfo.unknown && !watchInfo.notAired && !watchInfo.idConfident}
-          <!-- Offered only when the identity is UNCERTAIN — a resolver guess or
+          <!-- Offered only when the identity is UNCERTAIN - a resolver guess or
                a title match. A community-map id, a human decision or a manual
                override needs no correcting, and that holds even when we don't
                hold the show: the question is "do we know what this is", not
                "can you watch it". The correction belongs where the mistake is
                seen: a pick is
                remembered for everyone and queued for admin review, so one
-               viewer fixing it fixes it for the next. Hidden from guests —
+               viewer fixing it fixes it for the next. Hidden from guests -
                the write needs a token, and a control that 401s is worse than
                no control. Opening it swaps the pop-up into pick mode rather
                than dropping a menu inside it; `.modal-box` scrolls its own

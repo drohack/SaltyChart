@@ -1,19 +1,19 @@
 // ---------------------------------------------------------------------------
 // Offline replay of the matcher over a frozen corpus.
 //
-// Runs the SHIPPING `matchSeries` — not a reimplementation — over eight seasons
+// Runs the SHIPPING `matchSeries` - not a reimplementation - over eight seasons
 // of real AniList entries against a snapshot of the real library, and compares
 // every verdict to a committed baseline. Seconds, no network, deterministic, so
 // it can gate every push where the live corpus check (7 minutes, ~440 Jellyfin
 // lookups) cannot.
 //
 // Scope, precisely: `matchSeries` with community-map ids only. The identity
-// LAYER — the override table, the remote resolver's positive-only ids, the
-// film-index short-circuit — sits above `matchSeries` and is NOT replayed
+// LAYER - the override table, the remote resolver's positive-only ids, the
+// film-index short-circuit - sits above `matchSeries` and is NOT replayed
 // here; it is covered by the unit tests, `test_jellyfin`'s override round
 // trip, and `check_match_corpus.py` (which drives the full live path). Saying
 // "the shipping matcher" without that caveat overstated what a green replay
-// proves — the same trap as a diagnostic that doesn't send what the real
+// proves - the same trap as a diagnostic that doesn't send what the real
 // caller sends.
 //
 // It measures **matcher logic**, not current holdings. When the library changes
@@ -36,7 +36,7 @@ const read = (f: string) => JSON.parse(readFileSync(join(DIR, f), 'utf8'));
  * Every one was produced against the live library before the negative-evidence
  * rule, and every one is a *different work* matched onto its franchise parent.
  * They are listed by name so a regression says which invariant broke rather than
- * just moving a count — a diff of "234 → 236 matched" tells you nothing about
+ * just moving a count - a diff of "234 -> 236 matched" tells you nothing about
  * whether the two extras are the Pokémon bug coming back.
  *
  * Note these are NOT distinguishable by shape: "BLEACH: Thousand-Year Blood War"
@@ -90,37 +90,37 @@ const summary = {
   none: Object.values(results).filter((r) => r.c === null).length,
 };
 
-// ── the named invariants ────────────────────────────────────────────────────
+// -- the named invariants ----------------------------------------------------
 const violations: string[] = [];
 const inert: string[] = [];
 for (const bad of KNOWN_BAD) {
   const subjects = entries.filter((e) => e.titles.some((t) => t.includes(bad.entry)));
   // An assertion whose subject isn't in the corpus asserts nothing, and reads as
   // a pass forever. That is the same failure mode as a mutation row whose anchor
-  // has moved: green, and guarding nothing. Fail loudly instead — either the
+  // has moved: green, and guarding nothing. Fail loudly instead - either the
   // fixture no longer contains the case or the entry string has drifted.
   if (!subjects.length) {
-    inert.push(`"${bad.entry}" matches no corpus entry — this assertion is inert`);
+    inert.push(`"${bad.entry}" matches no corpus entry - this assertion is inert`);
     continue;
   }
   for (const e of subjects) {
     if (results[String(e.id)]?.lib === bad.mustNotMatch) {
       violations.push(
-        `"${e.titles[0]}" matched "${bad.mustNotMatch}" — the franchise-sibling ` +
+        `"${e.titles[0]}" matched "${bad.mustNotMatch}" - the franchise-sibling ` +
           `false positive is back (${e.season})`
       );
     }
   }
 }
 if (inert.length) {
-  for (const i of inert) console.log(`[replay] FAIL — ${i}`);
+  for (const i of inert) console.log(`[replay] FAIL - ${i}`);
 }
 
 if (process.argv.includes('--write')) {
   writeFileSync(join(DIR, 'baseline.json'), JSON.stringify({ summary, results }, null, 0) + '\n');
   console.log(`[replay] baseline written: ${JSON.stringify(summary)}`);
   if (violations.length) {
-    // Refuse to bake a known-bad pair into the baseline — that is exactly how a
+    // Refuse to bake a known-bad pair into the baseline - that is exactly how a
     // regression becomes "expected".
     for (const v of violations) console.log(`[replay] REFUSING: ${v}`);
     process.exit(1);
@@ -132,7 +132,7 @@ let baseline: { summary: any; results: Record<string, Verdict> };
 try {
   baseline = read('baseline.json');
 } catch {
-  console.log('[replay] FAIL — no baseline.json; run with --write after reviewing the fixtures');
+  console.log('[replay] FAIL - no baseline.json; run with --write after reviewing the fixtures');
   process.exit(1);
 }
 
@@ -146,7 +146,7 @@ for (const e of entries) {
   }
   if (a.lib !== b.lib || a.c !== b.c || (a.tier ?? null) !== (b.tier ?? null)) {
     changed.push(
-      `~ ${e.titles[0]} (${e.season}): ${a.c ?? 'none'}/${a.lib ?? '-'} → ${b.c ?? 'none'}/${b.lib ?? '-'}`
+      `~ ${e.titles[0]} (${e.season}): ${a.c ?? 'none'}/${a.lib ?? '-'} -> ${b.c ?? 'none'}/${b.lib ?? '-'}`
     );
   }
 }
@@ -155,15 +155,15 @@ console.log(
   `[replay] ${summary.entries} entries | id ${summary.id} | title ${summary.title} | none ${summary.none}`
 );
 if (violations.length) {
-  for (const v of violations) console.log(`[replay] FAIL — ${v}`);
+  for (const v of violations) console.log(`[replay] FAIL - ${v}`);
 }
 if (changed.length) {
   console.log(`[replay] ${changed.length} verdict(s) differ from the baseline:`);
   for (const c of changed.slice(0, 30)) console.log(`   ${c}`);
-  if (changed.length > 30) console.log(`   … and ${changed.length - 30} more`);
+  if (changed.length > 30) console.log(`   ... and ${changed.length - 30} more`);
 }
 if (violations.length || changed.length || inert.length) {
-  console.log('[replay] FAIL — matcher behaviour changed. If intended, re-baseline with --write.');
+  console.log('[replay] FAIL - matcher behaviour changed. If intended, re-baseline with --write.');
   process.exit(1);
 }
-console.log('[replay] PASS — every verdict matches the baseline');
+console.log('[replay] PASS - every verdict matches the baseline');

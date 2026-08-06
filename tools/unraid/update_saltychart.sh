@@ -1,19 +1,19 @@
 #!/bin/bash
-# SaltyChart auto-updater — reference copy of the Unraid User Script.
+# SaltyChart auto-updater - reference copy of the Unraid User Script.
 #
-# Install on Unraid: Settings → User Scripts → Add New Script
+# Install on Unraid: Settings -> User Scripts -> Add New Script
 # ("update_saltychart"), paste this file, set a custom cron of
 #   */10 * * * *
 #
 # What it does every 10 minutes:
 #   1. `docker compose pull` in the appdata compose dir.
-#   2. If neither :latest image changed → exit silently (the common case).
+#   2. If neither :latest image changed -> exit silently (the common case).
 #   3. If a new image arrived: back up the DB first (existing
 #      backup_saltychart_db User Script), swap containers with
 #      `docker compose up -d`, prune the now-untagged old images, and log.
 #
 # The SQLite DB is bind-mounted from /mnt/user/appdata/saltychart/prisma,
-# which pull/up -d never touch — the backup is belt-and-suspenders.
+# which pull/up -d never touch - the backup is belt-and-suspenders.
 
 set -u
 
@@ -37,32 +37,32 @@ image_ids() {
 before=$(image_ids)
 
 if ! docker compose pull -q; then
-  echo "$(date '+%F %T') pull failed (registry unreachable?) — containers untouched" >> "$LOG_FILE"
+  echo "$(date '+%F %T') pull failed (registry unreachable?) - containers untouched" >> "$LOG_FILE"
   exit 1
 fi
 
 after=$(image_ids)
 
 if [ "$before" = "$after" ]; then
-  exit 0    # nothing new — stay quiet so the cron log doesn't fill up
+  exit 0    # nothing new - stay quiet so the cron log doesn't fill up
 fi
 
-echo "$(date '+%F %T') new image(s) pulled — backing up DB before swap" >> "$LOG_FILE"
+echo "$(date '+%F %T') new image(s) pulled - backing up DB before swap" >> "$LOG_FILE"
 
 # /boot is mounted noexec on Unraid, so invoke via bash rather than directly
 if [ -f "$BACKUP_SCRIPT" ]; then
   if ! bash "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
-    echo "$(date '+%F %T') BACKUP FAILED — aborting update, containers untouched" >> "$LOG_FILE"
+    echo "$(date '+%F %T') BACKUP FAILED - aborting update, containers untouched" >> "$LOG_FILE"
     exit 1
   fi
 else
-  echo "$(date '+%F %T') WARNING: backup script not found at $BACKUP_SCRIPT — continuing without backup" >> "$LOG_FILE"
+  echo "$(date '+%F %T') WARNING: backup script not found at $BACKUP_SCRIPT - continuing without backup" >> "$LOG_FILE"
 fi
 
 if docker compose up -d; then
   docker image prune -f > /dev/null
   echo "$(date '+%F %T') updated + old images pruned" >> "$LOG_FILE"
 else
-  echo "$(date '+%F %T') compose up FAILED — check container state" >> "$LOG_FILE"
+  echo "$(date '+%F %T') compose up FAILED - check container state" >> "$LOG_FILE"
   exit 1
 fi

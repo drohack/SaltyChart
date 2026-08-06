@@ -2,7 +2,7 @@
 
 `mutation_audit.py` breaks one invariant at a time by finding an exact string
 in a source file and replacing it. When the code moves, that string stops
-matching and the row reports `SKIP` — which is easy to miss in a ~90-minute run
+matching and the row reports `SKIP` - which is easy to miss in a ~90-minute run
 and means the invariant has silently stopped being audited.
 
 That is not hypothetical. Batching the availability lookups moved the
@@ -12,7 +12,7 @@ forever.
 
 This is the cheap half of the problem. It runs in about a second, needs no
 servers, starts no transcodes, and can therefore sit in `run_all.py` on every
-push. It cannot tell you whether a row's *test* is meaningful — only a real
+push. It cannot tell you whether a row's *test* is meaningful - only a real
 `mutation_audit.py` run does that, and six rows were once vacuous while every
 anchor resolved perfectly. Treat a pass here as "the rows still aim at
 something", not "the rows work".
@@ -37,7 +37,7 @@ def main() -> int:
     try:
         import mutation_audit as ma
     except Exception as exc:  # a broken table is itself a failure
-        print(f"[anchors] FAIL — could not import mutation_audit: {exc!r}", flush=True)
+        print(f"[anchors] FAIL - could not import mutation_audit: {exc!r}", flush=True)
         return 1
 
     rows = ma.MUTATIONS
@@ -80,7 +80,7 @@ def main() -> int:
             stale.append(f"  [{i}] {m.name}\n      -> {', '.join(problems)}\n      in {m.path}")
 
     if stale:
-        print(f"[anchors] FAIL — {len(stale)} row(s) no longer match the source:", flush=True)
+        print(f"[anchors] FAIL - {len(stale)} row(s) no longer match the source:", flush=True)
         for s in stale:
             print(s, flush=True)
         print("[anchors] Those rows would SKIP, so the invariant is unaudited. "
@@ -98,7 +98,7 @@ def check_flow_labels(ma, rows) -> int:
     """A row's `flows` must name a real, SELECTABLE flow.
 
     A renamed or un-allowlisted label makes the child exit 2 before running
-    anything — which the audit reads as "the test failed", i.e. a catch. The
+    anything - which the audit reads as "the test failed", i.e. a catch. The
     row would report green while auditing nothing at all.
     """
     ui = ma.TESTS / "test_ui_interactions.py"
@@ -114,11 +114,11 @@ def check_flow_labels(ma, rows) -> int:
             elif f not in selectable:
                 bad.append(f"[{i}] {m.name} -> flow {f!r} is not in SELECTABLE_FLOWS")
     if bad:
-        print("[anchors] FAIL — mutation rows name flows that cannot run:", flush=True)
+        print("[anchors] FAIL - mutation rows name flows that cannot run:", flush=True)
         for b in bad:
             print(f"  {b}", flush=True)
         print("[anchors] A bad label makes the child exit before testing, which "
-              "the audit scores as a catch — the row would audit nothing.", flush=True)
+              "the audit scores as a catch - the row would audit nothing.", flush=True)
         return 1
     tagged = sum(1 for m in rows if getattr(m, "flows", ()))
     print(f"Done: {tagged} row(s) name a selectable UI flow, all valid", flush=True)
@@ -130,7 +130,7 @@ def check_expect_is_unambiguous(ma, rows) -> int:
 
     The audit proves a row by finding `expect` in the failing output. When the
     same substring is printed by more than one assertion, a mutation caught by
-    the WRONG one still scores as a catch — the exact failure the expect rule
+    the WRONG one still scores as a catch - the exact failure the expect rule
     was introduced to stop, sneaking back in through a too-generic string.
     Three rows shared "override did not change the verdict", which that test
     prints from three different checks.
@@ -151,7 +151,7 @@ def check_expect_is_unambiguous(ma, rows) -> int:
         if n > 1:
             bad.append(f"[{i}] {m.name} -> {m.expect!r} matches {n} assertions")
     if bad:
-        print("[anchors] FAIL — ambiguous expect string(s):", flush=True)
+        print("[anchors] FAIL - ambiguous expect string(s):", flush=True)
         for b in bad:
             print(f"  {b}", flush=True)
         print("[anchors] Make it specific enough that only the intended "
@@ -170,14 +170,14 @@ def check_exploratory_charter(repo: Path) -> int:
     withdrawn finding, plus a `file.svelte:36` reference the fix had already
     moved.
 
-    Only the mechanical half is checkable — prose can't be verified:
+    Only the mechanical half is checkable - prose can't be verified:
       * every cited file path exists
       * no `file.ext:NN` line references, which are the most rot-prone form
         (CLAUDE.md says so explicitly) and rot silently. Cite an identifier.
     """
     doc = repo / "tools" / "tests" / "EXPLORATORY.md"
     if not doc.exists():
-        print("[charter] SKIP — tools/tests/EXPLORATORY.md not present", flush=True)
+        print("[charter] SKIP - tools/tests/EXPLORATORY.md not present", flush=True)
         return 0
     text = doc.read_text(encoding="utf-8")
     problems: list[str] = []
@@ -185,7 +185,7 @@ def check_exploratory_charter(repo: Path) -> int:
     line_refs = re.findall(r"`([A-Za-z0-9_/.-]+\.(?:svelte|ts|css|py)):(\d+)`", text)
     for path, line in line_refs:
         problems.append(
-            f"line-number reference `{path}:{line}` — cite an identifier instead, "
+            f"line-number reference `{path}:{line}` - cite an identifier instead, "
             f"line numbers move silently"
         )
 
@@ -198,7 +198,7 @@ def check_exploratory_charter(repo: Path) -> int:
             problems.append(f"cites `{ref}`, which no longer exists anywhere in the repo")
 
     if problems:
-        print(f"[charter] FAIL — EXPLORATORY.md has {len(problems)} stale reference(s):", flush=True)
+        print(f"[charter] FAIL - EXPLORATORY.md has {len(problems)} stale reference(s):", flush=True)
         for p in problems:
             print(f"  {p}", flush=True)
         print("[charter] A charter that misdescribes the app sends the next pass "

@@ -67,7 +67,7 @@ import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-field
 import { MediaStreamType } from '@jellyfin/sdk/lib/generated-client/models/media-stream-type';
 
 // ---------------------------------------------------------------------------
-// /api/jellyfin — the whole Jellyfin integration: admin config + connection
+// /api/jellyfin - the whole Jellyfin integration: admin config + connection
 // test, library availability (single + batch), the identity override/lookup
 // endpoints behind /admin/matching, playback session setup, the HLS stream
 // proxy, and subtitle/attachment fetches.
@@ -94,7 +94,7 @@ const jellyfinLimiter = rateLimit({
 });
 
 // Playback is a playlist refresh plus a segment every few seconds, and seeking
-// arrives in bursts — it would eat the 120/min budget within a minute.
+// arrives in bursts - it would eat the 120/min budget within a minute.
 const streamLimiter = rateLimit({
   windowMs: 60_000,
   max: 600,
@@ -126,11 +126,11 @@ export async function getJellyfinConfig(): Promise<JellyfinConfig | null> {
 }
 
 // The client itself (axios instance, auth header, device id, the SDK `Api`)
-// lives in ../lib/jellyfinApi so the header has exactly one definition — the
+// lives in ../lib/jellyfinApi so the header has exactly one definition - the
 // raw proxy below sends it too, and the two must not be able to drift.
 export { jellyfinAxios, type JellyfinConfig };
 
-// Admin: read config — the URL only; the key is never sent back.
+// Admin: read config - the URL only; the key is never sent back.
 router.get('/config', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
   const rows = await prisma.appConfig.findMany({
     where: { key: { in: ['jellyfinUrl', 'jellyfinApiKey', 'jellyfinUserId'] } },
@@ -145,7 +145,7 @@ router.get('/config', jellyfinLimiter, requireAuth, requireAdmin, async (_req, r
 /**
  * Admin: the accounts on the Jellyfin server, for the playback-account picker.
  *
- * Only ids and names — an account list is not something a viewer needs, and the
+ * Only ids and names - an account list is not something a viewer needs, and the
  * response says nothing about credentials.
  */
 router.get('/users', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
@@ -168,8 +168,8 @@ router.get('/users', jellyfinLimiter, requireAuth, requireAdmin, async (_req, re
   }
 });
 
-// ── Identity overrides (admin) ───────────────────────────────────────────────
-// Our AniList → TVDB/TMDB corrections. See `lib/seriesIdentity.ts` for why this
+// -- Identity overrides (admin) -----------------------------------------------
+// Our AniList -> TVDB/TMDB corrections. See `lib/seriesIdentity.ts` for why this
 // is an overlay over the community map rather than a copy of it.
 
 router.get('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {
@@ -179,7 +179,7 @@ router.get('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (_req,
 /**
  * What do we currently believe about these entries, and where did it come from?
  *
- * The admin page pairs this with `/availability/batch` — that endpoint says
+ * The admin page pairs this with `/availability/batch` - that endpoint says
  * whether a show resolved and how (`matchedBy`, `titleTier`), this one says
  * which id produced it and whether a human has confirmed it.
  */
@@ -190,7 +190,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   }
   // Optional mediaId -> premiere year, sent by the page (it holds startDate
   // anyway for the availability batch). Only consulted for the per-row retry
-  // state — the tier arithmetic needs the entry's year, which nothing stored
+  // state - the tier arithmetic needs the entry's year, which nothing stored
   // on a miss row records.
   const years: Record<string, unknown> =
     req.body?.years && typeof req.body.years === 'object' ? req.body.years : {};
@@ -211,9 +211,9 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
     });
     for (const r of rows) askedAt.set(r.anilistId, r.updatedAt.getTime());
   } catch {
-    /* see above — absence of a timestamp is honest-by-default */
+    /* see above - absence of a timestamp is honest-by-default */
   }
-  // Candidates stored before the sweep kept years have `year: null` forever —
+  // Candidates stored before the sweep kept years have `year: null` forever -
   // but when we HOLD the candidate, its year is sitting in the library caches.
   // Enrich at read time (display only, storage untouched); the maps are the
   // cached in-memory ones, so this costs lookups, not fetches. Copies, never
@@ -221,7 +221,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   let yearFor: (c: { tvdbId?: string | null; tmdbId?: string | null; tmdbKind?: string | null }) => number | null =
     () => null;
   // How each entry resolves against the library, by the SAME classifier the
-  // sweep tallies with — so the admin panel's per-season row and its
+  // sweep tallies with - so the admin panel's per-season row and its
   // all-seasons row are one question asked at two scopes instead of two
   // computations that can disagree. Pure and in-memory; the viewer's
   // availability path is untouched.
@@ -234,7 +234,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
       const heldFilmTmdbIds = new Set(Object.keys(films));
       tierFor = (id) => {
         const t = titlesFor[String(id)];
-        if (!Array.isArray(t) || !t.length) return null; // no titles sent — say nothing
+        if (!Array.isArray(t) || !t.length) return null; // no titles sent - say nothing
         const i = resolveIdentity(id);
         return classifyMatch(
           {
@@ -262,7 +262,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
             null;
     }
   } catch {
-    /* enrichment is optional — years just stay absent */
+    /* enrichment is optional - years just stay absent */
   }
   const out: Record<number, any> = {};
   for (const raw of ids) {
@@ -274,7 +274,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
     out[id] = {
       ...ident,
       // The identity's own display year: stored (the sweep dates rows at
-      // write time now), else the held library item's — the match control is
+      // write time now), else the held library item's - the match control is
       // pre-populated from this row and must not read dateless while its
       // dropdown options are dated.
       year: ident.year ?? yearFor(ident),
@@ -283,7 +283,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
         : ident?.candidates ?? null,
       tier: tierFor(id),
       // A row with no ids and no human decision is what the sweep still owes
-      // an answer for — say where it stands (eligible / cooldown / retired).
+      // an answer for - say where it stands (eligible / cooldown / retired).
       // Settled rows get null, not 'eligible': there is nothing to retry.
       retry:
         !ident?.tvdbId && !ident?.tmdbId && !ident?.confirmed && !ident?.rejected
@@ -292,7 +292,7 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
     };
   }
   // The sweep summary rides along so /admin/matching can say when the daily
-  // resolver last ran and what it did — a background system that "silently
+  // resolver last ran and what it did - a background system that "silently
   // stops improving" is this codebase's most-repeated failure class, and until
   // now its only trace was a backend console line nobody watches.
   res.json({ identities: out, ready: identityReady(), sweep: await sweepStatus() });
@@ -302,14 +302,14 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
  * Start an identity sweep, shared by the boot/daily timers (index.ts) and the
  * manual endpoint below. `scheduled` keeps the per-run cap and the retry
  * cooldowns; `drain` drops both, so one admin click asks about everything we
- * still owe an answer for (pacing still applies — drain removes the
+ * still owe an answer for (pacing still applies - drain removes the
  * truncation, not the politeness; retired entries stay out, see planSweep).
  *
  * The sweep itself is fired WITHOUT await: a drain over a cold-start backlog
  * runs for many minutes, far past any HTTP timeout. Its body is one
  * try/catch/finally, so the dangling promise never rejects; and `_running` is
  * set synchronously before its first await, so `sweepRunning()` read
- * immediately afterwards is truthful — it distinguishes "started" from "the
+ * immediately afterwards is truthful - it distinguishes "started" from "the
  * identity map isn't loaded yet" (the sweep's own silent-refusal case).
  */
 export async function triggerSweep(
@@ -320,7 +320,7 @@ export async function triggerSweep(
   if (sweepRunning()) return 'already-running';
   const api = await jellyfinApi(cfg);
   const library = await getSeriesLibrary(api);
-  // The film index feeds the sweep's match tally — a film is only ever resolved
+  // The film index feeds the sweep's match tally - a film is only ever resolved
   // by id, so without it every held film would be counted "not in library".
   // Cached and persisted, so this is a memory read on all but the first call.
   const films = await getFilmIndex(api).catch(() => ({} as Record<string, unknown>));
@@ -329,14 +329,14 @@ export async function triggerSweep(
   void runRemoteIdentitySweep(api, library, {
     heldFilmTmdbIds,
     // A drain drops every bound the schedule exists to enforce: the lookup cap,
-    // the retry cooldowns, and the re-grade cap — an admin pressing the button
+    // the retry cooldowns, and the re-grade cap - an admin pressing the button
     // after a deploy means "propagate everything now".
     ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true, regradeMax: Infinity } : {}),
   });
   return sweepRunning() ? 'started' : 'not-ready';
 }
 
-// Manual trigger for the sweep the timers otherwise own — a cold start used to
+// Manual trigger for the sweep the timers otherwise own - a cold start used to
 // mean restarting the container once per capped run (eight bounces, one
 // evening). Returns immediately; progress lands in the persisted sweep status
 // that /identity/resolve already carries.
@@ -349,7 +349,7 @@ router.post('/identity/sweep', jellyfinLimiter, requireAuth, requireAdmin, async
     if (result === 'not-ready') {
       return res
         .status(503)
-        .json({ error: 'Identity data is still loading — try again shortly', code: 'IDENTITY_NOT_READY' });
+        .json({ error: 'Identity data is still loading - try again shortly', code: 'IDENTITY_NOT_READY' });
     }
     // 202 either way: a sweep is running now. `started` says whether this
     // request is the one that kicked it off.
@@ -376,7 +376,7 @@ router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, 
   try {
     // Merged onto the stored row: a field the client didn't send keeps its
     // stored value, so Confirm doesn't wipe the resolver's provenance (source,
-    // note, candidates) — an explicit value, including null, still changes it.
+    // note, candidates) - an explicit value, including null, still changes it.
     const identity = await setIdentityOverride(mergeIdentityPatch(rawIdentityOverride(id), {
       anilistId: id,
       tvdbId: tvdbId ? String(tvdbId) : null,
@@ -406,7 +406,7 @@ router.put('/identity', jellyfinLimiter, requireAuth, requireAdmin, async (req, 
  * Sonarr-style lookup for /admin/matching: a name searches Jellyfin's remote
  * providers; `tvdb:12345` / `tmdb:12345` resolves a pasted id. Every result
  * carries both ids where they can be known (library metadata first, community
- * map cross-walk second — this server's remote search returns TMDB ids only)
+ * map cross-walk second - this server's remote search returns TMDB ids only)
  * and an `library` tag naming what we hold under those ids, so the admin sees
  * what they are agreeing to BEFORE Confirm writes it as permanent fact.
  * Admin-only and never on a viewer's path; the library/film caches it reads
@@ -441,7 +441,7 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
       let tmdbId = c.tmdbId ?? null;
       let tmdbKind = c.tmdbKind ?? null;
       let library: { title: string } | null = null;
-      /** The held item's own year — fills results the provider left undated. */
+      /** The held item's own year - fills results the provider left undated. */
       let libYear: number | null = null;
 
       const s =
@@ -450,13 +450,13 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
       if (s) {
         library = { title: s.title };
         libYear = s.year ?? null;
-        // The library's own metadata carries both ids — the first free
+        // The library's own metadata carries both ids - the first free
         // tvdb<->tmdb translation.
         tvdbId = tvdbId ?? s.tvdbId ?? null;
         if (!tmdbId && s.tmdbId) tmdbId = String(s.tmdbId);
         if (tmdbId && !tmdbKind) tmdbKind = 'tv';
       }
-      // A raw `tmdb:` paste has no kind — a film-index hit is itself the
+      // A raw `tmdb:` paste has no kind - a film-index hit is itself the
       // evidence the number means a film. Only a known-'tv' id skips this.
       if (!library && tmdbId && tmdbKind !== 'tv') {
         const f = films[String(tmdbId)];
@@ -467,14 +467,14 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
         }
       }
       if (!tvdbId || !tmdbId) {
-        // The community map is the second translation: anilist→tvdb joined to
-        // anilist→tmdb through the anilist key.
+        // The community map is the second translation: anilist->tvdb joined to
+        // anilist->tmdb through the anilist key.
         const x = crosswalkIds({ tvdbId, tmdbId, tmdbKind });
         if (x) {
           tvdbId = tvdbId ?? x.tvdbId;
           tmdbId = tmdbId ?? x.tmdbId;
           tmdbKind = tmdbKind ?? x.tmdbKind;
-          // The kind may only now be known — give the film index its shot.
+          // The kind may only now be known - give the film index its shot.
           if (!library && tmdbId && tmdbKind === 'movie') {
             const f = films[String(tmdbId)];
             if (f) {
@@ -502,7 +502,7 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
 
     // Which review row this lookup serves, when the caller says. A learned
     // year must not evaporate on refresh: if that row is stored undated and a
-    // result matches the row's OWN ids, persist the year through the merge —
+    // result matches the row's OWN ids, persist the year through the merge -
     // ids and flags are read from the authoritative row, so nothing else can
     // be touched, and a failure here never fails the lookup.
     const anilistIdQ = Number(req.query.anilistId);
@@ -531,14 +531,14 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
           pending: ex.pending,
         }));
       } catch {
-        /* display data — never fail the lookup over it */
+        /* display data - never fail the lookup over it */
       }
     };
 
     const term = parseLookupTerm(termRaw);
     if (term.kind === 'name') {
       // Series-first: TVDB ids arrive natively from skyhook (Sonarr's own
-      // metadata service) instead of hoping the cross-walk can fill them —
+      // metadata service) instead of hoping the cross-walk can fill them -
       // this Jellyfin's remote search returns TMDB only. Degrades to the
       // TMDB-only list if skyhook is unreachable.
       const sky: RemoteCandidate[] = (await skyhookSearch(term.name)).slice(0, 5).map((s) => ({
@@ -552,7 +552,7 @@ router.get('/identity/lookup', jellyfinLimiter, requireAuth, requireAdmin, async
         premiereDate: s.firstAired,
       }));
       const cands = await searchBothKinds(api, term.name, year);
-      // Merge, deduped by completed identity — a skyhook row and a TMDB row
+      // Merge, deduped by completed identity - a skyhook row and a TMDB row
       // for the same series collapse into one, keeping the richer fields.
       const results: ReturnType<typeof toResult>[] = [];
       const seen = new Map<string, ReturnType<typeof toResult>>();
@@ -644,7 +644,7 @@ router.put('/config', jellyfinLimiter, requireAuth, requireAdmin, async (req, re
       .json({ error: 'URL must start with http:// or https://', code: 'BAD_REQUEST' });
   }
   // Like the key, an empty URL keeps the stored one. The admin form starts
-  // blank when its config GET failed, and this write used to be unconditional —
+  // blank when its config GET failed, and this write used to be unconditional -
   // so Save in that state replaced a working URL with whatever the form fell
   // back to, silently breaking availability and playback for everyone.
   if (cleanUrl) {
@@ -676,7 +676,7 @@ router.put('/config', jellyfinLimiter, requireAuth, requireAdmin, async (req, re
 });
 
 // Admin: test a connection. Uses supplied values when given, falling back to
-// stored ones — so the admin can test before saving. Always 200; failures are
+// stored ones - so the admin can test before saving. Always 200; failures are
 // reported in-body for inline display.
 router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (req, res) => {
   const { url, apiKey } = req.body ?? {};
@@ -698,7 +698,7 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
 
   try {
     const api = await jellyfinApi({ url: testUrl, apiKey: testKey });
-    // /System/Info needs authentication, so a 200 here proves the key works —
+    // /System/Info needs authentication, so a 200 here proves the key works -
     // unlike /System/Info/Public, which any unauthenticated caller can read.
     const info = await getSystemApi(api).getSystemInfo();
     const serverName = info.data?.ServerName;
@@ -711,7 +711,7 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
       type: String(f.CollectionType ?? ''),
     }));
     // Which account playback will actually run as. Worth reporting: a wrong or
-    // deleted id doesn't fail loudly — PlaybackInfo just returns no
+    // deleted id doesn't fail loudly - PlaybackInfo just returns no
     // TranscodingUrl, which looks like the profile was rejected.
     let playbackAccount = '';
     try {
@@ -721,7 +721,7 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
       playbackAccount = match
         ? `${match.Name}${match.Policy?.IsAdministrator ? ' (administrator)' : ''}`
         : resolved
-          ? 'unknown account — the configured id is not on this server'
+          ? 'unknown account - the configured id is not on this server'
           : '';
     } catch {
       /* reported as blank rather than failing the whole test */
@@ -737,9 +737,9 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
     const status = err?.response?.status;
     const hint =
       status === 401
-        ? 'Jellyfin rejected the API key (401). Create one under Dashboard → API Keys.'
+        ? 'Jellyfin rejected the API key (401). Create one under Dashboard -> API Keys.'
         : err?.code === 'ECONNREFUSED'
-        ? 'Connection refused — check the URL and port (Jellyfin defaults to 8096).'
+        ? 'Connection refused - check the URL and port (Jellyfin defaults to 8096).'
         : err?.message ?? 'Unknown error';
     res.json({ ok: false, error: hint });
   }
@@ -750,7 +750,7 @@ router.post('/config/test', jellyfinLimiter, requireAuth, requireAdmin, async (r
 // ---------------------------------------------------------------------------
 
 interface JfSeries extends MatchableSeries {
-  /** Jellyfin ItemId — `MatchableSeries.id` holds the same value. */
+  /** Jellyfin ItemId - `MatchableSeries.id` holds the same value. */
   itemId: string;
 }
 
@@ -766,7 +766,7 @@ let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null 
  *
  * The library cache was made restart-safe first, and these two are the same bug
  * in its siblings: they hold answers to real Jellyfin calls, they live only in
- * memory, and restarts are frequent — every dev reload, every deploy, ~26 times
+ * memory, and restarts are frequent - every dev reload, every deploy, ~26 times
  * an hour during a mutation audit. A cold `availabilityCache` means the next
  * wheel load re-derives ~50 shows, each an episodes lookup.
  *
@@ -808,7 +808,7 @@ async function loadPersistedEntries<K, V>(key: string): Promise<Array<[K, V]>> {
  * A file's own width and bitrate, cached.
  *
  * These describe the media on disk, so they cannot change while the item id
- * stays the same — replacing a release gives a new id. Bounded because a long
+ * stays the same - replacing a release gives a new id. Bounded because a long
  * session of wheel spins would otherwise grow it without limit.
  */
 const sourceDims = new Map<string, { dims: { width: number; bitrate: number }; at: number }>();
@@ -857,7 +857,7 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
     const tvdb = it.ProviderIds?.Tvdb ?? it.ProviderIds?.tvdb ?? null;
     // These are Series items, so their Tmdb id is a TMDB *TV* id. Measured on
     // the live library: 2252 of 2271 series carry one, near-identical coverage
-    // to Tvdb's 2259 — it adds almost nothing on TV but is the only usable id
+    // to Tvdb's 2259 - it adds almost nothing on TV but is the only usable id
     // for films, where TVDB covers 4 of 117 corpus entries against TMDB's 43.
     const tmdb = it.ProviderIds?.Tmdb ?? it.ProviderIds?.tmdb ?? null;
     series.push({
@@ -874,7 +874,7 @@ function toJfSeries(items: BaseItemDto[]): JfSeries[] {
 }
 
 /**
- * The library, persisted across restarts — the biggest sibling of the
+ * The library, persisted across restarts - the biggest sibling of the
  * restart-safety rule on `persistMapSoon` above. In-memory only, the whole
  * library (2271 series, with ProviderIds) was refetched per restart: the first
  * viewer after every deploy paid for it, and in development it was most of
@@ -912,10 +912,10 @@ async function savePersistedLibrary(series: JfSeries[], total: number, at: numbe
   }
 }
 
-// The film index lives in lib/jellyfinFilmIndex.ts — an id index, never a
+// The film index lives in lib/jellyfinFilmIndex.ts - an id index, never a
 // matchable corpus. Imported above; warmed at boot in index.ts.
 
-/** Series count only — no items serialised, so it is cheap to ask often. */
+/** Series count only - no items serialised, so it is cheap to ask often. */
 async function countSeries(api: Api): Promise<number | null> {
   const { data } = await getItemsApi(api).getItems(
     {
@@ -935,12 +935,12 @@ async function countSeries(api: Api): Promise<number | null> {
  *
  * A refresh is incremental where it safely can be. Jellyfin does not return
  * `DateLastSaved` on items, so the watermark is our own fetch time rather than
- * a max over the results — hence the overlap window.
+ * a max over the results - hence the overlap window.
  */
 export async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (!force && _library && _library.expires > Date.now()) return _library.series;
   // Coalesce: the Randomize page asks about every show at once, and without
-  // this each request pulled the whole library separately — dozens of
+  // this each request pulled the whole library separately - dozens of
   // simultaneous full-library queries that all timed out, which reported
   // every show as missing.
   if (_libraryInFlight) return _libraryInFlight;
@@ -949,7 +949,7 @@ export async function getSeriesLibrary(api: Api, force = false): Promise<JfSerie
   // expired SeasonCache row. Expiry used to make the *next* request pay for the
   // refresh: open Randomize an hour after anyone last did, and the page waited
   // on a count probe plus a refetch before it could say whether a single show
-  // was in the library — with nothing on screen to say why. The stale answer is
+  // was in the library - with nothing on screen to say why. The stale answer is
   // seconds-to-an-hour old and describes a library that changes when media is
   // added, so serving it while refreshing behind costs a viewer nothing.
   const stale = _libraryPersisted ?? (await loadPersistedLibrary());
@@ -983,7 +983,7 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
     if (!force && cached && now - cached.at < LIBRARY_FULL_REFRESH_MS) {
       // Cheap probe first. A changed count means something was added or
       // removed, and removals are the one thing an incremental fetch cannot
-      // show us — so that case falls through to a full refresh.
+      // show us - so that case falls through to a full refresh.
       try {
         const count = await countSeries(api);
         if (count != null && count === cached.total) {
@@ -1008,7 +1008,7 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
           }
         }
       } catch (err) {
-        // NOT `err` — an axios error carries the auth header. See jellyfinErrorInfo.
+        // NOT `err` - an axios error carries the auth header. See jellyfinErrorInfo.
         console.warn('[jellyfin] incremental library refresh failed, falling back to full',
                      jellyfinErrorInfo(err));
       }
@@ -1050,20 +1050,20 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
  * **Air date is the primary signal, not the title.** Titles are a bad join key:
  * `detectSeasonNumber` only understands "Nth Season" / "Season N" / 第N期, so
  * `Part 2`, roman numerals (`II`), trailing digits (`Edgerunners 2`) and named
- * arcs all fell through to "first episode overall" — and the worst case isn't a
+ * arcs all fell through to "first episode overall" - and the worst case isn't a
  * missing match, it's a confident wrong one. *BLEACH: Thousand-Year Blood War -
- * The Calamity* resolved to `S1E1 · The Day I Became a Shinigami`, an episode
+ * The Calamity* resolved to `S1E1 - The Day I Became a Shinigami`, an episode
  * from 2004, because TVDB models all of TYBW as later seasons of the original
  * Bleach and the entry's title carries no season marker at all.
  *
  * An air date has none of those problems: it is language-independent, needs no
  * marker, and is the same fact on both sides. Against that same entry it picks
- * `S17E41` — 0 days off — and note it lands *mid-season*, on the cour boundary,
+ * `S17E41` - 0 days off - and note it lands *mid-season*, on the cour boundary,
  * which a season number cannot even express.
  *
  * The title tiers remain as the fallback, because the air date can be absent
  * (no `startDate`), useless (a `year`-only partial), or unmatched (the library
- * simply doesn't have that season — in which case nothing lands inside the
+ * simply doesn't have that season - in which case nothing lands inside the
  * tolerance and a season-marked entry correctly reports unavailable).
  */
 async function getFirstEpisode(
@@ -1073,7 +1073,7 @@ async function getFirstEpisode(
   airDateMs: number | null = null
 ) {
   // Deliberately WITHOUT MediaSources. Asking for it here makes Jellyfin
-  // enumerate the media sources of *every* episode — real disk work — to obtain
+  // enumerate the media sources of *every* episode - real disk work - to obtain
   // exactly one id, and the Randomize page runs this for every show on the
   // wheel. A 50-show list did that 50 times over on every cold load, which is
   // most of what pegged the server. Everything the choice below needs
@@ -1085,7 +1085,7 @@ async function getFirstEpisode(
   const eps = data.Items ?? [];
   if (!eps.length) return null;
 
-  // ── Tier 1: air date ────────────────────────────────────────────────────
+  // -- Tier 1: air date ----------------------------------------------------
   // `PremiereDate` is a default field on this endpoint (verified against the
   // live server), so this costs no extra request.
   if (airDateMs != null) {
@@ -1097,7 +1097,7 @@ async function getFirstEpisode(
     }
     // We had a usable air date, the series has dated episodes, and *none* of
     // them is anywhere near it. That is positive evidence the library holds a
-    // different part of this franchise, not this entry — so say so, rather than
+    // different part of this franchise, not this entry - so say so, rather than
     // falling through to "first episode overall" and confidently offering an
     // episode from 20 years earlier. This is the other half of the BLEACH case:
     // the tier above fixes it when the library HAS the season, and this fixes it
@@ -1108,7 +1108,7 @@ async function getFirstEpisode(
     if (best && seasonNumber == null) return null;
   }
 
-  // ── Tier 2: season marker in the title, else first episode overall ──────
+  // -- Tier 2: season marker in the title, else first episode overall ------
   let pool: any[];
   if (seasonNumber != null) {
     pool = eps.filter((e) => e.ParentIndexNumber === seasonNumber);
@@ -1127,7 +1127,7 @@ async function getFirstEpisode(
 
 /** Resolve the one chosen episode's media source id. */
 async function finishEpisode(api: Api, ep: any) {
-  // Now — and only now — ask for the one episode's media sources. Measured on
+  // Now - and only now - ask for the one episode's media sources. Measured on
   // this library, 8 of 8 sampled episodes report a source id equal to their
   // item id, so this call almost always confirms what the fallback would have
   // guessed. It stays because "almost" is doing real work: an item with merged
@@ -1163,7 +1163,7 @@ router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res
     const configured = !!(await getJellyfinConfig());
     // A false here silently removes every Watch button and disables
     // Hide-Not-in-Library for that browser session, and left no trace at all.
-    if (!configured) console.warn('[jellyfin] /status answered configured:false — library UI will be hidden');
+    if (!configured) console.warn('[jellyfin] /status answered configured:false - library UI will be hidden');
     res.json({ configured, isAdmin });
   } catch (err: any) {
     console.warn('[jellyfin] /status failed, answering configured:false:', err?.message ?? err);
@@ -1173,9 +1173,9 @@ router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res
 
 // Availability: is this AniList entry in the library, and what is its first
 // episode? Cached per mediaId (1 h positives, 10 min negatives so newly-added
-// shows appear without a restart). Always 200 — the server being down or
+// shows appear without a restart). Always 200 - the server being down or
 // unconfigured is `{ available: false, unknown: true }`, never an error.
-/** `v` is MATCH_ALGO_VERSION — entries from an older matcher are dropped on load. */
+/** `v` is MATCH_ALGO_VERSION - entries from an older matcher are dropped on load. */
 const availabilityCache = new Map<number, { data: any; expires: number; v?: number }>();
 const AVAILABILITY_KEY = 'jellyfinAvailability';
 const AVAILABILITY_MAX = 500; // a couple of seasons' worth; bounded like sourceDims
@@ -1185,13 +1185,13 @@ const AVAILABILITY_MAX = 500; // a couple of seasons' worth; bounded like source
  * produced.
  *
  * This cache is persisted and entries live up to an hour, so without a version
- * a matcher fix doesn't take effect for existing entries until they expire —
+ * a matcher fix doesn't take effect for existing entries until they expire -
  * a deploy that corrects a wrong episode would keep serving the wrong episode
  * across the restart, which is the one moment someone is looking for the fix.
  *
  * 2: episode chosen by air date, with a miss treated as evidence the library
  *    doesn't hold this entry (was: first episode of the title-parsed season).
- * 3: a known id is authoritative in both directions — an id the library lacks
+ * 3: a known id is authoritative in both directions - an id the library lacks
  *    ends the lookup instead of falling back to titles. Every cached "available"
  *    produced by the old rule has to go: 12 of them were the wrong series.
  */
@@ -1201,12 +1201,12 @@ const MATCH_ALGO_VERSION = 3;
  * Record one availability answer, in memory and (debounced) on disk.
  *
  * Entries carry an absolute `expires`, so they age correctly across a restart
- * with no extra bookkeeping — a 10-minute negative written before a deploy is
+ * with no extra bookkeeping - a 10-minute negative written before a deploy is
  * still a 10-minute negative after it.
  */
 function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
   // A match made before the id map has loaded skipped the id tier, so it is
-  // provisional — it may be title-tier where it should be exact, or missing
+  // provisional - it may be title-tier where it should be exact, or missing
   // where it should match. Caching it would pin that degraded answer for up to
   // an hour, trading the blocking fetch this replaced for something worse.
   // Requests during that window still get an answer; it just isn't recorded.
@@ -1219,7 +1219,7 @@ function rememberAvailability(mediaId: number, data: any, ttlMs: number): void {
   if (!identityReady()) return;
   // `unknown` means "couldn't ask", not "not in the library". Caching it at all
   // would make one slow moment stick; persisting it would make that survive a
-  // restart. The call sites already avoid this — the guard is here so a future
+  // restart. The call sites already avoid this - the guard is here so a future
   // one can't reintroduce it silently.
   if (data?.unknown) return;
 
@@ -1238,7 +1238,7 @@ function availabilitySnapshot() {
 
 // The point of writing an identity override is to change the verdict. Leaving
 // the cached one in place would mean the correction appears to do nothing for
-// up to an hour — which reads exactly like the feature is broken. The persist
+// up to an hour - which reads exactly like the feature is broken. The persist
 // matters as much as the delete: without it the on-disk blob still holds the
 // old answer, and a restart inside the debounce window restores it, silently
 // reverting the correction. Registered here (not in the route handlers) so the
@@ -1260,7 +1260,7 @@ void (async () => {
   try {
     let dropped = 0;
     for (const [k, v] of await loadPersistedEntries<number, { data: any; expires: number; v?: number }>(AVAILABILITY_KEY)) {
-      // Absent `v` means "written before versioning" — an older matcher either way.
+      // Absent `v` means "written before versioning" - an older matcher either way.
       if (v?.v !== MATCH_ALGO_VERSION) { dropped++; continue; }
       if (v?.expires > now && !v.data?.unknown) availabilityCache.set(Number(k), v);
     }
@@ -1291,7 +1291,7 @@ function invalidEntry(mediaId: unknown, titles: unknown): boolean {
 
 /**
  * Resolve one entry, cache included. Shared by the single and batch routes so
- * the matching rules have exactly one definition — a second copy is how the two
+ * the matching rules have exactly one definition - a second copy is how the two
  * would come to disagree about what counts as available.
  *
  * Never throws: a failure becomes `{ available: false, unknown: true }`, which
@@ -1310,7 +1310,7 @@ async function resolveAvailability(
   // The pop-up sends it when a show reads as unavailable, so a just-downloaded
   // series appears without waiting out the 10-minute negative TTL. It used to
   // bypass *only* negatives, which matched that one caller but made the flag
-  // mean something narrower than its name — and left no way to force a real
+  // mean something narrower than its name - and left no way to force a real
   // resolution at all. That mattered once the cache started surviving restarts:
   // `test_jellyfin` proves the AniList->TVDB id tier is alive by checking that
   // some series matched by `id`, and with every answer served from cache it was
@@ -1325,18 +1325,18 @@ async function resolveAvailability(
   }
 
   try {
-    // AniList id → TVDB id, when the community map knows this entry. Absent
+    // AniList id -> TVDB id, when the community map knows this entry. Absent
     // is normal (coverage tracks how long a season has aired) and simply
     // means the match falls back to titles.
     // Deliberately NOT awaited. This used to be `await ensureAnilistTvdbMap()`,
     // which on a fresh process with a stale map joins the boot refresh and
     // blocks the viewer's request on a 7.5 MB GitHub download (60s timeout),
     // re-arming on every deploy. The map only ever gains entries and a missing
-    // one degrades this match to title-tier — which the module itself calls
-    // "degraded, not broken" — so a request reads whatever is loaded and never
+    // one degrades this match to title-tier - which the module itself calls
+    // "degraded, not broken" - so a request reads whatever is loaded and never
     // waits on a third party.
     void ensureAnilistTvdbMap();
-    // Our override table first, then the community map — see `seriesIdentity.ts`.
+    // Our override table first, then the community map - see `seriesIdentity.ts`.
     // An id found here is authoritative in BOTH directions: if the library
     // doesn't carry it, `matchSeries` returns null rather than guessing from
     // titles. That single rule removed the entire remaining false-positive
@@ -1353,19 +1353,19 @@ async function resolveAvailability(
     const idConfident =
       identity.rejected || identity.confirmed ||
       identity.source === 'map' ||
-      // A manual row an ADMIN wrote is settled; a viewer pick is not — it is
+      // A manual row an ADMIN wrote is settled; a viewer pick is not - it is
       // unconfirmed by construction and /admin/matching queues it for review.
       // Counting it as confident hid the picker the instant someone used it,
       // taking the undo (which lives inside the picker) with it.
       (identity.source === 'manual' && !(identity.note ?? '').startsWith('viewer:')) ||
-      // A resolver id a DATE vouched for is as settled as a map id — see
+      // A resolver id a DATE vouched for is as settled as a map id - see
       // isDateVerified. Gating on provenance alone offered the picker on 105
       // of 166 uncertain-looking 2026 rows that had matched on the exact
       // premiere day, which is noise on a control meant for real doubt.
       (identity.source === 'remote' && isDateVerified(identity.note));
     // An admin has said outright that this entry is not in the library. That has
     // to short-circuit *before* matching, because a rejection carries no ids and
-    // would otherwise fall straight through to the title tier — which is exactly
+    // would otherwise fall straight through to the title tier - which is exactly
     // the match being rejected. Without this the Reject button on
     // /admin/matching writes its row, drops the entry from the review list, and
     // leaves the wrong Watch button on screen.
@@ -1375,7 +1375,7 @@ async function resolveAvailability(
       return data;
     }
     // A film is resolved against films, never against the series list. If we
-    // know an entry is a film and we do not hold it, that IS the answer —
+    // know an entry is a film and we do not hold it, that IS the answer -
     // falling through to title-matching a list of TV shows is a category error,
     // and it is where "The Last Blossom" -> *House* came from. Measured: cutting
     // it removes 26 wrong matches and costs 1 real one.
@@ -1402,7 +1402,7 @@ async function resolveAvailability(
         idConfident,
         // Date-verified rows are NOT flagged: /admin/matching renders them
         // green-verified, and a warning that fires on the ordinary case is a
-        // warning nobody reads — the same lesson tier-0 titles already taught.
+        // warning nobody reads - the same lesson tier-0 titles already taught.
         unverified:
           identity.source === 'remote' && !identity.confirmed &&
           !isDateVerified(identity.note),
@@ -1461,23 +1461,23 @@ async function resolveAvailability(
       episodeTitle: episode.title,
       seasonNumber: episode.seasonNumber,
       episodeNumber: episode.episodeNumber,
-      // Matched library title — surfaced in the UI so a bad fuzzy match is
+      // Matched library title - surfaced in the UI so a bad fuzzy match is
       // visible instead of mysteriously playing the wrong series.
       idConfident,
       libraryTitle: hit.series.title,
-      // 'id' = an AniList→TVDB→library id chain (exact). 'title' = fuzzy, and
+      // 'id' = an AniList->TVDB->library id chain (exact). 'title' = fuzzy, and
       // fuzzy has produced a real false positive, so the UI marks it and
       // Hide-Not-in-Library refuses to act on it.
       matchedBy: hit.confidence,
       // Which fuzzy tier hit: 0 exact, 1 prefix. (A contains-anywhere tier
-      // existed and was removed — measured wrong 9 times out of 9.) Worth
+      // existed and was removed - measured wrong 9 times out of 9.) Worth
       // reporting because "fuzzy" lumps together two very different things: an
       // exact normalised title ("Mebius Dust" == "Mebius Dust") measured 99%
       // precise against the id tier, while prefix measured 60%. Both used to
       // raise the same "unconfirmed match" warning, which made it noise on the
       // common case and easy to ignore on the dangerous one.
       titleTier: hit.tier,
-      // An id match is normally exact — but a `remote` id is one the resolver
+      // An id match is normally exact - but a `remote` id is one the resolver
       // *guessed* from a TMDB search, so it deserves the same warning a partial
       // title match gets. Without this the UI would present a guess as fact,
       // which is the opposite of what the confidence markers exist for. A row a
@@ -1491,7 +1491,7 @@ async function resolveAvailability(
     rememberAvailability(mediaId, data, 60 * 60 * 1000);
     return data;
   } catch (err: any) {
-    // Deliberately NOT cached — a transient hiccup shouldn't stick. `unknown`
+    // Deliberately NOT cached - a transient hiccup shouldn't stick. `unknown`
     // distinguishes "we couldn't ask" from "the library doesn't have it", so
     // the UI never claims a show is missing (or hides it) on a timeout.
     console.warn(`[jellyfin] availability lookup failed for ${mediaId}:`, err?.message ?? err);
@@ -1502,7 +1502,7 @@ async function resolveAvailability(
 /**
  * Search the held library so a viewer can correct a wrong match.
  *
- * VIEWER-GATED on purpose — `requireAuth` and no `requireAdmin`, unlike every
+ * VIEWER-GATED on purpose - `requireAuth` and no `requireAdmin`, unlike every
  * other identity route. The pop-up is where a bad match is actually noticed;
  * /admin/matching is where it could be fixed, and nobody goes there. Reads only
  * the cached library and film index, so it costs no Jellyfin calls.
@@ -1527,7 +1527,7 @@ router.get('/library/search', jellyfinLimiter, requireAuth, async (req, res) => 
  *
  * `<img>` cannot send an Authorization header, so this takes `?token=` like
  * the stream and subtitle proxies. The Jellyfin key stays server-side as
- * always — it goes on the request we make, never into anything a browser sees.
+ * always - it goes on the request we make, never into anything a browser sees.
  *
  * Posters exist because the picker without them is a list of near-identical
  * strings: a franchise's entries differ by a word, and the cover is how a
@@ -1563,7 +1563,7 @@ router.get('/library/image/:itemId', streamLimiter, async (req, res) => {
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.type(String(headers['content-type'] ?? 'image/jpeg')).send(Buffer.from(data));
   } catch {
-    // A missing poster is normal — answer 404 rather than an error the picker
+    // A missing poster is normal - answer 404 rather than an error the picker
     // would have to special-case.
     res.status(404).end();
   }
@@ -1572,7 +1572,7 @@ router.get('/library/image/:itemId', streamLimiter, async (req, res) => {
 /**
  * Undo: drop the override so this entry goes back to the automatic match.
  *
- * An action a viewer cannot reverse is worse than no action — picking the
+ * An action a viewer cannot reverse is worse than no action - picking the
  * wrong show would otherwise be permanent until an admin noticed. Same guard
  * as the pick: a human decision (confirmed or rejected) is never touched.
  */
@@ -1605,7 +1605,7 @@ router.post('/identity/unpick', jellyfinLimiter, requireAuth, async (req: AuthRe
  *    itemId; everything written is read off the matching library row. A caller
  *    cannot point an entry at an arbitrary id.
  *  - **A human decision is never overwritten.** `setIdentityOverride` upserts
- *    unconditionally and nothing else guards confirmed/rejected rows — only
+ *    unconditionally and nothing else guards confirmed/rejected rows - only
  *    admin-gating did. Without this check a viewer could silently undo a
  *    deliberate Reject.
  *
@@ -1654,7 +1654,7 @@ router.post('/identity/pick', jellyfinLimiter, requireAuth, async (req: AuthRequ
         };
     if (!picked.tvdbId && !picked.tmdbId) {
       // The search never offers these, so reaching here means a hand-made
-      // request — say why rather than storing a row that resolves to nothing.
+      // request - say why rather than storing a row that resolves to nothing.
       return res.status(422).json({
         error: 'That library item carries no TVDB or TMDB id, so it cannot be pinned',
         code: 'NOT_PINNABLE',
@@ -1707,7 +1707,7 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
  * The same question for a whole page of shows, in one request.
  *
  * Randomize asks about every wheel item, and asking one at a time meant ~50 HTTP
- * requests per page load — 40% of this router's own 120/min budget, repeated on
+ * requests per page load - 40% of this router's own 120/min budget, repeated on
  * every full page load because the browser-side cache doesn't outlive one. On a
  * cold backend those 50 also became 50 Jellyfin episode lookups.
  *
@@ -1742,7 +1742,7 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
   const api = await jellyfinApi(cfg);
   const out: Record<number, any> = {};
   // A warm cache makes every entry a Map lookup, so this pool only matters on a
-  // cold one — where the point is to walk the library at a steady rate rather
+  // cold one - where the point is to walk the library at a steady rate rather
   // than open 50 simultaneous episode queries against it.
   const CONCURRENCY = 5;
   let next = 0;
@@ -1757,7 +1757,7 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
 
   // One line that separates every way this can go. Without it, "no Watch
   // buttons on the page" was indistinguishable from "everything resolved and
-  // nothing was missing" — from the logs as well as on screen — which is why a
+  // nothing was missing" - from the logs as well as on screen - which is why a
   // real report cost four wrong theories and no answer. `unknown` is the one to
   // watch: it means the lookup failed, not that the show is absent.
   const vals = Object.values(out) as any[];
@@ -1790,7 +1790,7 @@ const QUALITY: Record<string, { width: number; bitrate: number } | null> = {
 /**
  * The Jellyfin account playback runs as.
  *
- * **PlaybackInfo silently ignores a DeviceProfile without a user id** — it
+ * **PlaybackInfo silently ignores a DeviceProfile without a user id** - it
  * returns a perfectly valid response with no `TranscodingUrl`, which reads
  * exactly like "the profile was rejected". An API key authenticates the request
  * but does not identify a viewer, and Jellyfin needs a viewer to apply policy
@@ -1804,7 +1804,7 @@ const QUALITY: Record<string, { width: number; bitrate: number } | null> = {
  *
  * Nothing is written to that account's watch history either way: Jellyfin only
  * records progress when a client reports it via `/Sessions/Playing`, and this
- * proxy never does — verified against episodes played repeatedly during
+ * proxy never does - verified against episodes played repeatedly during
  * testing, which stayed at `playCount=0, lastPlayed=never`.
  *
  * Falls back to an administrator when unset, so the integration keeps working
@@ -1850,8 +1850,8 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
     // The source's own dimensions, for `auto`. Two things make this cheaper
     // than it was:
     //
-    //   * an explicit tier (1080p/720p/480p) doesn't need them at all — the
-    //     numbers come from QUALITY — yet this used to probe anyway and throw
+    //   * an explicit tier (1080p/720p/480p) doesn't need them at all - the
+    //     numbers come from QUALITY - yet this used to probe anyway and throw
     //     the answer away, once per quality switch;
     //   * they cannot change for a given file, so the answer is cached rather
     //     than re-asked. Opening one pop-up makes two /playback calls (one to
@@ -1883,7 +1883,7 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
 
     const userId = await jellyfinUserId(cfg);
     // The profile goes in the body; everything else stays a query parameter.
-    // `userId` in particular must NOT move into the DTO — PlaybackInfo without
+    // `userId` in particular must NOT move into the DTO - PlaybackInfo without
     // it returns a valid response with no TranscodingUrl at all, which reads
     // exactly like the profile was rejected.
     const { data } = await getMediaInfoApi(api).getPostedPlaybackInfo({
@@ -1931,11 +1931,11 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
     // Jellyfin names the URL it wants us to play, given the profile we sent.
     // Building one by hand is what produced 416x234 and a day of guessing at
     // query parameters; this is the server's own answer. It is relative
-    // ("/videos/…"), so the frontend prefixes the proxy mount.
+    // ("/videos/..."), so the frontend prefixes the proxy mount.
     //
     // **It embeds the API key.** Jellyfin writes `ApiKey=<the key>` into the
     // URL, and handing that to a browser would publish the credential to every
-    // viewer — the exact thing the manifest guard below exists to prevent, and
+    // viewer - the exact thing the manifest guard below exists to prevent, and
     // which it caught when this was first wired up. Strip it here; the proxy
     // injects the key server-side on every hop anyway.
     const rawUrl: string | null = src.TranscodingUrl ?? null;
@@ -1949,7 +1949,7 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
       transcodingUrl = `${path}?${params.toString()}`;
     }
     if (!transcodingUrl) {
-      // Only happens if Jellyfin thinks direct play applies — it cannot here,
+      // Only happens if Jellyfin thinks direct play applies - it cannot here,
       // since DirectPlayProfiles is empty and browsers can't demux MKV.
       console.warn(`[jellyfin] no TranscodingUrl for ${itemId} (quality=${quality})`);
     }
@@ -2068,7 +2068,7 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
       upstreamRes.pipe(res);
       return;
     }
-    // Manifests are kilobytes — buffering one costs nothing and lets us
+    // Manifests are kilobytes - buffering one costs nothing and lets us
     // guarantee no credential leaves the server.
     const chunks: Buffer[] = [];
     upstreamRes.on('data', (c) => chunks.push(c));
@@ -2083,14 +2083,14 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
       res.end(body);
     });
   });
-  // Idle timeout, not a total-duration one — it resets as bytes arrive, so it
+  // Idle timeout, not a total-duration one - it resets as bytes arrive, so it
   // only fires when Jellyfin has gone quiet. It must therefore exceed the worst
   // case for *starting* a stream, which is the slow part: ffmpeg has to spin up
   // and produce the whole first segment before a single byte is sent.
   //
   // Measured with tools/bench_player.py against the real library: a first
   // segment takes 1.3s at best and 50.5s at worst (cold disk, array
-  // contention). The previous 30s cut those slow starts off mid-flight — the
+  // contention). The previous 30s cut those slow starts off mid-flight - the
   // player then saw a failed segment on a stream that was merely slow, which
   // presents as a video that never starts or goes black. Every proxied run in
   // that benchmark stopped at exactly 30.01s, which is what a timeout looks
@@ -2113,8 +2113,8 @@ router.get('/stream/*', streamLimiter, async (req, res) => {
  * A subtitle track, converted by Jellyfin on its own box. `.ass` is a
  * pass-through of the original (styling, positioning, karaoke intact).
  *
- * NOT on the playback path any more — Jellyfin burns subtitles into the video
- * — but kept and tested: it is the only way to inspect what a release ships.
+ * NOT on the playback path any more - Jellyfin burns subtitles into the video
+ * - but kept and tested: it is the only way to inspect what a release ships.
  */
 router.get('/subtitles', streamLimiter, async (req, res) => {
   const itemId = String(req.query.itemId ?? '');
@@ -2161,7 +2161,7 @@ router.get('/attachments', streamLimiter, async (req, res) => {
  *
  *     WEBVTT
  *                        <- blank line ends the header
- *     Region: id:subtitle …
+ *     Region: id:subtitle ...
  *
  * Per the spec they belong in the header, and the browser's parser follows the
  * spec: it reads `Region:` as a cue identifier, then throws on the missing
@@ -2169,9 +2169,9 @@ router.get('/attachments', streamLimiter, async (req, res) => {
  * ParsingError and one dropped cue (360 of 361); lifting the definitions into
  * the header gives 361 and no error.
  *
- * It does not make regions work — vtt.js splits the header line on ':' and
+ * It does not make regions work - vtt.js splits the header line on ':' and
  * ignores it unless there are exactly two parts, so Jellyfin's
- * `id:subtitle width:80% …` is unparseable to it wherever it sits. That costs
+ * `id:subtitle width:80% ...` is unparseable to it wherever it sits. That costs
  * nothing here: Jellyfin repeats the placement on every cue (`line:90%`), and
  * cue settings are what actually position the text.
  */
@@ -2217,7 +2217,7 @@ async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
         ? 'text/vtt; charset=utf-8'
         : String(headers['content-type'] ?? 'application/octet-stream');
     const body = kind === 'vtt' ? Buffer.from(liftVttRegions(data)) : Buffer.from(data);
-    // Subtitles and fonts are immutable for a given item+index — a file only
+    // Subtitles and fonts are immutable for a given item+index - a file only
     // changes if the release is replaced, which changes the item id too. Let
     // the browser keep them so a rewatch, or reopening the same episode,
     // costs nothing.
@@ -2232,8 +2232,8 @@ async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
 /**
  * Tell Jellyfin the viewer is done so it can tear the transcode down.
  *
- * Not strictly required — segment requests are their own keep-alive and an
- * idle session times out — but leaving transcodes running on a box that also
+ * Not strictly required - segment requests are their own keep-alive and an
+ * idle session times out - but leaving transcodes running on a box that also
  * serves everyone else's playback is rude.
  */
 router.post('/playback/stop', jellyfinLimiter, requireAuth, async (req, res) => {

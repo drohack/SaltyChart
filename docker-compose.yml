@@ -11,9 +11,9 @@
 #  • The SQLite DB is a bind mount at /mnt/user/appdata/saltychart/prisma so
 #    it survives image upgrades and is directly visible/backupable on the
 #    host. (A legacy `saltychart_db` named volume from an older revision of
-#    this file went stale in April 2026 — do not resurrect it.)
+#    this file went stale in April 2026 - do not resurrect it.)
 #  • Creates an explicit bridge network (salty-net) to ensure the container
-#    IPs stay stable between restarts – many Unraid users like to reference
+#    IPs stay stable between restarts - many Unraid users like to reference
 #    them from other stacks or fail2ban rules.
 #  • Maps the nginx 80 port to 8085 on the host while keeping the API
 #    internal-only.

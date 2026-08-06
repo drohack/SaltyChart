@@ -2,8 +2,8 @@
 Download-config benchmark for the live translation path.
 
 The live daemon's felt latency is dominated by the audio download, and that cost
-is yt-dlp's EXTRACTION handshake (resolve video → player response → player JS →
-nsig descramble), NOT byte transfer — the `worstaudio` file is only ~1-2 MB. So
+is yt-dlp's EXTRACTION handshake (resolve video -> player response -> player JS ->
+nsig descramble), NOT byte transfer - the `worstaudio` file is only ~1-2 MB. So
 the levers are extraction-side: which player_client, skipping extra requests,
 picking a format directly, warm player cache. (aria2c multi-connection is tested
 too, though it parallelises bytes of which there are almost none here.)
@@ -65,9 +65,9 @@ def build_configs():
             "external_downloader": aria,
             "external_downloader_args": {"aria2c": ["-x16", "-s16", "-k1M"]},
         }))
-        print(f"[setup] aria2c found at {aria} — including aria2c_x16 arm", flush=True)
+        print(f"[setup] aria2c found at {aria} - including aria2c_x16 arm", flush=True)
     else:
-        print("[setup] aria2c NOT found (set ARIA2C_PATH or add to PATH) — skipping that arm", flush=True)
+        print("[setup] aria2c NOT found (set ARIA2C_PATH or add to PATH) - skipping that arm", flush=True)
     return cfgs
 
 
@@ -136,7 +136,7 @@ def run(videos, configs, runs):
 def format_report(results, videos, runs):
     lines = []
     when = time.strftime("%Y-%m-%d %H:%M")
-    lines.append(f"Benchmark: suite '{SUITE}' — live download config  ({when})")
+    lines.append(f"Benchmark: suite '{SUITE}' - live download config  ({when})")
     lines.append(f"Videos: {len(videos)}  |  runs/video: {runs} (last run = warm, "
                  f"yt-dlp player JS cached)")
     lines.append("download time is extraction-bound (~1-2 MB file); lower is better.")

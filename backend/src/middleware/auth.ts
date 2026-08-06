@@ -26,7 +26,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   }
 
   // A correctly signed token still need not carry an id, and Prisma rejects on
-  // `{ id: undefined }` rather than returning null — inside an async middleware
+  // `{ id: undefined }` rather than returning null - inside an async middleware
   // with no catch that means Express never answers and the request hangs
   // forever instead of returning 401.
   if (typeof payload?.id !== 'number') {

@@ -14,7 +14,7 @@
   // A thin wrapper around video.js (Apache-2.0). video.js owns the player:
   // control bar, menus, fullscreen, keyboard, error handling. Two things are
   // added on top:
-  //   1. 0.10x speed stepping on [ and ] — the reason this exists at all,
+  //   1. 0.10x speed stepping on [ and ] - the reason this exists at all,
   //      since Plex's and Jellyfin's own players are locked to coarser steps.
   //   2. quality selection, because Jellyfin's own client has no equivalent
   //      when the stream is coming through a proxy.
@@ -46,7 +46,7 @@
   // onMount awaits can outlive a quick close; every await point re-checks this.
   let destroyed = false;
 
-  // 0.10 steps across 0.2x–4.0x, used for both the keys and video.js's speed
+  // 0.10 steps across 0.2x-4.0x, used for both the keys and video.js's speed
   // menu so the two can't disagree.
   const SPEED_MIN = 0.2;
   const SPEED_MAX = 4;
@@ -72,7 +72,7 @@
    *
    * Not assembled here any more. Hand-built query parameters meant guessing at
    * a contract Jellyfin already defines, and it has no "assume everything is
-   * supported" fallback — an under-specified request came back as 416x234. The
+   * supported" fallback - an under-specified request came back as 416x234. The
    * backend sends a DeviceProfile and returns the server's own TranscodingUrl;
    * this only prefixes the proxy mount so the API key stays server-side.
    */
@@ -219,7 +219,7 @@
     qualityMenu = bar.addChild('SaltyQualityButton', {}, at >= 0 ? at : undefined);
   }
 
-  // ── Speed control (the reason this component exists) ──────────────────
+  // -- Speed control (the reason this component exists) ------------------
   let rateFlashVisible = false;
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   /** While in the future, video.js is not allowed to mark the user active. */
@@ -232,7 +232,7 @@
     rateFlashVisible = true;
     if (flashTimer) clearTimeout(flashTimer);
     flashTimer = setTimeout(() => (rateFlashVisible = false), 3000);
-    // Changing speed must not count as "user activity" — the corner flash is
+    // Changing speed must not count as "user activity" - the corner flash is
     // the feedback. Every activity path in video.js funnels through
     // reportUserActivity, so gate that (see the wrapper in onMount) instead
     // of trying to clear the flag afterwards, which loses the race.
@@ -258,12 +258,12 @@
    *
    * `play()` rejects for two very different reasons and only one of them means
    * the viewer has to do something:
-   *   - `NotAllowedError` — autoplay policy. The gesture that opened the modal
+   *   - `NotAllowedError` - autoplay policy. The gesture that opened the modal
    *     is too old, nothing will start without a click, so show the button.
-   *   - `AbortError` — the play was interrupted by a `pause()` or a new
+   *   - `AbortError` - the play was interrupted by a `pause()` or a new
    *     `load()`. That happens on every deliberate stream rebuild, and playback
    *     resumes on its own. Treating it as a block put a big play button over a
-   *     video that was already restarting — the jarring flash mid-switch.
+   *     video that was already restarting - the jarring flash mid-switch.
    */
   function offerPlayButtonIfBlocked(err: unknown) {
     if ((err as DOMException | undefined)?.name !== 'NotAllowedError') return;
@@ -271,14 +271,14 @@
     player?.addClass('sc-autoplay-blocked');
   }
 
-  /** Begin playback — once only, whoever gets here first. */
+  /** Begin playback - once only, whoever gets here first. */
   function startPlayback() {
     if (playbackStarted || !player) return;
     playbackStarted = true;
     player.play()?.catch?.(offerPlayButtonIfBlocked);
   }
 
-  // ── Stall detection ──────────────────────────────────────────────────
+  // -- Stall detection --------------------------------------------------
   //
   // Seeking itself needs no client-side help: Jellyfin serves a complete VOD
   // playlist and repositions its own transcoder for an out-of-range segment,
@@ -286,7 +286,7 @@
   //
   // What does survive is recovery. That repositioning races Jellyfin's own
   // segment cleanup on remux/direct-stream jobs (jellyfin#16608), and a burst
-  // of scrubbing can leave a session serving nothing at any offset —
+  // of scrubbing can leave a session serving nothing at any offset -
   // permanently, since VHS retries a sole playlist forever. Reported from the
   // field, and not reproducible on demand, which is the argument for healing
   // rather than only detecting.
@@ -303,7 +303,7 @@
   /**
    * A dead *picture* is caught separately from a dead stream, and needs longer.
    *
-   * Reported from the field: pause, seek a few minutes ahead, resume — audio
+   * Reported from the field: pause, seek a few minutes ahead, resume - audio
    * keeps playing and the picture stays black. `currentTime` advances happily
    * throughout, so a watchdog that only reads the clock sees a perfectly
    * healthy stream and never fires. What actually stops is frame decoding.
@@ -313,7 +313,7 @@
    * How long a deliberate restart is allowed to produce no frames.
    *
    * A quality or subtitle change tears the stream down and asks Jellyfin for a
-   * new one, which means a fresh ffmpeg and a fresh buffer — frames genuinely
+   * new one, which means a fresh ffmpeg and a fresh buffer - frames genuinely
    * stop for several seconds. `recovering` does not cover it, because that is
    * cleared as soon as `player.src()` is called rather than when frames resume.
    * Without this the stall detector fired 9s into an intentional switch and
@@ -342,7 +342,7 @@
         stalled = false;
         everProgressed = true;
         // Deliberately NOT resetting `recoveries` here. A moving clock is not
-        // proof of health — in the picture-stall failure the audio keeps the
+        // proof of health - in the picture-stall failure the audio keeps the
         // clock moving while nothing decodes, so resetting on `timeupdate`
         // defeats the retry cap and restarts forever. Decoded frames are the
         // honest health signal; see below.
@@ -354,7 +354,7 @@
       // A slow *start* is not a stall. `paused` goes false the moment play() is
       // called, so without this a first segment that legitimately takes 25s
       // (measured: up to 50s on a cold disk) would look stalled and get
-      // restarted — throwing away the ffmpeg that was about to deliver, and
+      // restarted - throwing away the ffmpeg that was about to deliver, and
       // doing it again on the restart.
       if (!everProgressed) return;
       if (Date.now() - restartedAt < RESTART_GRACE_MS) return;
@@ -388,7 +388,7 @@
    *
    * Needed on two paths, and it is the same call for both: closing the modal,
    * and abandoning a session mid-playback to rebuild the stream. Nothing else
-   * stops these — Jellyfin only reclaims a session on its own idle timeout, and
+   * stops these - Jellyfin only reclaims a session on its own idle timeout, and
    * its ffmpeg keeps writing to the transcode cache in the meantime.
    *
    * `keepalive` so a stop issued as the page goes away still gets sent.
@@ -404,7 +404,7 @@
   }
 
   /**
-   * Rebuild the stream around a fresh playSessionId at the viewer's position —
+   * Rebuild the stream around a fresh playSessionId at the viewer's position -
    * why a wedged session needs this is in the stall-detection block above.
    */
   async function restartStream(reason = 'no progress') {
@@ -414,11 +414,11 @@
     recoveries += 1;
     const resumeAt = player.currentTime?.() ?? 0;
     const abandoned = playSessionId;
-    console.warn(`[player] ${reason} — restarting stream at ${resumeAt.toFixed(1)}s`);
+    console.warn(`[player] ${reason} - restarting stream at ${resumeAt.toFixed(1)}s`);
     // Hold the seek bar where the viewer actually is.
     //
     // `player.src()` resets the tech's clock to 0, and the seek bar repaints
-    // from that before `loadedmetadata` lets us seek back — so the played
+    // from that before `loadedmetadata` lets us seek back - so the played
     // section empties for 1.5-5s while the time readout stays correct. Nothing
     // is wrong, but an empty bar reads as "you lost your place" in the middle
     // of a deliberate track change. Pinned via a CSS variable because video.js
@@ -430,7 +430,7 @@
     }
     try {
       // The current quality and track are what makes this a *different* stream,
-      // so they have to be asked for — a restart that omits them replays the
+      // so they have to be asked for - a restart that omits them replays the
       // URL it was trying to change, which is exactly how the quality menu came
       // to select a tier and change nothing.
       // `fresh` matters too: the cached info holds the session we are escaping.
@@ -449,21 +449,21 @@
         if (destroyed || !player) return;
         player.currentTime(resumeAt);
         // A rebuild can genuinely be refused too (a long switch can outlive the
-        // opening gesture), so the same check applies — but an interrupted play
+        // opening gesture), so the same check applies - but an interrupted play
         // during the rebuild must not count.
         player.removeClass?.('sc-autoplay-blocked');
         player.play()?.catch?.(offerPlayButtonIfBlocked);
         // Release the pinned seek bar only once the clock has actually caught
         // up, so it never hands back to a bar that would repaint at 0. Capped,
         // because a stream that never resumes must not leave it pinned forever
-        // — a frozen bar on a dead stream would be a worse lie than an empty one.
+        // - a frozen bar on a dead stream would be a worse lie than an empty one.
         const settle = () => {
           if (!player) return;
           if (Math.abs((player.currentTime?.() ?? 0) - resumeAt) < 5) {
             player.off?.('timeupdate', settle);
             // Not immediately: the clock is restored a repaint before the bar
             // is, so releasing the pin the moment the times agree hands back to
-            // a bar that still paints at zero for a frame or two — the very
+            // a bar that still paints at zero for a frame or two - the very
             // flash this exists to prevent.
             setTimeout(() => player?.removeClass?.('sc-rebuilding'), 400);
           }
@@ -495,14 +495,14 @@
       // for nobody.
       //
       // In `finally`, not after `player.src()`: a throw from there skipped it
-      // and stranded the encode on exactly the path — a failing rebuild — where
+      // and stranded the encode on exactly the path - a failing rebuild - where
       // an orphan is most likely. It is fire-and-forget, so this cannot delay
       // playback wherever it sits.
       if (abandoned && abandoned !== playSessionId) stopSession(abandoned);
     }
   }
 
-  /** Offer casting only if it is *already* possible — why the Cast SDK is
+  /** Offer casting only if it is *already* possible - why the Cast SDK is
    * warmed elsewhere and never awaited is on `loadCastSdk` in jellyfinPrewarm.ts. */
   async function setupChromecast(videojs: any): Promise<boolean> {
     if (!window.isSecureContext || !castReady()) return false;
@@ -526,7 +526,7 @@
     // Registered before anything can fail. If this waited until after the
     // stream started, a throw in between would leave the tab able to close on
     // a live encode with nothing listening to stop it. Harmless to have armed
-    // early — it no-ops while there is no session yet.
+    // early - it no-ops while there is no session yet.
     window.addEventListener('pagehide', onPageHide);
     // Shared with the Randomize page's idle warm-up, so this is usually
     // already resolved by the time anyone presses Watch.
@@ -549,7 +549,7 @@
       enableSmoothSeeking: true,
       experimentalSvgIcons: true,
       controlBar: {
-        // PiP removed deliberately — the browser's mini-player fights the
+        // PiP removed deliberately - the browser's mini-player fights the
         // modal and the transcode session; use fullscreen instead.
         pictureInPictureToggle: false,
         skipButtons: { forward: 10, backward: 10 },
@@ -559,15 +559,15 @@
 
     // Cast button: put it before fullscreen, and give it its icon back.
     //
-    // Done on the DOM, not through video.js components, and retried — the
+    // Done on the DOM, not through video.js components, and retried - the
     // previous attempt used `bar.getChild('chromecastButton')` immediately
     // after construction and silently did nothing, because the plugin adds its
     // button asynchronously once the Cast SDK reports in. There was no button
     // to find yet.
     //
     // Two fixes:
-    //  * position — fullscreen must be the last control, always.
-    //  * icon — with `experimentalSvgIcons` video.js no longer renders the
+    //  * position - fullscreen must be the last control, always.
+    //  * icon - with `experimentalSvgIcons` video.js no longer renders the
     //    `.vjs-icon-placeholder` span, and the plugin's stylesheet draws its
     //    (shipped, bundled) PNG as that span's background. No span, no icon.
     //    Re-adding the span makes the plugin's own artwork appear; nothing
@@ -608,7 +608,7 @@
 
     // Caption-styling defaults for video.js's text-track renderer, which never
     // has a track here (subtitles are burned in). Inert for local playback;
-    // seeded — only until the viewer sets their own — in case a future
+    // seeded - only until the viewer sets their own - in case a future
     // receiver or text track ever appears.
     if (!localStorage.getItem('vjs-text-track-settings') && player.textTrackSettings) {
       player.textTrackSettings.setValues({
@@ -640,7 +640,7 @@
       if (typeof r === 'number') rate = r;
     });
 
-    // The session id and subtitle tracks — normally already
+    // The session id and subtitle tracks - normally already
     // resolved, because the show pop-up asked for them when it opened.
     // The first call tells us which tracks exist; the chosen one then has to
     // be baked into the stream, so the request we actually play is the second.
@@ -683,7 +683,7 @@
    * Closing the tab must stop the transcode too.
    *
    * `onDestroy` does not run when the page is closed, reloaded or navigated
-   * away from — and closing the tab is how most people actually stop watching.
+   * away from - and closing the tab is how most people actually stop watching.
    * Every one of those left an encode running, and Jellyfin's ffmpeg keeps
    * writing until the whole episode is done regardless of where the viewer got
    * to (jellyfin#16608), so the cost is a full episode re-encoded for nobody.
@@ -716,9 +716,9 @@
 
 <dialog open class="modal z-[999]">
   <!-- Sized like the trailer modal, which scales with the viewport. This was
-       `max-w-5xl`, a hard 64rem cap at any screen size — ~1024px of video on a
+       `max-w-5xl`, a hard 64rem cap at any screen size - ~1024px of video on a
        1905px display against the trailer's ~1524px.
-       The video itself is fully fluid — it is always a percentage of the window
+       The video itself is fully fluid - it is always a percentage of the window
        and never a fixed size. The one constant is the `8rem` allowance for the
        title row, the hint and the padding, used to stop a *tall* video pushing
        the modal past the viewport on a short screen. It is a bound, not a size:
@@ -731,7 +731,7 @@
     <div class="shrink-0 flex items-center justify-between gap-2">
       <h3 class="font-bold text-lg truncate">
         {title}
-        {#if episodeTitle}<span class="opacity-60 font-normal"> — {episodeTitle}</span>{/if}
+        {#if episodeTitle}<span class="opacity-60 font-normal"> - {episodeTitle}</span>{/if}
       </h3>
       <button
         class="btn btn-sm btn-circle btn-ghost shrink-0"
@@ -747,7 +747,7 @@
       {#if !playbackStarted && !stalled}
         <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-white">
           <span class="loading loading-spinner loading-lg"></span>
-          <span class="text-xs opacity-70">Starting playback…</span>
+          <span class="text-xs opacity-70">Starting playback...</span>
         </div>
       {/if}
 
@@ -756,14 +756,14 @@
       {#if switching}
         <div class="absolute top-3 left-4 z-20 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-white">
           <span class="loading loading-spinner loading-xs"></span>
-          <span class="text-xs">{switching}…</span>
+          <span class="text-xs">{switching}...</span>
         </div>
       {/if}
 
       {#if stalled}
         <div class="absolute inset-x-0 bottom-16 z-20 flex justify-center">
           <div class="rounded bg-error/90 px-3 py-1 text-sm text-error-content">
-            Playback stalled — try closing and reopening.
+            Playback stalled - try closing and reopening.
           </div>
         </div>
       {/if}
@@ -795,7 +795,7 @@
    *
    * `autoplay` is off (playback is started by hand), so video.js sits in its
    * not-yet-started state for however long Jellyfin takes to build the first
-   * segment (1-30s) and puts a large play button over it — offering the viewer
+   * segment (1-30s) and puts a large play button over it - offering the viewer
    * an action that is already under way. The loading spinner is the honest
    * indicator during that wait.
    *
@@ -803,7 +803,7 @@
    * actually required of the viewer.
    *
    * `!important` is deliberate. `player.src()` clears `vjs-has-started`, so
-   * video.js's own skin puts the button back mid-switch — and which stylesheet
+   * video.js's own skin puts the button back mid-switch - and which stylesheet
    * wins then depends on the order video.js's CSS and this component's chunk
    * happen to load in, which is not something to leave to chance for a control
    * that must not appear.
@@ -818,7 +818,7 @@
    * Hold the played section where the viewer is while the stream is rebuilt.
    *
    * A track or quality change swaps `player.src()`, which resets the tech's
-   * clock to 0 and empties the bar for 1.5-5s before we can seek back — the
+   * clock to 0 and empties the bar for 1.5-5s before we can seek back - the
    * time readout stays right, so the bar alone claims the position was lost.
    * `!important` because video.js writes this width inline on every update.
    */
@@ -833,19 +833,19 @@
   }
   /* Keep WebVTT captions clear of the control bar (video.js otherwise drops
      them to 1em while the bar is hidden, so they hop as it slides in and out).
-     Inert for local playback — subtitles are burned in, so no text track ever
-     renders — kept in case a future receiver or text track appears. */
+     Inert for local playback - subtitles are burned in, so no text track ever
+     renders - kept in case a future receiver or text track appears. */
   :global(.video-js .vjs-text-track-display) {
     bottom: 3em !important;
   }
   /* The speed flash is sized against the *player*, not the viewport.
      It was `text-4xl md:text-5xl`, which keys off screen width in two coarse
-     steps — so it stayed the same size whether the player filled the window or
+     steps - so it stayed the same size whether the player filled the window or
      sat small inside it, and jumped a step when the browser crossed 768px for
      reasons nothing to do with the video. A container query ties it to the box
      it actually sits in; `clamp` keeps it legible on a phone and stops it
      dominating a fullscreen 4K frame. */
-  /* The stage must NOT impose a height — video.js derives the player's height
+  /* The stage must NOT impose a height - video.js derives the player's height
      from the video's own ratio. Two attempts at being cleverer both broke it,
      and both are worth not repeating: stretching `.video-js` to fill a
      taller box letterboxed the picture while pinning the control bar to the
@@ -863,7 +863,7 @@
     line-height: 1;
   }
   /* Fullscreen needs its own rule. The flash is re-parented into `player.el()`
-     on mount (so it survives fullscreen at all — the overlay would otherwise be
+     on mount (so it survives fullscreen at all - the overlay would otherwise be
      outside the fullscreen subtree), but `.sc-stage` stays laid out at the
      modal's size while `.video-js` fills the screen. A container query would
      therefore resolve against the *small* box and render the smallest text
@@ -874,7 +874,7 @@
   }
   /* The cast button's icon is a PNG the plugin ships, drawn as the background of
      a `.vjs-icon-placeholder` span. Under `experimentalSvgIcons` video.js stops
-     rendering that span, so the button came out empty — the span is re-added in
+     rendering that span, so the button came out empty - the span is re-added in
      script (see `fixCastButton`) and this only sizes it, since the plugin's own
      rule is 12px, about half the height of every neighbouring control. */
   :global(.video-js .vjs-chromecast-button .vjs-icon-placeholder) {

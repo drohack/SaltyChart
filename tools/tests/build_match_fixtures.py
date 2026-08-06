@@ -5,13 +5,13 @@ Rebuild the fixtures that `test_match_replay.py` runs against.
 snapshot of the real library, the real id map, and eight seasons of real AniList
 entries, so the matcher can be exercised offline against data it actually has to
 cope with. Run it only when you deliberately intend to move the baseline, and read the
-replay diff before accepting it — a fixture rebuild that silently absorbs a
+replay diff before accepting it - a fixture rebuild that silently absorbs a
 regression is worse than no fixture at all.
 
 Why a snapshot rather than live data: the replay must be deterministic and must
 run in seconds with no network, so it can run on every change. It measures
 **matcher logic**, not what is currently on disk. When holdings change, the fixture goes
-out of date and that is fine — it is not trying to describe today's library.
+out of date and that is fine - it is not trying to describe today's library.
 
 **Output is gitignored on purpose.** The library snapshot contains every title
 in the media server and its internal item ids, and this repo is public. Build it
@@ -52,7 +52,7 @@ def main() -> int:
 
     lib_raw = cfg(db, "jellyfinLibrary")
     if not lib_raw:
-        print("no cached jellyfinLibrary — start the backend and load a season first", flush=True)
+        print("no cached jellyfinLibrary - start the backend and load a season first", flush=True)
         return 1
     library = json.loads(lib_raw)["series"]
     # Keep only what the matcher reads. The full rows carry itemId and other
@@ -63,7 +63,7 @@ def main() -> int:
          "tvdbId": s.get("tvdbId"), "tmdbId": s.get("tmdbId")}
         for s in library
     ]
-    # A column that is empty across EVERY row means the source didn't have it —
+    # A column that is empty across EVERY row means the source didn't have it -
     # not that the data is like that. `tmdbId` was captured as null on all 2271
     # rows because the fixture was built before the field existed, and the replay
     # test then ran green for hours while exercising only half of `matchSeries`.
@@ -91,7 +91,7 @@ def main() -> int:
         # Never write a fixture from a season that didn't load: an empty list
         # scores as "everything absent" and every assertion passes vacuously.
         if not isinstance(shows, list) or not shows:
-            print(f"FAILED to load {season} {year} — refusing to write a partial fixture", flush=True)
+            print(f"FAILED to load {season} {year} - refusing to write a partial fixture", flush=True)
             return 1
         for m in shows:
             t = m.get("title") or {}
@@ -112,7 +112,7 @@ def main() -> int:
     ids = {k: v for k, v in ids.items() if v["tvdb"] or v["tmdb"]}
     (OUT / "ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
     print(f"ids.json: {len(ids)} of {len(entries)} entries have an id", flush=True)
-    print("Done: fixtures written — now run match_replay with --write to re-baseline", flush=True)
+    print("Done: fixtures written - now run match_replay with --write to re-baseline", flush=True)
     return 0
 
 

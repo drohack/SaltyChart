@@ -79,7 +79,7 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
         where: { userId: req.userId!, season, year: Number(year), watched: true }
       });
 
-      // Only update rank if it is currently null/undefined – keeps manual
+      // Only update rank if it is currently null/undefined - keeps manual
       // re-ordering intact when the user toggles back and forth.
       await prisma.watchList.updateMany({
         where: { userId: req.userId!, season, year: Number(year), mediaId, watchedRank: null },
@@ -258,7 +258,7 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
 export default router;
 
 // ---------------------------------------------------------------------------
-// Public (unauthenticated) endpoints — nickname + ratings lookups, all behind
+// Public (unauthenticated) endpoints - nickname + ratings lookups, all behind
 // publicListLimiter. Registered after the export; Express routes attach fine.
 // ---------------------------------------------------------------------------
 

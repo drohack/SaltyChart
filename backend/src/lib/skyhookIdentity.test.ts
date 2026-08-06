@@ -21,11 +21,11 @@ const DAY = 24 * 60 * 60 * 1000;
  * had collapsed to "Re".
  */
 
-test('titleRelated: a collapsed base must not relate — the Re:Born case', () => {
+test('titleRelated: a collapsed base must not relate - the Re:Born case', () => {
   // base_title("Re:Zero kara Hajimeru ...") strips at the colon and leaves
   // "Re". Without a length floor that prefix-relates to every Re-titled work.
   assert.equal(titleRelated('Re:Born', ['Re']), false,
-    'a 2-char base must never relate — "Re" matched Re:Born in the measurement');
+    'a 2-char base must never relate - "Re" matched Re:Born in the measurement');
   assert.equal(titleRelated('Reborn!', ['Re']), false);
 });
 
@@ -33,7 +33,7 @@ test('titleRelated: exact and meaningful prefix relations hold', () => {
   assert.equal(titleRelated('Ranma ½ (2024)', ['Ranma1/2 (2024) Season 3', 'Ranma1/2 (2024)']), true,
     'unicode fraction vs slash must normalise equal');
   // The Frieren miss: the entry only carried romaji, TVDB answers in English.
-  // Searching every title form is the fix — related() itself just has to hold
+  // Searching every title form is the fix - related() itself just has to hold
   // for whichever form matches.
   assert.equal(titleRelated("Frieren: Beyond Journey's End", ["Frieren: Beyond Journey's End Season 3", 'Sousou no Frieren']), true);
   assert.equal(titleRelated('Punirunes', ['Punirunes Puni 2', 'Punirunes Puni']), true,
@@ -45,13 +45,13 @@ test('titleRelated: exact and meaningful prefix relations hold', () => {
 const ep = (s: number, e: number, air: string | null): SkyhookEpisode =>
   ({ seasonNumber: s, episodeNumber: e, airDate: air });
 
-test('seasonPremiereDelta: only a season premiere may verify — the weekly confound', () => {
+test('seasonPremiereDelta: only a season premiere may verify - the weekly confound', () => {
   const prem = Date.UTC(2025, 9, 5); // 2025-10-05
   // A long-running weekly series: some mid-run episode is ALWAYS within days
   // of any seasonal premiere. That episode must not count.
   const weekly = [ep(3, 11, '2025-09-28'), ep(3, 12, '2025-10-05'), ep(3, 13, '2025-10-12')];
   assert.equal(seasonPremiereDelta(weekly, prem), null,
-    'a mid-run weekly episode 0d away must not verify — it verified Lego Friends once');
+    'a mid-run weekly episode 0d away must not verify - it verified Lego Friends once');
   // Ranma ½ (2024) S3E1 on the entry premiere: the real rescue.
   const ranma = [ep(1, 1, '2024-10-06'), ep(2, 1, '2025-10-04'), ep(3, 1, '2025-10-05'), ep(3, 2, '2025-10-12')];
   assert.equal(seasonPremiereDelta(ranma, prem), 0);
@@ -63,11 +63,11 @@ test('seasonPremiereDelta: only a season premiere may verify — the weekly conf
 });
 
 test('hasUndatedFutureSeason: the Frieren-S3 shape', () => {
-  // TVDB lists season 3 but has not dated it — the signal that a held-library
+  // TVDB lists season 3 but has not dated it - the signal that a held-library
   // rejection is premature.
   const frieren = [ep(1, 1, '2023-09-29'), ep(2, 1, '2026-01-09'), ep(2, 10, '2026-03-27'), ep(3, 1, null)];
   assert.equal(hasUndatedFutureSeason(frieren), true);
-  // A continuing series whose seasons are all dated (One Piece) is NOT that —
+  // A continuing series whose seasons are all dated (One Piece) is NOT that -
   // its rejections were correct and must stay rejections.
   const onepiece = [ep(21, 190, '2024-08-01'), ep(22, 37, '2024-10-20')];
   assert.equal(hasUndatedFutureSeason(onepiece), false);

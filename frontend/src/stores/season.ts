@@ -10,7 +10,7 @@ export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
  * How early to switch the default view to the upcoming season.
  *
  * Was 76 days, which flipped the default about two weeks after the *current*
- * season's premieres — so for most of a season you landed on one where nothing
+ * season's premieres - so for most of a season you landed on one where nothing
  * had aired and nothing could be in the library yet. 50 days moves the cutover
  * to roughly six weeks in, leaving the airing season as the default for longer
  * while still giving a month and a half of trailer-browsing lead time.
@@ -18,17 +18,17 @@ export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
  * Declared at the top of the module on purpose: `computeInitialSeason()` runs
  * during module initialisation (the store restores its value eagerly), so a
  * `const` declared next to that function sits in the temporal dead zone and
- * throws `Cannot access 'LOOKAHEAD_DAYS' before initialization` — which renders
+ * throws `Cannot access 'LOOKAHEAD_DAYS' before initialization` - which renders
  * the entire app blank, since the store never initialises.
  */
 const LOOKAHEAD_DAYS = 50;
 
 // Helper: derive the anime “production” season from today’s month.
 // Mapping follows the common industry convention:
-//   Winter : January – March  (0–2)
-//   Spring : April  – June   (3–5)
-//   Summer : July   – September (6–8)
-//   Fall   : October – December (9–11)
+//   Winter : January - March  (0-2)
+//   Spring : April  - June   (3-5)
+//   Summer : July   - September (6-8)
+//   Fall   : October - December (9-11)
 function currentSeason(date: Date = new Date()): Season {
   const m = date.getMonth();
   if (m <= 2) return 'WINTER';
@@ -87,7 +87,7 @@ function loadPersisted(): { season: Season; year: number } | null {
 
     const now = Date.now();
     if (typeof saved === 'number' && now - saved > CACHE_TTL_MS) {
-      // Expired – clear so next load uses current season
+      // Expired - clear so next load uses current season
       localStorage.removeItem(STORAGE_KEY);
       return null;
     }
@@ -116,7 +116,7 @@ if (typeof localStorage !== 'undefined') {
       const payload: Persisted = { ...val, saved: Date.now() } as Persisted;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
-      /* quota or other errors – ignore */
+      /* quota or other errors - ignore */
     }
   });
 }
@@ -124,7 +124,7 @@ if (typeof localStorage !== 'undefined') {
 // ---------------------------------------------------------------------------
 // Fetch current season/year from AniList GraphQL (once per session).
 //
-// ⚠ Calls graphql.anilist.co DIRECTLY from the browser — invisible to every
+// (!) Calls graphql.anilist.co DIRECTLY from the browser - invisible to every
 // backend rate-limit control, because the backend never sees it. It currently
 // has no callers. Don't wire it up; route it through /api/anime if the need
 // returns.
@@ -190,7 +190,7 @@ export function nextSeasonInfo(
 
 // Returns the season to show by default: the upcoming season if within
 // LOOKAHEAD_DAYS (declared at the top of this module) of its start, otherwise
-// the current season. Handles the cross-year case (FALL→WINTER) correctly.
+// the current season. Handles the cross-year case (FALL->WINTER) correctly.
 function computeInitialSeason(date: Date = new Date()): { season: Season; year: number } {
   const m = date.getMonth();
   let raw: Season;

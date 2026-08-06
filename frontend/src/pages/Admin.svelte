@@ -5,7 +5,7 @@
   import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
   import AdminTabs from '../components/AdminTabs.svelte';
 
-  // ── Jellyfin config ─────────────────────────────────────────────────
+  // -- Jellyfin config -------------------------------------------------
   // The API key is stored server-side and never sent back to a browser;
   // reads return only `apiKeySet`.
   let jfUrl = '';
@@ -29,17 +29,17 @@
       }
     | null = null;
 
-  /** Placeholder text only — a blank box means "keep the stored URL", enforced server-side. */
+  /** Placeholder text only - a blank box means "keep the stored URL", enforced server-side. */
   const DEFAULT_JF_URL = 'http://192.168.1.2:8096';
 
-  /** Set when the saved config couldn't be read — distinct from "nothing saved". */
+  /** Set when the saved config couldn't be read - distinct from "nothing saved". */
   let jfLoadError = '';
 
   async function loadConfig() {
     if (!$authToken) return;
     const auth = { Authorization: `Bearer ${$authToken}` };
     // One `catch {}` used to wrap this *and* loadUsers, so any failure rendered
-    // as empty fields and an empty account picker — i.e. "nothing is
+    // as empty fields and an empty account picker - i.e. "nothing is
     // configured", on the page whose entire job is showing what is configured.
     try {
       const data = await apiJson<any>('/api/jellyfin/config', { headers: auth },
@@ -49,7 +49,7 @@
       jfUserId = data.userId ?? '';
       jfLoadError = '';
     } catch {
-      jfLoadError = "Couldn't load the saved configuration — the fields below may be blank for that reason, not because nothing is saved.";
+      jfLoadError = "Couldn't load the saved configuration - the fields below may be blank for that reason, not because nothing is saved.";
     }
     await loadUsers();
   }
@@ -60,7 +60,7 @@
    * Split out because it needs re-running after Test and after Save, not only on
    * mount: `/api/jellyfin/users` reads the *stored* config, so on a first setup
    * (or after correcting a bad URL/key) the mount-time call returns nothing and
-   * the picker sits empty with no way to choose an account — which is the one
+   * the picker sits empty with no way to choose an account - which is the one
    * thing you came to this page to do.
    */
   async function loadUsers() {
@@ -101,7 +101,7 @@
         { label: 'jellyfin/config-test', timeoutMs: 30_000 }
       );
       // A green test means the stored credentials can reach the server, so the
-      // account list is worth (re)fetching — otherwise you'd have to save and
+      // account list is worth (re)fetching - otherwise you'd have to save and
       // reload the page before the picker had anything in it.
       if (jfTestResult?.ok) await loadUsers();
     } catch {
@@ -116,14 +116,14 @@
     jfSaveMsg = '';
     jfSaveErr = '';
     try {
-      // A blank URL means "keep the stored one" — enforced SERVER-side, the
+      // A blank URL means "keep the stored one" - enforced SERVER-side, the
       // same way a blank key is. The old fallback chain here ended at the
       // hardcoded placeholder, so Save on a form left blank by a failed config
       // read could overwrite a working address with the default.
       const res = await apiFetch('/api/jellyfin/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-        // `apiKey: undefined` is the documented "keep the stored key" signal —
+        // `apiKey: undefined` is the documented "keep the stored key" signal -
         // the key is never sent to the browser, so a blank box means unchanged.
         body: JSON.stringify({ url: jfUrl.trim(), apiKey: jfKey || undefined, userId: jfUserId }),
       }, { label: 'jellyfin/config-save', timeoutMs: QUICK });
@@ -142,7 +142,7 @@
       }
     } catch (e) {
       jfSaveErr = (e as ApiError)?.unreachable
-        ? "Couldn't reach the backend — nothing was saved."
+        ? "Couldn't reach the backend - nothing was saved."
         : 'Save failed.';
     } finally {
       jfSaving = false;
@@ -207,7 +207,7 @@
             id="jf-key"
             type="password"
             class="input input-bordered w-full"
-            placeholder={jfKeySet ? '•••••••••• (saved — leave blank to keep)' : 'Paste a Jellyfin API key'}
+            placeholder={jfKeySet ? '•••••••••• (saved - leave blank to keep)' : 'Paste a Jellyfin API key'}
             autocomplete="new-password"
             data-bwignore="true"
             data-1p-ignore="true"
@@ -216,7 +216,7 @@
           />
           <div class="label">
             <span class="label-text-alt opacity-60">
-              Jellyfin → Dashboard → API Keys → “+” to create one.
+              Jellyfin &rarr; Dashboard &rarr; API Keys &rarr; “+” to create one.
             </span>
           </div>
         </div>
@@ -228,7 +228,7 @@
           <select id="jf-user" class="select select-bordered w-full" bind:value={jfUserId}>
             <option value="">Any administrator (default)</option>
             {#each jfUsers as u}
-              <option value={u.id}>{u.name}{u.isAdministrator ? ' — administrator' : ''}</option>
+              <option value={u.id}>{u.name}{u.isAdministrator ? ' - administrator' : ''}</option>
             {/each}
           </select>
           <div class="label">
@@ -238,7 +238,7 @@
               stops a later policy change quietly degrading it for everyone. It
               needs library access and no bitrate or rating limit; it does not
               need to be an administrator. Nothing is written to its watch
-              history either way — SaltyChart never reports progress.
+              history either way - SaltyChart never reports progress.
             </span>
           </div>
         </div>
@@ -265,7 +265,7 @@
               <div>
                 <p class="font-semibold">
                   Connected to “{jfTestResult.serverName}”
-                  {#if jfTestResult.version}<span class="opacity-70 font-normal"> — Jellyfin {jfTestResult.version}</span>{/if}
+                  {#if jfTestResult.version}<span class="opacity-70 font-normal"> - Jellyfin {jfTestResult.version}</span>{/if}
                 </p>
                 <ul class="list-disc list-inside text-sm mt-1">
                   {#each jfTestResult.libraries ?? [] as lib}

@@ -13,8 +13,8 @@ Exits 0 if all expectations match, 1 otherwise. Requires:
   - faster-whisper, easyocr, sentence-transformers installed
 
 Test cases use videos confirmed in the live PROD SubtitleCache:
-  - EsQudPqDOQQ (Eren the Southpaw) — known burned-in, expected: yes
-  - 7ObipYqbOd8 (Sparks of Tomorrow) — has YouTube English CC, no burned-in
+  - EsQudPqDOQQ (Eren the Southpaw) - known burned-in, expected: yes
+  - 7ObipYqbOd8 (Sparks of Tomorrow) - has YouTube English CC, no burned-in
 """
 import re
 import subprocess
@@ -33,7 +33,7 @@ CASES = [
 
 def run_case(case_num: int, total: int, video_id: str, expected: str) -> tuple[bool, str]:
     """Run local_translate.py against one video. Streams a self-contained
-    progress line for each meaningful event — every line carries
+    progress line for each meaningful event - every line carries
     [case n/total VIDEO_ID step] so the status bar always shows overall position."""
     prefix = f"[{case_num}/{total} {video_id}]"
     proc = subprocess.Popen(
@@ -56,7 +56,7 @@ def run_case(case_num: int, total: int, video_id: str, expected: str) -> tuple[b
         elif "Checking for burned-in" in line:
             print(f"{prefix} step 3/4: starting burned-in OCR check (7 frames)", flush=True)
         elif "Frame " in line and ("match" in line or "MATCH" in line):
-            # "Frame 3 (17.1s): MATCH (fz=86% sem=86%) ocr=..." → "frame 4/7 (17.1s): MATCH"
+            # "Frame 3 (17.1s): MATCH (fz=86% sem=86%) ocr=..." -> "frame 4/7 (17.1s): MATCH"
             m = re.match(r"\s*Frame (\d+) (\(.*?\)):\s+(.*)", line)
             if m:
                 idx = int(m.group(1)) + 1
@@ -79,20 +79,20 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    print(f"Burned-in detection regression test — {len(CASES)} cases", flush=True)
+    print(f"Burned-in detection regression test - {len(CASES)} cases", flush=True)
 
     failed = 0
     total = len(CASES)
     for i, (video_id, title, expected) in enumerate(CASES, 1):
-        print(f"\n[{i}/{total} {video_id}] starting — {title[:40]} (expect {expected})", flush=True)
+        print(f"\n[{i}/{total} {video_id}] starting - {title[:40]} (expect {expected})", flush=True)
         ok, detail = run_case(i, total, video_id, expected)
         if ok:
-            print(f"[{i}/{total} {video_id}] PASS — {detail}", flush=True)
+            print(f"[{i}/{total} {video_id}] PASS - {detail}", flush=True)
         else:
-            print(f"[{i}/{total} {video_id}] FAIL — {detail}", flush=True)
+            print(f"[{i}/{total} {video_id}] FAIL - {detail}", flush=True)
             failed += 1
 
-    # Final line — what the status bar shows after script exit
+    # Final line - what the status bar shows after script exit
     if failed:
         print(f"\nDone: {len(CASES) - failed}/{len(CASES)} passed, {failed} failed", flush=True)
         sys.exit(1)

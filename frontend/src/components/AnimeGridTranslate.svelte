@@ -46,17 +46,17 @@ $: _currentLang = $options.titleLanguage;
   // id of trailer currently open in modal (null = none)
   let modal: string | null = null;
 
-  // Pre-fetched English sub status — passed in from Home.svelte via check-batch.
+  // Pre-fetched English sub status - passed in from Home.svelte via check-batch.
   // Key: YouTube video ID, Value: true = confirmed English CC in DB.
   export let prefetchedSubs: Map<string, boolean> = new Map();
-  // True once the batch has returned — lets openModal skip the 150ms precheck
+  // True once the batch has returned - lets openModal skip the 150ms precheck
   // race for videos not in prefetchedSubs (batch already said: no English CC).
   export let prefetchComplete: boolean = false;
 
-  // ── Translation state ──────────────────────────────────────────────
+  // -- Translation state ----------------------------------------------
   let subtitleSegments: Array<{ start: number; end: number; text: string }> = [];
   let currentSubtitle = '';
-  // Pointer into subtitleSegments for O(1) tick lookups — advances forward only
+  // Pointer into subtitleSegments for O(1) tick lookups - advances forward only
   let currentSegIdx = 0;
   let eventSource: EventSource | null = null;
   let subtitleTickInterval: number | null = null;
@@ -94,7 +94,7 @@ $: _currentLang = $options.titleLanguage;
 
     const mediaParam = mediaId ? `&mediaId=${mediaId}` : '';
 
-    // Fast path: batch prefetch confirmed English CC — instant, no network call.
+    // Fast path: batch prefetch confirmed English CC - instant, no network call.
     if (prefetchedSubs.get(id) === true) {
       hasEnglishSubs = true;
       subtitlesVisible = false;
@@ -104,7 +104,7 @@ $: _currentLang = $options.titleLanguage;
     }
 
     // If the batch has already run and this video wasn't in it, we know there's
-    // no confirmed English CC — skip the precheck race and go straight to
+    // no confirmed English CC - skip the precheck race and go straight to
     // translation. Still fire /check async to catch subtitlesDisabled/hasBurnedInSubs
     // and to pick up any Python result that completed after the batch ran.
     if (prefetchComplete) {
@@ -132,7 +132,7 @@ $: _currentLang = $options.titleLanguage;
       return;
     }
 
-    // Batch hasn't run yet (user clicked very fast) — race /check against 150ms
+    // Batch hasn't run yet (user clicked very fast) - race /check against 150ms
     // so the iframe doesn't block while Python potentially runs.
     const checkPromise = fetch(`/api/translate/check?videoId=${id}${mediaParam}`)
       .then(res => res.json()).catch(() => null);
@@ -179,7 +179,7 @@ $: _currentLang = $options.titleLanguage;
   /**
    * Briefly show why subtitles aren't coming. Deliberately transient and
    * non-blocking: the trailer plays fine without subtitles, so this must never
-   * gate playback or cover the video — it sits in the existing control cluster
+   * gate playback or cover the video - it sits in the existing control cluster
    * beside the CC toggle and clears itself.
    */
   let translationError: string | null = null;
@@ -204,7 +204,7 @@ $: _currentLang = $options.titleLanguage;
 
     // If the viewer is already several seconds into the trailer (re-open, or
     // they scrubbed ahead), tell the backend to begin transcription near the
-    // playhead instead of second 0 — it won't waste CPU on already-watched audio
+    // playhead instead of second 0 - it won't waste CPU on already-watched audio
     // that the forward-only subtitle pointer would discard anyway. The common
     // open-from-start case keeps start=0 so the result is still cached fully.
     const startSec = Math.floor(playerCurrentTime);
@@ -216,7 +216,7 @@ $: _currentLang = $options.titleLanguage;
       try {
         const data = JSON.parse(event.data);
         if (data.cached) {
-          // Cached response — skip spinner, go straight to translating mode
+          // Cached response - skip spinner, go straight to translating mode
           translationLoading = false;
           translating = true;
           checkResolved = true;
@@ -293,13 +293,13 @@ $: _currentLang = $options.titleLanguage;
         playerCurrentTime = (Date.now() - modalOpenedAt) / 1000;
       }
 
-      // Re-seek on a backward scrub — the pointer only advances forward, so
+      // Re-seek on a backward scrub - the pointer only advances forward, so
       // without this a rewind would never re-show earlier subtitles.
       if (currentSegIdx > 0 && playerCurrentTime < subtitleSegments[currentSegIdx].start) {
         currentSegIdx = 0;
       }
 
-      // Advance pointer forward (segments are chronological) — O(1) for stable
+      // Advance pointer forward (segments are chronological) - O(1) for stable
       // playback, O(n) only on the tick right after a rewind.
       while (currentSegIdx < subtitleSegments.length - 1 &&
              playerCurrentTime > subtitleSegments[currentSegIdx].end) {
@@ -309,14 +309,14 @@ $: _currentLang = $options.titleLanguage;
       currentSubtitle = (seg && playerCurrentTime >= seg.start && playerCurrentTime <= seg.end)
         ? seg.text : '';
       // NOTE: the interval is intentionally NOT self-cleared past the last
-      // segment — a backward scrub must still re-display subtitles. It's cleared
+      // segment - a backward scrub must still re-display subtitles. It's cleared
       // in stopTranslation()/closeModal().
     }, 200);
   }
 
   /**
    * Escape closes the trailer. Bound to the window, because the handler used to
-   * live on the overlay div with `tabindex="-1"` — nothing ever focused it, so
+   * live on the overlay div with `tabindex="-1"` - nothing ever focused it, so
    * the keydown went to the still-focused trigger button and Escape closed
    * nothing at all.
    *
@@ -522,7 +522,7 @@ const dispatch = createEventDispatcher();
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  // Map AniList MediaSource enum → human readable label
+  // Map AniList MediaSource enum -> human readable label
   const SOURCE_LABELS: Record<string, string> = {
     ORIGINAL: 'Original Content',
     MANGA: 'Manga',
@@ -567,7 +567,7 @@ const dispatch = createEventDispatcher();
         const win = iframeElement!.contentWindow!;
         win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onApiChange'] }), '*');
         win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
-        // Kill captions immediately on ready — before onApiChange fires
+        // Kill captions immediately on ready - before onApiChange fires
         if (!hasEnglishSubs) {
           win.postMessage(JSON.stringify({ event: 'command', func: 'unloadModule', args: ['captions'] }), '*');
         }
@@ -588,7 +588,7 @@ const dispatch = createEventDispatcher();
         }
       }
       // onApiChange: fires early (before /check resolves), so hasEnglishSubs is
-      // false → unloadModule kills any Japanese auto-captions immediately.
+      // false -> unloadModule kills any Japanese auto-captions immediately.
       // When /check later confirms English subs, the check handler re-enables them.
       if (data.event === 'onApiChange') {
         const win = iframeElement!.contentWindow!;
@@ -613,7 +613,7 @@ const dispatch = createEventDispatcher();
    */
   function onIframeLoad() {
     if (iframeElement?.contentWindow) {
-      // Wall-clock fallback anchor — used only if YouTube's infoDelivery events
+      // Wall-clock fallback anchor - used only if YouTube's infoDelivery events
       // stop sending currentTime (e.g. embed restrictions). Primary sync comes
       // from the YouTube iframe API's currentTime via infoDelivery messages.
       modalOpenedAt = Date.now();
@@ -625,7 +625,7 @@ const dispatch = createEventDispatcher();
 
   // Blur-up cover loading: the tiny `medium` image sits blurred underneath
   // while the full `large` cover fades in once it finishes downloading. The
-  // placeholder is then removed outright — leaving hundreds of blurred images
+  // placeholder is then removed outright - leaving hundreds of blurred images
   // live costs a decoded bitmap and a compositing layer each, and merely
   // hiding them leaves invisible covers in the DOM for anything (tests
   // included) that looks for a visible cover image. `error` counts as done
@@ -649,7 +649,7 @@ const dispatch = createEventDispatcher();
 <svelte:window on:keydown={handleWindowKey} />
 
 <!-- grid of horizontal cards -->
-<!-- Responsive grid: 1 column, 2 columns at ≥1122px, 3 columns at ≥1732px -->
+<!-- Responsive grid: 1 column, 2 columns at >=1122px, 3 columns at >=1732px -->
 <div class="grid grid-cols-1 2cols:grid-cols-2 3cols:grid-cols-3 gap-6">
   {#each displayedAnime as show (show.id)}
     {#key show.id}
@@ -835,7 +835,7 @@ const dispatch = createEventDispatcher();
 {#if modal}
   <!-- svelte-ignore a11y-click-events-have-key-events
        The backdrop is a convenience, not the keyboard path: Escape is handled
-       on <svelte:window> above (it could not be handled here — this element is
+       on <svelte:window> above (it could not be handled here - this element is
        never focused, which is exactly the bug that shipped), and there is a
        real labelled ✕ button inside the modal. -->
   <div
@@ -867,7 +867,7 @@ const dispatch = createEventDispatcher();
         on:load={onIframeLoad}
       />
 
-      <!-- Translation controls — spinner + CC toggle side by side.
+      <!-- Translation controls - spinner + CC toggle side by side.
            `translationError` is in the condition because the error handler
            clears `translationLoading`, so without it the cluster unmounts at
            exactly the moment there is something to say. -->
@@ -892,7 +892,7 @@ const dispatch = createEventDispatcher();
               class="flex items-center gap-2 bg-black/60 text-white text-sm px-3 py-1.5 rounded"
               data-translation-error
             >
-              Subtitles unavailable — {translationError}
+              Subtitles unavailable - {translationError}
             </div>
           {/if}
           <button

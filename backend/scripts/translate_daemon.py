@@ -1,11 +1,11 @@
 """
-Persistent Whisper daemon — keeps the `small` model (int8) in RAM for fast
+Persistent Whisper daemon - keeps the `small` model (int8) in RAM for fast
 on-demand translation.  Used by the /api/translate/stream SSE endpoint.
 
 For higher-quality batch pre-translation, see batch_translate.py which uses
 the `medium` model instead.
 
-Protocol (stdin JSON lines → stdout JSON lines):
+Protocol (stdin JSON lines -> stdout JSON lines):
   Input:  {"cmd": "translate", "rid": "abc123", "videoId": "9OWMV9XrZ8k"}
   Input:  {"cmd": "check",     "rid": "def456", "videoId": "9OWMV9XrZ8k"}
   Input:  {"cmd": "cancel",    "rid": "abc123"}
@@ -19,12 +19,12 @@ Concurrency limited to MAX_WORKERS (2) via semaphore. Auto-exits
 gracefully after IDLE_TIMEOUT seconds of inactivity, waiting for
 in-flight requests to finish.
 
-Tuning — this path is CPU-only and shares the Unraid box with Plex (~5 GB RAM
+Tuning - this path is CPU-only and shares the Unraid box with Plex (~5 GB RAM
 free, Plex transcoding most of the time), so cheap-and-neighbourly beats fast:
 
 - `os.nice(10)` at startup (Linux) so Whisper yields CPU to Plex.
 - Env knobs (apply bench winners without code changes): WHISPER_LIVE_MODEL
-  (default `small`), WHISPER_LIVE_THREADS (CTranslate2 cpu_threads; default 2 —
+  (default `small`), WHISPER_LIVE_THREADS (CTranslate2 cpu_threads; default 2 -
   benchmarked sweet spot, 0 = CT2 default), WHISPER_LIVE_WORKERS (default 2),
   WHISPER_LIVE_IDLE (idle-exit seconds), WHISPER_LIVE_NICE.
 - Single ffmpeg pass: `download_audio(..., as_wav=False)` keeps the native
@@ -34,10 +34,10 @@ free, Plex transcoding most of the time), so cheap-and-neighbourly beats fast:
 - Playhead start: /api/translate/stream?start=<sec> begins transcription at
   the viewer's position (`generate_chunks(duration, start)`) instead of second
   0. The frontend sends `start` only when the playhead is >3 s in; start>0
-  runs are partial and NOT cached (the batch produces the complete version) —
+  runs are partial and NOT cached (the batch produces the complete version) -
   gated by the `cache` flag on `pendingSegments` in routes/translate.ts.
-- A per-request timing line goes to stderr (→ backend console):
-  `[daemon] <vid> model=… thr=… start=…s dur=…s dl=…s ttfs=…s total=…s segs=…`
+- A per-request timing line goes to stderr (-> backend console):
+  `[daemon] <vid> model=... thr=... start=...s dur=...s dl=...s ttfs=...s total=...s segs=...`
   so live latency is observable and comparable across pipeline changes.
 - faster-whisper 1.2.1 quirk: a vad_filter pass that finds no speech (common
   on a trailer's silent first 5 s) can poison LATER transcriptions on the same
@@ -70,7 +70,7 @@ MAX_WORKERS = int(os.environ.get("WHISPER_LIVE_WORKERS", "2") or "2")  # safety 
 # (tools/bench_live_cpu.py) can be applied without code changes. Defaults match
 # the historical behaviour (small model, CTranslate2's own thread default).
 MODEL_NAME = os.environ.get("WHISPER_LIVE_MODEL", "small")
-# Default 2 threads: benchmarked sweet spot on the Plex-contended box — TTFS ~2.5s,
+# Default 2 threads: benchmarked sweet spot on the Plex-contended box - TTFS ~2.5s,
 # ~half the CPU-seconds of 4 threads, and transcription still runs many× faster than
 # playback (xRT well under 1). The bench showed smaller models (tiny/base) are both
 # slower AND far worse quality, so `small` stays. 0 = let CTranslate2 decide.
@@ -111,7 +111,7 @@ def handle_translate(model, rid: str, video_id: str, cancelled: threading.Event,
         emit(rid, data)
 
     try:
-        # Native download (no whole-file WAV transcode) — chunks are sliced on the fly.
+        # Native download (no whole-file WAV transcode) - chunks are sliced on the fly.
         full_audio, duration = download_audio(video_id, tmpdir, as_wav=False)
         dl = time.time() - t0
 
@@ -150,7 +150,7 @@ def handle_check(rid: str, video_id: str):
 
 
 def main():
-    # Be a good neighbour to Plex (shares the server) — yield CPU under contention.
+    # Be a good neighbour to Plex (shares the server) - yield CPU under contention.
     # Best-effort; only meaningful on Linux (the Unraid host).
     try:
         if hasattr(os, "nice"):
@@ -171,8 +171,8 @@ def main():
         sys.stdout.flush()
 
     last_activity = time.time()
-    active_requests: dict[str, threading.Event] = {}  # rid → cancelled event
-    active_threads: dict[str, threading.Thread] = {}   # rid → thread (for cleanup)
+    active_requests: dict[str, threading.Event] = {}  # rid -> cancelled event
+    active_threads: dict[str, threading.Thread] = {}   # rid -> thread (for cleanup)
     shutdown_flag = threading.Event()
 
     # Idle timeout watcher + stale request pruning

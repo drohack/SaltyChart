@@ -1,6 +1,6 @@
 // Prisma schema for SaltyChart.
 // NOTE: production does NOT run `prisma migrate`. The raw SQL in
-// ensureDatabaseSchema() (backend/src/index.ts) is authoritative at runtime —
+// ensureDatabaseSchema() (backend/src/index.ts) is authoritative at runtime -
 // it creates/patches every table (incl. SeasonCache & SubtitleCache) on
 // startup. Keep this schema in sync with that SQL; run `npx prisma generate`
 // (not `migrate`) after edits so the client types match.
@@ -97,7 +97,7 @@ model SeasonCache {
 }
 
 /// Server-wide key/value config: the Jellyfin URL + API key set via the admin
-/// page, and the cached AniList→TVDB id map. Created & maintained by the raw
+/// page, and the cached AniList->TVDB id map. Created & maintained by the raw
 /// SQL in ensureDatabaseSchema() (index.ts); mirrored here (same reason as
 /// SeasonCache).
 model AppConfig {
@@ -105,7 +105,7 @@ model AppConfig {
   value String
 }
 
-/// Our own AniList → TVDB/TMDB overrides — an override *layer* over the
+/// Our own AniList -> TVDB/TMDB overrides - an override *layer* over the
 /// community map, not a copy of it. Rows exist only for corrections,
 /// confirmations of title-only matches, and entries the map never covered.
 /// Created & maintained by the raw SQL in ensureDatabaseSchema() (index.ts);
@@ -118,25 +118,25 @@ model SeriesIdentity {
   tmdbKind  String?
   source    String   @default("manual")
   confirmed Boolean  @default(false)
-  /// "this entry is definitively NOT in the library" — suppresses the title
+  /// "this entry is definitively NOT in the library" - suppresses the title
   /// fallback as well as the map. Distinct from `confirmed` with blank ids,
   /// which is what confirming a good title match looks like.
   rejected  Boolean  @default(false)
   /// The ids on this row are a *suggestion* from the remote resolver that could
-  /// not be verified against an air date. They ARE used — a resolver id is
-  /// positive-only, so it can add a Watch button and never remove one — but the
+  /// not be verified against an air date. They ARE used - a resolver id is
+  /// positive-only, so it can add a Watch button and never remove one - but the
   /// match is marked unverified in the UI and listed on /admin/matching.
   pending      Boolean @default(false)
   /// Which resolver decided this row (RESOLVER_VERSION in seriesIdentity.ts).
   /// Rows below the current version are re-resolved by regradeStoredRows, which
-  /// is how a ladder or ranking change reaches rows already stored — the main
+  /// is how a ladder or ranking change reaches rows already stored - the main
   /// sweep skips any entry that already carries an id. Null on rows written
   /// before the stamp existed.
   resolverVersion Int?
   /// The title the resolver matched against, so a reviewer can judge the
   /// suggestion without repeating the search.
   matchedTitle String?
-  /// JSON array of the lookup's top candidates (five — TMDB orders by
+  /// JSON array of the lookup's top candidates (five - TMDB orders by
   /// relevance and the tail is noise; see `searchOne`), best-first, so the
   /// review page can offer alternatives rather than a yes/no on the first hit.
   candidates   String?

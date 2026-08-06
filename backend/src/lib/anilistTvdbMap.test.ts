@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { __setMapsForTest, crosswalkIds } from './anilistTvdbMap';
 
 /**
- * The community map stores anilist→tvdb and anilist→tmdb; the cross-walk joins
- * tvdb↔tmdb THROUGH the anilist key. It exists because Jellyfin's remote
+ * The community map stores anilist->tvdb and anilist->tmdb; the cross-walk joins
+ * tvdb<->tmdb THROUGH the anilist key. It exists because Jellyfin's remote
  * search returns TMDB ids only on this deployment (measured: all 342 stored
  * resolver candidates), while corrections sometimes arrive as pasted TVDB ids.
  */
 
-test('crosswalkIds joins tvdb→tmdb through the anilist key', () => {
+test('crosswalkIds joins tvdb->tmdb through the anilist key', () => {
   __setMapsForTest({ '10': '81797' }, { '10': 'tv:37854' });
   const x = crosswalkIds({ tvdbId: '81797' });
   assert.equal(x?.tmdbId, '37854', 'a tvdb id must pick up its tmdb sibling from the map');
@@ -17,8 +17,8 @@ test('crosswalkIds joins tvdb→tmdb through the anilist key', () => {
   assert.equal(x?.tvdbId, '81797');
 });
 
-test('crosswalkIds joins tmdb→tvdb, respecting the kind namespace', () => {
-  // TMDB numbers films and shows independently — the same NUMBER exists in
+test('crosswalkIds joins tmdb->tvdb, respecting the kind namespace', () => {
+  // TMDB numbers films and shows independently - the same NUMBER exists in
   // both namespaces, so the join must never cross them.
   __setMapsForTest({ '20': '5555' }, { '20': 'tv:123', '21': 'movie:123' });
   const tv = crosswalkIds({ tmdbId: '123', tmdbKind: 'tv' });

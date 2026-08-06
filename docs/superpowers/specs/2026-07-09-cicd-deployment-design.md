@@ -1,4 +1,4 @@
-# SaltyChart automated deployment — design spec
+# SaltyChart automated deployment - design spec
 
 Date: 2026-07-09
 Status: approved (brainstormed + user-approved in session)
@@ -12,38 +12,38 @@ the Unraid GUI. Error-prone, slow, and every deploy moves the ~3 GB of baked
 Whisper models even when only app code changed.
 
 Goals:
-- Push to `master` → deployed, hands-off.
+- Push to `master` -> deployed, hands-off.
 - Never transfer the AI-model layers on a routine deploy.
 - Zero risk to existing data (SQLite DB bind-mounted at
   `/mnt/user/appdata/saltychart/prisma`; an earlier draft said the
-  `saltychart_db` named volume — rollout discovered that volume has been
+  `saltychart_db` named volume - rollout discovered that volume has been
   stale since April 2026, see *Data safety* below).
 
 ## Architecture
 
 ```text
-dev PC ──git push──▶ GitHub master
+dev PC ──git push──> GitHub master
                         │ (Actions: deploy.yml)
-                        ▼
+                        v
               gate: tsc --noEmit + vite build
                         │
-                        ▼
+                        v
               buildx build backend + frontend
               (backend FROM pinned base image)
                         │ push :latest + :YYYYMMDD-sha
-                        ▼
+                        v
                    ghcr.io/drohack/*
-                        ▲                     ┌────────────────────────┐
+                        ^                     ┌────────────────────────┐
                         │ pull (only changed  │ Unraid User Script cron │
                         │ app layers, ~100MB) │ */10: compose pull;     │
-                        └─────────────────────│ if new → backup DB →    │
-                                              │ compose up -d → prune   │
+                        └─────────────────────│ if new -> backup DB ->    │
+                                              │ compose up -d -> prune   │
                                               └────────────────────────┘
 ```
 
 ## Components
 
-### Base image (`backend/Dockerfile.base` → `saltychart-backend-base:vN`)
+### Base image (`backend/Dockerfile.base` -> `saltychart-backend-base:vN`)
 
 Holds everything heavy and slow-changing: `node:20-slim` + apt
 (curl/openssl/python3/ffmpeg) + pip (faster-whisper, yt-dlp,
@@ -53,20 +53,20 @@ models. ~3.3 GB.
 Built **only** by the manually-dispatched `build-base.yml` workflow with an
 explicit `version` input. The app Dockerfile pins `FROM
 ghcr.io/drohack/saltychart-backend-base:v1`, so the heavy layer digests
-cannot drift — a routine deploy is guaranteed to transfer only the app
-layers (~50–150 MB), independent of CI cache state. Updating yt-dlp or a
+cannot drift - a routine deploy is guaranteed to transfer only the app
+layers (~50-150 MB), independent of CI cache state. Updating yt-dlp or a
 model = edit `Dockerfile.base`, dispatch `build-base` with `v2`, bump the
 `FROM` line. That one deploy pulls big; then it's stable again.
 
 ### App images (built every push by `deploy.yml`)
 
-- `saltychart-backend:latest` + `:YYYYMMDD-<shortsha>` — builder stage
+- `saltychart-backend:latest` + `:YYYYMMDD-<shortsha>` - builder stage
   (npm ci, prisma generate, tsc, prune) unchanged; runtime = pinned base +
   COPY node_modules/dist/prisma/scripts.
-- `saltychart-frontend:latest` + `:YYYYMMDD-<shortsha>` — unchanged
-  Dockerfile (vite build → nginx:alpine, ~60 MB).
+- `saltychart-frontend:latest` + `:YYYYMMDD-<shortsha>` - unchanged
+  Dockerfile (vite build -> nginx:alpine, ~60 MB).
 
-`deploy.yml` runs as a single job: gate → build both (no push) → push all
+`deploy.yml` runs as a single job: gate -> build both (no push) -> push all
 tags only after both builds succeed, so the `:latest` pair updates
 atomically (no frontend-only deploys on a backend build failure).
 `paths-ignore` skips builds for `**.md`, `docs/**`, `tools/**`.
@@ -76,8 +76,8 @@ atomically (no frontend-only deploys on a backend build failure).
 Reference copy in repo: `tools/unraid/update_saltychart.sh`.
 
 1. `docker compose pull` in `/mnt/user/appdata/saltychart`.
-2. Compare `:latest` image IDs before/after. Unchanged → exit silently.
-3. Changed → run the existing `backup_saltychart_db` user script (fresh
+2. Compare `:latest` image IDs before/after. Unchanged -> exit silently.
+3. Changed -> run the existing `backup_saltychart_db` user script (fresh
    restore point before every swap), `docker compose up -d` (recreates only
    changed containers), `docker image prune -f`, append a timestamped line
    to `update.log`.
@@ -85,8 +85,8 @@ Reference copy in repo: `tools/unraid/update_saltychart.sh`.
 ### Compose changes
 
 Images become `ghcr.io/drohack/saltychart-{backend,frontend}:latest`.
-Everything else — the DB bind mount, `salty-net` network, port 8085,
-`JWT_SECRET` — is unchanged. The stale `./frontend:/app:ro` dev bind mount
+Everything else - the DB bind mount, `salty-net` network, port 8085,
+`JWT_SECRET` - is unchanged. The stale `./frontend:/app:ro` dev bind mount
 is removed.
 
 ## Data safety
@@ -96,7 +96,7 @@ is removed.
 - Every applied update triggers the backup script first.
 - **Rollout finding (2026-07-09):** the server's compose had switched from
   the `saltychart_db` named volume to the bind mount months earlier, but
-  the backup/restore User Scripts still targeted the volume — every backup
+  the backup/restore User Scripts still targeted the volume - every backup
   since ~April 2026 silently archived stale April data. Both scripts were
   rewritten to target the live DB via the SQLite online-backup API
   (consistent under concurrent writes); reference copies now live in
@@ -104,22 +104,22 @@ is removed.
 
 ## Error handling & failure modes
 
-- Gate or build fails in CI → nothing is pushed; production untouched.
-- Backend build fails after frontend succeeded → nothing pushed (atomic
+- Gate or build fails in CI -> nothing is pushed; production untouched.
+- Backend build fails after frontend succeeded -> nothing pushed (atomic
   push step).
-- GHCR/network down during cron pull → `compose pull` fails, script exits;
+- GHCR/network down during cron pull -> `compose pull` fails, script exits;
   running containers unaffected; next cron retries.
-- Bad deploy reaches prod → rollback: pin compose to the previous
+- Bad deploy reaches prod -> rollback: pin compose to the previous
   `:YYYYMMDD-sha` tag, `docker compose up -d`; restore DB from the
   pre-update backup if needed.
-- GitHub outage → offline fallback: the old tar/scp/`docker load` procedure
+- GitHub outage -> offline fallback: the old tar/scp/`docker load` procedure
   (kept in README as appendix) still works.
 
 ## Testing
 
 - CI gate: backend `tsc --noEmit` (after `prisma generate`), frontend
   `vite build`.
-- The full pre-deploy suite (`tools/tests/run_all.py` — Playwright + GPU
+- The full pre-deploy suite (`tools/tests/run_all.py` - Playwright + GPU
   burned-in test) cannot run on hosted runners; it remains the required
   **local** step before pushing to master.
 

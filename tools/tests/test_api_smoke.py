@@ -11,7 +11,7 @@ Usage:
 
 Exits 0 if all steps pass, 1 on any failure. Each progress line is
 self-contained per the global CLAUDE.md convention:
-  [k/13 API-smoke] step name — detail
+  [k/13 API-smoke] step name - detail
 """
 import argparse
 import sys
@@ -34,7 +34,7 @@ def step(n: int, msg: str) -> None:
 
 
 def fail(n: int, msg: str) -> None:
-    print(f"[{n}/{TOTAL_STEPS} API-smoke] FAIL — {msg}", flush=True)
+    print(f"[{n}/{TOTAL_STEPS} API-smoke] FAIL - {msg}", flush=True)
     sys.exit(1)
 
 
@@ -50,17 +50,17 @@ def main():
     username = f"smoke_test_{int(time.time())}"
     password = "smoke_pw_123"
 
-    print(f"API smoke test — backend={backend}", flush=True)
+    print(f"API smoke test - backend={backend}", flush=True)
     print(f"  test user: {username}\n", flush=True)
 
-    # ───────── 1/10  Health check ─────────
+    # --------- 1/10  Health check ---------
     step(1, "GET /api/health")
     r = requests.get(f"{backend}/api/health", timeout=5)
     if r.status_code != 200 or r.json().get("status") != "ok":
         fail(1, f"unexpected health response: {r.status_code} {r.text[:200]}")
-    step(1, "PASS — status=ok")
+    step(1, "PASS - status=ok")
 
-    # ───────── 2/10  Signup ─────────
+    # --------- 2/10  Signup ---------
     step(2, f"POST /api/auth/signup as {username}")
     r = requests.post(f"{backend}/api/auth/signup",
                       json={"username": username, "password": password}, timeout=5)
@@ -71,27 +71,27 @@ def main():
         fail(2, f"missing token or username: {data}")
     token = data["token"]
     auth_headers = {"Authorization": f"Bearer {token}"}
-    step(2, "PASS — got JWT token")
+    step(2, "PASS - got JWT token")
 
-    # ───────── 3/10  Login with bad password ─────────
-    step(3, "POST /api/auth/login with bad password — expect 401")
+    # --------- 3/10  Login with bad password ---------
+    step(3, "POST /api/auth/login with bad password - expect 401")
     r = requests.post(f"{backend}/api/auth/login",
                       json={"username": username, "password": "wrong"}, timeout=5)
     if r.status_code != 401:
         fail(3, f"expected 401, got {r.status_code}")
     if r.json().get("code") != "INVALID_CREDENTIALS":
         fail(3, f"expected code=INVALID_CREDENTIALS, got {r.json()}")
-    step(3, "PASS — 401 INVALID_CREDENTIALS")
+    step(3, "PASS - 401 INVALID_CREDENTIALS")
 
-    # ───────── 4/10  Login with correct password ─────────
+    # --------- 4/10  Login with correct password ---------
     step(4, "POST /api/auth/login with correct password")
     r = requests.post(f"{backend}/api/auth/login",
                       json={"username": username, "password": password}, timeout=5)
     if r.status_code != 200 or not r.json().get("token"):
         fail(4, f"login failed: {r.status_code} {r.text[:200]}")
-    step(4, "PASS — got JWT token")
+    step(4, "PASS - got JWT token")
 
-    # ───────── 5/10  List: PUT then GET ─────────
+    # --------- 5/10  List: PUT then GET ---------
     step(5, f"PUT /api/list with 3 items, then GET")
     items = [
         {"mediaId": TEST_MEDIA_ID,     "customName": "Eren the Lefty"},
@@ -113,10 +113,10 @@ def main():
         fail(5, f"expected 3 items, got {len(got)}")
     if got[0]["mediaId"] != TEST_MEDIA_ID or got[0]["customName"] != "Eren the Lefty":
         fail(5, f"order or customName wrong: {got[0]}")
-    step(5, f"PASS — list has 3 items, ordered, customName preserved")
+    step(5, f"PASS - list has 3 items, ordered, customName preserved")
 
-    # ───────── 6/10  Mark watched + verify rank ─────────
-    step(6, f"PATCH /api/list/watched mediaId={TEST_MEDIA_ID} → watched=true")
+    # --------- 6/10  Mark watched + verify rank ---------
+    step(6, f"PATCH /api/list/watched mediaId={TEST_MEDIA_ID} -> watched=true")
     r = requests.patch(f"{backend}/api/list/watched",
                        json={"season": TEST_SEASON, "year": TEST_YEAR,
                              "mediaId": TEST_MEDIA_ID, "watched": True},
@@ -131,10 +131,10 @@ def main():
         fail(6, f"watched flag not set: {row}")
     if row.get("watchedRank") != 0:
         fail(6, f"expected watchedRank=0 (first watched), got {row.get('watchedRank')}")
-    step(6, f"PASS — watched=true, watchedRank=0")
+    step(6, f"PASS - watched=true, watchedRank=0")
 
-    # ───────── 7/10  Toggle hidden flag ─────────
-    step(7, f"PATCH /api/list/hidden mediaId={TEST_MEDIA_ID + 1} → hidden=true")
+    # --------- 7/10  Toggle hidden flag ---------
+    step(7, f"PATCH /api/list/hidden mediaId={TEST_MEDIA_ID + 1} -> hidden=true")
     r = requests.patch(f"{backend}/api/list/hidden",
                        json={"season": TEST_SEASON, "year": TEST_YEAR,
                              "mediaId": TEST_MEDIA_ID + 1, "hidden": True},
@@ -147,9 +147,9 @@ def main():
     row = next((x for x in r.json() if x["mediaId"] == TEST_MEDIA_ID + 1), None)
     if not row or row.get("hidden") is not True:
         fail(7, f"hidden flag not set: {row}")
-    step(7, "PASS — hidden=true")
+    step(7, "PASS - hidden=true")
 
-    # ───────── 8/10  AniList anime endpoint ─────────
+    # --------- 8/10  AniList anime endpoint ---------
     step(8, f"GET /api/anime?season={TEST_SEASON}&year={TEST_YEAR}&format=TV")
     r = requests.get(f"{backend}/api/anime",
                      params={"season": TEST_SEASON, "year": TEST_YEAR, "format": "TV"},
@@ -164,9 +164,9 @@ def main():
         fail(8, f"missing title object: {first}")
     if not first["title"].get("romaji"):
         fail(8, f"missing title.romaji: {first['title']}")
-    step(8, f"PASS — {len(anime)} anime returned, shape OK")
+    step(8, f"PASS - {len(anime)} anime returned, shape OK")
 
-    # ───────── 9/10  Public-list endpoints ─────────
+    # --------- 9/10  Public-list endpoints ---------
     step(9, "Public-list endpoints (5 sub-requests)")
     # 9a: users-with-ratings
     r = requests.get(f"{backend}/api/list/users-with-ratings",
@@ -203,9 +203,9 @@ def main():
     post = r.json()
     if len(post) != 1 or post[0]["mediaId"] != TEST_MEDIA_ID:
         fail(9, f"public-list post should have 1 watched item: {post}")
-    step(9, "PASS — all 5 public endpoints return expected shapes")
+    step(9, "PASS - all 5 public endpoints return expected shapes")
 
-    # ───────── 10/10  Options round-trip ─────────
+    # --------- 10/10  Options round-trip ---------
     step(10, "GET /api/options then PUT with theme change")
     r = requests.get(f"{backend}/api/options", headers=auth_headers, timeout=5)
     if r.status_code != 200:
@@ -231,10 +231,10 @@ def main():
     r = requests.get(f"{backend}/api/options", headers=auth_headers, timeout=5)
     if r.json().get("theme") != "NIGHT" or r.json().get("hideFromCompare") is not True:
         fail(10, f"options change not persisted: {r.json()}")
-    step(10, "PASS — options round-trip works")
+    step(10, "PASS - options round-trip works")
 
-    # ───────── 11/12  PATCH /api/list/rank — reorder watched items ─────────
-    step(11, "PATCH /api/list/rank — mark 2nd item watched, then swap ranks")
+    # --------- 11/12  PATCH /api/list/rank - reorder watched items ---------
+    step(11, "PATCH /api/list/rank - mark 2nd item watched, then swap ranks")
     # Mark mediaId+2 as watched (rank=1, second after first watched)
     r = requests.patch(f"{backend}/api/list/watched",
                        json={"season": TEST_SEASON, "year": TEST_YEAR,
@@ -242,7 +242,7 @@ def main():
                        headers=auth_headers, timeout=5)
     if r.status_code != 200:
         fail(11, f"prep PATCH watched failed: {r.status_code} {r.text[:200]}")
-    # Now swap their watchedRanks via /rank — body is {season, year, ids: [mediaId, ...]}
+    # Now swap their watchedRanks via /rank - body is {season, year, ids: [mediaId, ...]}
     # where ids[0] gets rank 0, ids[1] gets rank 1, etc.
     r = requests.patch(f"{backend}/api/list/rank",
                        json={"season": TEST_SEASON, "year": TEST_YEAR,
@@ -257,10 +257,10 @@ def main():
     rows = {x["mediaId"]: x.get("watchedRank") for x in r.json() if x.get("watched")}
     if rows.get(TEST_MEDIA_ID + 2) != 0 or rows.get(TEST_MEDIA_ID) != 1:
         fail(11, f"ranks not swapped: {rows}")
-    step(11, f"PASS — ranks swapped (mediaId+2 → 0, mediaId → 1)")
+    step(11, f"PASS - ranks swapped (mediaId+2 -> 0, mediaId -> 1)")
 
-    # ───────── 12/12  Anime endpoint cache hit latency ─────────
-    step(12, "GET /api/anime twice — second call should be cached < 200ms")
+    # --------- 12/12  Anime endpoint cache hit latency ---------
+    step(12, "GET /api/anime twice - second call should be cached < 200ms")
     t0 = time.time()
     r = requests.get(f"{backend}/api/anime",
                      params={"season": TEST_SEASON, "year": TEST_YEAR, "format": "TV"},
@@ -276,10 +276,10 @@ def main():
     if r.status_code != 200:
         fail(12, f"second call failed: {r.status_code}")
     if second_ms > 200:
-        fail(12, f"second call too slow ({second_ms:.0f}ms) — cache not used")
-    step(12, f"PASS — cache hit: {first_ms:.0f}ms → {second_ms:.0f}ms")
+        fail(12, f"second call too slow ({second_ms:.0f}ms) - cache not used")
+    step(12, f"PASS - cache hit: {first_ms:.0f}ms -> {second_ms:.0f}ms")
 
-    # ───────── 13/13  /api/users endpoint (Compare username picker) ─────────
+    # --------- 13/13  /api/users endpoint (Compare username picker) ---------
     # API returns up to 20 usernames alphabetically, excluding users with
     # hideFromCompare=true. Step 10 set hideFromCompare=true for our test user,
     # so they're correctly filtered out. We need to reset that flag first.
@@ -305,7 +305,7 @@ def main():
     filtered = r.json()
     if username not in filtered:
         fail(13, f"prefix filter didn't include our user (got {len(filtered)} matches)")
-    step(13, f"PASS — {len(users)} usernames; prefix filter finds our user")
+    step(13, f"PASS - {len(users)} usernames; prefix filter finds our user")
 
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 
@@ -314,5 +314,5 @@ if __name__ == "__main__":
     try:
         main()
     except requests.RequestException as e:
-        print(f"\nFAIL — backend unreachable: {e}", flush=True)
+        print(f"\nFAIL - backend unreachable: {e}", flush=True)
         sys.exit(1)

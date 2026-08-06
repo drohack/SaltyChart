@@ -14,7 +14,7 @@
   // Index of the item currently being dragged; -1 when none.
   let dragIdx: number = -1;
 
-  // Placeholder insertion index while dragging (0 … list.length).  -1 = none.
+  // Placeholder insertion index while dragging (0 ... list.length).  -1 = none.
   let placeholder: number = -1;
 
   // Reference to the <ul> so we can scroll while dragging near edges.

@@ -20,7 +20,7 @@ import { __setMapsForTest } from './anilistTvdbMap';
  * again later":
  *
  *   - `resolveIdentity` returned any override first, so an empty row shadowed
- *     the community map permanently — Fribb adding the pair next week could
+ *     the community map permanently - Fribb adding the pair next week could
  *     never take effect.
  *   - the sweep skipped anything with an identity row, so a single failed search
  *     retired the entry forever and the retry schedule below it was unreachable.
@@ -39,7 +39,7 @@ test('a recorded miss does not shadow the community map', () => {
   });
   const id = resolveIdentity(111);
   assert.equal(id.tvdbId, '74796',
-    'the map must win over an id-less bookkeeping row — otherwise a pair added ' +
+    'the map must win over an id-less bookkeeping row - otherwise a pair added ' +
     'upstream can never take effect');
   assert.equal(id.source, 'map');
 });
@@ -64,7 +64,7 @@ test('the sweep re-examines an entry it previously failed on', () => {
            matchedTitle: null, candidates: null, note: 'remote: no match', year: null },
   });
   assert.equal(needsRemoteLookup(333), true,
-    'a failed search must not retire an entry — TMDB gains records as a show ' +
+    'a failed search must not retire an entry - TMDB gains records as a show ' +
     'approaches airing, which is exactly when re-checking matters');
 });
 
@@ -81,14 +81,14 @@ test('the sweep leaves settled entries alone', () => {
   assert.equal(needsRemoteLookup(444), false, 'already has an id');
   assert.equal(needsRemoteLookup(555), false, 'the map already knows it');
   assert.equal(needsRemoteLookup(666), false, 'a human said no');
-  assert.equal(needsRemoteLookup(777), true, 'nothing known — look it up');
+  assert.equal(needsRemoteLookup(777), true, 'nothing known - look it up');
 });
 
 /**
  * `mergeIdentityPatch` exists because Confirm used to destroy the very evidence
  * the review page renders: the PUT handler passed only what the button sent, so
  * `setIdentityOverride` defaulted `source` back to 'manual' and nulled `note`
- * and `candidates` — one click relabelled a resolver id as a human decision and
+ * and `candidates` - one click relabelled a resolver id as a human decision and
  * erased which rung of the ladder accepted it. Absent means "keep what's
  * stored"; an explicit value (including null) means "change it".
  */
@@ -146,7 +146,7 @@ test('needsRegrade: a ladder change reaches stored rows, but never human ones', 
   // The self-healing half of a matcher improvement. The sweep skips any entry
   // that already carries an id (needsRemoteLookup is false for it), so before
   // this a better ladder or ranking fixed only NEW lookups and left every old
-  // suggestion exactly as it was — Echo kept offering its 2023 namesake until
+  // suggestion exactly as it was - Echo kept offering its 2023 namesake until
   // its row was deleted by hand. A stamped version is what makes "re-ask about
   // everything decided by an older resolver" expressible, and self-terminating.
   const stale = { source: 'remote' as const, confirmed: false, rejected: false,
@@ -158,7 +158,7 @@ test('needsRegrade: a ladder change reaches stored rows, but never human ones', 
     'a row stamped before versioning existed is stale by definition');
   assert.equal(
     needsRegrade({ ...stale, resolverVersion: RESOLVER_VERSION }), false,
-    'a current row must NOT recycle — that is what makes the pass self-terminating');
+    'a current row must NOT recycle - that is what makes the pass self-terminating');
 
   // Human decisions are permanent; re-grading one would overwrite the answer a
   // person gave with a machine's guess.
@@ -177,8 +177,8 @@ test('needsRegrade: a ladder change reaches stored rows, but never human ones', 
 
 test('isDateVerified: only a DATE vouches for a resolver id', () => {
   // The strongest evidence this system has. Measured across the corpus,
-  // correct matches land 0–31 days from the AniList premiere and wrong ones
-  // 62–21,929 — nothing in between. So a resolver row accepted on a date is
+  // correct matches land 0-31 days from the AniList premiere and wrong ones
+  // 62-21,929 - nothing in between. So a resolver row accepted on a date is
   // as settled as a community-map id, and the viewer's correction picker is
   // hidden for it; 105 of 166 uncertain-looking 2026 rows are this case.
   assert.equal(isDateVerified('remote: air date 0d'), true);
@@ -186,8 +186,8 @@ test('isDateVerified: only a DATE vouches for a resolver id', () => {
   assert.equal(isDateVerified('remote: tvdb season premiere 1d'), true);
 
   // Text and year are NOT dates. An exact title dated 1,012 days off is the
-  // Echo class, and a ±1 production year is nearly free for an unrelated
-  // sibling — both must stay correctable by a viewer.
+  // Echo class, and a +/-1 production year is nearly free for an unrelated
+  // sibling - both must stay correctable by a viewer.
   assert.equal(isDateVerified('remote: exact title'), false);
   assert.equal(isDateVerified('remote: release year 0'), false);
   assert.equal(isDateVerified('remote: unverified'), false);

@@ -4,7 +4,7 @@
     // Classic Node resolution, NOT NodeNext. `@jellyfin/sdk` declares
     // `"type": "module"` but its shipped .d.ts files use extensionless relative
     // imports (`from '../models'`), which ESM resolution cannot follow. Under
-    // NodeNext every nested SDK type silently degrades to `any` — and
+    // NodeNext every nested SDK type silently degrades to `any` - and
     // `skipLibCheck` hides the diagnostics, so it looks like it worked.
     // Measured: with NodeNext, `SubtitleProfiles: [{ Method: 'nonsense' }]`
     // compiles clean; with Node10 it errors, which is the entire point of

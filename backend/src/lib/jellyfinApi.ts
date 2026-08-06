@@ -6,7 +6,7 @@
  * object literals, and the two bugs that cost the most time were both
  * guessed-field bugs: a DeviceProfile missing `videoBitRate` silently produced
  * a 416x234 stream, and `SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]`
- * — the field the whole burned-in-subtitle architecture turns on — was found by
+ * - the field the whole burned-in-subtitle architecture turns on - was found by
  * poking at the API rather than read off a contract. The official SDK generates
  * both from Jellyfin's own OpenAPI spec, so those are now enums a typo cannot
  * survive.
@@ -38,9 +38,9 @@ export interface JellyfinConfig {
  * Must stay exactly this string.
  *
  * `POST /playback/stop` tears a transcode down with
- * `DELETE /Videos/ActiveEncodings?deviceId=…`, and Jellyfin only matches that
+ * `DELETE /Videos/ActiveEncodings?deviceId=...`, and Jellyfin only matches that
  * against the device id the *stream* was started under. If the two ever drift,
- * nothing errors — the encode simply survives, and its ffmpeg keeps writing the
+ * nothing errors - the encode simply survives, and its ffmpeg keeps writing the
  * whole episode to the transcode cache.
  */
 export const DEVICE_ID = 'saltychart';
@@ -53,7 +53,7 @@ export const DEVICE_INFO = { name: 'Web', id: DEVICE_ID };
  * parameter does.
  *
  * Built with the SDK's own formatter so the header the raw proxy sends and the
- * header the SDK sends are literally the same string — they authenticate the
+ * header the SDK sends are literally the same string - they authenticate the
  * same requests, so they must not be able to drift.
  */
 export function jellyfinAuthHeader(apiKey: string): string {
@@ -67,16 +67,16 @@ export function jellyfinAuthHeader(apiKey: string): string {
 }
 
 /**
- * A loggable summary of a failed Jellyfin call — **never the error object**.
+ * A loggable summary of a failed Jellyfin call - **never the error object**.
  *
  * An axios error carries its whole request `config`, and that config carries the
- * `Authorization` header. So `console.warn('…', err)` prints the server's
+ * `Authorization` header. So `console.warn('...', err)` prints the server's
  * Jellyfin API key into the backend log, where it goes to the Docker logs and
  * into anything anyone pastes from them. Observed for real: a library-refresh
- * timeout logged `Token="…"` in full.
+ * timeout logged `Token="..."` in full.
  *
  * The codebase already treats this key as something that must never leave the
- * server — the stream proxy refuses any manifest containing a credential, and
+ * server - the stream proxy refuses any manifest containing a credential, and
  * `test_jellyfin` asserts it. That guard was written against browsers; logs are
  * the same secret by a different route.
  *
@@ -116,7 +116,7 @@ let _api: { key: string; api: Api } | null = null;
  *
  * **This import crosses a module-system boundary.** `@jellyfin/sdk` is ESM
  * (`"type": "module"`) while this backend emits CommonJS, so importing it
- * becomes `require()` of an ESM package — supported only on Node >= 20.19.
+ * becomes `require()` of an ESM package - supported only on Node >= 20.19.
  * Verified by actually loading it on 20.19.2 and 22.16; production runs 20.20.2.
  * That is what the `engines` floor in package.json is for: if the base image is
  * ever rebuilt on something older, a declared floor turns a mystery crash into
@@ -142,14 +142,14 @@ export async function jellyfinApi(cfg: JellyfinConfig): Promise<Api> {
  *
  * Sending a profile is not optional politeness: Jellyfin has no "assume
  * everything is supported" fallback, so a client that declares nothing gets the
- * most conservative option it can construct — which is how a stream request
+ * most conservative option it can construct - which is how a stream request
  * without `videoBitRate` came back as **416×234**. Hand-tuning query parameters
  * was reverse-engineering this structure badly.
  *
  * `SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]` is the entire
  * burn-in switch. Jellyfin renders the ASS with libass and the episode's own
- * extracted fonts (`-vf subtitles=…:fontsdir=…`), composites it on the GPU via
- * `overlay_qsv`, and encodes with `h264_qsv` — so the picture the viewer gets is
+ * extracted fonts (`-vf subtitles=...:fontsdir=...`), composites it on the GPU via
+ * `overlay_qsv`, and encodes with `h264_qsv` - so the picture the viewer gets is
  * what libass would have drawn in the browser, minus every way the browser can
  * fail to draw it.
  *

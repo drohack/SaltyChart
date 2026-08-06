@@ -6,7 +6,7 @@
  * synopsis, and by then the episode's ItemId is already known, so the
  * PlaybackInfo round trip happens there and is cached here; pressing Watch then
  * costs only the stream start. Subtitles are burned into the video server-side,
- * so there is nothing else to fetch — no wasm, no fonts, no subtitle body.
+ * so there is nothing else to fetch - no wasm, no fonts, no subtitle body.
  *
  * Deliberately **client-side only**. Nothing here touches the HLS manifest:
  * Jellyfin's transcode throttling is deprecated and disabled by default, and
@@ -83,7 +83,7 @@ export function isAss(subStreams: SubStream[], index: number): boolean {
  *
  * The player component imports this rather than calling `import('video.js')`
  * itself, so that warming it from the Randomize page and mounting the player
- * share one promise. Importing the component's own chunk is not enough — the
+ * share one promise. Importing the component's own chunk is not enough - the
  * bulk is this dependency, and a dynamic import inside `onMount` doesn't come
  * along with it.
  */
@@ -106,7 +106,7 @@ export function loadVideoJs(): Promise<any> {
  * It is fetched from gstatic.com, so it is the one asset here whose latency is
  * someone else's internet rather than the LAN. The player used to `await` it
  * before constructing itself, which put a third party on the path between
- * pressing Watch and the first byte of video — for a button that cannot appear
+ * pressing Watch and the first byte of video - for a button that cannot appear
  * at all unless the app is served over HTTPS. Warmed here instead, and consumed
  * only if it happens to be ready.
  */
@@ -128,7 +128,7 @@ export function loadCastSdk(): Promise<void> {
   return castPromise;
 }
 
-/** True only if the SDK is already usable — never a reason to wait. */
+/** True only if the SDK is already usable - never a reason to wait. */
 export function castReady(): boolean {
   return !!(window as any).chrome?.cast;
 }
@@ -136,7 +136,7 @@ export function castReady(): boolean {
 
 /**
  * Bounded so a long session of wheel spins can't grow these without limit.
- * Small enough that eviction is a non-event — a re-fetch is one cheap request.
+ * Small enough that eviction is a non-event - a re-fetch is one cheap request.
  */
 const MAX_CACHED = 24;
 
@@ -152,7 +152,7 @@ function remember<T>(cache: Map<string, T>, key: string, make: () => T): T {
 const playbackCache = new Map<string, Promise<PlaybackInfo | null>>();
 
 /**
- * The session id and subtitle tracks — one call, cached.
+ * The session id and subtitle tracks - one call, cached.
  *
  * `fresh` is not optional politeness: a cached response carries the
  * `playSessionId` of a session that may since have been stopped or wedged, so
@@ -169,7 +169,7 @@ export function playbackInfo(
   const quality = opts.quality ?? 'auto';
   // Three states, not two. Omitting the key means "you choose" (the opening
   // probe, before the tracks are even known); `null` means the viewer turned
-  // subtitles off, and that has to be sent as Jellyfin's -1 — leaving it out
+  // subtitles off, and that has to be sent as Jellyfin's -1 - leaving it out
   // lets Jellyfin pick a default track, which with burn-in puts subtitles on
   // screen for someone who just asked for none.
   const stated = 'subtitleIndex' in opts;

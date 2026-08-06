@@ -1,7 +1,7 @@
 """
 Is the pre-deploy suite load-bearing, or does it just pass?
 
-`Pre-deploy: 15/15 passed — ready to build` is the sentence the whole deploy
+`Pre-deploy: 15/15 passed - ready to build` is the sentence the whole deploy
 rests on, and a passing suite says nothing about what it would *catch*. This
 breaks one invariant at a time and checks that the test guarding it actually
 fails. A mutation that survives is a coverage hole, reported as one.
@@ -14,7 +14,7 @@ so every match silently fell back to fuzzy titles (10/10 again). Both are
 failure classes that have already happened in this repo.
 
 Deliberately NOT part of run_all.py: it edits tracked source and is slow. It is
-a periodic audit, not a deploy gate. Add a row here whenever you add a test —
+a periodic audit, not a deploy gate. Add a row here whenever you add a test -
 a test nobody has watched fail is a test nobody should trust.
 
 Two things about the table are load-bearing, not cosmetic. Rows are **sorted by
@@ -50,6 +50,16 @@ def say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
+# Every other test here does this; this file never did, and it shows up in the
+# one place nobody reads carefully - the status bar. Redirected stdout on
+# Windows defaults to the locale codec (cp1252), so the em dashes and ellipses
+# in these very messages were written as bytes no UTF-8 reader can decode, and
+# every progress line arrived with a `?` in it. errors="replace" so a stray
+# character from a child's output can never take the run down.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 @dataclass
 class Mutation:
     """One invariant, the edit that breaks it, and the test that must notice."""
@@ -61,11 +71,11 @@ class Mutation:
     expect: str               # substring the FAILING output must contain
     guards: str               # what breaks in production if this goes unnoticed
     # Some invariants are enforced in more than one place, and breaking a single
-    # site leaves the others still holding the line — the mutation then reads as
+    # site leaves the others still holding the line - the mutation then reads as
     # 'survived' when it was simply too narrow to change any behaviour.
     also: list[tuple[str, str]] = field(default_factory=list)
     # Same idea as `also`, but for sites in *other* files: (path, find, replace).
-    # Needed because a guard can legitimately live at more than one layer — the
+    # Needed because a guard can legitimately live at more than one layer - the
     # "never act on an `unknown` availability verdict" rule is enforced both
     # where server data enters the store and again in the page that consumes it.
     # Breaking either alone changes no behaviour, because the other still holds,
@@ -75,7 +85,7 @@ class Mutation:
     extra: list[tuple[str, str, str]] = field(default_factory=list)
     # Which test_ui_interactions flows this row needs, by their registry label.
     #
-    # A T_UI row without this re-runs all 25 browser flows twice — about half
+    # A T_UI row without this re-runs all 25 browser flows twice - about half
     # this audit's wall clock for rows that touch one screen. Naming the flow
     # cuts a ~110 s child to ~15 s.
     #
@@ -137,7 +147,7 @@ MUTATIONS: list[Mutation] = [
         name="AniList->TVDB/TMDB id match tier disabled",
         path=BACKEND_JF,
         # Both ids, not just tvdbId. Nulling TVDB alone leaves the tier alive
-        # through TMDB — measured: step 6 still found id matches, and the
+        # through TMDB - measured: step 6 still found id matches, and the
         # mutation was caught by an unrelated assertion instead. A row that
         # fails for the wrong reason audits nothing.
         find="""    const identity = resolveIdentity(mediaId);""",
@@ -161,14 +171,14 @@ MUTATIONS: list[Mutation] = [
         replace="    /* mutation: fall back to titles */",
         test=T_REPLAY,
         expect="franchise-sibling false positive is back",
-        guards="a new work resolves to its franchise parent — Pokemon Concierge "
+        guards="a new work resolves to its franchise parent - Pokemon Concierge "
                "played episode 109 of season 20 of Pokemon",
     ),
     Mutation(
         name="a guessed id gains negative-evidence power",
         path=BACKEND_MATCH,
         # Resolver ids must be positive-only. Granting them both directions lets
-        # an unverified TMDB guess delete a working title match — the same
+        # an unverified TMDB guess delete a working title match - the same
         # false-positive class as the franchise siblings, from the other side.
         find="    if (entry.idIsAuthoritative !== false) return null;",
         replace="    return null; /* mutation */",
@@ -208,14 +218,14 @@ MUTATIONS: list[Mutation] = [
                "      rememberAvailability(mediaId, data, 60 * 60 * 1000);\n      return data;\n      }\n    }\n\n    const entry = {")],
         test=T_JELLYFIN,
         expect="fell through to a SERIES title match",
-        guards="a film resolves to the television series of the same name — "
+        guards="a film resolves to the television series of the same name - "
                "The Last Blossom played House",
     ),
     Mutation(
         name="an explicit rejection no longer suppresses the title match",
         path=BACKEND_JF,
         # This shipped broken and no test caught it: a rejection carries no ids,
-        # so without the short-circuit it falls through to the title tier — the
+        # so without the short-circuit it falls through to the title tier - the
         # very match being rejected. It looked fixed on screen (the row leaves
         # the review list) while the Watch button stayed.
         find="    if (identity.rejected) {",
@@ -231,7 +241,7 @@ MUTATIONS: list[Mutation] = [
         # Both halves of "check again later" were broken by the same bookkeeping
         # row. This half meant a pair added upstream could never take effect:
         # once we had looked and failed, our empty row answered first, forever.
-        # Nothing observable goes wrong — the system just silently stops
+        # Nothing observable goes wrong - the system just silently stops
         # improving, which is why it needs a test rather than a reader.
         find="  if (override && !isBookkeeping) return override;",
         replace="  if (override) return override; /* mutation */",
@@ -264,7 +274,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="share one in-flight fetch",
         guards="a cold wheel with two films fires duplicate full-library scans "
-               "at Jellyfin — the stampede class this codebase keeps relearning",
+               "at Jellyfin - the stampede class this codebase keeps relearning",
     ),
     Mutation(
         name="a same-day double premiere opens on whichever episode came last",
@@ -274,7 +284,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="ties must go to the earlier episode even when",
         guards="Watch opens episode 2 of a double premiere whenever Jellyfin "
-               "happens to list it first — order the API never promised",
+               "happens to list it first - order the API never promised",
     ),
     Mutation(
         name="specials win air-date ties against real episodes again",
@@ -301,6 +311,7 @@ MUTATIONS: list[Mutation] = [
       chunks.push(ids.slice(i, i + CHECK_BATCH_MAX));
     }""",
         replace="    const chunks: string[][] = [ids]; /* mutation: unchunked */",
+        flows=("check-batch chunked",),
         test=T_UI,
         expect="the server slices at 100",
         guards="a third of a full season silently loses its known English CC "
@@ -325,6 +336,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/Home.svelte",
         find="  let sidebarCollapsed = typeof window !== 'undefined' && window.innerWidth < 640;",
         replace="  let sidebarCollapsed = false; /* mutation */",
+        flows=("phone sidebar collapsed",),
         test=T_UI,
         expect="covers the viewport centre on a 375px phone load",
         guards="every phone load starts behind a full-screen My List panel "
@@ -339,6 +351,7 @@ MUTATIONS: list[Mutation] = [
         # so one desktop visit poisoned every later phone load.
         find="      if (sidebarChoiceMade) {",
         replace="      if (true) { /* mutation: default recorded as a choice */",
+        flows=("phone sidebar collapsed",),
         test=T_UI,
         expect="covers the viewport centre on a 375px phone load",
         guards="anyone who ever opened Home on a desktop gets the full-screen "
@@ -349,6 +362,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/stores/options.ts",
         find="      localStorage.setItem('options', JSON.stringify(value));",
         replace="      /* mutation: guests lose options on reload */",
+        flows=("guest options + compare warning",),
         test=T_UI,
         expect="did not reach localStorage",
         guards="a guest's theme and language choices silently revert on every "
@@ -361,6 +375,7 @@ MUTATIONS: list[Mutation] = [
     suggestions.length === 0;""",
         replace="""    suggestionsFor === typedOther &&
     false; /* mutation: never fires */""",
+        flows=("guest options + compare warning",),
         test=T_UI,
         expect="data-unknown-user",
         guards="a typo leaves the previous user's ranks on screen under the "
@@ -372,10 +387,11 @@ MUTATIONS: list[Mutation] = [
         # notAired is `available:false` with `unknown` falsy, so a writer that
         # guards only `unknown` records every unaired show as confirmed-missing
         # and the button enables on seasons where nothing was checked at all.
-        # The hide action itself filters notAired, so this lies without acting —
+        # The hide action itself filters notAired, so this lies without acting -
         # which is why only the button-state assertion can see it.
         find="          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
         replace="          if (!info.unknown) recordAvailability(mediaId, info.available); /* mutation */",
+        flows=("unaired not looked up",),
         test=T_UI,
         expect="'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED",
         guards="the app's default look-ahead season shows an enabled control "
@@ -386,7 +402,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/AdminMatching.svelte",
         # `chosen` (a picked lookup result) is the Confirm discriminator; its
         # predecessor inferred "hand-typed" from prefilled boxes and relabelled
-        # every id-bearing confirm as source:'manual', note:null — wiping the
+        # every id-bearing confirm as source:'manual', note:null - wiping the
         # provenance the server-side merge exists to preserve. This recreates
         # that: an untouched confirm is dressed up as a manual correction.
         find="                  const changed = !sameIdentity(sel, baseline[r.mediaId] ?? null);",
@@ -422,7 +438,7 @@ MUTATIONS: list[Mutation] = [
         # `if (false && library)` was the first version, and it never exercised
         # the guard: TS narrows `library` to null inside the dead block, the
         # file fails to COMPILE (TS18047 x3), and node --test reports the whole
-        # test file as ERR_TEST_FAILURE without running one assertion — red for
+        # test file as ERR_TEST_FAILURE without running one assertion - red for
         # the wrong reason. A mutant must type-check, or it audits the compiler.
         find="""  if (library) {
     tvdbId = tvdbId ?? library.tvdbId ?? null;""",
@@ -445,13 +461,13 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="a tvdb id must pick up its tmdb sibling from the map",
         guards="pasted ids and picked results carry only the id space they "
-               "arrived in — corrections quietly lose their redundancy",
+               "arrived in - corrections quietly lose their redundancy",
     ),
     Mutation(
         name="a title-text remote accept is invisible to review again",
         path="frontend/src/pages/AdminMatching.svelte",
         # The resolver accepts an exact title without any air date vouching for
-        # it, stored pending=false — this clause is the only one that lists such
+        # it, stored pending=false - this clause is the only one that lists such
         # a row. Neutering it recreates the hole: a wrong exact-title collision
         # (two works genuinely sharing a name) becomes permanent, and the empty
         # state says nothing needs review.
@@ -483,7 +499,7 @@ MUTATIONS: list[Mutation] = [
         name="a two-year-old miss is retried forever",
         path=BACKEND_REMOTE,
         # The retirement rung: an entry that aired >2 years ago and is still
-        # unknown upstream has been unknown its whole life — without this line
+        # unknown upstream has been unknown its whole life - without this line
         # every permanent residue entry burns a lookup a month, forever.
         find="  if (startYear < thisYear - 2) return Infinity;",
         replace="  /* mutation: never retire */",
@@ -497,8 +513,8 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_IDENTITY,
         # The version stamp is what makes a matcher fix reach rows already
         # decided AND stop once it has. Dropping the comparison re-resolves
-        # every row on every sweep — unbounded provider traffic that never
-        # converges — and is indistinguishable from working, since the rows do
+        # every row on every sweep - unbounded provider traffic that never
+        # converges - and is indistinguishable from working, since the rows do
         # get re-graded.
         find="  return (row.resolverVersion ?? 0) < currentVersion;",
         replace="  return true; /* mutation: always stale */",
@@ -551,7 +567,7 @@ MUTATIONS: list[Mutation] = [
         name="provider popularity decides which candidate is offered",
         path=BACKEND_REMOTE,
         # The last rung of pickCandidate. Without date ordering here, TMDB's
-        # popularity ranking picks the suggestion a human reviews — which is
+        # popularity ranking picks the suggestion a human reviews - which is
         # how Echo was offered its 2023 namesake 1,012 days from the premiere
         # while the 2026 film 46 days away sat third in the list.
         find="    const dated = exacts.filter((c) => delta(c) != null).sort(byDelta);\n    return dated[0] ?? exacts[0];",
@@ -566,7 +582,7 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_REMOTE,
         # planSweep's one override: a human pressing Run sweep now is not the
         # daily budget. Without it the button is a no-op on exactly the state
-        # it exists for — a backlog whose rows were all asked about recently.
+        # it exists for - a backlog whose rows were all asked about recently.
         find="    cooldown++;\n    return !!opts?.ignoreCooldown;",
         replace="    cooldown++;\n    return false; /* mutation: drain obeys cooldown */",
         test=T_UNIT,
@@ -593,7 +609,7 @@ MUTATIONS: list[Mutation] = [
         name="Enter in the library search marks the show watched",
         path="frontend/src/pages/Randomize.svelte",
         # handleModalKey is a WINDOW listener, so the pop-up's Enter = "mark
-        # watched" fires wherever the keystroke came from — including a text
+        # watched" fires wherever the keystroke came from - including a text
         # box the viewer is typing a search into. The player already guards
         # against this; pick mode reached the same trap from another direction,
         # and it was found by using the feature, not by any test.
@@ -610,8 +626,8 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_IDENTITY,
         # The rung list decides which resolver ids are settled enough to hide
         # the viewer's correction picker. Widening it to any accepted rung
-        # would hide the control on exact-title and release-year accepts —
-        # the Echo class, and the coincidental-sibling class — which are
+        # would hide the control on exact-title and release-year accepts -
+        # the Echo class, and the coincidental-sibling class - which are
         # precisely the rows a human should be able to correct.
         find="const DATE_RUNGS = ['remote: air date', 'remote: premiere date', 'remote: tvdb season premiere'];",
         replace="const DATE_RUNGS = ['remote: '];",
@@ -624,7 +640,7 @@ MUTATIONS: list[Mutation] = [
         name="a viewer can clear an admin's decision",
         path=BACKEND_JF,
         # The undo half of the same rule. Split from the pick row because
-        # the two guards are separate code that can regress separately —
+        # the two guards are separate code that can regress separately -
         # and because one shared anchor silently audited only this one.
         find="""  if (existing?.confirmed || existing?.rejected) {
     return res.status(409).json({
@@ -643,11 +659,11 @@ MUTATIONS: list[Mutation] = [
         name="a viewer pick can overwrite an admin's decision",
         path=BACKEND_JF,
         # The only identity endpoint any logged-in user can reach. Nothing else
-        # guards confirmed/rejected rows — setIdentityOverride upserts
+        # guards confirmed/rejected rows - setIdentityOverride upserts
         # unconditionally, and before this endpoint existed only admin-gating
         # stood between a viewer and a deliberate Reject.
         # ANCHORED PAST THE GUARD on purpose: /identity/unpick carries a
-        # byte-identical block, and the bare line matched THAT one — so this
+        # byte-identical block, and the bare line matched THAT one - so this
         # row spent a run proving the unpick guard while its name claimed
         # pick, leaving pick unaudited. The audit found it; nothing else
         # could have.
@@ -687,10 +703,10 @@ MUTATIONS: list[Mutation] = [
         #
         # This guards the branch the harness can reach: an unheld pending row.
         # The sibling wording on HELD rows (the Bananya case) renders only for
-        # a row whose id the library carries, which this test cannot seed —
+        # a row whose id the library carries, which this test cannot seed -
         # stated so the gap isn't mistaken for coverage.
-        find="      return { verdict: 'Needs review', detail: `auto-search found a likely match — ${unverifiedBecause(r)}`, cls: 'badge-warning', options };",
-        replace="      return { verdict: 'Needs review', detail: 'auto-search found a likely match — unverified', cls: 'badge-warning', options };",
+        find="      return { verdict: 'Needs review', detail: `auto-search found a likely match - ${unverifiedBecause(r)}`, cls: 'badge-warning', options };",
+        replace="      return { verdict: 'Needs review', detail: 'auto-search found a likely match - unverified', cls: 'badge-warning', options };",
         flows=("remote accept visible",),
         test=T_UI,
         expect="gives no reason at all",
@@ -701,7 +717,7 @@ MUTATIONS: list[Mutation] = [
         name="the stats block silently disappears",
         path=ADMIN_MATCHING,
         # The tiles are the page's answer to "how much of this season is
-        # actually handled" — a markup regression that drops them leaves the
+        # actually handled" - a markup regression that drops them leaves the
         # page functional-looking and the question unanswerable.
         find='<div class="overflow-x-auto -my-1" data-matching-stats>',
         replace='<div class="hidden" data-matching-stats-mutated>',
@@ -715,7 +731,7 @@ MUTATIONS: list[Mutation] = [
         name="the sweep trigger endpoint loses its admin gate",
         path=BACKEND_JF,
         # The manual sweep starts real provider traffic (skyhook + TMDB via
-        # Jellyfin) — ungated, any logged-in user can drain someone else's
+        # Jellyfin) - ungated, any logged-in user can drain someone else's
         # budget. NOTE: the mutant run really does 202 a sweep on the dev
         # backend; the revert's restart kills it within seconds, and the dev
         # DB's eligible queue is near-empty, so the leaked traffic is a few
@@ -738,27 +754,27 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="did not enter its running state",
         guards="the admin's only manual sweep control can break without any "
-               "test noticing — a dead button still looks clickable",
+               "test noticing - a dead button still looks clickable",
     ),
     Mutation(
         name="the release-year rung accepts TV candidates again",
         path=BACKEND_REMOTE,
         # The year rung exists because a film has no episodes to date. For a
-        # series the year is nearly free — TMDB's Year-filtered search returns
-        # same-year works — so ungating it writes a coincidental TV sibling
+        # series the year is nearly free - TMDB's Year-filtered search returns
+        # same-year works - so ungating it writes a coincidental TV sibling
         # into the identity table as accepted fact, no human in the loop.
         find="  if (input.kind === 'movie' && input.yearDelta != null && input.yearDelta <= 1) {",
         replace="  if (input.yearDelta != null && input.yearDelta <= 1) { /* mutation */",
         test=T_UNIT,
         expect="year rung is for films only",
         guards="a same-year TV franchise sibling we don't hold becomes a stored "
-               "id that is never re-examined — the air-date gate's failure "
+               "id that is never re-examined - the air-date gate's failure "
                "class, minus the air date",
     ),
     Mutation(
         name="an exact title blind-accepts against a refuting premiere date",
         path=BACKEND_REMOTE,
-        # The Echo bug restored: rung A2 used to be the whole of rung A — an
+        # The Echo bug restored: rung A2 used to be the whole of rung A - an
         # exact title accepted unconditionally, so TMDB's "Echo" (2023) was
         # written as fact for an anime premiering 2026-07-19, with the day that
         # refuted it (1,012d) sitting unread in the same search response.
@@ -767,7 +783,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="must not blind-accept",
         guards="a same-titled work years from the entry's premiere is stored as "
-               "an accepted match — the Echo class",
+               "an accepted match - the Echo class",
     ),
     Mutation(
         name="a dated localized-title match stays queued forever",
@@ -776,7 +792,7 @@ MUTATIONS: list[Mutation] = [
         # holds the work under its localized English title, 0 days from the
         # AniList premiere. Neutering it re-strands all 14 measured cases.
         # `p <= -1` and not `if (false)`: p is an absolute delta so it can never
-        # fire, but the branch stays reachable — TS drops null-narrowing inside
+        # fire, but the branch stays reachable - TS drops null-narrowing inside
         # unreachable code and `if (false)` turns the mutation into a compile
         # error, which the audit would report as CRASHED rather than a catch.
         find="    if (p <= AIR_DATE_TOLERANCE_MS) return { verdict: 'accept', rung: `premiere date ${days(p)}d` };",
@@ -791,7 +807,7 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_REMOTE,
         # The other half of the Echo bug: with two same-titled candidates the
         # winner was whichever TMDB ranked first (popularity), not the one the
-        # premiere date vouches for — DIVE IN! shipped its 167d sibling while
+        # premiere date vouches for - DIVE IN! shipped its 167d sibling while
         # the 16d one sat second in the list.
         find="  const datedExact = all.filter((c) => c.exact && within(c)).sort(byDelta);",
         replace="  const datedExact = all.filter((c) => c.exact); /* mutation */",
@@ -804,7 +820,7 @@ MUTATIONS: list[Mutation] = [
         name="baseTitles strips the subtitle before the season marker again",
         path=BACKEND_REMOTE,
         # The old ordering collapsed "Mission: Yozakura Family Season 2 Part 2"
-        # straight to "Mission" — which TMDB answered with Mission: Impossible —
+        # straight to "Mission" - which TMDB answered with Mission: Impossible -
         # while the form that resolves on TVDB was never generated at all.
         find="""  let m = t;
   while (SEASON_MARKER.test(m)) m = m.replace(SEASON_MARKER, '');""",
@@ -832,7 +848,7 @@ MUTATIONS: list[Mutation] = [
         name="a collapsed base title relates to everything again",
         path="backend/src/lib/skyhookIdentity.ts",
         # Short search terms still reach here ("Q" and "mono" are full titles,
-        # "Mission" a legitimate variant) — without the length floor a short
+        # "Mission" a legitimate variant) - without the length floor a short
         # prefix relates to every similarly-titled work; the measurement that
         # shaped this watched a collapsed "Re" relate to "Re:Born".
         find="    if (shorter.length < MIN_RELATION_CHARS) continue;",
@@ -846,7 +862,7 @@ MUTATIONS: list[Mutation] = [
         name="any weekly episode verifies a TVDB season again",
         path="backend/src/lib/skyhookIdentity.ts",
         # An AniList entry's start date is a season START, and a weekly series
-        # has SOME episode within days of any date — the first pass of the
+        # has SOME episode within days of any date - the first pass of the
         # measurement 'verified' Natsume S7 against a Lego Friends mid-run
         # episode exactly this way.
         find="    if (e.seasonNumber <= 0 || e.episodeNumber !== 1 || !e.airDate) continue;",
@@ -854,7 +870,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="must not verify",
         guards="any currently-airing series on TVDB date-verifies against any "
-               "seasonal entry — the Lego Friends confound",
+               "seasonal entry - the Lego Friends confound",
     ),
     Mutation(
         name="a held rejection ignores TVDB's undated future season",
@@ -870,10 +886,10 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="premature",
         guards="every unaired new season of a held show writes 'not this "
-               "series' about its own parent — the Frieren S3 class",
+               "series' about its own parent - the Frieren S3 class",
     ),
     Mutation(
-        name="identity writes tell no one — the availability cache goes stale",
+        name="identity writes tell no one - the availability cache goes stale",
         path=BACKEND_IDENTITY,
         # Every identity writer (admin PUT and the sweep's three call sites)
         # invalidates the cached availability through this one notify. Gutting
@@ -890,7 +906,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="identity invalidation never reaches the persisted blob",
         path=BACKEND_JF,
-        # The in-memory delete alone looked correct in every live check — the
+        # The in-memory delete alone looked correct in every live check - the
         # persist call is what makes the correction survive a restart, and it
         # is the half that was originally missing.
         find="""  availabilityCache.delete(id);
@@ -901,7 +917,7 @@ MUTATIONS: list[Mutation] = [
 });""",
         test=T_JELLYFIN,
         expect="stale availability verdict survives a restart",
-        guards="boot restore resurrects the pre-correction verdict from disk — "
+        guards="boot restore resurrects the pre-correction verdict from disk - "
                "the exact failure the identity cache-bust exists to prevent",
     ),
     Mutation(
@@ -909,14 +925,14 @@ MUTATIONS: list[Mutation] = [
         path=BACKEND_IDENTITY,
         # The PUT handler merges onto the stored row so that confirming a
         # resolver suggestion keeps its source/note/candidates. Nulling the note
-        # on every write is exactly what the handler used to do — one click of
+        # on every write is exactly what the handler used to do - one click of
         # Confirm erased which rung of the ladder accepted the id and relabelled
         # it a human decision.
         find="    note: patch.note !== undefined ? patch.note : existing.note,",
         replace="    note: patch.note ?? null, /* mutation */",
         test=T_UNIT,
         expect="Confirm must not wipe provenance",
-        guards="the review page destroys its own evidence — every confirmed row "
+        guards="the review page destroys its own evidence - every confirmed row "
                "reads as a hand-typed correction with no explanation",
     ),
     Mutation(
@@ -992,7 +1008,7 @@ MUTATIONS: list[Mutation] = [
         expect="documented one-minute lockout",
         guards="every retry lands inside AniList's 60s timeout, so all attempts "
                "are spent failing and a cold season load hangs for minutes and "
-               "then errors anyway — the exact bug this replaced",
+               "then errors anyway - the exact bug this replaced",
         settle=0.0,  # a pure helper; no dev server involved
     ),
     Mutation(
@@ -1011,7 +1027,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="an `unknown` availability verdict is treated as a definite 'no'",
         # The guard moved when availability was batched. It is now in the store,
-        # which drops `unknown` before any page sees it — so the old row, which
+        # which drops `unknown` before any page sees it - so the old row, which
         # broke the filter in Randomize, mutated a site that can no longer
         # receive an `unknown` and survived while proving nothing. Break it
         # where the data actually arrives.
@@ -1023,12 +1039,12 @@ MUTATIONS: list[Mutation] = [
         replace="""        _availabilityCache.set(mediaId, info); /* mutation */
         out.set(mediaId, info);""",
         # The single-show path keeps its own copy of the rule, and it feeds the
-        # same client cache — leaving it intact lets a pop-up refill the cache
+        # same client cache - leaving it intact lets a pop-up refill the cache
         # with a definite answer and mask the mutation.
         also=[("      if (!data.unknown) _availabilityCache.set(mediaId, data);",
                "      _availabilityCache.set(mediaId, data); /* mutation */")],
         # And the page checks again on the way in. That second guard is real
-        # defence in depth, not redundancy to be deleted — but it does mean the
+        # defence in depth, not redundancy to be deleted - but it does mean the
         # store guard alone is unreachable: an `unknown` that gets past the
         # store is filtered here instead, so the wheel behaves correctly and the
         # mutation survives having changed nothing. Both layers have to go for
@@ -1038,7 +1054,7 @@ MUTATIONS: list[Mutation] = [
                 "          if (!info.notAired) recordAvailability(mediaId, info.available); /* mutation */")],
         flows=("unknown never hides",),
         test=T_UI,
-        # The failure text, not the pass text — 'unknown verdicts' appears only
+        # The failure text, not the pass text - 'unknown verdicts' appears only
         # in the PASS line, so matching it reported a real catch as a hole.
         expect="is enabled while every lookup returned unknown",
         guards="one slow moment from Jellyfin empties the whole wheel, because "
@@ -1052,7 +1068,7 @@ MUTATIONS: list[Mutation] = [
         flows=("share as image",),
         test=T_UI,
         expect="Share produced nothing",
-        guards="Share silently does nothing — the failure is swallowed by its own "
+        guards="Share silently does nothing - the failure is swallowed by its own "
                "try/catch, the same shape that downgraded every ASS release to WebVTT",
     ),
     Mutation(
@@ -1092,9 +1108,10 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/lib/remote.ts",
         find="      const res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });",
         replace="      const res = await fetch(path, { ...init }); /* mutation */",
+        flows=("hung backend reported",),
         test=T_UI,
         expect="hung availability request left the page waiting",
-        guards="a hung backend hangs the page indefinitely — no error, no timeout, "
+        guards="a hung backend hangs the page indefinitely - no error, no timeout, "
                "nothing to catch, which is the failure mode with no upper bound",
     ),
     Mutation(
@@ -1102,27 +1119,29 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/Randomize.svelte",
         # Break the state revert only, leaving the message. Removing the whole
         # `revertHidden` call also removes the warning, so the test died waiting
-        # for that instead of reaching the assertion about UI/server agreement —
+        # for that instead of reaching the assertion about UI/server agreement -
         # red, but for the wrong reason, which proves nothing about the guard.
         find="    watchList = watchList.map((e) => (undo.has(e.mediaId) ? { ...e, hidden: back } : e));",
         replace="    /* mutation: no revert */",
+        flows=("failed hide write reverts",),
         test=T_UI,
         expect="UI and server have diverged",
         guards="the screen shows shows as hidden while the server disagrees, so a "
-               "reload silently undoes what the user just did — data loss, not "
+               "reload silently undoes what the user just did - data loss, not "
                "just a missing message",
     ),
     Mutation(
         name="a failed single-show hide stops reverting",
         path="frontend/src/pages/Randomize.svelte",
         # The per-row eye toggle had its own fire-and-forget fetch for months
-        # after the bulk paths gained the rollback — one shared revert helper
+        # after the bulk paths gained the rollback - one shared revert helper
         # is not one shared guarantee, so this path gets its own row. The
-        # mutant is type-valid on purpose (see row: half-filled identities —
+        # mutant is type-valid on purpose (see row: half-filled identities -
         # a mutant that fails to compile audits the compiler).
         find="""    const failed = await writeHidden([item.id], targetHidden);
     if (failed.length) revertHidden(failed, !targetHidden, 1);""",
         replace="    void writeHidden([item.id], targetHidden); /* mutation: no single revert */",
+        flows=("failed hide write reverts",),
         test=T_UI,
         expect="the eye toggle is the one hide path",
         guards="hiding one show from the list or pop-up looks applied, the server "
@@ -1133,10 +1152,11 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/stores/jellyfin.ts",
         find="  libraryStatus.set(failedChunks ? 'unreachable' : 'ok');",
         replace="  libraryStatus.set('ok'); /* mutation */",
+        flows=("library unreachable visible",),
         test=T_UI,
         expect="the page said nothing",
         guards="a failed availability lookup renders exactly like a healthy library "
-               "with nothing missing — the state a real outage was reported in, "
+               "with nothing missing - the state a real outage was reported in, "
                "which cost four wrong theories and was never explained",
     ),
     Mutation(
@@ -1144,10 +1164,11 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/stores/jellyfin.ts",
         find="  if (info.status) return info.status === 'NOT_YET_RELEASED';",
         replace="  if (info.status) return false; /* mutation */",
+        flows=("unaired not looked up",),
         test=T_UI,
         expect="availability lookup(s) fired for a NOT_YET_RELEASED season",
         guards="every match on the default (unaired) season falls through to fuzzy "
-               "titles against a library that cannot hold the show — measured 7/7 "
+               "titles against a library that cannot hold the show - measured 7/7 "
                "wrong, offering 'Firefly' for 'Firefly Wedding'",
     ),
     Mutation(
@@ -1159,7 +1180,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="Escape did not close the trailer modal",
         guards="the only remaining exit is the backdrop, which is a thin strip on a "
-               "phone — and the test that was meant to catch this used to fall back "
+               "phone - and the test that was meant to catch this used to fall back "
                "to a backdrop click and assert on that instead",
     ),
     Mutation(
@@ -1178,6 +1199,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/Home.svelte",
         find="      <p class=\"text-center opacity-60 my-12\" data-no-results>",
         replace="      <p class=\"text-center opacity-60 my-12\" data-no-results-mutated>",
+        flows=("no-results message",),
         test=T_UI,
         expect="no-match search rendered nothing at all",
         guards="searching for a show that isn't in this season shows a blank page, "
@@ -1187,7 +1209,7 @@ MUTATIONS: list[Mutation] = [
 
 
 # Grouped by the file each row edits, so the audit stops bouncing between the
-# backend and frontend dev servers — every switch back to a backend file costs a
+# backend and frontend dev servers - every switch back to a backend file costs a
 # ts-node-dev restart. Enforced by sorting rather than by hand-ordering the list
 # above, so adding a row in the wrong place cannot quietly undo it. Sorting by
 # path also puts all `backend/` rows first, which is where the restarts are.
@@ -1202,11 +1224,11 @@ def dirty_paths() -> list[str]:
     """Repo-relative paths with uncommitted changes.
 
     Do NOT strip the output. Porcelain lines are `XY PATH`, and an unstaged
-    modification is `" M path"` — a leading space. Stripping the whole blob
+    modification is `" M path"` - a leading space. Stripping the whole blob
     removes it from the *first* line only, so `l[3:]` then eats a character of
     that path: `backend/...` became `ackend/...`, matched nothing, and the
     dirty-tree guard silently stopped protecting whichever file sorted first.
-    That is not hypothetical — it reverted uncommitted work in
+    That is not hypothetical - it reverted uncommitted work in
     `backend/src/routes/jellyfin.ts` on the run that found this.
     """
     out = git("status", "--porcelain").stdout
@@ -1280,11 +1302,11 @@ def wait_for_backend(timeout: float = 90.0) -> None:
     apply the PID changes within 0.5 s, but on a revert that lands while the
     first restart is still in flight, ts-node-dev folds both writes into one
     cycle and the PID never changes again. Waiting for a second change then
-    burns the whole timeout and proceeds anyway — which is how an audit run
+    burns the whole timeout and proceeds anyway - which is how an audit run
     reported 7/14 with `test_jellyfin` exiting in one second against a backend
     that was not up.
 
-    So this asks the question that actually matters — "is it serving?" — rather
+    So this asks the question that actually matters - "is it serving?" - rather
     than a proxy for it. The grace period matters as much as the polling: without
     it we sample the *old* process, get a 200 immediately, and conclude all is
     well before the restart has even begun.
@@ -1300,15 +1322,49 @@ def wait_for_backend(timeout: float = 90.0) -> None:
     # Don't abort: a backend that never came back is itself a finding, and the
     # test about to run reports it far more usefully than a crash here would.
     print(f"      (warning: backend did not come back within {timeout:.0f}s "
-          f"— the next result may be unreliable)", flush=True)
+          f"- the next result may be unreliable)", flush=True)
+
+
+#: Tests that read the mutated file off disk and compile it themselves, never
+#: talking to :3000. `npm run test:unit` is node --test over the .test.ts files;
+#: the replay is pure and makes zero HTTP calls (asserted: no requests import).
+OFFLINE_TESTS = (T_UNIT, T_REPLAY)
+
+
+def _is_offline(m: Mutation) -> bool:
+    return any(m.test is t for t in OFFLINE_TESTS)
+
+
+#: Set when a backend file was written or reverted and nobody waited for
+#: ts-node-dev to come back. The wait is not skipped, it is DEFERRED to the next
+#: row whose test actually needs the server - which is what makes it safe.
+#:
+#: Measured: 30 of 74 rows run an offline test against a backend file, and each
+#: was paying ~7 s (a wait after apply and another after revert) for a restart
+#: nothing in that row would ever read - 3.4 min of a 47 min audit. Skipping the
+#: wait outright would be the old bug back (a row testing against a backend
+#: that is still booting), hence the flag rather than a plain early return.
+_backend_pending = False
 
 
 def settle_after_edit(m: Mutation) -> None:
-    """Wait for whichever dev server the edited file belongs to."""
+    """Wait for whichever dev server this row's TEST is about to talk to."""
+    global _backend_pending
+    edits_backend = any(p.startswith("backend/") for p in m.paths)
+    if _is_offline(m):
+        # Nothing this row runs reads the dev server, so the restart it just
+        # triggered is somebody else's problem - recorded, not waited on.
+        if edits_backend:
+            _backend_pending = True
+        return
     if not m.settle:
         return
-    if any(p.startswith("backend/") for p in m.paths):
+    # `_backend_pending` matters even for a frontend-only mutation: a UI flow
+    # talks to :3000 whatever file the row edited, so an offline row's deferred
+    # restart has to be collected here or it lands mid-test.
+    if edits_backend or _backend_pending:
         wait_for_backend()
+        _backend_pending = False
     else:
         # Vite HMR keeps the same process and reloads far quicker than a
         # ts-node-dev restart, so a short sleep is honest here.
@@ -1318,20 +1374,49 @@ def settle_after_edit(m: Mutation) -> None:
 def restore(m: Mutation, wait: bool = True) -> None:
     """Put every file this mutation touched back. `wait` is False for cleanup.
 
-    Mid-run the wait is load-bearing — it stops one row's revert bleeding into
+    Mid-run the wait is load-bearing - it stops one row's revert bleeding into
     the next row's test. In the final sweep nothing runs afterwards, so waiting
     there only adds a settle per file to the end of every audit.
     """
+    global _backend_pending
     git("checkout", "--", *m.paths)
-    if wait and m.settle and any(p.startswith("backend/") for p in m.paths):
+    if not any(p.startswith("backend/") for p in m.paths):
+        return
+    if wait and m.settle and not _is_offline(m):
         wait_for_backend()
+    else:
+        _backend_pending = True
+
+
+def _describe(m: Mutation) -> str:
+    """What this row is actually running, short enough for the status bar.
+
+    The heartbeat used to read `test running 100s...`, which answers neither
+    question a reader has at that moment: what is taking 100 seconds, and is
+    100 the elapsed time or a limit. A player row legitimately sits there for
+    two minutes doing real transcodes; a UI flow at 100 s is stuck.
+    """
+    if m.test is T_UNIT:
+        return "backend unit suite"
+    if m.test is T_JELLYFIN:
+        return "jellyfin, 13 live steps"
+    if m.test is T_REPLAY:
+        return "match replay (offline)"
+    if m.test is T_NEGATIVE:
+        return "api negative paths"
+    if m.test is T_UI:
+        return f"ui flow {m.flows[0]!r}" if m.flows else "ui, ALL 25 flows"
+    if "test_player.py" in " ".join(m.test):
+        steps = m.test[-1] if "--only-steps" in m.test else "all"
+        return f"player, steps {steps} (real transcodes)"
+    return Path(m.test[-1]).name
 
 
 def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
     """True when the test PASSED (i.e. the mutation went unnoticed).
 
     The child's output is a diagnostic to scan afterwards, never progress to
-    show — but a silent 110s child is a frozen status line (the status bar
+    show - but a silent 110s child is a frozen status line (the status bar
     shows the last line of output, and a UI-suite row prints nothing for two
     minutes). So the child writes to a temp file and a heartbeat ticks here,
     carrying the row context because a bare "still running" is meaningless as
@@ -1341,6 +1426,7 @@ def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
     cmd = list(m.test)
     if m.flows:
         cmd += ["--only-flows", ",".join(m.flows)]
+    what = _describe(m)
     shell = sys.platform == "win32" and m.test[0] in ("npm", "npx")
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as sink:
         p = subprocess.Popen(cmd, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
@@ -1356,7 +1442,7 @@ def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
                     p.kill()
                     p.wait()
                     return False, "TIMED OUT"
-                say(f"{ctx} test running {elapsed:.0f}s…")
+                say(f"{ctx} {what} - {elapsed:.0f}s elapsed")
         sink.seek(0)
         return rc == 0, sink.read()
 
@@ -1379,10 +1465,16 @@ def main() -> int:
     # affected rows" after touching code a row anchors to, and a change that
     # lands across several modules affects dozens. One row per invocation meant
     # re-warming the season cache and re-checking the tree for each, so the
-    # practical choice became "one row or all of them". Validate before indexing —
+    # practical choice became "one row or all of them". Validate before indexing -
     # the single-int version raised IndexError on an out-of-range number
     # before its own bounds check ran.
     chosen = MUTATIONS
+    # The row NUMBERS behind `chosen`, so a partial run can still say which row
+    # it is on. `--only` used to be printed verbatim in place of the number,
+    # which was fine while it took one value and turned every progress line of
+    # a multi-row run into `[1,2,3,4,55,61,.../74]` - unreadable in the one-line
+    # status bar those labels exist for.
+    chosen_nums = list(range(1, len(MUTATIONS) + 1))
     if args.only:
         try:
             idxs = [int(x) for x in args.only.split(",") if x.strip()]
@@ -1394,6 +1486,7 @@ def main() -> int:
             say(f"--only must be 1..{len(MUTATIONS)} (got {bad or 'nothing'})")
             return 2
         chosen = [MUTATIONS[i - 1] for i in idxs]
+        chosen_nums = idxs
 
     # Only the files this run will actually revert. Checking every row's target
     # blocked `--only 9` because some unrelated file had edits in it, which is a
@@ -1403,24 +1496,24 @@ def main() -> int:
     clash = sorted(targets & set(dirty))
     if clash:
         say("Refusing to run: these files have uncommitted changes and would be "
-            "reverted by this audit —")
+            "reverted by this audit -")
         for c in clash:
             say(f"   {c}")
         say("\nCommit or stash them first.")
         return 2
 
-    say(f"Mutation audit — {len(chosen)} mutation(s), each must be CAUGHT by its test")
+    say(f"Mutation audit - {len(chosen)} mutation(s), each must be CAUGHT by its test")
     say("Servers must be running, same as the suite this audits.\n")
 
     # The run times itself so nobody has to estimate. Both docs carried a
-    # figure for years — ~35 min in CLAUDE.md, ~118 min in the tests README —
+    # figure for years - ~35 min in CLAUDE.md, ~118 min in the tests README -
     # and neither had ever been measured; one was true at 18 rows and the other
     # was arithmetic. A number a tool prints about itself cannot go stale.
     run_started = time.time()
     survived: list[str] = []
     # Warm before touching anything. The audit restarts the backend twice per
     # row, and a stale season key would re-fetch on the first request after each
-    # restart — dozens of cold AniList fetches across a run, which is what kept
+    # restart - dozens of cold AniList fetches across a run, which is what kept
     # tripping the 30/min limit and made rows fail for reasons unrelated to the
     # invariant they were testing.
     #
@@ -1429,7 +1522,7 @@ def main() -> int:
     # every time a row is added, and this assumption has already broken
     # silently: 18 rows (~35 min) fit the old 1 h TTL, 57 rows (~90 min) did
     # not, and the last half hour of that run fired a stale background refresh
-    # per restart into AniList's shared ~30/min budget — nothing failed, the
+    # per restart into AniList's shared ~30/min budget - nothing failed, the
     # run just quietly became a 429 storm. Live tests must never provoke a 429;
     # the 429/backoff *logic* is unit-tested in anilistRateLimit without
     # touching the network. If the audit ever approaches the TTL, raise the
@@ -1447,15 +1540,16 @@ def main() -> int:
 
     skipped: list[str] = []
     try:
-        for i, m in enumerate(chosen, 1):
-            n = args.only or i
+        for pos, (n, m) in enumerate(zip(chosen_nums, chosen), 1):
             # Every line below carries this: the status bar shows exactly one
             # line, and "caught in 112s" with no row number tells a reader
-            # nothing about where the run is.
-            ctx = f"[{n}/{len(MUTATIONS)}]"
+            # nothing about where the run is. A partial run needs both - which
+            # row this is, and how far through the selection.
+            ctx = (f"[{n}/{len(MUTATIONS)}]" if len(chosen) == len(MUTATIONS)
+                   else f"[{n}/{len(MUTATIONS)} - {pos} of {len(chosen)}]")
             say(f"{ctx} {m.name}")
             if not apply(m):
-                say(f"      {ctx} SKIP — anchor text not found; the code moved, update this row\n")
+                say(f"      {ctx} SKIP - anchor text not found; the code moved, update this row\n")
                 skipped.append(m.name)
                 continue
             try:
@@ -1466,28 +1560,28 @@ def main() -> int:
                 restore(m)
             took = time.time() - t0
             if passed:
-                say(f"      {ctx} SURVIVED in {took:.0f}s — nothing caught it")
+                say(f"      {ctx} SURVIVED in {took:.0f}s - nothing caught it")
                 say(f"      would ship: {m.guards}\n")
                 survived.append(m.name)
             elif m.expect and m.expect.lower() not in out.lower():
                 # Red is not the same as covered, and conflating the two is the
                 # exact mistake this audit exists to catch: a leaked credential
                 # once turned a test red with the message "video never advanced"
-                # — a real failure pointing at the wrong subsystem, which nobody
+                # - a real failure pointing at the wrong subsystem, which nobody
                 # would have traced back. If no assertion names this invariant,
                 # it is still a hole, however red the run looks.
                 why = next((l for l in out.splitlines() if "FAIL" in l), "").strip()
                 # Distinguish "the test asserted something else" from "the test
                 # never got to assert at all". Both used to print
                 # `(no FAIL line)`, which reads like a coverage hole and hides a
-                # broken harness — five player rows were reported as holes for a
+                # broken harness - five player rows were reported as holes for a
                 # week because `--only-steps` skipped a step they depended on and
                 # the run died on an UnboundLocalError.
                 if not why and "Traceback (most recent call last)" in out:
                     crash = next((l.strip() for l in reversed(out.splitlines())
                                   if l.strip() and not l.startswith((" ", "\t"))), "")
-                    why = f"CRASHED before asserting — {crash[:100]}"
-                say(f"      {ctx} WRONG REASON in {took:.0f}s — red, but not because of "
+                    why = f"CRASHED before asserting - {crash[:100]}"
+                say(f"      {ctx} WRONG REASON in {took:.0f}s - red, but not because of "
                     f"this invariant")
                 say(f"      expected to see: {m.expect!r}")
                 say(f"      actually failed: {why[:140] or '(no FAIL line)'}")
@@ -1496,7 +1590,7 @@ def main() -> int:
             else:
                 hit = next((l for l in out.splitlines()
                             if m.expect.lower() in l.lower()), "").strip()
-                say(f"      {ctx} caught in {took:.0f}s — {hit[:130]}\n")
+                say(f"      {ctx} caught in {took:.0f}s - {hit[:130]}\n")
     finally:
         # Belt and braces: restore what this run touched, including on Ctrl-C.
         #
@@ -1514,11 +1608,11 @@ def main() -> int:
     mins = (time.time() - run_started) / 60
     say(f"Done: {total - len(survived)}/{total} caught"
         + (f", {len(skipped)} skipped" if skipped else "")
-        + f" — {len(chosen)} row(s) in {mins:.0f} min"
+        + f" - {len(chosen)} row(s) in {mins:.0f} min"
         + (" (full run)" if len(chosen) == len(MUTATIONS) else ""))
     if len(chosen) == len(MUTATIONS):
         # The only figure either doc should quote, and it re-measures itself
-        # every time — see the note at run_started.
+        # every time - see the note at run_started.
         say(f"   Quote this for a full audit: {len(chosen)} rows, {mins:.0f} min, "
             f"measured {datetime.date.today().isoformat()}.")
     for s in survived:

@@ -8,7 +8,7 @@ export const allUsers = writable<string[]>([]);
 // Stored as a Set for O(1) lookup.
 export const selectedUsers = writable<Set<string>>(new Set());
 
-// When options change (e.g., after login), sync nicknameUserSel → selectedUsers
+// When options change (e.g., after login), sync nicknameUserSel -> selectedUsers
 options.subscribe((opt) => {
   if (opt && Array.isArray(opt.nicknameUserSel)) {
     selectedUsers.set(new Set(opt.nicknameUserSel));

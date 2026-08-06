@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
 // Searching the held library so a VIEWER can correct a wrong match.
 //
-// The Randomize pop-up is where a bad match is actually noticed — /admin/matching
+// The Randomize pop-up is where a bad match is actually noticed - /admin/matching
 // is where it can be fixed, and nobody goes there. This is the search behind the
 // pop-up's "Not the right show?" picker.
 //
 // It offers LIBRARY ITEMS, never the resolver's stored candidates. Candidates
-// are TMDB/TVDB ids, and most of them aren't held — that is usually *why* a row
+// are TMDB/TVDB ids, and most of them aren't held - that is usually *why* a row
 // is unverified. A menu where six of eight options can't play is worse than one
 // honest answer.
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ export interface PickableFilm {
 /** One option a viewer may pick. Ids are ours, read from the library. */
 export interface PickOption {
   kind: 'tv' | 'movie';
-  /** Jellyfin item id — what the pick endpoint resolves against. */
+  /** Jellyfin item id - what the pick endpoint resolves against. */
   itemId: string;
   title: string;
   year: number | null;
@@ -37,7 +37,7 @@ export interface PickOption {
  * Film titles arrive unnormalized: `jellyfinFilmIndex` is deliberately an id
  * index and not a second matchable corpus, so it stores no `norms`. Normalizing
  * ~6,600 of them on every keystroke would be silly, and the index object is
- * replaced wholesale on refresh — so memoize against its identity and let the
+ * replaced wholesale on refresh - so memoize against its identity and let the
  * old entry fall out with it.
  */
 const _filmNorms = new WeakMap<object, Map<string, string>>();
@@ -121,7 +121,7 @@ export function searchLibrary(
     });
   }
 
-  // Tier first, then the shortest title — the least extra noise around the
+  // Tier first, then the shortest title - the least extra noise around the
   // words the viewer actually typed, same instinct as matchByTitle.
   scored.sort((a, b) => a.tier - b.tier || a.opt.title.length - b.opt.title.length);
   return scored.slice(0, limit).map((s) => s.opt);

@@ -1,15 +1,15 @@
-# SaltyChart – Monorepo Overview
+# SaltyChart - Monorepo Overview
 
 This repository contains the _two_ production images that make up the
 SaltyChart deployment:
 
-1. **`backend/`** – Express + TypeScript REST API
-2. **`frontend/`** – Svelte + Vite **SPA** that consumes the API
+1. **`backend/`** - Express + TypeScript REST API
+2. **`frontend/`** - Svelte + Vite **SPA** that consumes the API
 
 Both are built and orchestrated locally with **Docker Compose**.  Each package
-is fully independent ‑ it ships its own `package.json`, lock-file and
+is fully independent - it ships its own `package.json`, lock-file and
 configuration.  Keeping them isolated avoids the usual confusion that comes
-with "mega" root‐level configuration files while still allowing a single
+with "mega" root-level configuration files while still allowing a single
 Git repository.
 
 ```
@@ -17,11 +17,11 @@ Git repository.
 ├── backend         # Express API & Prisma SQLite database
 │   ├── Dockerfile
 │   ├── package.json
-│   └── src/ …
+│   └── src/ ...
 ├── frontend        # Svelte + Tailwind single-page app
-│   ├── Dockerfile  # multi-stage – dev & prod
+│   ├── Dockerfile  # multi-stage - dev & prod
 │   ├── package.json
-│   └── src/ …
+│   └── src/ ...
 ├── docker-compose.yml  # `docker compose up --build`
 └── README.md       # you are here
 ```
@@ -44,14 +44,14 @@ open http://localhost:8085
 cp backend/.env.example backend/.env   # provides DATABASE_URL for ts-node-dev
 pip install youtube-transcript-api     # enables YouTube English CC detection
 
-# Terminal 1 — backend (port 3000)
+# Terminal 1 - backend (port 3000)
 cd backend && npm install && npm run dev
 
-# Terminal 2 — frontend (port 5173)
+# Terminal 2 - frontend (port 5173)
 cd frontend && npm install && npm run dev
 ```
 
-`DATABASE_URL` is required — the server exits with `[FATAL]` on startup without
+`DATABASE_URL` is required - the server exits with `[FATAL]` on startup without
 it. The `.env` file keeps it in place across ts-node-dev hot-reloads. SQLite DB
 lives at `backend/prisma/prisma/data.db`.
 
@@ -68,7 +68,7 @@ chronological order; all features listed are live.
 **Progressive Home loading**
 - The season toolbar and section headers render immediately; each section
   (current season vs. Leftovers) pops in as soon as its own fetch lands, with
-  shimmer skeleton cards holding the layout in the meantime — no more
+  shimmer skeleton cards holding the layout in the meantime - no more
   all-or-nothing spinner on a cold cache.
 - Cover images blur-up: a tiny low-res cover shows instantly and the full
   quality image fades in when downloaded.
@@ -79,29 +79,29 @@ chronological order; all features listed are live.
 - The site admin points SaltyChart at a Jellyfin server on the **/admin**
   page (URL + API key, tested with one click). The key is stored server-side
   and never sent to browsers. Viewers never need a Jellyfin account or login.
-- The same page picks a **playback account** — Jellyfin applies its policy per
+- The same page picks a **playback account** - Jellyfin applies its policy per
   account, so streaming needs one. Use a dedicated account (library access, no
   bitrate or rating limit; it needn't be an administrator) rather than a real
   person's: it keeps playback off their profile, and tightening their policy
   later can't quietly degrade playback for everyone. Nothing is written to its
-  watch history either way — SaltyChart never reports progress. If left unset,
+  watch history either way - SaltyChart never reports progress. If left unset,
   an administrator is used.
-- On the Randomize page, the show pop-up gains **▶ Watch here** with the
-  season and episode it will start on, playing in-page through the backend —
-  when the series is found in your library. Matching goes by **id first** — a
-  show is identified before it is looked for — and falls back to English *and*
+- On the Randomize page, the show pop-up gains a **Watch here** button with the
+  season and episode it will start on, playing in-page through the backend -
+  when the series is found in your library. Matching goes by **id first** - a
+  show is identified before it is looked for - and falls back to English *and*
   Japanese titles only when no id exists anywhere. It is season-aware, and picks
   the episode by air date, so a "Part 2" or a mid-season cour opens where it
   actually starts. The matched library title is shown under the button, and a
   "Not in library" note appears otherwise.
 - If the media server can't be reached, the page **says so and offers Retry**
-  rather than just showing no Watch buttons — which used to look exactly like
+  rather than just showing no Watch buttons - which used to look exactly like
   "none of these are in your library". Bulk Hide/Show changes that the server
   refuses are put back on screen with a note, instead of appearing to work and
   vanishing on the next reload.
 - **A show we can identify but don't have is now reported as missing, not
   guessed at.** Previously, if the id said a series wasn't in the library, a
-  fuzzy title match could still put a Watch button on it — which is how *Pokémon
+  fuzzy title match could still put a Watch button on it - which is how *Pokémon
   Concierge* offered episode 109 of season 20 of *Pokémon*, and a 2026 *Nanoha*
   offered the 2004 one. Measured across two years of shows, that mistake happened
   12 times and is now impossible.
@@ -109,8 +109,8 @@ chronological order; all features listed are live.
   match that was made by title alone, so a bad one is fixed once instead of
   coming back whenever the cache expires.
 - **Shows the community id map has never covered now get identified automatically.**
-  Roughly a third of a season — films, shorts, specials — has no entry in the
-  public AniList→TVDB mapping, so nothing could recognise them. SaltyChart now
+  Roughly a third of a season - films, shorts, specials - has no entry in the
+  public AniList->TVDB mapping, so nothing could recognise them. SaltyChart now
   looks them up through your own Jellyfin's metadata providers and records what it
   finds, checking each answer against the show's real air date before trusting it.
   It runs quietly in the background and re-checks upcoming seasons every couple of
@@ -120,15 +120,15 @@ chronological order; all features listed are live.
 - **Films are matched against your films.** Previously a movie could only be
   compared against TV series, so *The Last Blossom* offered you *House* and
   *Demon Slayer: Infinity Castle* offered the television show. Now a film either
-  finds the actual film — seven you already own became watchable — or honestly
+  finds the actual film - seven you already own became watchable - or honestly
   reports that it isn't in the library.
-- Matches confirmed by an AniList→TVDB id chain are shown plainly; ones found
-  only by title similarity are marked **⚠ unconfirmed match**, so a
+- Matches confirmed by an AniList->TVDB id chain are shown plainly; ones found
+  only by title similarity are marked **unconfirmed match**, so a
   same-name-different-show mix-up is visible before you press play.
 - The in-page player is **video.js**, so it comes with a proper control bar,
   speed menu, fullscreen and the usual hotkeys. The one thing added on top is
   what the media servers' own players can't do: `]` / `[` step playback speed
-  by **±0.10×** (they're locked to 0.25× steps), shown as a VLC-style corner
+  by **+/-0.10x** (they're locked to 0.25x steps), shown as a VLC-style corner
   flash.
 - **Subtitles are drawn into the video by Jellyfin**, using libass and the
   episode's own fonts, so signs, songs and karaoke appear where the release put
@@ -138,22 +138,22 @@ chronological order; all features listed are live.
   control bar, defaulting to plain English dialogue rather than an SDH or
   signs-only track.
 - **A quality menu** sits next to it: *Auto* (the file's own quality), 1080p,
-  720p or 480p — for when the connection can't keep up. Changing either the
+  720p or 480p - for when the connection can't keep up. Changing either the
   track or the quality restarts the stream where you left off, which takes a
   second or so; that's how every Jellyfin client works, because the choice is
   baked into what the server sends.
 - The player loads itself ahead of time: the video code is fetched quietly when
   you open the Randomize page, and a show's playback details when you open its
-  pop-up — so pressing **Watch** only has to start the stream. Skipped entirely
+  pop-up - so pressing **Watch** only has to start the stream. Skipped entirely
   on metered or 2G connections.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
-  version (the `YYYYMMDD-<sha>` image tag) in a tooltip on hover — `dev`
+  version (the `YYYYMMDD-<sha>` image tag) in a tooltip on hover - `dev`
   when running outside a CI-built image.
 
 **Compare redesign (card layout, mobile-first)**
-- Cards replace the old 4-column grid — one anime per row with cover, title,
+- Cards replace the old 4-column grid - one anime per row with cover, title,
   and a `[your rank | diff badge | other rank]` strip.
 - Sticky username bar pins to viewport top while cards scroll.
 - Unified controls block: season header + 2-column user grid (you + 2nd user)
@@ -170,68 +170,68 @@ chronological order; all features listed are live.
   season or year changes.
 - Season row left-aligned to match Home and Compare.
 
-**Hide from Wheel** – right-click a show in *My List* ➜ **Hide from Randomize**.
+**Hide from Wheel** - right-click a show in *My List* -> **Hide from Randomize**.
 Persists the `WatchList.hidden` boolean and is toggled via
 `PATCH /api/list/hidden`.
 
-**Bulk list replace** – `PUT /api/list` can replace an entire season's list
+**Bulk list replace** - `PUT /api/list` can replace an entire season's list
 in one request. Powers the CSV importer and third-party integrations.
 
-**Nickname sharing** – pop-ups on Randomize/Compare show friends' custom
+**Nickname sharing** - pop-ups on Randomize/Compare show friends' custom
 nicknames + ranks. Endpoints:
 `GET /api/list/users-with-nicknames`, `GET /api/list/nicknames?mediaId=`,
 `GET /api/list/users-with-ratings?season=&year=`, `GET /api/list/user-ratings?username=&season=&year=`.
 
-**Nickname user filter** – the global *Options* modal's **Nickname User Picker**
+**Nickname user filter** - the global *Options* modal's **Nickname User Picker**
 lets you choose whose nicknames are displayed.
 
-**Real-time subtitle translation** – click a Japanese trailer and get live
+**Real-time subtitle translation** - click a Japanese trailer and get live
 English subtitles streamed via SSE. If the video has YouTube English CC
-(manual or auto-generated), those are shown instead — they're higher quality.
+(manual or auto-generated), those are shown instead - they're higher quality.
 When no English CC exists, the app suppresses YouTube's Japanese CC and
 streams Whisper-translated subtitles. Translations cached in the database so
 repeat plays are instant (~50ms). On page load the app batch-checks all
 trailers against the cache (`/api/translate/check-batch`) so the CC decision
 is instant when the user clicks play. Persistent Python daemon (`small` model,
-chunked) handles on-demand requests. Short videos (≤30s) skip chunking. 
+chunked) handles on-demand requests. Short videos (<=30s) skip chunking. 
 Concurrent requests are deduplicated and limited to 2. Subtitles sync to YouTube's playback position (pause, scrub). All transcription
 uses `word_timestamps=True` so segment start/end times align to actual word
-boundaries rather than Whisper's coarser segment estimates — eliminates the
+boundaries rather than Whisper's coarser segment estimates - eliminates the
 "subtitle appears before speech" issue. Users can dismiss subtitles via the CC
 toggle and the preference persists for all users.
 
-**Pre-translation pipeline** — two-tier system covering the previous, current,
+**Pre-translation pipeline** - two-tier system covering the previous, current,
 and next seasons on every run:
 - **Local GPU** (`tools/local_translate.py`): runs every Sunday at 5am via
-  Windows Scheduled Task ("SaltyChart Translate"). No window gate — always runs
+  Windows Scheduled Task ("SaltyChart Translate"). No window gate - always runs
   and caches new trailers for all 3 seasons. Uses the **split pipeline**:
-  Demucs vocal isolation → `large-v3` Japanese transcription → LLM translation
+  Demucs vocal isolation -> `large-v3` Japanese transcription -> LLM translation
   (`qwen3.5:9b` via Ollama), tagged `large-v3-split`.
 - **Server batch** (`backend/scripts/batch_translate.py`, `medium` int8 CPU):
-  runs automatically on Wednesdays 2–4am when within 50 days of a season start.
-  Fallback only — skips anything already cached at higher quality. Stops at 10am.
+  runs automatically on Wednesdays 2-4am when within 50 days of a season start.
+  Fallback only - skips anything already cached at higher quality. Stops at 10am.
 
 Both scripts detect model rank and never downgrade a higher-quality translation.
 
-**Local GPU translation** (`tools/local_translate.py`) — the highest-quality
-tier, benchmarked as the bake-off winner. Pipeline: best-quality audio → Demucs
-vocal separation (removes music/SFX so Whisper hallucinates less) → `large-v3`
-Japanese transcription → natural English translation by a local LLM
+**Local GPU translation** (`tools/local_translate.py`) - the highest-quality
+tier, benchmarked as the bake-off winner. Pipeline: best-quality audio -> Demucs
+vocal separation (removes music/SFX so Whisper hallucinates less) -> `large-v3`
+Japanese transcription -> natural English translation by a local LLM
 (`qwen3.5:9b` via Ollama, started and stopped automatically). Falls back to
 end-to-end Whisper translate if Ollama is unavailable. Automatic burned-in
 subtitle detection: OCR frames compared to the translated segments via hybrid
 fuzzy + semantic matching (sentence-transformers); burned-in videos are flagged
 so the frontend defaults subtitles off.
 
-**Per-user subtitle settings** — font size, family, position, text/bg color,
+**Per-user subtitle settings** - font size, family, position, text/bg color,
 opacity, text outline. Settings popup via gear icon next to the CC button.
 Stored per-user in the Settings table.
 
 **Auth improvements**
 - Login page links directly to Sign Up and Password Reset.
 - Sign Up page links back to Login.
-- Password reset (`POST /api/auth/reset-password`) — username-only, no email
-  required. Three-step page: enter username → confirm → set new password.
+- Password reset (`POST /api/auth/reset-password`) - username-only, no email
+  required. Three-step page: enter username -> confirm -> set new password.
 
 **Season default look-ahead**
 - On first load the app now defaults to the *upcoming* season if it starts
@@ -242,7 +242,7 @@ Stored per-user in the Settings table.
 
 **Performance & hardening**
 - DB indexes on `WatchList(userId)`, `WatchList(season, year)`,
-  `Settings(hideFromCompare)` — created idempotently at startup in
+  `Settings(hideFromCompare)` - created idempotently at startup in
   `ensureDatabaseSchema()`.
 - Rate limit (60 req/min per IP) on the four unauthenticated
   `/api/list/*` endpoints (`users-with-nicknames`, `users-with-ratings`,
@@ -262,7 +262,7 @@ container, so no additional environment configuration is required.
 
 ---
 
-## Deployment (automatic — push to master)
+## Deployment (automatic - push to master)
 
 Deploys are handled by CI + an Unraid pull script. **Pushing to `master` is
 deploying**; there is no manual build/transfer step.
@@ -277,15 +277,15 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect the final line: "Pre-deploy: 16/16 passed — ready to build"
-   # (15/15 with --skip-burned-in — use it if no CUDA)
+   # Expect the final line: "Pre-deploy: 16/16 passed - ready to build"
+   # (15/15 with --skip-burned-in - use it if no CUDA)
    ```
 
 2. **Push to `master`.** The `deploy` workflow
    (`.github/workflows/deploy.yml`) typechecks the backend, builds the
    frontend, then builds & pushes both images to GHCR:
    `ghcr.io/drohack/saltychart-{backend,frontend}`, tagged `latest` plus an
-   immutable `YYYYMMDD-<shortsha>` for rollback. The push is atomic — a
+   immutable `YYYYMMDD-<shortsha>` for rollback. The push is atomic - a
    failed backend build never publishes a frontend-only update.
 
 3. **The server updates itself.** The `update_saltychart` User Script on
@@ -301,8 +301,8 @@ interval). The SQLite DB is bind-mounted from
 
 ### The base image (why deploys are small)
 
-The backend's heavy layers — python3, ffmpeg, pip deps, and the ~2 GB of
-pre-downloaded Whisper models — live in a separate **pinned base image**,
+The backend's heavy layers - python3, ffmpeg, pip deps, and the ~2 GB of
+pre-downloaded Whisper models - live in a separate **pinned base image**,
 `ghcr.io/drohack/saltychart-backend-base:vN`, built from
 `backend/Dockerfile.base`. `backend/Dockerfile` builds `FROM` that pinned
 tag, so a routine deploy only transfers ~100 MB of app layers.
@@ -310,10 +310,10 @@ tag, so a routine deploy only transfers ~100 MB of app layers.
 To update the base (new yt-dlp, model change, etc.):
 
 1. Edit `backend/Dockerfile.base`.
-2. Run the **build-base** workflow (GitHub → Actions → build-base → Run
+2. Run the **build-base** workflow (GitHub -> Actions -> build-base -> Run
    workflow) with the next version, e.g. `v2`.
 3. Bump the `FROM ...saltychart-backend-base:v2` line in
-   `backend/Dockerfile` and push — that one deploy pulls the full base once,
+   `backend/Dockerfile` and push - that one deploy pulls the full base once,
    then deploys are small again.
 
 ### Rollback
@@ -321,11 +321,11 @@ To update the base (new yt-dlp, model change, etc.):
 Every deploy leaves an immutable tag and a fresh DB backup:
 
 ```bash
-# On the server: pin compose to the previous tag…
+# On the server: pin compose to the previous tag...
 vi /mnt/user/appdata/saltychart/docker-compose.yml
 #   image: ghcr.io/drohack/saltychart-backend:YYYYMMDD-abc1234  (and frontend)
 docker compose up -d
-# …and if data must rewind, run the restore_saltychart_db User Script.
+# ...and if data must rewind, run the restore_saltychart_db User Script.
 ```
 
 (Return to `:latest` afterwards or the auto-updater won't pick up new
@@ -349,7 +349,7 @@ scp saltychart_YYYYMMDD.tar <user>@<unraid-ip>:/mnt/user/SHARE/user/drohackfiles
 ssh <user>@<unraid-ip> docker load -i /mnt/user/SHARE/user/drohackfiles/saltychart_YYYYMMDD.tar
 
 # Point /mnt/user/appdata/saltychart/docker-compose.yml at the loaded tags,
-# then Docker ➜ Compose ➜ Compose Down / Compose Up in the Unraid GUI.
+# then Docker -> Compose -> Compose Down / Compose Up in the Unraid GUI.
 ```
 
 ---
@@ -357,7 +357,7 @@ ssh <user>@<unraid-ip> docker load -i /mnt/user/SHARE/user/drohackfiles/saltycha
 ## Backup and Restore database
 
 On the Unraid server there's some user scripts to backup the database.
-Reference copies live in `tools/unraid/` — if you edit them, update the
+Reference copies live in `tools/unraid/` - if you edit them, update the
 server's User Scripts to match. The live DB is the bind mount at
 `/mnt/user/appdata/saltychart/prisma/data.db` (**not** the legacy
 `saltychart_db` docker volume, which went stale in April 2026 and whose

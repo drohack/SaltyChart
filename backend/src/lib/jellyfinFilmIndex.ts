@@ -5,19 +5,19 @@ import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-ite
 import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-fields';
 import { jellyfinErrorInfo } from './jellyfinApi';
 
-// ── Films ───────────────────────────────────────────────────────────────────
+// -- Films -------------------------------------------------------------------
 //
 // Deliberately an id INDEX, not a second matchable corpus. Films are only ever
-// looked up by TMDB id — every film we resolve has one, from the community map
-// or from our own lookup — so titles are never compared and `OriginalTitle` is
+// looked up by TMDB id - every film we resolve has one, from the community map
+// or from our own lookup - so titles are never compared and `OriginalTitle` is
 // never needed. That also sidesteps the whole class of error this exists to
 // stop: a film has no business being fuzzy-matched at all.
 //
 // Why it exists: `getSeriesLibrary` fetches `IncludeItemTypes=Series`, so a
 // film's id could never match anything and the lookup fell through to
 // title-matching against TV series. Measured over 8 seasons that produced 26
-// category errors — "The Last Blossom" -> *House*, "ChaO" -> *ChäoS;Head*,
-// "Demon Slayer: Infinity Castle" -> the television show — against exactly 1
+// category errors - "The Last Blossom" -> *House*, "ChaO" -> *ChäoS;Head*,
+// "Demon Slayer: Infinity Castle" -> the television show - against exactly 1
 // case where the fall-through found something the air date accepted. It also
 // left 7 films we actually own unreachable.
 
@@ -94,7 +94,7 @@ function restoreOnce(): Promise<void> {
 }
 
 /**
- * Check-and-set with NOTHING awaited between — that ordering is the entire
+ * Check-and-set with NOTHING awaited between - that ordering is the entire
  * guard. The first shape checked `_filmsInFlight`, then awaited the persisted
  * read, then assigned it: two callers racing through the cold path both passed
  * the check and each started its own ~6,600-item fetch. `getSeriesLibraryFresh`
@@ -112,7 +112,7 @@ function startRefresh(api: Api): Promise<Record<string, FilmEntry>> {
       } catch (err: any) {
         console.warn('[jellyfin] film index refresh failed:', jellyfinErrorInfo(err));
         // Degraded, not broken: an old copy still answers, and no copy at all just
-        // means films report as not held — which is what happened before this
+        // means films report as not held - which is what happened before this
         // existed.
         return _films?.byTmdb ?? {};
       } finally {
@@ -124,7 +124,7 @@ function startRefresh(api: Api): Promise<Record<string, FilmEntry>> {
 }
 
 /**
- * TMDB film id → the item in the library, cached and persisted.
+ * TMDB film id -> the item in the library, cached and persisted.
  *
  * Persisted for the same reason as the series library: the load it avoids is
  * *caused* by restarts, so an in-memory-only copy is empty exactly when it is
@@ -144,7 +144,7 @@ export async function getFilmIndex(api: Api): Promise<Record<string, FilmEntry>>
 /**
  * Test seam: replace the Jellyfin fetch and the persistence, and reset all
  * module state. The coalescing behaviour is about *when* the in-flight promise
- * is assigned relative to the awaits around it — pure timing logic worth
+ * is assigned relative to the awaits around it - pure timing logic worth
  * testing without a server or a database.
  */
 export function __setFilmIndexForTest(opts: {

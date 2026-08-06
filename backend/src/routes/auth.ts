@@ -73,7 +73,7 @@ router.post('/login', async (req, res) => {
 
 // INTENTIONAL low-security design: resets any user's password with no identity
 // check. This is a deliberate tradeoff for a tiny trusted friend-group app with
-// no email infrastructure (documented in CLAUDE.md) — do NOT "harden" it into a
+// no email infrastructure (documented in CLAUDE.md) - do NOT "harden" it into a
 // token/email flow without a product decision.
 router.post('/reset-password', async (req, res) => {
   const { username, newPassword } = req.body as {

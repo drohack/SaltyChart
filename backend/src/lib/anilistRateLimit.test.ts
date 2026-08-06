@@ -38,7 +38,7 @@ test('a reset timestamp in the past floors instead of retrying instantly', () =>
 test('a headerless 429 waits the documented one-minute lockout', () => {
   // THE BUG: this used to wait 15s on the first attempt. AniList's documented
   // timeout is 60s, so every retry landed inside the lockout, achieved nothing,
-  // and burned the attempt budget — a cold fetch spent 90s to still fail.
+  // and burned the attempt budget - a cold fetch spent 90s to still fail.
   const d = backoffFor({}, 1, NOW);
   assert.equal(d.waitMs, DEFAULT_LOCKOUT_MS);
   assert.equal(d.source, 'default');
@@ -56,7 +56,7 @@ test('no attempt ever waits less than the lockout when there are no headers', ()
 
 test('the worst-case total hang stays close to one lockout, not several', () => {
   // The property a viewer actually feels. Waits are a full 60s window each now,
-  // so attempts multiply straight into hang time — at 4 attempts someone waits
+  // so attempts multiply straight into hang time - at 4 attempts someone waits
   // three minutes and still gets an error. Raising MAX_ATTEMPTS without redoing
   // this arithmetic re-creates the original bug in a new form.
   let total = 0;
@@ -65,12 +65,12 @@ test('the worst-case total hang stays close to one lockout, not several', () => 
   }
   assert.ok(
     total <= 90_000,
-    `worst case waits ${total / 1000}s before failing — too long to hold a request open`
+    `worst case waits ${total / 1000}s before failing - too long to hold a request open`
   );
 });
 
 test('malformed header values fall through rather than producing NaN', () => {
-  // A NaN wait becomes `setTimeout(NaN)` — which fires immediately, i.e. a
+  // A NaN wait becomes `setTimeout(NaN)` - which fires immediately, i.e. a
   // hot retry loop against a server that just rate-limited us.
   for (const bad of ['', 'soon', undefined, null]) {
     const d = backoffFor({ 'retry-after': bad }, 1, NOW);

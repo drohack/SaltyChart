@@ -30,9 +30,9 @@ import { nextSeasonInfo } from '../stores/season';
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // Countdown to next season (derived from the local clock — see nextSeasonInfo)
-  // ──────────────────────────────────────────────────────────────────
+  // ------------------------------------------------------------------
+  // Countdown to next season (derived from the local clock - see nextSeasonInfo)
+  // ------------------------------------------------------------------
 
   let daysUntilNext: number | null = null;
   let nextSeasonLabel: string = '';
@@ -68,7 +68,7 @@ import { nextSeasonInfo } from '../stores/season';
 
   // Pre-fetch English sub status for all trailers. Populated after each season load.
   let prefetchedSubs = new Map<string, boolean>();
-  // True once the batch has returned — openModal uses this to skip the 150ms
+  // True once the batch has returned - openModal uses this to skip the 150ms
   // precheck race for videos not in the map (batch already said: no English CC).
   let prefetchComplete = false;
   // Incremented on every prefetch call; stale responses are discarded when they
@@ -79,7 +79,7 @@ import { nextSeasonInfo } from '../stores/season';
    * Server cap on `/api/translate/check-batch`, mirrored here so we chunk
    * instead of being silently truncated.
    *
-   * This used to send every id in one request — 126 on a full season — and the
+   * This used to send every id in one request - 126 on a full season - and the
    * route does `.slice(0, 100)`. The tail was dropped with no error, so those
    * shows never learned they had English CC and each one started an
    * unnecessary Whisper translation when opened. Measured: 6 of the 26 dropped
@@ -202,7 +202,7 @@ let autoRename = false;
   // Hide adult (18+) content
   let hideAdult = true;
 
-  // "Catch up on another user's ratings" filter — shows only trailers the
+  // "Catch up on another user's ratings" filter - shows only trailers the
   // selected user has watched that the current user hasn't. Auto-disables
   // the three hide filters while active and restores them when deactivated.
   let catchUpMode = false;
@@ -218,7 +218,7 @@ let autoRename = false;
 
   /**
    * Whether the My List sidebar starts collapsed. Below `sm` the sidebar is
-   * full-width, so an open one hides the whole grid — default to collapsed
+   * full-width, so an open one hides the whole grid - default to collapsed
    * there, and let a stored choice override it on any screen size.
    */
   let sidebarCollapsed = typeof window !== 'undefined' && window.innerWidth < 640;
@@ -244,11 +244,11 @@ let autoRename = false;
   }
 
   /**
-   * True once the sidebar state reflects a choice — this session's toggle, or
+   * True once the sidebar state reflects a choice - this session's toggle, or
    * a stored one honoured by loadPrefs. Only then may it be persisted:
    * auto-saving the width default recorded a plain desktop visit as "chose
    * expanded", and the next phone load honoured that over the small-screen
-   * default — the full-screen-sidebar bug, back for anyone who had ever
+   * default - the full-screen-sidebar bug, back for anyone who had ever
    * loaded Home on a desktop first.
    */
   let sidebarChoiceMade = false;
@@ -270,7 +270,7 @@ let autoRename = false;
         obj.sidebarCollapsed = sidebarCollapsed;
       } else {
         // Carry an earlier session's explicit choice through untouched rather
-        // than dropping it — this function rewrites the whole blob.
+        // than dropping it - this function rewrites the whole blob.
         const raw = localStorage.getItem(prefsKey(user));
         const prev = raw ? JSON.parse(raw) : null;
         if (prev && typeof prev.sidebarCollapsed === 'boolean') {
@@ -460,7 +460,7 @@ let autoRename = false;
       if (Array.isArray(data)) {
         anime = data;
         _mainLanded = true;
-        // Fire the subtitle prefetch as soon as the main season is in — the
+        // Fire the subtitle prefetch as soon as the main season is in - the
         // leftovers call re-runs it with both lists when it lands.
         prefetchSubtitleStatus(anime, prevSeasonAnime);
       } else {
@@ -506,7 +506,7 @@ let autoRename = false;
   }
 
   function fetchAnime() {
-    // Two independent fetches — each section renders as soon as its own
+    // Two independent fetches - each section renders as soon as its own
     // data arrives.
     fetchMainSeason();
     fetchLeftovers();
@@ -563,7 +563,7 @@ let autoRename = false;
     const key = `${season}-${year}`;
     if (key !== lastSeasonYearKey) {
       lastSeasonYearKey = key;
-      fetchAnime(); // no debounce needed – user interaction is limited
+      fetchAnime(); // no debounce needed - user interaction is limited
       fetchCatchUpUsers();
     }
   }
@@ -600,7 +600,7 @@ let autoRename = false;
     <SkeletonGrid count={6} />
   {:else if errorMain}
     <div class="alert alert-error mt-8">
-      <span>Couldn't load {season} {year} — AniList may be busy.</span>
+      <span>Couldn't load {season} {year} - AniList may be busy.</span>
       <button class="btn btn-sm" on:click={fetchMainSeason}>Retry</button>
     </div>
   {:else}
@@ -714,7 +714,7 @@ let autoRename = false;
     {/if}
 
     <!-- Every section above is gated on `.length`, so a search matching nothing
-         rendered a completely blank page — indistinguishable from "still
+         rendered a completely blank page - indistinguishable from "still
          loading" or "the app is broken". Only shown once both fetches have
          settled, so it can't flash during a slow load. -->
     {#if noMatches}
@@ -722,7 +722,7 @@ let autoRename = false;
         {#if searchQuery.trim()}
           No series match &ldquo;{searchQuery.trim()}&rdquo; in {season} {year}.
         {:else}
-          Nothing to show — every series in {season} {year} is hidden by the filters above.
+          Nothing to show - every series in {season} {year} is hidden by the filters above.
         {/if}
       </p>
     {/if}

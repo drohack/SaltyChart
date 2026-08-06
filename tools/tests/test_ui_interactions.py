@@ -1,18 +1,18 @@
 """
-Pre-deploy smoke test: frontend UI interactions — 25 flows.
+Pre-deploy smoke test: frontend UI interactions - 25 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
-that clicking buttons triggers the right behavior — and that every failure
+that clicking buttons triggers the right behavior - and that every failure
 path found by an audit or exploratory pass stays VISIBLE on screen. Catches
 the regression class where a button renders but its handler is broken, and
 the worse one where a failure renders exactly like a healthy page.
 
 The flows, and the trap each was watched to fail on:
 
-Button-click smoke (1–9): login, search filter, hide 18+, season change,
+Button-click smoke (1-9): login, search filter, hide 18+, season change,
 add-to-list, theme, wheel spin, logout, trailer-modal Escape. The Escape step
-must NOT fall back to a backdrop click — that fallback is how it passed for
-months while Escape closed nothing — and it also asserts the trailer's ✕
+must NOT fall back to a backdrop click - that fallback is how it passed for
+months while Escape closed nothing - and it also asserts the trailer's ✕
 button exists.
 
 Correctness the old assertions never checked:
@@ -22,74 +22,74 @@ Correctness the old assertions never checked:
 - /admin (11): playback-account picker populated; no API key in the DOM.
 - unknown never hides (12): availability route-intercepted to {unknown:true};
   the Hide-Not-in-Library control must refuse to act.
-- share-as-image (13): the JPEG must have more than one colour — an all-blank
+- share-as-image (13): the JPEG must have more than one colour - an all-blank
   render is the realistic silent failure.
 - progressive loading (14): only the leftovers fetch fails; Retry appears
   while the main grid still renders.
 
 From the exploratory pass:
 - no-match search (15): an explicit message, never a blank page.
-- unaired season (16): ZERO /api/jellyfin/availability calls — a
+- unaired season (16): ZERO /api/jellyfin/availability calls - a
   NOT_YET_RELEASED series cannot be in the library, so a lookup can only
   produce a false positive (measured 7/7 wrong before the guard); and Hide
   Not in Library stays disabled. `notAired` is available:false with `unknown`
   falsy, so a writer guarding only `unknown` recorded every unaired show as
   confirmed-missing and lit a button whose hides could never fire.
 
-Silent-failure paths (17–19):
-- library unreachable (17): 502 on every lookup → a message and a working
+Silent-failure paths (17-19):
+- library unreachable (17): 502 on every lookup -> a message and a working
   Retry, where before the page just looked empty. Its skip decision asks
-  /api/jellyfin/status directly — inferring "unconfigured" from an empty DOM
+  /api/jellyfin/status directly - inferring "unconfigured" from an empty DOM
   read a slow or partial render as not-applicable, and the mutation audit
   watched this test survive its mutation exactly that way.
 - hung backend (18): the route hangs forever; the page must say something
-  inside the timeout — the case nothing in the frontend could survive before
+  inside the timeout - the case nothing in the frontend could survive before
   remote.ts existed.
 - failed hide write (19): every PATCH /api/list/hidden fails; the page must
-  revert AND say so. Asserts on the SCREEN, not the server — with all writes
+  revert AND say so. Asserts on the SCREEN, not the server - with all writes
   failing the server is trivially correct, so a server check would pass with
   the rollback deleted.
 
 /admin/matching contract (20): a resolver accept decided on title text alone
 is listed. Seeds a remote-sourced accepted row against an entry the library
 doesn't hold, then verifies post-seed that no older filter clause can see it
-— a remote id is positive-only, so seeding one revives the title tier; the
+- a remote id is positive-only, so seeding one revives the title tier; the
 first version picked the Madoka film, which prefix-matched its own franchise
 series and passed with the clause under test deleted. Locates the row by the
 seeded entry's title (a marker in the note text stopped working the day the
 raw note stopped being rendered). Asserts resolver accepts are absent from
 the default queue but reachable via "+ resolver accepts"; drives the
 Sonarr-style match dropdown (an intercepted search fills the control, the
-"changed — saves as manual" indicator appears, nothing writes until Confirm,
+"changed - saves as manual" indicator appears, nothing writes until Confirm,
 reset returns to the stored match, and a changed Confirm writes
 source:'manual'); an untouched Confirm settles the row off the list with
-provenance intact — the id boxes are prefilled with the stored ids, so
+provenance intact - the id boxes are prefilled with the stored ids, so
 "typed" must mean "changed": the first handler read any non-empty box as
 hand-typed and relabelled every confirm as manual. Also clicks Run sweep now
-(POST stubbed — a real drain would hammer skyhook/TMDB for minutes) and
+(POST stubbed - a real drain would hammer skyhook/TMDB for minutes) and
 asserts the button visibly enters its running state: a click that changes
 nothing on screen is this page's fire-and-forget hide toggle. And asserts the
 stats tiles render with both groups (season match health + auto-search
-queue) — presence and labels only; the numbers are live season data.
+queue) - presence and labels only; the numbers are live season data.
 
-Exploratory pass-1 guards that were claimed and missing for months (21–24):
+Exploratory pass-1 guards that were claimed and missing for months (21-24):
 - check-batch stays chunked at 100 (21), asserted against the live season's
-  real >100-trailer id list — the tail used to be silently sliced off
+  real >100-trailer id list - the tail used to be silently sliced off
   server-side.
 - a failed translation stream is visible (22): the stream reports failure
   IN-BAND as an SSE {error} event on a 200, which is what the chip's handler
-  reads — a 503 only triggers EventSource's silent reconnect and tests
+  reads - a 503 only triggers EventSource's silent reconnect and tests
   nothing.
 - the phone sidebar starts collapsed at 375px (23). Writing this found a live
   regression: the reactive prefs-save persisted the width DEFAULT as though
   the user chose it, so one desktop visit put the full-screen sidebar back on
-  every later phone load — the suite's own desktop flows running first is
+  every later phone load - the suite's own desktop flows running first is
   what exposes it.
 - guest options reach localStorage + Compare names a user it can't find (24).
   No Escape after typing: svelte-select clears its filter text on Escape,
   hiding the very warning under test.
 
-Seeds from live season data — the old hardcoded mediaIds aged out of the
+Seeds from live season data - the old hardcoded mediaIds aged out of the
 season entirely, so every seeded list joined against zero shows and the
 looser assertions passed anyway.
 
@@ -112,7 +112,7 @@ from playwright.sync_api import sync_playwright
 TOTAL = 25
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
-# tests seed — and a list whose ids aren't in the displayed season renders
+# tests seed - and a list whose ids aren't in the displayed season renders
 # nothing at all, since entries are joined against that season's metadata.
 SEASON_KEY = "season-year"
 SEEDED_SEASON, SEEDED_YEAR = "SUMMER", 2026
@@ -122,7 +122,7 @@ def season_ids(backend: str, n: int = 3) -> list[int]:
     """Real mediaIds from the seeded season.
 
     These used to be hardcoded (158036/158037/158038). AniList season contents
-    change, and by now not one of those three is in Summer 2026 — so every
+    change, and by now not one of those three is in Summer 2026 - so every
     seeded list joined against zero shows and the pages rendered empty, which
     the older assertions were loose enough to pass anyway.
     """
@@ -151,8 +151,8 @@ def pin_season(page) -> None:
 
 UNKNOWN_BODY = '{"available": false, "unknown": true}'
 
-# Availability is asked two ways — one show at a time for the pop-up, and a
-# whole page at once for the wheel — so a pattern that only matches the single
+# Availability is asked two ways - one show at a time for the pop-up, and a
+# whole page at once for the wheel - so a pattern that only matches the single
 # route lets the batch call through to the real server. That would not fail
 # loudly: the wheel would get genuine answers, most shows would be available,
 # and the "unknown never hides" test would pass while testing nothing.
@@ -193,7 +193,7 @@ def admin_token() -> str:
     """A JWT for ADMIN_USER_ID, signed with the backend's own secret.
 
     /admin is gated on the user id, and the fixture users this suite creates are
-    never that user — so without minting one, the admin UI cannot be reached at
+    never that user - so without minting one, the admin UI cannot be reached at
     all. Signed through node so the suite gains no dependency and signs exactly
     the way the app does. Reading local config for a test is established
     practice here: tools/bench_player.py reads the Jellyfin key from the DB.
@@ -220,7 +220,7 @@ def wait_for_grids(page, timeout: int = 30_000) -> None:
     Wait until Home has finished loading *every* section.
 
     Sections load independently, so cards being on screen no longer means the
-    page is done — the Leftovers grid frequently renders while the current
+    page is done - the Leftovers grid frequently renders while the current
     season is still a skeleton. Anything that counts or clicks cards has to
     wait for the skeletons to go away, not just for the first image.
     """
@@ -241,9 +241,9 @@ def signup_and_login(page, frontend: str) -> tuple[str, str]:
     return username, password
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 1/10  Login form
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_login_form(page, frontend: str, username: str, password: str):
     step(1, "step 1/3: logging out first to test fresh login")
     page.evaluate("localStorage.removeItem('token'); localStorage.removeItem('username')")
@@ -259,12 +259,12 @@ def test_login_form(page, frontend: str, username: str, password: str):
     page.wait_for_url(re.compile(r"/$|/home"), timeout=10_000)
     token = page.evaluate("localStorage.getItem('token')")
     assert token, f"authToken not set in localStorage after login"
-    step(1, f"PASS — redirected, token set (len={len(token)})")
+    step(1, f"PASS - redirected, token set (len={len(token)})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 2/10  Search filter
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_search_filter(page):
     step(2, "step 1/3: navigating Home and counting cards")
     wait_for_grids(page)
@@ -278,16 +278,16 @@ def test_search_filter(page):
 
     step(2, "step 3/3: verifying card count dropped")
     after = page.locator('img[src*="anilist"]').count()
-    assert after < before, f"search didn't filter: {before} → {after}"
+    assert after < before, f"search didn't filter: {before} -> {after}"
 
-    search.fill("")  # cleanup — must fully restore for downstream tests
+    search.fill("")  # cleanup - must fully restore for downstream tests
     page.wait_for_timeout(300)
-    step(2, f"PASS — {before} → {after} cards on 'Eren' filter")
+    step(2, f"PASS - {before} -> {after} cards on 'Eren' filter")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 3/10  Hide 18+ filter
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_hide_18plus(page):
     step(3, "step 1/3: counting cards with Hide 18+ unchecked")
     # Find the Hide 18+ checkbox by its associated label text
@@ -308,26 +308,26 @@ def test_hide_18plus(page):
 
     step(3, "step 3/3: verifying card count changed")
     after = page.locator('img[src*="anilist"]').count()
-    # Hide 18+ should reduce count (current season may have 0 adult, in which case it's equal — accept that too)
-    assert after <= before, f"after Hide 18+, count went up?? {before} → {after}"
+    # Hide 18+ should reduce count (current season may have 0 adult, in which case it's equal - accept that too)
+    assert after <= before, f"after Hide 18+, count went up?? {before} -> {after}"
 
     # Restore initial state
     if checkbox.is_checked() != initial_state:
         checkbox.click()
         page.wait_for_timeout(300)
-    step(3, f"PASS — Hide 18+ toggled ({before} → {after})")
+    step(3, f"PASS - Hide 18+ toggled ({before} -> {after})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 4/10  Season change
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_season_change(page, frontend: str):
     step(4, "step 1/3: ensuring on Home and finding active season button")
     page.goto(frontend)
     wait_for_grids(page)
     page.wait_for_timeout(500)  # let toolbar render
 
-    # Find the current active season via JS — Playwright's has_text+regex fails on
+    # Find the current active season via JS - Playwright's has_text+regex fails on
     # the trimmed Svelte button text. JS is more reliable here.
     current = page.evaluate("""() => {
       const btns = Array.from(document.querySelectorAll('button'));
@@ -341,13 +341,13 @@ def test_season_change(page, frontend: str):
 
     other = "Fall" if current != "Fall" else "Winter"
     step(4, f"step 2/3: clicking {other} (was {current})")
-    # Click via JS evaluation by text — bypasses Playwright locator issues
+    # Click via JS evaluation by text - bypasses Playwright locator issues
     page.evaluate(f"""() => {{
       const btns = Array.from(document.querySelectorAll('button'));
       const t = btns.find(b => (b.textContent || '').trim() === '{other}');
       if (t) t.click();
     }}""")
-    # Wait for anime fetch to settle — networkidle is faster than a fixed sleep
+    # Wait for anime fetch to settle - networkidle is faster than a fixed sleep
     try:
         page.wait_for_load_state('networkidle', timeout=4_000)
     except Exception:
@@ -374,17 +374,17 @@ def test_season_change(page, frontend: str):
         page.wait_for_load_state('networkidle', timeout=4_000)
     except Exception:
         page.wait_for_timeout(800)
-    step(4, f"PASS — {current} → {other} → back to {current}")
+    step(4, f"PASS - {current} -> {other} -> back to {current}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 5/10  "watched trailer" button adds to list
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_watched_trailer_button(page, backend: str):
     step(5, "step 1/3: noting current list size via API")
     token = page.evaluate("localStorage.getItem('token')")
     auth = {"Authorization": f"Bearer {token}"}
-    # Read the season/year the UI is actually displaying — the default season
+    # Read the season/year the UI is actually displaying - the default season
     # moves with the calendar (50-day lookahead), so hardcoding e.g. SUMMER
     # breaks once the app rolls over to the next season.
     ui_season = page.evaluate("""() => {
@@ -417,26 +417,26 @@ def test_watched_trailer_button(page, backend: str):
     wait_for_grids(page)
     btns = page.get_by_role("button", name=re.compile(r"^watched trailer$", re.I))
     count = btns.count()
-    assert count > 0, "no 'watched trailer' buttons on Home — page not rendering buttons correctly"
+    assert count > 0, "no 'watched trailer' buttons on Home - page not rendering buttons correctly"
     btns.first.click()
     page.wait_for_timeout(800)  # PATCH /api/list/watched + toast
 
     step(5, "step 3/3: verifying list grew by 1 via API")
     after_size = get_list_size()
     assert after_size == before_size + 1, \
-        f"list size should have grown by 1: {before_size} → {after_size}"
-    step(5, f"PASS — list grew {before_size} → {after_size} after button click")
+        f"list size should have grown by 1: {before_size} -> {after_size}"
+    step(5, f"PASS - list grew {before_size} -> {after_size} after button click")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 6/10  Theme dropdown applies theme
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_theme_change(page):
     step(6, "step 1/3: noting current data-theme attribute")
     initial = page.evaluate("document.documentElement.getAttribute('data-theme')")
 
     step(6, "step 2/3: opening Options modal and changing theme")
-    # Settings gear button — its inner text is the "settings" material icon ligature
+    # Settings gear button - its inner text is the "settings" material icon ligature
     page.get_by_role("button", name="Options").click()
     page.wait_for_selector('select#themeSelect', timeout=3_000)
     # Pick a value different from current
@@ -446,22 +446,22 @@ def test_theme_change(page):
 
     step(6, "step 3/3: verifying data-theme attribute changed")
     after = page.evaluate("document.documentElement.getAttribute('data-theme')")
-    assert after != initial, f"data-theme didn't change: {initial} → {after}"
+    assert after != initial, f"data-theme didn't change: {initial} -> {after}"
 
-    # Restore — SYSTEM is the default install state for fresh signup
+    # Restore - SYSTEM is the default install state for fresh signup
     page.locator('select#themeSelect').select_option("SYSTEM")
     page.wait_for_timeout(200)
     # Close modal by clicking backdrop or close button
     page.keyboard.press("Escape")
     page.wait_for_timeout(200)
-    step(6, f"PASS — theme changed from {initial} to {after}")
+    step(6, f"PASS - theme changed from {initial} to {after}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 7/10  Wheel spin opens result modal (Randomize page, auth required)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_wheel_spin(page, backend: str, frontend: str, token: str):
-    """Verify Randomize page is interactive — wheel renders (if items in
+    """Verify Randomize page is interactive - wheel renders (if items in
     current season) or empty-state shows. Spin if possible, verify modal."""
     step(7, "step 1/3: navigating to /random")
     page.goto(f"{frontend}/random")
@@ -482,7 +482,7 @@ def test_wheel_spin(page, backend: str, frontend: str, token: str):
       return { state: 'unknown', sample: bodyText.slice(0, 200) };
     }""")
     if state.get("state") == "wheel":
-        step(7, "step 3/3: clicking Spin button → expect result modal")
+        step(7, "step 3/3: clicking Spin button -> expect result modal")
         page.evaluate("""() => {
           const b = Array.from(document.querySelectorAll('button'))
             .find(b => (b.textContent || '').trim() === 'Spin');
@@ -492,21 +492,21 @@ def test_wheel_spin(page, backend: str, frontend: str, token: str):
         has_modal = page.locator('button').filter(
             has_text=re.compile(r"mark.*watched|hide.*series", re.I)).count() > 0
         assert has_modal, f"result modal didn't appear after spin"
-        step(7, "PASS — wheel spun, result modal appeared")
+        step(7, "PASS - wheel spun, result modal appeared")
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
     elif state.get("state") == "empty":
-        step(7, "PASS — Randomize page loaded (empty state, no items in season)")
+        step(7, "PASS - Randomize page loaded (empty state, no items in season)")
     else:
         assert False, f"Randomize page in unknown state: {state}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 8/10  Logout clears auth and kicks out of auth-gated pages
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_logout(page, frontend: str):
     step(8, "step 1/3: navigating to Home (ensures no modal overlay) + clicking Logout")
-    # Previous wheel test may have left a result modal open over the header —
+    # Previous wheel test may have left a result modal open over the header -
     # navigate fresh to ensure logout link is clickable
     page.goto(frontend)
     wait_for_grids(page)
@@ -520,19 +520,19 @@ def test_logout(page, frontend: str):
     tok = page.evaluate("localStorage.getItem('token')")
     assert not tok, f"authToken still set after logout: {tok}"
 
-    step(8, "step 3/3: navigating to /random — should redirect/disable")
+    step(8, "step 3/3: navigating to /random - should redirect/disable")
     page.goto(f"{frontend}/random")
     page.wait_for_timeout(1_500)
     # Either we're redirected away, or the page shows a "please log in" state.
     # The simplest check: no wheel SVG rendered.
     wheel_count = page.locator('svg[viewBox="-50 -50 100 100"]').count()
-    assert wheel_count == 0, "wheel still rendered after logout — auth-gate broken"
-    step(8, "PASS — logout cleared token, /random not accessible")
+    assert wheel_count == 0, "wheel still rendered after logout - auth-gate broken"
+    step(8, "PASS - logout cleared token, /random not accessible")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 9/10  Trailer modal Escape closes
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 def test_trailer_modal_escape(page, frontend: str):
     step(9, "step 1/3: returning to Home and opening a trailer")
     page.goto(frontend)
@@ -546,13 +546,13 @@ def test_trailer_modal_escape(page, frontend: str):
     iframe_count = page.locator('iframe[src*="youtube"]').count()
     assert iframe_count > 0, "iframe didn't open"
 
-    step(9, "step 3/4: pressing Escape → expect modal gone")
+    step(9, "step 3/4: pressing Escape -> expect modal gone")
     page.keyboard.press("Escape")
     page.wait_for_timeout(800)
     iframe_after = page.locator('iframe[src*="youtube"]').count()
     # No backdrop-click fallback. This step used to fall back to clicking the
     # backdrop and assert on *that*, so it passed for months while Escape closed
-    # nothing at all — the handler sat on a tabindex="-1" overlay that never
+    # nothing at all - the handler sat on a tabindex="-1" overlay that never
     # received focus. If Escape is broken, this must go red.
     assert iframe_after == 0, (
         f"Escape did not close the trailer modal ({iframe_after} iframes still open). "
@@ -564,23 +564,23 @@ def test_trailer_modal_escape(page, frontend: str):
     page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
     close_btn = page.locator('button[aria-label="Close trailer"]')
     assert close_btn.count() == 1, (
-        "trailer modal has no visible close button — the backdrop was the only "
+        "trailer modal has no visible close button - the backdrop was the only "
         "way out, which is near-invisible on a phone"
     )
     close_btn.click()
     page.wait_for_timeout(600)
     assert page.locator('iframe[src*="youtube"]').count() == 0, "✕ button did not close the modal"
-    step(9, "PASS — Escape and the ✕ button both close the trailer")
+    step(9, "PASS - Escape and the ✕ button both close the trailer")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10/10  Compare page with 2 users — table renders with diff
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 10/10  Compare page with 2 users - table renders with diff
+# -----------------------------------------------------------------------------
 def test_compare_two_users(page, backend: str, frontend: str):
     """Compare must show the right numbers, not merely render.
 
     This used to assert `any(s in body_text for s in ("Compare", "compare",
-    "2nd user", "vs"))`, which passes on a page that rendered no rows at all —
+    "2nd user", "vs"))`, which passes on a page that rendered no rows at all -
     and it never even selected a second user. Both lists are seeded here with
     deliberately different orders so every rank and diff on screen is known in
     advance, and the page is read through `data-compare-row` hooks rather than
@@ -639,12 +639,12 @@ def test_compare_two_users(page, backend: str, frontend: str):
         "() => [...document.querySelectorAll('[data-rank-b]')]"
         ".some(e => e.getAttribute('data-rank-b'))")
     # This is an assertion, not a skip. The picker searches the backend as you
-    # type, so a freshly created user IS findable — that was broken once
+    # type, so a freshly created user IS findable - that was broken once
     # (`bind:searchText` + `on:search`, neither of which svelte-select 5 has),
     # which capped the picker at whatever `/api/users` returns unfiltered and
     # made anyone outside that slice unselectable. Skipping here would hide
     # exactly that regression coming back.
-    assert picked, (f"{user_b} was never offered by the picker — the search box is "
+    assert picked, (f"{user_b} was never offered by the picker - the search box is "
                     f"not querying the backend, so users outside the unfiltered "
                     f"/api/users slice cannot be compared with")
     try:
@@ -668,7 +668,7 @@ def test_compare_two_users(page, backend: str, frontend: str):
         assert (got["a"], got["b"], got["d"]) == (str(want_a), str(want_b), str(want_d)), (
             f"media {media_id}: expected rankA={want_a} rankB={want_b} diff={want_d}, "
             f"got rankA={got['a']} rankB={got['b']} diff={got['d']}")
-    step(10, f"PASS — {len(EXPECTED)} shared rows, ranks and diffs all match the seeded orders")
+    step(10, f"PASS - {len(EXPECTED)} shared rows, ranks and diffs all match the seeded orders")
 
 def test_admin_page(page, backend: str, frontend: str):
     """The admin page and its playback-account picker.
@@ -767,9 +767,9 @@ def test_share_as_image(page, backend: str, frontend: str, token: str):
     step(13, "step 2/3: clicking Share and capturing what it writes")
     # The image is rendered first and `window.open` runs after that await, by
     # which point Chrome no longer treats it as user-activated and blocks the
-    # popup. Stub the window so this tests the part that fails *silently* — the
-    # rendering — rather than the browser's popup policy.
-    # The stub has to answer the whole document API the real code uses —
+    # popup. Stub the window so this tests the part that fails *silently* - the
+    # rendering - rather than the browser's popup policy.
+    # The stub has to answer the whole document API the real code uses -
     # open(), write(), close(). Missing `open` made this look like the feature
     # was broken when the only thing broken was the stub.
     page.evaluate("""() => {
@@ -786,7 +786,7 @@ def test_share_as_image(page, backend: str, frontend: str, token: str):
     try:
         page.wait_for_function("() => window.__shared", timeout=90_000)
     except Exception:
-        raise AssertionError("Share produced nothing — toJpeg most likely resolved to "
+        raise AssertionError("Share produced nothing - toJpeg most likely resolved to "
                              "undefined and the failure was swallowed by its try/catch")
     src = page.evaluate("""() => (window.__shared.match(/src="([^"]+)"/) || [])[1] || ''""")
     assert src.startswith("data:image/jpeg"), (
@@ -834,7 +834,7 @@ def test_no_results_message(page, frontend: str):
     """A search matching nothing must say so.
 
     Every section on Home is gated on `.length`, so a no-match search rendered a
-    completely blank page — indistinguishable from "still loading" or "broken".
+    completely blank page - indistinguishable from "still loading" or "broken".
     """
     step(15, "step 1/3: loading Home and searching for something that can't match")
     page.goto(frontend)
@@ -845,7 +845,7 @@ def test_no_results_message(page, frontend: str):
     step(15, "step 2/3: expecting an explicit no-results message")
     msg = page.locator("[data-no-results]")
     assert msg.count() == 1, (
-        "a no-match search rendered nothing at all — no explanation, no empty state"
+        "a no-match search rendered nothing at all - no explanation, no empty state"
     )
     text = msg.inner_text()
     assert "zzzzznotarealshow" in text, f"message didn't name the search term: {text!r}"
@@ -856,7 +856,7 @@ def test_no_results_message(page, frontend: str):
     assert page.locator("[data-no-results]").count() == 0, \
         "no-results message stayed up after the search was cleared"
     assert page.locator('img[alt]').count() > 0, "grid did not come back"
-    step(15, f"PASS — {text.strip()[:60]!r}")
+    step(15, f"PASS - {text.strip()[:60]!r}")
 
 
 def test_library_unreachable_is_visible(page, backend: str, frontend: str, token: str):
@@ -864,7 +864,7 @@ def test_library_unreachable_is_visible(page, backend: str, frontend: str, token
 
     This is the one failure that was actually reproduced from a real report: no
     Watch buttons anywhere, Hide-Not-in-Library greyed out, nothing on screen
-    explaining it, and no retry — so it looked identical to a healthy library
+    explaining it, and no retry - so it looked identical to a healthy library
     with nothing missing. The batch was failing and the store swallowed it.
     """
     step(17, "step 1/3: seeding a list, then failing every availability lookup")
@@ -876,13 +876,16 @@ def test_library_unreachable_is_visible(page, backend: str, frontend: str, token
                lambda route: route.fulfill(status=502, body="bad gateway"))
     try:
         page.goto(f"{frontend}/random")
-        page.wait_for_timeout(12_000)   # allow the retries to run out
 
         step(17, "step 2/3: the page must name the problem and offer a way back")
-        # Give the failure a real window to surface (the store retries 5xx on
-        # its own budget before setting 'unreachable'), then decide.
+        # One condition poll, not a sleep plus a poll. The store retries 5xx
+        # inside a 30 s budget (`budgetMs` in lib/remote.ts), so that is the
+        # window this has to cover - but it used to cover it as a flat 12 s
+        # wait_for_timeout followed by a 20 s wait_for_selector, which paid the
+        # 12 s on every run including the ones that had already failed. Same
+        # budget, ~12 s cheaper whenever the answer arrives early.
         try:
-            page.wait_for_selector("[data-library-status='unreachable']", timeout=20_000)
+            page.wait_for_selector("[data-library-status='unreachable']", timeout=32_000)
         except Exception:
             pass
         status = page.locator("[data-library-status='unreachable']")
@@ -890,16 +893,16 @@ def test_library_unreachable_is_visible(page, backend: str, frontend: str, token
             # Only the backend can say whether a silent page is legitimate.
             # This used to be inferred from the DOM (no Hide button => "not
             # configured" => skip), which read a slow or partial render as an
-            # unconfigured deploy and silently passed — the mutation audit
+            # unconfigured deploy and silently passed - the mutation audit
             # proved it by deleting the 'unreachable' write and watching this
             # test survive. Ask the source of truth instead.
             r = requests.get(f"{backend}/api/jellyfin/status", timeout=15,
                              headers={"Authorization": f"Bearer {token}"})
             if r.ok and not r.json().get("configured"):
-                step(17, "SKIP — media library not configured on this backend")
+                step(17, "SKIP - media library not configured on this backend")
                 return
             raise AssertionError(
-                "availability lookup failed and the page said nothing — this is "
+                "availability lookup failed and the page said nothing - this is "
                 "indistinguishable from 'everything is in your library', which is "
                 "exactly how a real outage went undiagnosed"
             )
@@ -913,14 +916,14 @@ def test_library_unreachable_is_visible(page, backend: str, frontend: str, token
     page.wait_for_timeout(6000)
     assert not page.locator("[data-library-status='unreachable']").count(), \
         "still reporting unreachable after a successful retry"
-    step(17, "PASS — failure is visible, and Retry clears it")
+    step(17, "PASS - failure is visible, and Retry clears it")
 
 
 def test_hung_backend_does_not_hang_the_page(page, backend: str, frontend: str, token: str):
     """A request that never answers must not spin forever.
 
     There were no AbortSignals anywhere in the frontend, so a hung backend hung
-    the page indefinitely — no error, no timeout, nothing to catch, and nothing
+    the page indefinitely - no error, no timeout, nothing to catch, and nothing
     on screen. That is a different failure from a 502 and the one nothing could
     previously survive.
     """
@@ -934,19 +937,23 @@ def test_hung_backend_does_not_hang_the_page(page, backend: str, frontend: str, 
     try:
         page.goto(f"{frontend}/random")
         step(18, "step 2/2: expecting a reported failure well inside the timeout budget")
-        # 15s timeout, and a timeout is deliberately not retried.
-        page.wait_for_selector("[data-library-status='unreachable']", timeout=45_000)
+        # QUICK is 15 s and a timeout is deliberately never retried, so the
+        # failure is on screen by ~16 s or the guard is gone. The wait is the
+        # audit's single most expensive one - under the mutation the selector
+        # never appears, so this timeout is paid in full - and 45 s bought 30 s
+        # of headroom on a 15 s deadline. 25 s is still a 60% margin.
+        page.wait_for_selector("[data-library-status='unreachable']", timeout=25_000)
     except Exception:
         if not page.locator("button:has-text('Hide Not in Library')").count():
-            step(18, "SKIP — media library not configured on this backend")
+            step(18, "SKIP - media library not configured on this backend")
             return
         raise AssertionError(
             "a hung availability request left the page waiting with nothing on "
-            "screen — this is the failure mode with no upper bound"
+            "screen - this is the failure mode with no upper bound"
         )
     finally:
         page.unroute("**/api/jellyfin/availability/batch**")
-    step(18, "PASS — a hang becomes a reported failure, not an endless spinner")
+    step(18, "PASS - a hang becomes a reported failure, not an endless spinner")
 
 
 def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str):
@@ -954,13 +961,13 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
 
     Hide All updated the list locally then fired the writes with
     `.catch(() => {})`. A failure left the screen showing shows as hidden while
-    the server disagreed — reload and they were all back. Silent data loss.
+    the server disagreed - reload and they were all back. Silent data loss.
 
     Step 4 covers the SINGLE-show toggle separately, because it was a separate
     hole: the bulk paths were fixed after the exploratory pass while the
     per-row eye toggle kept its own fire-and-forget fetch, found months later
     by a comment audit (the comment called it "keeping the code simple").
-    One shared rollback isn't enough to assert once — the toggle used to
+    One shared rollback isn't enough to assert once - the toggle used to
     bypass it entirely.
     """
     step(19, "step 1/4: seeding a visible list")
@@ -977,7 +984,7 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     try:
         hide_all = page.locator("button:text-is('Hide All')")
         if not hide_all.count():
-            step(19, "SKIP — no Hide All control (empty list)")
+            step(19, "SKIP - no Hide All control (empty list)")
             return
         hide_all.first.click()
         # The message clears itself, so poll rather than sleeping past it.
@@ -986,7 +993,7 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
         page.unroute("**/api/list/hidden**")
 
     step(19, "step 3/4: the screen must agree with the server, not just the server")
-    # Assert on the *UI*. The server is trivially correct here — the writes
+    # Assert on the *UI*. The server is trivially correct here - the writes
     # failed, so nothing is hidden there no matter what the page does. The whole
     # bug is the page believing something the server never accepted, so checking
     # the server proves nothing and would pass with the revert deleted.
@@ -996,7 +1003,7 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     assert not [w for w in hidden if w.get("hidden")], "server unexpectedly recorded a hide"
     show_all = page.locator("button:text-is('Show All')")
     assert show_all.count() and show_all.first.is_disabled(), (
-        "the page still shows items as hidden after every write failed — UI and "
+        "the page still shows items as hidden after every write failed - UI and "
         "server have diverged, and a reload will silently undo what was just done"
     )
 
@@ -1013,17 +1020,17 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
             page.wait_for_selector("[data-hide-write-error]", timeout=20_000)
         except Exception:
             raise AssertionError(
-                "single-show hide left applied after a failed write — the eye "
+                "single-show hide left applied after a failed write - the eye "
                 "toggle is the one hide path that used to skip the rollback, and "
                 "a reload will silently undo what the user just did"
             )
         assert show_all.first.is_disabled(), (
-            "single-show hide left applied after a failed write — the message "
+            "single-show hide left applied after a failed write - the message "
             "showed but the item stayed hidden"
         )
     finally:
         page.unroute("**/api/list/hidden**")
-    step(19, "PASS — failed writes reverted and reported, bulk and single")
+    step(19, "PASS - failed writes reverted and reported, bulk and single")
 
 
 def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
@@ -1031,8 +1038,8 @@ def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
 
     It cannot be there, so a lookup can only produce a false positive. Measured
     before this guard: on the season the app opens on by default, *every* match
-    was fuzzy-title and *all* of them were wrong ("Firefly Wedding" → "Firefly",
-    "Dragon Ball Super: Beerus" → "Dragon Ball").
+    was fuzzy-title and *all* of them were wrong ("Firefly Wedding" -> "Firefly",
+    "Dragon Ball Super: Beerus" -> "Dragon Ball").
     """
     step(16, "step 1/4: finding a NOT_YET_RELEASED season to seed from")
     unaired_season, unaired_year, ids = None, None, []
@@ -1046,7 +1053,7 @@ def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
             ids = [a["id"] for a in entries[:3]]
             break
     if not ids:
-        step(16, "SKIP — no season with unaired entries available right now")
+        step(16, "SKIP - no season with unaired entries available right now")
         return
 
     requests.put(f"{backend}/api/list", timeout=15,
@@ -1069,23 +1076,23 @@ def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
 
     step(16, "step 3/4: expecting zero lookups for an unaired season")
     assert not calls, (
-        f"{len(calls)} availability lookup(s) fired for a NOT_YET_RELEASED season — "
+        f"{len(calls)} availability lookup(s) fired for a NOT_YET_RELEASED season - "
         "the isUnaired() gate in stores/jellyfin.ts is not holding, so fuzzy title "
         "matching will offer the wrong series"
     )
 
     step(16, "step 4/4: unaired shows must not light 'Hide Not in Library'")
     # notAired is `available: false` with `unknown` falsy, so a writer guarding
-    # only `unknown` records every unaired show as confirmed-missing — and the
+    # only `unknown` records every unaired show as confirmed-missing - and the
     # button enables with a tooltip promising hides it cannot perform. The hide
     # action itself always filtered notAired; this is the button state lying.
     hide = page.locator("button", has_text="Hide Not in Library")
     if hide.count():
         assert hide.first.is_disabled(), (
-            "'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED shows — "
+            "'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED shows - "
             "notAired verdicts are being recorded as 'not in library'"
         )
-    step(16, f"PASS — 0 availability lookups across {len(ids)} unaired shows, "
+    step(16, f"PASS - 0 availability lookups across {len(ids)} unaired shows, "
              f"hide control {'disabled' if hide.count() else 'not offered'}")
 
 
@@ -1094,19 +1101,19 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
 
     `verdictFor` accepts an exact title without any air date having vouched for
     it, and the sweep stores that with pending=false. Before the fourth clause
-    of the review filter, such a row failed every branch — the page's empty
+    of the review filter, such a row failed every branch - the page's empty
     state actively said nothing needed review while a wrong exact-title
-    collision (two works genuinely sharing a name — `The Last Blossom` →
+    collision (two works genuinely sharing a name - `The Last Blossom` ->
     *House* was this shape) sat permanent and invisible.
     """
     step(20, "step 1/6: minting an admin token")
     tok = admin_token()
     if not tok:
-        step(20, "SKIP — could not sign an admin token (node or backend/.env missing)")
+        step(20, "SKIP - could not sign an admin token (node or backend/.env missing)")
         return
     ah = {"Authorization": f"Bearer {tok}"}
     # The seeded entry must be one the library does NOT hold at all. A held or
-    # title-matched show is surfaced by the older filter clauses anyway — the
+    # title-matched show is surfaced by the older filter clauses anyway - the
     # first version of this test seeded one and kept passing with the new
     # clause deleted, which is exactly the vacuous pass it exists to prevent.
     r = requests.get(f"{backend}/api/anime",
@@ -1122,7 +1129,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
     verdicts = a.json() if a.status_code == 200 else {}
 
     # The marker makes THIS row findable among real resolver rows the dev DB
-    # may hold — the note renders verbatim next to the "our lookup" badge.
+    # may hold - the note renders verbatim next to the "our lookup" badge.
     marker = "ui-test-seed"
     step(20, "step 2/6: seeding a remote title-text accept the older clauses can't see")
     mid = None
@@ -1132,7 +1139,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
                 and not v.get("libraryTitle")):
             continue
         cand, titles = s["id"], next(i["titles"] for i in items if i["mediaId"] == s["id"])
-        # The page renders english-else-romaji as the row title — the locator
+        # The page renders english-else-romaji as the row title - the locator
         # anchor. (A marker in the note used to serve this, until the raw note
         # stopped being rendered as text.)
         seed_title = ((s.get("title") or {}).get("english")
@@ -1144,8 +1151,8 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             f"could not seed the identity row: {w.status_code} {w.text[:120]}"
         # Verify the seeded row really is invisible to the OLDER clauses. A
         # remote id is positive-only, so seeding it revives the title tier, and
-        # an entry that prefix-matches its own franchise (the Madoka film → the
-        # Madoka series) comes back matchedBy='title' — which the title-only
+        # an entry that prefix-matches its own franchise (the Madoka film -> the
+        # Madoka series) comes back matchedBy='title' - which the title-only
         # clause already lists. 133007 did exactly that, and the first version
         # of this test kept passing with the new clause deleted.
         chk = requests.post(f"{backend}/api/jellyfin/availability", headers=ah, timeout=60,
@@ -1155,7 +1162,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             break
         requests.delete(f"{backend}/api/jellyfin/identity/{cand}", headers=ah, timeout=15)
     if mid is None:
-        step(20, "SKIP — no season entry stays fully unmatched once seeded")
+        step(20, "SKIP - no season entry stays fully unmatched once seeded")
         return
     try:
         step(20, "step 3/6: the row must appear in the review list")
@@ -1166,26 +1173,26 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         page.wait_for_selector("[data-matching-list], [data-matching-empty], [data-matching-error]",
                                timeout=30_000)
         page.wait_for_timeout(1000)
-        # The sweep status line renders in one of its two states ("last ran…"
-        # or "hasn't completed a run yet") — without it the daily resolver has
+        # The sweep status line renders in one of its two states ("last ran..."
+        # or "hasn't completed a run yet") - without it the daily resolver has
         # no admin-visible trace at all, which is how three of its bugs stayed
         # invisible.
         assert page.locator("[data-sweep-status]").count(), (
-            "no resolver-sweep status line on /admin/matching — the daily sweep is "
+            "no resolver-sweep status line on /admin/matching - the daily sweep is "
             "invisible to the admin again")
         # The stats tiles: season match health + the auto-search queue's
         # standing (never searched / cooldown / retired). Presence + both
-        # group labels — the numbers are live season data and not stable.
+        # group labels - the numbers are live season data and not stable.
         stats_el = page.locator("[data-matching-stats]")
         assert stats_el.count(), (
-            "no stats block on /admin/matching — the season's match health and "
+            "no stats block on /admin/matching - the season's match health and "
             "the auto-search queue are invisible again")
         stats_text = (stats_el.text_content() or "").lower()
         # Both scopes must render: the season on screen and the all-seasons
         # row the sweep status feeds. One without the other is half a summary.
         assert "entries" in stats_text and "all seasons" in stats_text, (
             f"stats block is missing a scope row (got: {stats_text[:120]!r})")
-        # The Run-sweep button must visibly enter a running state on click —
+        # The Run-sweep button must visibly enter a running state on click -
         # a button that fires and changes nothing is this page's version of
         # the fire-and-forget hide toggle. The POST is stubbed: a real drain
         # sweep from a test would hammer skyhook/TMDB for minutes.
@@ -1199,12 +1206,12 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             btn.click()
             page.wait_for_timeout(300)
             assert btn.is_disabled(), (
-                "Run sweep now did not enter its running state after the click — "
+                "Run sweep now did not enter its running state after the click - "
                 "the admin can't tell a triggered sweep from a dead button")
         finally:
             page.unroute(SWEEP_ROUTE)
             # Stop the completion poll the click started (it would tick against
-            # the real backend for the rest of the file) — navigation destroys
+            # the real backend for the rest of the file) - navigation destroys
             # the component and its interval.
             page.goto(f"{frontend}/admin/matching")
             page.wait_for_selector(
@@ -1213,15 +1220,15 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             page.wait_for_timeout(500)
         # The admin trusts resolver accepts: the default queue must NOT hold
         # them (low priority was the ask), and the second filter option is
-        # where they live — reachable, never invisible.
+        # where they live - reachable, never invisible.
         assert not page.locator("[data-matching-list] li", has_text=seed_title).count(), (
-            "a resolver accept sits in the default 'Needs attention' queue — these "
+            "a resolver accept sits in the default 'Needs attention' queue - these "
             "are trusted and belong behind the unverified-auto-matches filter")
         page.locator("[data-filter-mode]").select_option("attention+accepts")
         page.wait_for_timeout(500)
         row = page.locator("[data-matching-list] li", has_text=seed_title)
         assert row.count(), (
-            "remote-accepted row is invisible on /admin/matching — an accept decided "
+            "remote-accepted row is invisible on /admin/matching - an accept decided "
             "on title text alone is unreachable under every filter, and the empty "
             "state says nothing needs looking at")
 
@@ -1235,7 +1242,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             status=200, content_type="application/json", body=LOOKUP_BODY))
         try:
             # The control opens a Sonarr-style dropdown, prefilled with the
-            # entry's own title and searched immediately — the intercepted
+            # entry's own title and searched immediately - the intercepted
             # route answers with the deterministic result.
             row.first.locator("[data-match-control]").click()
             page.wait_for_selector("[data-match-dropdown]", timeout=10_000)
@@ -1251,14 +1258,14 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             assert "242424" in pair, (
                 f"the full id pair is not on the control's hover title ({pair!r})")
             assert row.first.locator("[data-match-changed]").count(), (
-                "no 'changed — Confirm saves as manual' indicator after picking a "
+                "no 'changed - Confirm saves as manual' indicator after picking a "
                 "different match")
-            # Picking must FILL, never save — Confirm is the act of agreement.
+            # Picking must FILL, never save - Confirm is the act of agreement.
             got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
                                 timeout=20, json={"mediaIds": [mid]}).json()
             pre = (got.get("identities") or {}).get(str(mid)) or {}
             assert pre.get("tvdbId") == "99999998", (
-                "picking a lookup result wrote the override by itself — Confirm must "
+                "picking a lookup result wrote the override by itself - Confirm must "
                 "stay the act of agreement")
             row.first.locator("button[aria-label^='Reset']").click()
             page.wait_for_timeout(300)
@@ -1274,14 +1281,14 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             "confirming the row did not remove it from the review list"
         # And the click must not have relabelled it: the id boxes are PREFILLED
         # with the stored ids, so an untouched Confirm has to keep the
-        # resolver's provenance — "typed" means "changed", not "non-empty".
+        # resolver's provenance - "typed" means "changed", not "non-empty".
         # The first version of the handler got this wrong and every id-bearing
         # confirm arrived as source:'manual', note:null.
         got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
                             timeout=20, json={"mediaIds": [mid]}).json()
         confirmed_row = (got.get("identities") or {}).get(str(mid)) or {}
         assert confirmed_row.get("source") == "remote", (
-            "confirming an untouched suggestion relabelled it manual — the prefilled "
+            "confirming an untouched suggestion relabelled it manual - the prefilled "
             f"id boxes are being read as hand-typed (source={confirmed_row.get('source')!r})")
 
         step(20, "step 6/6: a looked-up Confirm writes the picked ids as manual")
@@ -1316,7 +1323,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
 
             # Last, because it rewrites the row: the state column must never
             # name a rung that didn't fire. A row stored as `remote: unverified`
-            # was told it matched "on exact title" — 81 rows saying so against
+            # was told it matched "on exact title" - 81 rows saying so against
             # the 13 that used that rung. Seeded pending, which is the branch a
             # suggestion nothing verified actually renders through.
             requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
@@ -1329,23 +1336,23 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
                    .first.text_content() or "").lower()
             assert "exact title" not in unv, (
                 "a row nothing could verify still claims it matched on an exact "
-                f"title — the state column is naming a rung that never fired: {unv[:160]!r}")
+                f"title - the state column is naming a rung that never fired: {unv[:160]!r}")
             assert "nothing could verify it" in unv, (
-                "an unverifiable suggestion gives no reason at all — the reviewer "
+                "an unverifiable suggestion gives no reason at all - the reviewer "
                 f"is asked to judge it with no evidence on screen: {unv[:160]!r}")
         finally:
             page.unroute(LOOKUP_ROUTE)
     finally:
         requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
-    step(20, "PASS — a title-text remote accept is listed, the lookup fills without "
+    step(20, "PASS - a title-text remote accept is listed, the lookup fills without "
              "saving, and Confirm settles both paths with the right provenance")
 
 
 def test_check_batch_chunked(page, frontend: str):
-    """More than 100 video ids must arrive in ≤100-id chunks, none dropped.
+    """More than 100 video ids must arrive in <=100-id chunks, none dropped.
 
-    Home used to post [...current, ...prev] in one request — 126 on a full
-    season — and the route does `.slice(0, 100)`: the tail was silently
+    Home used to post [...current, ...prev] in one request - 126 on a full
+    season - and the route does `.slice(0, 100)`: the tail was silently
     dropped, six of those shows had English CC already recorded, and each one
     started a needless Whisper translation when opened.
     """
@@ -1375,19 +1382,19 @@ def test_check_batch_chunked(page, frontend: str):
         ids.update(vids)
     assert sizes, "no check-batch request fired at all"
     assert max(sizes) <= 100, (
-        f"a check-batch request carried {max(sizes)} ids — the server slices at 100 "
+        f"a check-batch request carried {max(sizes)} ids - the server slices at 100 "
         "and silently drops the tail")
     if len(ids) > 100:
         assert len(sizes) >= 2, (
-            f"{len(ids)} unique ids but one request — everything past 100 was dropped")
-    step(21, f"PASS — {len(ids)} ids across {len(sizes)} request(s), all within the cap "
+            f"{len(ids)} unique ids but one request - everything past 100 was dropped")
+    step(21, f"PASS - {len(ids)} ids across {len(sizes)} request(s), all within the cap "
              f"({'chunking exercised' if len(ids) > 100 else 'season small enough for one chunk'})")
 
 
 def test_translation_error_visible(page, frontend: str):
     """A failed translation stream must say so on screen.
 
-    "Server busy" was written for a human and only ever reached the console —
+    "Server busy" was written for a human and only ever reached the console -
     the viewer just saw subtitles never arrive, indistinguishable from a slow
     translation. The fix is a transient chip by the CC toggle.
     """
@@ -1398,7 +1405,7 @@ def test_translation_error_visible(page, frontend: str):
         status=200, content_type="application/json",
         body='{"hasEnglish": false, "subtitlesDisabled": false, "hasCachedSegments": false}'))
     # The stream reports failure IN-BAND: an SSE message carrying {error}, on a
-    # 200 — that is what the chip's handler reads. A plain 503 here only
+    # 200 - that is what the chip's handler reads. A plain 503 here only
     # triggers EventSource's silent reconnect and exercises nothing.
     page.route("**/api/translate/stream**", lambda r: r.fulfill(
         status=200, content_type="text/event-stream",
@@ -1417,37 +1424,52 @@ def test_translation_error_visible(page, frontend: str):
         page.unroute("**/api/translate/stream**")
         page.unroute("**/api/translate/check?**")
         page.unroute("**/api/translate/check-batch**")
-    step(22, "PASS — a failed stream renders 'Subtitles unavailable' on screen")
+    step(22, "PASS - a failed stream renders 'Subtitles unavailable' on screen")
 
 
 def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
     """On a phone, the My List sidebar must not cover the page on load.
 
     Measured at 375×667 before the fix: the <aside> was 375×667 at (0,0),
-    opaque, and 25/25 sampled viewport points landed on it — every fresh load
+    opaque, and 25/25 sampled viewport points landed on it - every fresh load
     required dismissing it before anything else was usable.
     """
-    step(23, "step 1/2: seeding a list and loading Home at 375×667")
+    step(23, "step 1/3: a desktop-width visit - the state a phone load must survive")
     seed_list(backend, token, season_ids(backend, 3))
     original = page.viewport_size
-    page.set_viewport_size({"width": 375, "height": 667})
+    # This visit used to be INHERITED: the desktop flows simply ran first, and
+    # the second half of this bug (a desktop visit persisting the width default
+    # as though the user had chosen it) only reproduces once one has. That made
+    # the flow unrunnable alone - it passed with its mutation applied - so its
+    # two rows were the last in the audit still paying for all 25 flows, ~4.7 min
+    # between them. Doing the desktop visit here costs a page load and makes the
+    # dependency the flow's own, which is also the honest reading: the bug IS
+    # "someone opened it on a desktop once".
+    page.set_viewport_size({"width": 1280, "height": 800})
     try:
         page.goto(frontend)
         page.evaluate("t => localStorage.setItem('token', t)", token)
         pin_season(page)
         page.goto(frontend)
         wait_for_grids(page)
+        # The prefs write is reactive, not awaited by anything on screen.
+        page.wait_for_timeout(1500)
 
-        step(23, "step 2/2: the viewport centre must not be the sidebar")
+        step(23, "step 2/3: now load Home at 375×667")
+        page.set_viewport_size({"width": 375, "height": 667})
+        page.goto(frontend)
+        wait_for_grids(page)
+
+        step(23, "step 3/3: the viewport centre must not be the sidebar")
         covered = page.evaluate(
             "() => { const el = document.elementFromPoint(187, 333);"
             " return !!(el && el.closest('aside')); }")
         assert not covered, (
-            "the My List sidebar covers the viewport centre on a 375px phone load — "
+            "the My List sidebar covers the viewport centre on a 375px phone load - "
             "`collapsed` is not defaulting to true below the sm breakpoint")
     finally:
         page.set_viewport_size(original)
-    step(23, "PASS — sidebar starts collapsed on a phone-sized viewport")
+    step(23, "PASS - sidebar starts collapsed on a phone load that follows a desktop one")
 
 
 def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token: str):
@@ -1456,7 +1478,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     /admin/matching can fix a wrong match and nobody goes there; the Watch
     pop-up is where it's noticed every season. The backend contract (the 409
     over an admin decision, the write, the provenance) is test_jellyfin step
-    13 — what this guards is the wiring in between: that the control exists for
+    13 - what this guards is the wiring in between: that the control exists for
     a logged-in viewer, that it searches the LIBRARY, and that choosing an
     option actually fires the write rather than being a dead button.
 
@@ -1464,7 +1486,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     leave the suite's own dev deployment altered.
     """
     step(25, "step 1/3: seed an entry whose identity is UNCERTAIN")
-    # The picker is deliberately ABSENT when we know the show — a community-map
+    # The picker is deliberately ABSENT when we know the show - a community-map
     # id or a human decision needs no correcting. Most of a season is confident,
     # so hunting the wheel for an uncertain entry skipped this test on every
     # run: it asserted nothing while reporting a pass. Seed the condition
@@ -1472,13 +1494,13 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     # the picker exists for.
     admin = admin_token()
     if not admin:
-        step(25, "SKIP — could not sign an admin token to seed an uncertain row")
+        step(25, "SKIP - could not sign an admin token to seed an uncertain row")
         return
     ah = {"Authorization": f"Bearer {admin}"}
     shows = requests.get(f"{backend}/api/anime?season={SEEDED_SEASON}&year={SEEDED_YEAR}",
                          timeout=200).json()
     if not shows:
-        step(25, "SKIP — the seeded season returned no entries")
+        step(25, "SKIP - the seeded season returned no entries")
         return
     target = shows[0]
     mid = target["id"]
@@ -1503,13 +1525,13 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
         " if (!el) return false; el.click(); return true; }", seed_title)
     if not clicked:
         unseed()
-        step(25, "SKIP — the seeded entry did not appear on the wheel")
+        step(25, "SKIP - the seeded entry did not appear on the wheel")
         return
     try:
         page.wait_for_selector("[data-pick-open]", timeout=20_000)
     except Exception:
         unseed()
-        step(25, "SKIP — no availability verdict for the seeded entry")
+        step(25, "SKIP - no availability verdict for the seeded entry")
         return
 
     step(25, "step 2/3: the picker offers LIBRARY items, not resolver candidates")
@@ -1518,7 +1540,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     page.wait_for_timeout(3000)
     # The picker must say what the entry resolves to RIGHT NOW. Without it the
     # list is options with no indication which is live, so a viewer cannot tell
-    # a correction from a no-op — and the prefilled search usually surfaces the
+    # a correction from a no-op - and the prefilled search usually surfaces the
     # current match first, making that ambiguity the default view.
     current = (page.locator("[data-pick-current]").text_content() or "").strip()
     assert current, "the picker does not say what the entry is currently matched to"
@@ -1527,23 +1549,23 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     opts = page.locator("[data-pick-results] li button")
     if not opts.count():
         unseed()
-        step(25, "SKIP — the library returned no candidates for this title")
+        step(25, "SKIP - the library returned no candidates for this title")
         return
 
     # Enter belongs to the search box while picking. `handleModalKey` is a
     # WINDOW listener that marks the show watched and closes the pop-up, so
     # typing a query and pressing Enter used to mark-watch the very show being
-    # corrected — the trap the player already guards against, reached from a
+    # corrected - the trap the player already guards against, reached from a
     # second direction. A search with no hits is used deliberately: the failure
     # was reported while looking at exactly that empty state.
     page.locator("[data-pick-input]").fill("zzz no such show zzz")
     page.keyboard.press("Enter")
     page.wait_for_timeout(800)
     assert page.locator("[data-pick-dropdown]").count(), (
-        "Enter in the library search closed the picker — the window-level modal "
+        "Enter in the library search closed the picker - the window-level modal "
         "key handler is still marking the show watched out from under it")
     assert "no match for" in (page.locator("[data-pick-results]").text_content() or "").lower(), (
-        "an empty library search says nothing about why — it reads as a broken "
+        "an empty library search says nothing about why - it reads as a broken "
         "search rather than a show the library doesn't have")
 
     step(25, "step 3/3: choosing an option fires the write and closes the picker")
@@ -1552,7 +1574,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     page.wait_for_timeout(3000)
     if not opts.count():
         unseed()
-        step(25, "SKIP — results did not return after the keyboard check")
+        step(25, "SKIP - results did not return after the keyboard check")
         return
     PICK_ROUTE = "**/api/jellyfin/identity/pick"
     page.route(PICK_ROUTE, lambda rt: rt.fulfill(
@@ -1561,24 +1583,24 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
         opts.first.click()
         page.wait_for_timeout(2500)
         assert not page.locator("[data-pick-dropdown]").count(), (
-            "picking a library item left the picker open — the click did not run "
+            "picking a library item left the picker open - the click did not run "
             "its handler, which is a dead button wearing a working one's clothes")
     finally:
         page.unroute(PICK_ROUTE)
         unseed()
-    step(25, "PASS — the picker searches the library and a choice fires the write")
+    step(25, "PASS - the picker searches the library and a choice fires the write")
 
 
 def test_guest_options_and_compare_warning(page, frontend: str):
     """The 'small three' remnants: a guest's options must mirror to
     localStorage (a theme choice used to survive only until reload), and
-    Compare must say "No user named …" for a typo'd username instead of
+    Compare must say "No user named ..." for a typo'd username instead of
     rendering silently nothing.
     """
     step(24, "step 1/2: a guest theme choice must land in localStorage")
     page.goto(frontend)
     # The guest check needs a logged-out page, but Compare below needs the
-    # session back — /compare renders no picker for guests.
+    # session back - /compare renders no picker for guests.
     prior_token = page.evaluate("localStorage.getItem('token')")
     prior_name = page.evaluate("localStorage.getItem('username')")
     page.evaluate("localStorage.removeItem('token'); localStorage.removeItem('username');"
@@ -1590,7 +1612,7 @@ def test_guest_options_and_compare_warning(page, frontend: str):
     page.wait_for_timeout(500)
     stored = page.evaluate("JSON.parse(localStorage.getItem('options') || 'null')")
     assert stored and stored.get("theme") == "NIGHT", (
-        f"a guest's theme choice did not reach localStorage (stored={stored!r}) — "
+        f"a guest's theme choice did not reach localStorage (stored={stored!r}) - "
         "it will silently revert on the next load")
     page.locator("select#themeSelect").select_option("SYSTEM")
     page.keyboard.press("Escape")
@@ -1610,17 +1632,17 @@ def test_guest_options_and_compare_warning(page, frontend: str):
     page.wait_for_selector("[data-unknown-user]", timeout=15_000)
     body = page.evaluate("document.body.textContent || ''")
     assert "No user named" in body, (
-        "a typo'd second user renders silently as nothing — indistinguishable "
+        "a typo'd second user renders silently as nothing - indistinguishable "
         "from the user having no list at all")
-    step(24, "PASS — guest options persist, and a missing user is named on screen")
+    step(24, "PASS - guest options persist, and a missing user is named on screen")
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Flows that behave IDENTICALLY run alone — the only ones `--only-flows` accepts.
+# Flows that behave IDENTICALLY run alone - the only ones `--only-flows` accepts.
 #
 # The selector exists because the mutation audit re-runs this whole file twice
 # per UI row, which is about half the audit's wall clock. It is deliberately an
@@ -1629,24 +1651,28 @@ def test_guest_options_and_compare_warning(page, frontend: str):
 # cost and silently hollowed out six of fourteen rows, whose setup lived in the
 # steps being skipped.
 #
-# Each flow below mints its own auth, seeds its own list, pins its own season
-# and navigates itself. Everything NOT here depends on something a predecessor
-# left behind, and the dependency is rarely visible in the flow's own body:
+# Each flow below seeds its own list, pins its own season and navigates itself,
+# on top of the session `main()` always mints before the first flow runs.
+# Everything NOT here depends on something a predecessor left behind, and the
+# dependency is rarely visible in the flow's own body:
 #
 #   - "search filter", "hide 18+ filter", "watched trailer btn", "theme
-#     dropdown" never navigate or authenticate at all — they act on whatever
-#     page the previous flow left, and several restore state FOR later flows
-#     (the search box is cleared, the season is put back).
-#   - about a dozen more read the session `main()` created rather than setting
-#     one, so they work alone only by accident of that token still existing.
-#   - "phone sidebar collapsed" is the dangerous one: run alone it PASSES with
-#     its mutation applied. The bug needs a desktop-width visit to have
-#     persisted a width preference first, which only happens because earlier
-#     flows ran. Isolated, it is green either way — a vacuous row, which is
-#     the `--only-steps` failure repeating in a new file.
+#     dropdown" never navigate at all - they act on whatever page the previous
+#     flow left, and several restore state FOR later flows (the search box is
+#     cleared, the season is put back).
+#   - "logout" deliberately destroys the session the flows after it re-mint.
+#
+# "phone sidebar collapsed" is why this is an allowlist and not a free filter.
+# It used to be green in isolation WITH its mutation applied, because the bug
+# needs a desktop-width visit to have persisted a width preference and it was
+# relying on the desktop flows happening to run first. The fix was to give the
+# flow that visit of its own rather than to keep it off this list - an inherited
+# precondition is a bug in the flow, not a property of the suite. It is only
+# here because both its rows were then watched to fail under the narrowed run.
 #
 # Before adding a label here: run it alone, then run it alone WITH its
-# mutation applied, and confirm it still fails. Passing alone is not enough.
+# mutation applied, and confirm it still fails. Passing alone is not enough -
+# every flow below has been watched BOTH ways.
 SELECTABLE_FLOWS = {
     "compare 2 users",
     "admin page",
@@ -1656,6 +1682,14 @@ SELECTABLE_FLOWS = {
     "translation error visible",
     "trailer modal esc",
     "viewer picks the right show",
+    "no-results message",
+    "unaired not looked up",
+    "library unreachable visible",
+    "hung backend reported",
+    "failed hide write reverts",
+    "check-batch chunked",
+    "guest options + compare warning",
+    "phone sidebar collapsed",
 }
 
 
@@ -1675,7 +1709,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     frontend = args.frontend.rstrip("/")
-    print(f"UI interaction smoke test — {frontend}", flush=True)
+    print(f"UI interaction smoke test - {frontend}", flush=True)
 
     failed = 0
     ran = 0
@@ -1723,14 +1757,14 @@ def main():
                 known = {label for label, _ in tests}
                 unknown = [w for w in want if w not in known]
                 if unknown:
-                    print(f"  unknown flow label(s): {unknown} — known labels are "
+                    print(f"  unknown flow label(s): {unknown} - known labels are "
                           f"{sorted(known)}", flush=True)
                     sys.exit(2)
                 blocked = [w for w in want if w not in SELECTABLE_FLOWS]
                 if blocked:
                     # Refusing is the whole point: a flow that inherits state
                     # can pass alone while proving nothing.
-                    print(f"  refusing to run {blocked} in isolation — those flows "
+                    print(f"  refusing to run {blocked} in isolation - those flows "
                           f"depend on state earlier flows leave behind, and would "
                           f"pass vacuously. See SELECTABLE_FLOWS.", flush=True)
                     sys.exit(2)
@@ -1742,16 +1776,16 @@ def main():
                 try:
                     fn()
                 except AssertionError as e:
-                    print(f"  FAIL [{label}] — {e}", flush=True)
+                    print(f"  FAIL [{label}] - {e}", flush=True)
                     failed += 1
                 except Exception as e:
-                    print(f"  ERROR [{label}] — {type(e).__name__}: {e}", flush=True)
+                    print(f"  ERROR [{label}] - {type(e).__name__}: {e}", flush=True)
                     failed += 1
         finally:
             browser.close()
 
     # Report against what actually RAN. Printing "25/25" after a one-flow
-    # selection is how a narrowed run gets mistaken for full coverage — and the
+    # selection is how a narrowed run gets mistaken for full coverage - and the
     # mutation audit reads this line.
     total = ran or TOTAL
     if failed:

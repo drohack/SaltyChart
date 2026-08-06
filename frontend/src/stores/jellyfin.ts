@@ -4,7 +4,7 @@ import { apiFetch, apiJson, QUICK } from '../lib/remote';
 
 /**
  * Whether the logged-in user is the admin (null = probe in flight). Rides
- * along on the once-per-login /api/jellyfin/status probe below — deliberately
+ * along on the once-per-login /api/jellyfin/status probe below - deliberately
  * NOT its own fetch against an admin-only endpoint, which would log a 403
  * console error for every regular user.
  */
@@ -12,11 +12,11 @@ export const isAdmin = writable<boolean | null>(null);
 
 export interface MediaAvailability {
   available: boolean;
-  /** True when the lookup failed (server slow/unreachable) — NOT "not present". */
+  /** True when the lookup failed (server slow/unreachable) - NOT "not present". */
   unknown?: boolean;
   /**
    * The series hasn't aired yet, so it was never looked up. Distinct from
-   * `available: false` on its own, which means "we asked and it isn't there" —
+   * `available: false` on its own, which means "we asked and it isn't there" -
    * bulk actions must not treat this as missing. See `isUnaired`.
    */
   notAired?: boolean;
@@ -28,17 +28,17 @@ export interface MediaAvailability {
   /** Season/episode the player will start at (e.g. 3 / 1 for a "3rd Season" entry). */
   seasonNumber?: number | null;
   episodeNumber?: number | null;
-  /** Matched library title — shown in the UI so a bad match is visible. */
+  /** Matched library title - shown in the UI so a bad match is visible. */
   libraryTitle?: string;
   /**
-   * How the match was made. `id` is an AniList→TVDB→library id chain and is
+   * How the match was made. `id` is an AniList->TVDB->library id chain and is
    * exact; `title` is fuzzy string matching, which has produced a real false
    * positive (a 2026 entry matching a 2004 series of similar name). The UI
    * marks `title` matches, and bulk actions refuse to act on them.
    */
   matchedBy?: 'id' | 'title';
   /**
-   * Do we actually KNOW which show this is — a community-map id, a human
+   * Do we actually KNOW which show this is - a community-map id, a human
    * decision, or a hand-written override?
    *
    * False for a resolver guess or a title match. The viewer's correction
@@ -50,8 +50,8 @@ export interface MediaAvailability {
    * The id behind an `id` match was *guessed* by the remote resolver rather than
    * supplied by the community map or confirmed by a human.
    *
-   * It still shows a Watch button — the id is positive-only, so it can only ever
-   * add one — but it carries the same warning a partial title match does. An
+   * It still shows a Watch button - the id is positive-only, so it can only ever
+   * add one - but it carries the same warning a partial title match does. An
    * unmarked guess presented as fact is exactly what the confidence markers
    * exist to prevent.
    */
@@ -60,15 +60,15 @@ export interface MediaAvailability {
    * Which fuzzy tier matched: 0 exact, 1 prefix. Only set when
    * `matchedBy === 'title'`. Tier 0 is a normalised exact hit and is treated as
    * confirmed; the false positives this warning exists for were all tier 1.
-   * (A contains-anywhere tier 2 existed and was removed backend-side — 9 fired,
-   * 9 wrong — so 2 can never arrive on the wire.)
+   * (A contains-anywhere tier 2 existed and was removed backend-side - 9 fired,
+   * 9 wrong - so 2 can never arrive on the wire.)
    */
   titleTier?: 0 | 1;
 }
 
 /**
  * Whether the server has a media library configured (null = unknown).
- * When false (or logged out) every library UI element stays hidden — that's
+ * When false (or logged out) every library UI element stays hidden - that's
  * the entire "non-Jellyfin deploy shows nothing" mechanism.
  */
 export const mediaConfigured = writable<boolean | null>(null);
@@ -88,7 +88,7 @@ export const libraryStatus = writable<LibraryStatus>('idle');
 
 let _statusCheckedFor: string | null = null;
 
-// Declared before the subscribe below — svelte stores invoke the subscriber
+// Declared before the subscribe below - svelte stores invoke the subscriber
 // synchronously on registration, and the logged-out branch clears these.
 const _availabilityCache = new Map<number, MediaAvailability>();
 const _inFlight = new Map<number, Promise<MediaAvailability>>();
@@ -110,7 +110,7 @@ authToken.subscribe((tok) => {
   /**
    * Probe whether a library is configured, retrying until we get a real answer.
    *
-   * "Couldn't ask" is not "there is no library" — the same distinction
+   * "Couldn't ask" is not "there is no library" - the same distinction
    * `unknown` already makes for availability, which this probe was missing.
    * It used to latch `_statusCheckedFor` *before* the request and treat any
    * failure (including a non-200) as `configured: false`, so a single blip
@@ -138,7 +138,7 @@ authToken.subscribe((tok) => {
       // Give up loudly rather than pretending there's no library: leaving
       // `mediaConfigured` null keeps the UI in its "still figuring this out"
       // state instead of asserting a wrong answer for the whole session, which
-      // is what latching `false` used to do — and it never recovered without a
+      // is what latching `false` used to do - and it never recovered without a
       // reload, even once the server came back.
       console.warn('[jellyfin] status probe failed; library UI stays hidden until reload');
     });
@@ -158,14 +158,14 @@ export interface AiringInfo {
  *
  * A show that hasn't aired cannot be in the library, so asking about it can only
  * ever produce a false positive. Measured on the season the app opens on by
- * default (the look-ahead can land on an unaired season): the AniList→TVDB map has no
+ * default (the look-ahead can land on an unaired season): the AniList->TVDB map has no
  * entries for brand-new shows, so every match fell through to fuzzy titles and
- * *all* of them were wrong — "Firefly Wedding" → the 2002 series "Firefly",
- * "Dragon Ball Super: Beerus" → "Dragon Ball". FALL 2026 was 83/83
+ * *all* of them were wrong - "Firefly Wedding" -> the 2002 series "Firefly",
+ * "Dragon Ball Super: Beerus" -> "Dragon Ball". FALL 2026 was 83/83
  * NOT_YET_RELEASED; SPRING 2026 had none, so aired seasons are unaffected.
  *
  * `status` is authoritative when present. `startDate` is the fallback and is
- * routinely partial (`{year: 2026, month: 10, day: null}`) — a missing month or
+ * routinely partial (`{year: 2026, month: 10, day: null}`) - a missing month or
  * day is treated as the earliest possible, so a show is only called unaired when
  * even its earliest possible date is still in the future.
  */
@@ -184,7 +184,7 @@ export function isUnaired(info?: AiringInfo | null, now: Date = new Date()): boo
  * Resolves to `unknown` on any error.
  *
  * `fresh: true` bypasses both the client cache and the server's negative
- * cache — used when a popup opens on a "not available" result, so a
+ * cache - used when a popup opens on a "not available" result, so a
  * just-downloaded show appears without waiting out cache TTLs.
  */
 export function checkAvailability(
@@ -196,7 +196,7 @@ export function checkAvailability(
   const tok = get(authToken);
   if (!tok || get(mediaConfigured) === false) return Promise.resolve(NOT_AVAILABLE);
 
-  // Never ask about a show that hasn't aired — see `isUnaired`. Deliberately
+  // Never ask about a show that hasn't aired - see `isUnaired`. Deliberately
   // ahead of the cache and not written to it: this is a fact about the calendar,
   // not about the library, so it must be re-derived rather than pinned for the
   // session (a show can start airing while the tab is open).
@@ -219,14 +219,14 @@ export function checkAvailability(
         titles: titles.filter(Boolean).slice(0, 10),
         ...(fresh ? { fresh: true } : {}),
         // Lets the server pick the episode by air date rather than by parsing a
-        // season number out of the title — see `getFirstEpisode`.
+        // season number out of the title - see `getFirstEpisode`.
         ...(airing?.startDate ? { startDate: airing.startDate } : {}),
       }),
     },
     { label: 'availability', timeoutMs: QUICK }
   )
     .then((data: MediaAvailability) => {
-      // Never cache "we couldn't ask" — otherwise one slow moment marks a
+      // Never cache "we couldn't ask" - otherwise one slow moment marks a
       // show as missing for the rest of the session.
       if (!data.unknown) _availabilityCache.set(mediaId, data);
       return data;
@@ -245,7 +245,7 @@ const BATCH_MAX = 100;
  * Ask about many shows in one request.
  *
  * Randomize needs an answer for every wheel item. Calling `checkAvailability`
- * per show meant ~50 HTTP requests on every page load — enough to eat most of
+ * per show meant ~50 HTTP requests on every page load - enough to eat most of
  * the Jellyfin router's 120/min budget, and on a cold backend enough to become
  * 50 separate library lookups.
  *
@@ -258,7 +258,7 @@ export async function checkAvailabilityMany(
   const out = new Map<number, MediaAvailability>();
   const tok = get(authToken);
   if (!tok || get(mediaConfigured) === false) {
-    // Not an answer — we never asked. Callers already refuse to act on a gap,
+    // Not an answer - we never asked. Callers already refuse to act on a gap,
     // but the page used to render this identically to "everything resolved and
     // nothing is missing", which is how a broken lookup looked exactly like a
     // healthy library.
@@ -268,7 +268,7 @@ export async function checkAvailabilityMany(
 
   const missing: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }> = [];
   for (const e of entries) {
-    // Unaired entries are answered locally and never sent — on an unaired
+    // Unaired entries are answered locally and never sent - on an unaired
     // season this is the whole list, so it also removes ~83 library
     // lookups per page load. Not cached, for the reason in `checkAvailability`.
     if (isUnaired(e.airing)) { out.set(e.mediaId, NOT_AIRED); continue; }
@@ -296,13 +296,13 @@ export async function checkAvailabilityMany(
 
     // Retry rather than drop. A chunk used to be abandoned on the first
     // non-2xx or throw, leaving those shows permanently unanswered for the
-    // page — no Watch buttons, no explanation, and nothing re-triggered it
+    // page - no Watch buttons, no explanation, and nothing re-triggered it
     // because the only trigger is the wheel contents changing. The server
     // never caches `unknown`, so re-asking is cheap and correct.
     //
     // `apiFetch` owns the retry policy: bounded by a total budget, and never
     // retrying a timeout, so a slow-but-working server isn't asked three times
-    // over. It also can't hang — this request had no timeout at all before.
+    // over. It also can't hang - this request had no timeout at all before.
     try {
       const data = await apiJson<Record<string, MediaAvailability>>(
         '/api/jellyfin/availability/batch',

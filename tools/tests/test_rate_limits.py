@@ -2,7 +2,7 @@
 Pre-deploy smoke test: the rate limiters actually limit.
 
 Every limiter in this codebase carries `skip: () => _isDev`, and the dev server
-runs without NODE_ENV — so in the environment the rest of this suite exercises,
+runs without NODE_ENV - so in the environment the rest of this suite exercises,
 not one of them is ever consulted. A limiter could be misconfigured to `max: 1`
 (locking everyone out) or effectively disabled, and all 13 other checks would
 still be green.
@@ -37,14 +37,14 @@ def step(n: int, msg: str) -> None:
 
 
 def fail(n: int, msg: str) -> None:
-    print(f"[{n}/{TOTAL} rate-limit] FAIL — {msg}", flush=True)
+    print(f"[{n}/{TOTAL} rate-limit] FAIL - {msg}", flush=True)
     print(f"\nRate limits: FAILED at step {n}", flush=True)
     sys.exit(1)
 
 
 def skip_all(n: int, why: str) -> None:
-    step(n, f"SKIP — {why}")
-    print(f"Rate limits: skipped — {why}", flush=True)
+    step(n, f"SKIP - {why}")
+    print(f"Rate limits: skipped - {why}", flush=True)
     sys.exit(0)
 
 
@@ -69,7 +69,7 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     base = f"http://127.0.0.1:{args.port}"
-    print(f"Rate limit test — production-mode backend on :{args.port}", flush=True)
+    print(f"Rate limit test - production-mode backend on :{args.port}", flush=True)
 
     step(1, "building and starting a production-mode backend")
     entry = BACKEND / "dist" / "index.js"
@@ -83,7 +83,7 @@ def main() -> int:
     # Its own database, never the dev one. This instance runs
     # `ensureDatabaseSchema()` at boot, and pointing a second backend at the
     # SQLite file the dev server is serving from is asking for lock contention
-    # in the middle of everyone else's tests — which is exactly what it caused.
+    # in the middle of everyone else's tests - which is exactly what it caused.
     scratch = Path(tempfile.gettempdir()) / f"saltychart-ratelimit-{os.getpid()}.db"
     env = {
         **os.environ,
@@ -102,7 +102,7 @@ def main() -> int:
             if proc.poll() is not None:
                 out = (proc.stdout.read() or "")[-300:] if proc.stdout else ""
             skip_all(1, f"the production backend did not come up{': ' + out if out else ''}")
-        step(1, "PASS — production backend healthy")
+        step(1, "PASS - production backend healthy")
 
         step(2, f"exceeding the auth limiter ({AUTH_MAX}/min) on /api/auth/login")
         codes: list[int] = []
@@ -115,14 +115,14 @@ def main() -> int:
                 limited = r
                 break
         if limited is None:
-            fail(2, f"never rate limited after {len(codes)} logins — the limiter is "
+            fail(2, f"never rate limited after {len(codes)} logins - the limiter is "
                     f"inert in production, so nothing throttles credential stuffing "
                     f"(statuses: {sorted(set(codes))})")
         # It must not trip so early that real users are locked out either.
         if len(codes) <= 3:
-            fail(2, f"rate limited after only {len(codes)} requests — a real person "
+            fail(2, f"rate limited after only {len(codes)} requests - a real person "
                     f"signing in would be locked out")
-        step(2, f"PASS — 429 after {len(codes)} attempts")
+        step(2, f"PASS - 429 after {len(codes)} attempts")
 
         step(3, "the 429 carries the documented error shape")
         body = {}
@@ -138,7 +138,7 @@ def main() -> int:
         # off rather than hammer.
         if "ratelimit-limit" not in {k.lower() for k in limited.headers}:
             fail(3, "429 carried no RateLimit-* headers, so clients cannot back off")
-        step(3, f"PASS — {body['code']}, {limited.headers.get('RateLimit-Limit')} per window")
+        step(3, f"PASS - {body['code']}, {limited.headers.get('RateLimit-Limit')} per window")
     finally:
         proc.terminate()
         try:
@@ -156,5 +156,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except requests.RequestException as e:
-        print(f"\nRate limits: FAIL — {e}", flush=True)
+        print(f"\nRate limits: FAIL - {e}", flush=True)
         sys.exit(1)

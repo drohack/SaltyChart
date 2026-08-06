@@ -3,7 +3,7 @@ Match-quality corpus check (diagnostic, NOT part of run_all.py).
 
 Runs every entry of a season through /api/jellyfin/availability and reports how
 many resolved, and by which tier. Results depend on what is actually in the
-library, so this can never gate a deploy — but it is how the id-vs-title
+library, so this can never gate a deploy - but it is how the id-vs-title
 confidence numbers were measured, and it is the fastest way to spot a matcher
 regression against real data.
 
@@ -15,9 +15,9 @@ season alone the honest-looking conclusion was "one bad title", and the fix woul
 have been to nudge a threshold until that row went away. Matching quality is a
 property of the corpus, not of whichever season you happened to run.
 
-⚠ Not free, and not to be run in a loop. Every entry is a real
+(!) Not free, and not to be run in a loop. Every entry is a real
 `/api/jellyfin/availability` call, and each match makes Jellyfin resolve the
-series and list its episodes — a full season is ~52 of those, and the default
+series and list its episodes - a full season is ~52 of those, and the default
 window is eight of them. Run repeatedly alongside the rest of the suite, this was
 a measurable share of the API load that drove the Jellyfin server process to
 ~800% CPU. Once per matcher change is the intended cadence, the same rule
@@ -109,12 +109,12 @@ def main() -> int:
         # A season that didn't load must STOP the run, never score as zero. An
         # earlier ad-hoc harness scored two rate-limited seasons as "0 shows" and
         # carried on, and the summary was reported as covering eight seasons when
-        # it covered six — every per-season rate is trivially satisfied by an
+        # it covered six - every per-season rate is trivially satisfied by an
         # empty list, so a failure here reads as a clean result.
         if not isinstance(shows, list) or not shows:
             print(f"\n[{si}/{len(seasons)}] {label}: FAILED to load ({shows if not isinstance(shows, list) else 'empty list'})",
                   flush=True)
-            print("  Refusing to continue — a season that returns nothing scores as "
+            print("  Refusing to continue - a season that returns nothing scores as "
                   "all-missing and would silently understate the corpus. Warm the "
                   "cache (tools/tests/warm_cache.py) or wait out the AniList "
                   "rate limit, then re-run.", flush=True)
@@ -129,11 +129,11 @@ def main() -> int:
                 # per-mediaId availability cache, so this measures a recording of
                 # an earlier run rather than the matcher. A stale cached verdict
                 # would survive a matching change and this tool would report the
-                # fix as a no-op — the same trap test_jellyfin fell into with the
+                # fix as a no-op - the same trap test_jellyfin fell into with the
                 # id tier.
                 # `startDate` is as load-bearing as `fresh`. The air-date tier in
                 # getFirstEpisode is gated on `if (airDateMs != null)`, and
-                # airDateMs comes from this field — so omitting it silently
+                # airDateMs comes from this field - so omitting it silently
                 # disables the guard that rejects a franchise sibling, and the
                 # tool reports false positives the real frontend never shows.
                 # stores/jellyfin.ts sends it; anything measuring the matcher
@@ -173,12 +173,12 @@ def main() -> int:
           f"{totals['missing']:>9}{totals['unknown']:>9}")
 
     if eyeball:
-        print(f"\ntitle-only matches to eyeball ({len(eyeball)}) — each is a Watch")
+        print(f"\ntitle-only matches to eyeball ({len(eyeball)}) - each is a Watch")
         print("button pointed at a series we are not certain is the right one:")
         for label, anilist, lib in eyeball:
             print(f"  {label:<13} {anilist!r:<48} -> {lib!r}")
     else:
-        print("\nno title-only matches — every resolved entry was id-confirmed")
+        print("\nno title-only matches - every resolved entry was id-confirmed")
     return 0
 
 

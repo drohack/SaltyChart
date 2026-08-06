@@ -7,7 +7,7 @@ declare module '*?worker' {
 
 // Vite resolves these to a URL string at build time. Without the declarations
 // `svelte-check` reports them as missing modules, and that noise is enough to
-// stop anyone reading its output — which is the whole point of having it, since
+// stop anyone reading its output - which is the whole point of having it, since
 // it is the only thing that catches a reference to an identifier that no longer
 // exists. `vite build` never has.
 declare module '*?url' {

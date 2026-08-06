@@ -7,11 +7,11 @@ Run before starting fresh dev servers / smoke tests to ensure:
   - SQLite DB file isn't locked by a leftover process
 
 Works on Windows + Linux/macOS. It kills whatever is LISTENING on ports 3000
-and 5173 — it does not inspect command lines, so anything else parked on those
+and 5173 - it does not inspect command lines, so anything else parked on those
 ports goes too. In practice that is only ever a stale ts-node-dev or vite, but
 don't run it while something you care about holds either port. Note it frees
 the *ports* only: ts-node-dev pairs from old sessions that aren't listening
-survive it (and can still hold the Prisma engine DLL — see CLAUDE.md
+survive it (and can still hold the Prisma engine DLL - see CLAUDE.md
 Troubleshooting).
 
 Usage:
@@ -58,7 +58,7 @@ def main():
             print(f"  port {port}: killed PIDs {killed}", flush=True)
         else:
             print(f"  port {port}: already free", flush=True)
-    print("Done — safe to start fresh dev servers.", flush=True)
+    print("Done - safe to start fresh dev servers.", flush=True)
 
 
 if __name__ == "__main__":

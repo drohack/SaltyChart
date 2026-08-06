@@ -37,7 +37,7 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
 // Below the `sm` breakpoint this <aside> is `w-full`, so an open sidebar covers
 // the entire viewport and the grid is unreachable. It used to default to `false`
 // unconditionally, which meant every fresh page load on a phone landed on a
-// full-screen list — and because the flag was component-local, dismissing it
+// full-screen list - and because the flag was component-local, dismissing it
 // only lasted until the next reload. Home owns it now (`bind:collapsed`) and
 // persists the choice per user; the default here matches the breakpoint the
 // component's own classes key off.
@@ -161,7 +161,7 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
     workEl.style.height = `${workEl.scrollHeight}px`;
 
     // Declared before the try so the finally block can always restore/clean up
-    // even if an early await (e.g. the dynamic import) throws — otherwise the
+    // even if an early await (e.g. the dynamic import) throws - otherwise the
     // finally itself throws a ReferenceError and leaks the off-screen clone.
     let posters: HTMLImageElement[] = [];
     let posterDisplay: string[] = [];
@@ -215,7 +215,7 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
       borderFix.textContent = '*{border-color:transparent !important;}';
       workEl.prepend(borderFix);
 
-      // Remove list-item borders—they render as white lines in the exported
+      // Remove list-item borders-they render as white lines in the exported
       // image because CSS variables aren’t resolved in the cloned DOM.
       items = Array.from(workEl.querySelectorAll('li'));
       itemBorders = items.map((it) => it.style.border);
@@ -460,7 +460,7 @@ $: {
     }
 
     // When dragging over empty space in the sidebar we keep the current
-    // placeholder unless the cursor is below the last list item – in that
+    // placeholder unless the cursor is below the last list item - in that
     // case we show it at the very end. This prevents flickering caused by
     // rapidly alternating events on the gaps created by `space-y-*`.
     if (!overListItem(e.target)) {
@@ -512,7 +512,7 @@ $: {
   <div class="flex items-start justify-between gap-2 mb-2">
     <div class="flex-1 min-w-0">
       <h3 class="text-lg font-bold leading-tight truncate">
-        {season} {year} – {user ?? 'Guest'}
+        {season} {year} - {user ?? 'Guest'}
       </h3>
       <div class="text-sm opacity-70">My List</div>
     </div>
@@ -704,7 +704,7 @@ $: {
             <input
               id="watchlist-custom-name"
               type="text"
-              placeholder="Enter name…"
+              placeholder="Enter name..."
               bind:value={modalName}
               class="input input-bordered w-full"
               bind:this={nameInput}

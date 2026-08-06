@@ -1,13 +1,13 @@
 """How much CPU does one playback actually cost, and for how long?
 
-Plays ONE episode twice through the shipping proxy — once with an ASS track
+Plays ONE episode twice through the shipping proxy - once with an ASS track
 burned in (the default when a viewer picks subtitles), once with subtitles off
-(remux) — consuming HLS segments sequentially like a real player, and reads the
+(remux) - consuming HLS segments sequentially like a real player, and reads the
 server's own per-process CPU from the mirrored syslog (memwatch, 5-min ticks).
 
 Two numbers per condition:
   - transcode speed (x realtime): sequential segment consumption rate. This is
-    the "whole core" question's other half — Jellyfin's ffmpeg runs UNTHROTTLED
+    the "whole core" question's other half - Jellyfin's ffmpeg runs UNTHROTTLED
     until the whole file is written (jellyfin#16608), so a fast burst and a
     sustained core are very different bills for the same watch.
   - ffmpeg / Jellyfin CPU from `memwatch: topcpu:` and `dockercpu:` lines that
@@ -18,7 +18,7 @@ Jellyfin REPOSITION the transcoder (that is how seeking works), which would
 both corrupt the measurement and thrash the box. We fetch 0,1,2,... as they
 become available, exactly like a player pulling as fast as it can.
 
-Sessions are stopped by playSessionId, registered the moment they exist — see
+Sessions are stopped by playSessionId, registered the moment they exist - see
 the atexit note in run_condition.
 """
 import argparse
@@ -83,7 +83,7 @@ def stop_session(backend: str, token: str, psid: str) -> None:
 
 
 def follow(playlist_path: str, text: str) -> str | None:
-    """First URI in a playlist, resolved against the playlist's own path —
+    """First URI in a playlist, resolved against the playlist's own path -
     never the proxy root, or the 404 reads as an empty playlist (the full
     lesson is on bench_player.follow; this script relearned it once)."""
     for line in text.splitlines():
@@ -100,12 +100,12 @@ def run_condition(label: str, backend: str, token: str, item: dict,
          f"&quality=auto&subtitleIndex={sub_index}")
     pb = req_json(q, token=token, timeout=60)
     psid = pb["playSessionId"]
-    # Registered the moment the session exists — an exception anywhere below
+    # Registered the moment the session exists - an exception anywhere below
     # would otherwise leave ffmpeg writing out the rest of a ~1.4 GB episode.
     # The first version of this script did exactly that.
     atexit.register(stop_session, backend, token, psid)
     turl = pb["transcodingUrl"]
-    log(f"[{label}] session {psid[:8]}… subtitleIndex={sub_index}")
+    log(f"[{label}] session {psid[:8]}... subtitleIndex={sub_index}")
 
     # The stream lives under the proxy prefix; relative URIs resolve against
     # the UNPREFIXED playlist path, then get prefixed per request.
@@ -203,7 +203,7 @@ def main() -> int:
     if not ass:
         log("FAIL: no ASS track on this episode"); return 1
     log(f"episode: {item.get('libraryTitle')} S{item.get('seasonNumber')}E{item.get('episodeNumber')}"
-        f" — ASS track index {ass['index']}")
+        f" - ASS track index {ass['index']}")
 
     results = []
     for label, idx in [("A burn-in", ass["index"]), ("B remux  ", -1)]:

@@ -3,15 +3,15 @@ import { writable, type Readable } from 'svelte/store';
 /**
  * One way to read from the API.
  *
- * Every remote read used to be written from scratch, and only one of them —
- * `Home.fetchMainSeason` — got it right: a request-id staleness guard, loading
+ * Every remote read used to be written from scratch, and only one of them -
+ * `Home.fetchMainSeason` - got it right: a request-id staleness guard, loading
  * and error flags, shape validation, a real log line. Everywhere else shipped
  * with `catch {}`, so a failure rendered exactly like a successful empty result.
  * A real outage (no Watch buttons, nothing on screen, no logs) could not be
  * explained afterwards because nothing anywhere had written down that it failed.
  *
  * There were also **no** `AbortSignal`s in the frontend at all, so a hung
- * backend hung the page forever — no error, no timeout, nothing to catch.
+ * backend hung the page forever - no error, no timeout, nothing to catch.
  */
 
 export type ApiErrorKind = 'timeout' | 'network' | 'http';
@@ -38,7 +38,7 @@ export interface ApiFetchOpts {
    * is useless everywhere else.
    */
   timeoutMs?: number;
-  /** Extra attempts after the first. Ignored for timeouts — see below. */
+  /** Extra attempts after the first. Ignored for timeouts - see below. */
   retries?: number;
   /** Whole-operation ceiling across all attempts. */
   budgetMs?: number;
@@ -91,7 +91,7 @@ export async function apiFetch(
       const timedOut = err?.name === 'TimeoutError';
       last = new ApiError(timedOut ? 'timeout' : 'network', `${label}: ${err?.message ?? err}`);
       console.warn(`[api] ${label}: ${timedOut ? `timed out after ${timeoutMs}ms` : 'network error'} (attempt ${attempt + 1}/${retries + 1})`);
-      if (timedOut) break; // see above — retrying a slow server makes it worse
+      if (timedOut) break; // see above - retrying a slow server makes it worse
     }
     if (Date.now() >= deadline) break;
   }

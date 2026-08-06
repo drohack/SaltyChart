@@ -40,7 +40,7 @@ def step(n: int, msg: str) -> None:
 
 
 def fail(n: int, msg: str) -> None:
-    print(f"[{n}/{TOTAL_STEPS} FE-smoke] FAIL — {msg}", flush=True)
+    print(f"[{n}/{TOTAL_STEPS} FE-smoke] FAIL - {msg}", flush=True)
     sys.exit(1)
 
 
@@ -60,7 +60,7 @@ def load_page(page, url: str, n: int, label: str, wait_selector: str, wait_ms: i
     page.wait_for_timeout(wait_ms)  # let lazy chunks settle
     if errors:
         fail(n, f"{label} produced {len(errors)} console error(s): {errors[:3]}")
-    step(n, f"PASS — {label} rendered, no real console errors")
+    step(n, f"PASS - {label} rendered, no real console errors")
     # detach listeners to avoid double-counting
     page.remove_listener("pageerror", lambda exc: None)
 
@@ -78,13 +78,13 @@ def main():
     username = f"fe_smoke_{int(time.time())}"
     password = "smoke_pw_123"
 
-    print(f"Frontend route smoke test — {frontend}", flush=True)
+    print(f"Frontend route smoke test - {frontend}", flush=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page = browser.new_page()
         try:
-            # ───────── 1/5  Home renders anime grid ─────────
+            # --------- 1/5  Home renders anime grid ---------
             step(1, "loading / (Home page)")
             page.goto(frontend, wait_until="domcontentloaded", timeout=15000)
             # Skip the blur-up placeholders (aria-hidden): they're covers too,
@@ -95,21 +95,21 @@ def main():
             anime_count = page.locator('img[src*="anilist"]').count()
             if anime_count < 1:
                 fail(1, f"no anime cards rendered (got {anime_count})")
-            step(1, f"PASS — Home rendered {anime_count} anime cards")
+            step(1, f"PASS - Home rendered {anime_count} anime cards")
 
-            # ───────── 2/5  Login page form ─────────
+            # --------- 2/5  Login page form ---------
             step(2, "loading /login")
             page.goto(f"{frontend}/login", wait_until="domcontentloaded", timeout=15000)
             page.wait_for_selector('input[placeholder="Username"]', timeout=10000)
             page.wait_for_selector('input[type="password"]', timeout=5000)
-            step(2, "PASS — Login form rendered")
+            step(2, "PASS - Login form rendered")
 
-            # ───────── 3/5  SignUp page form ─────────
+            # --------- 3/5  SignUp page form ---------
             step(3, "loading /signup")
             page.goto(f"{frontend}/signup", wait_until="domcontentloaded", timeout=15000)
             page.wait_for_selector('input[placeholder="Username"]', timeout=10000)
             page.wait_for_selector('input[type="password"]', timeout=5000)
-            step(3, "PASS — SignUp form rendered")
+            step(3, "PASS - SignUp form rendered")
 
             # Sign up to test auth-gated pages
             page.fill('input[placeholder="Username"]', username)
@@ -117,23 +117,23 @@ def main():
             page.get_by_role("button", name=re.compile(r"sign\s*up|create", re.I)).click()
             page.wait_for_url(re.compile(r"/$|/home"), timeout=10000)
 
-            # ───────── 4/5  Randomize page ─────────
+            # --------- 4/5  Randomize page ---------
             step(4, "loading /random (requires login)")
             page.goto(f"{frontend}/random", wait_until="domcontentloaded", timeout=15000)
-            # Wheel renders even with empty list — should at least have a button
+            # Wheel renders even with empty list - should at least have a button
             page.wait_for_timeout(2000)
             # Should NOT be redirected to /login
             if "/login" in page.url:
-                fail(4, f"redirected to login — auth-gated route broken: {page.url}")
-            step(4, "PASS — Randomize page loaded (not redirected to login)")
+                fail(4, f"redirected to login - auth-gated route broken: {page.url}")
+            step(4, "PASS - Randomize page loaded (not redirected to login)")
 
-            # ───────── 5/5  Compare page ─────────
+            # --------- 5/5  Compare page ---------
             step(5, "loading /compare (requires login)")
             page.goto(f"{frontend}/compare", wait_until="domcontentloaded", timeout=15000)
             page.wait_for_timeout(2000)
             if "/login" in page.url:
-                fail(5, f"redirected to login — auth-gated route broken: {page.url}")
-            step(5, "PASS — Compare page loaded")
+                fail(5, f"redirected to login - auth-gated route broken: {page.url}")
+            step(5, "PASS - Compare page loaded")
         finally:
             browser.close()
 

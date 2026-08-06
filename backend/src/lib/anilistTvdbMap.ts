@@ -1,11 +1,11 @@
 import prisma from '../db';
 
 // ---------------------------------------------------------------------------
-// AniList → TVDB / TMDB id map.
+// AniList -> TVDB / TMDB id map.
 //
 // Community-maintained by Fribb/anime-lists. We keep only the id pairs (~7.2k
 // TVDB + ~8.1k TMDB, a few hundred KB as JSON) in AppConfig rows so the map
-// survives restarts and a GitHub outage — an unreachable upstream must never
+// survives restarts and a GitHub outage - an unreachable upstream must never
 // break availability lookups, it just costs the confidence tier.
 //
 // Coverage, measured over 8 seasons (945 entries) rather than assumed:
@@ -18,7 +18,7 @@ import prisma from '../db';
 //
 // An earlier note here claimed ~55% for a season two months out. That was never
 // measured and is wrong: even the currently-airing season is 81%. What is true
-// is that non-TV coverage is poor and largely irreplaceable — 387 corpus entries
+// is that non-TV coverage is poor and largely irreplaceable - 387 corpus entries
 // have no id in any scheme, and matching cannot invent one. See `animeMatch.ts`.
 // ---------------------------------------------------------------------------
 
@@ -30,12 +30,12 @@ const FETCHED_AT_KEY = 'anilistTvdbMapAt';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // weekly is plenty; entries only get added
 const FETCH_TIMEOUT_MS = 60_000;
 
-/** anilistId → tvdbId. Empty until loaded; never null, so callers need no guard. */
+/** anilistId -> tvdbId. Empty until loaded; never null, so callers need no guard. */
 let _map: Record<string, string> = {};
 /**
- * anilistId → `"tv:12345"` / `"movie:678"`.
+ * anilistId -> `"tv:12345"` / `"movie:678"`.
  *
- * The kind is stored with the id because **TMDB namespaces them separately** —
+ * The kind is stored with the id because **TMDB namespaces them separately** -
  * movie 550 and TV 550 are unrelated works. The series library's `Tmdb` ids are
  * TV ids, so comparing a film's id against them could match by coincidence.
  * Keeping the kind makes that impossible rather than unlikely.
@@ -62,11 +62,11 @@ interface Pairs {
 /**
  * Pull the list from GitHub and reduce it to id pairs.
  *
- * NOTE the field is `tvdb_id`, not `thetvdb_id` — the file carries both shapes
+ * NOTE the field is `tvdb_id`, not `thetvdb_id` - the file carries both shapes
  * across its history and reading the wrong one silently yields an empty map.
  *
  * And `themoviedb_id` is **an object**, `{"tv": N}` or `{"movie": N}` (7084 and
- * 1356 rows respectively) — never a bare number. Parsing it as a scalar
+ * 1356 rows respectively) - never a bare number. Parsing it as a scalar
  * stringifies to `"[object Object]"` and yields zero matches while looking like
  * it worked; that cost two wrong measurements before it was spotted.
  */
@@ -205,7 +205,7 @@ export async function ensureAnilistTvdbMap(force = false): Promise<void> {
       }
     } catch (err: any) {
       // Degraded, not broken: without the map every match is title-only.
-      console.warn('[anime-ids] could not refresh AniList→TVDB map:', err?.message ?? err);
+      console.warn('[anime-ids] could not refresh AniList->TVDB map:', err?.message ?? err);
       _loaded = true; // don't hammer a failing upstream on every request
     } finally {
       _inFlight = null;
@@ -222,7 +222,7 @@ export function tvdbIdForAnilist(anilistId: number | string): string | null {
 /**
  * The TMDB id for an AniList entry, with its namespace.
  *
- * Callers must compare `kind` before using `id` — see the note on `_tmdb`.
+ * Callers must compare `kind` before using `id` - see the note on `_tmdb`.
  * Against the series library only `tv` ids are meaningful; a `movie` id there
  * could only ever match by coincidence.
  */
@@ -261,15 +261,15 @@ export interface CrosswalkResult {
 }
 
 /**
- * Join tvdb↔tmdb THROUGH the anilist key.
+ * Join tvdb<->tmdb THROUGH the anilist key.
  *
  * Jellyfin's remote search returns TMDB ids only on this deployment (measured:
  * every stored resolver candidate), while corrections sometimes arrive as
- * pasted TVDB ids — this and the library's own metadata are the two free
+ * pasted TVDB ids - this and the library's own metadata are the two free
  * translations between the spaces. Several anilist rows can share one TVDB id
  * (seasons of one series), so the scan continues until a row actually carries
  * the missing sibling rather than trusting whichever row sorts first. Linear
- * over ~7k entries — admin-endpoint traffic only, never the viewer path.
+ * over ~7k entries - admin-endpoint traffic only, never the viewer path.
  */
 export function crosswalkIds(input: {
   tvdbId?: string | null;
@@ -295,7 +295,7 @@ export function crosswalkIds(input: {
     for (const anilistId of Object.keys(_tmdb)) {
       const ref = tmdbRefForAnilist(anilistId);
       if (!ref || ref.id !== wantTmdb) continue;
-      // TMDB numbers films and shows independently — never cross namespaces.
+      // TMDB numbers films and shows independently - never cross namespaces.
       if (input.tmdbKind && ref.kind !== input.tmdbKind) continue;
       const tvdbId = _map[anilistId] ?? null;
       hit = { tvdbId, tmdbId: wantTmdb, tmdbKind: ref.kind };

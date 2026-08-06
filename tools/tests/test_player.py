@@ -5,11 +5,11 @@ The rest of the suite never opens the player, which is exactly how two
 regressions reached a browser with a green build and 10/10 passing:
 
   * a deleted `let preparing` left a bare `preparing = false`, which Vite
-    happily compiles as a global assignment — every playback threw before
+    happily compiles as a global assignment - every playback threw before
     `player.src()`;
   * the client-side subtitle renderer got `workerUrl: undefined` from a
     double-unwrapped `.default`, so every ASS release silently fell back to
-    WebVTT — losing the exact fidelity the integration existed for. Nothing
+    WebVTT - losing the exact fidelity the integration existed for. Nothing
     failed loudly; it just quietly stopped doing its job.
 
 That renderer is gone: Jellyfin burns subtitles into the video now, which
@@ -18,7 +18,7 @@ inferred from a canvas nothing could read. Step 8 compares the same frames
 with subtitles on and off; step 9 covers the stream restart that a quality
 or track change costs.
 
-So this drives the real thing: pop-up → Watch → playing, and asserts the
+So this drives the real thing: pop-up -> Watch -> playing, and asserts the
 parts that can regress silently. The steps: pop-up pre-warm fires (no stream
 starts early, no libass/font requests come back), playback advances, exactly
 one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with
@@ -28,13 +28,13 @@ one restart, Escape stopping the transcode.
 
 Three structural rules, each learned the hard way:
 
-- Steps 1, 2, 3 and 5 ALWAYS run — they open the player, and every later step
+- Steps 1, 2, 3 and 5 ALWAYS run - they open the player, and every later step
   operates on what they create. Nesting any of them inside a `want()` block
   makes `--only-steps` skip setup and the run dies before asserting; six
   mutation-audit rows were once vacuous exactly this way.
 - Step 8 RELOADS THE PAGE before sampling with subtitles off. Both passes seek
   to the same twelve timestamps, so the first pass leaves the browser holding
-  subtitled segments at each — restarting in place doesn't evict them, and the
+  subtitled segments at each - restarting in place doesn't evict them, and the
   comparison then reads its own frames back byte-identical, reporting "not
   burned in" against healthy code.
 - Step 9 STUBS `play()` to reject once with `AbortError` while the real play
@@ -62,7 +62,7 @@ from playwright.sync_api import sync_playwright
 TOTAL = 10
 # Rendered geometry of the played section, as a fraction of the seek bar.
 # Never `style.width`: that is the inline value video.js writes, which a CSS
-# `!important` rule overrides without erasing — reading it reports the bar as
+# `!important` rule overrides without erasing - reading it reports the bar as
 # empty when it is visibly full.
 BAR_FRACTION = """() => {
     const holder = document.querySelector('.vjs-progress-holder');
@@ -85,7 +85,7 @@ def want(n: int) -> bool:
 # Sessions started during the run, stopped on the way out.
 #
 # `fail()` exits via SystemExit, so a failing run never reached the stop call at
-# the end of a step — and the browser being torn down does not give the player's
+# the end of a step - and the browser being torn down does not give the player's
 # onDestroy a chance to send one either. Every mutation-audit row is a
 # deliberately failing run, so each one used to leave an ffmpeg encoding the
 # rest of the episode. atexit covers the normal path and SystemExit alike.
@@ -125,14 +125,14 @@ def step(n: int, msg: str) -> None:
 
 
 def fail(n: int, msg: str) -> None:
-    print(f"[{n}/{TOTAL} player] FAIL — {msg}", flush=True)
+    print(f"[{n}/{TOTAL} player] FAIL - {msg}", flush=True)
     print(f"\nPlayer: FAILED at step {n}", flush=True)
     sys.exit(1)
 
 
 def skip_all(n: int, why: str) -> None:
-    step(n, f"SKIP — {why}")
-    print(f"Player: skipped — {why}", flush=True)
+    step(n, f"SKIP - {why}")
+    print(f"Player: skipped - {why}", flush=True)
     sys.exit(0)
 
 
@@ -194,8 +194,8 @@ def main():
     parser.add_argument("--frontend", default="http://localhost:5173")
     # Each assertion step that switches stream costs a real transcode, so the
     # mutation audit runs only the step guarding the invariant it broke rather
-    # than the whole file. Setup steps (1,2,3,5) always run — nothing works
-    # without them — and the teardown always stops the session.
+    # than the whole file. Setup steps (1,2,3,5) always run - nothing works
+    # without them - and the teardown always stops the session.
     parser.add_argument("--only-steps", default="",
                         help="comma-separated assertion steps to run, e.g. 9")
     args = parser.parse_args()
@@ -207,7 +207,7 @@ def main():
     backend, frontend = args.backend.rstrip("/"), args.frontend.rstrip("/")
     _BACKEND[0] = backend
     season, year = current_season_year()
-    print(f"Player smoke test — {frontend} ({season} {year})", flush=True)
+    print(f"Player smoke test - {frontend} ({season} {year})", flush=True)
 
     step(1, f"auth as {USERNAME} and check Jellyfin is configured")
     token = auth_token(backend)
@@ -216,7 +216,7 @@ def main():
     status = requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json()
     if not status.get("configured"):
         skip_all(1, "Jellyfin not configured (set URL+key on /admin to enable)")
-    step(1, "PASS — authenticated, Jellyfin configured")
+    step(1, "PASS - authenticated, Jellyfin configured")
 
     step(2, f"finding a {season} {year} series in the library")
     playable = find_playable(backend, auth, season, year)
@@ -227,7 +227,7 @@ def main():
     requests.put(f"{backend}/api/list", headers=auth, timeout=30,
                  json={"season": season, "year": year,
                        "items": [p["mediaId"] for p in playable]})
-    step(2, f"PASS — using {target['title'][:38]!r} ({kind}, {target['subs']} tracks)")
+    step(2, f"PASS - using {target['title'][:38]!r} ({kind}, {target['subs']} tracks)")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -262,13 +262,13 @@ def main():
             watch.wait_for(timeout=30_000)
         except Exception:
             fail(3, "the Watch button never appeared for a series known to be available")
-        step(3, "PASS — '▶ Watch here (via Jellyfin)' shown")
+        step(3, "PASS - '> Watch here (via Jellyfin)' shown")
 
-        # ── 4  Pre-warm happened while the pop-up sat open ──
+        # -- 4  Pre-warm happened while the pop-up sat open --
         if want(4):
          step(4, "pop-up pre-warmed the player before Watch was pressed")
          page.wait_for_timeout(2500)
-         # With subtitles burned in there is nothing client-side left to warm —
+         # With subtitles burned in there is nothing client-side left to warm -
          # no wasm, no fonts, no subtitle body. What the pop-up buys is the
          # PlaybackInfo round trip, and the assertion is now also that the
          # deleted stack has stayed deleted: a stray jassub or /attachments
@@ -284,11 +284,11 @@ def main():
                                  .map(x => x.replace(/.*\\/api\\/jellyfin\\//, '').replace(/\\?.*/, '')) };
          }""")
          if not warmed["playback"]:
-             fail(4, f"PlaybackInfo was not pre-warmed before the click — seen={warmed['seen']}")
+             fail(4, f"PlaybackInfo was not pre-warmed before the click - seen={warmed['seen']}")
          if warmed["libass"] or warmed["attachments"]:
              fail(4, f"client-side subtitle rendering is back: jassub={warmed['libass']} "
-                     f"attachments={warmed['attachments']} — subtitles are burned in server-side")
-         step(4, f"PASS — pre-warmed {warmed['playback']} PlaybackInfo call(s), "
+                     f"attachments={warmed['attachments']} - subtitles are burned in server-side")
+         step(4, f"PASS - pre-warmed {warmed['playback']} PlaybackInfo call(s), "
                  f"no libass/fonts, no stream started")
 
          # Pre-starting the stream is deliberately NOT done: Jellyfin's ffmpeg
@@ -298,12 +298,12 @@ def main():
                           ".filter(e => /jellyfin\\/stream/.test(e.name)).length"):
              fail(4, "the stream was started before Watch was pressed")
 
-        # ── 5  Playback actually starts ──
+        # -- 5  Playback actually starts --
         #
         # NOT gated by want(): this opens the player, and every step after it
         # operates on the player it creates. It used to sit inside the want(4)
         # block, so `--only-steps 9` skipped it and step 9 then dereferenced a
-        # `.video-js` that did not exist — the run died on
+        # `.video-js` that did not exist - the run died on
         # `Cannot read properties of null (reading 'player')` before reaching a
         # single assertion. The mutation audit reads that as "no FAIL line" and
         # reports a coverage hole, so all five player rows were auditing
@@ -319,11 +319,11 @@ def main():
             fail(5, "video never advanced (currentTime/readyState/videoWidth)")
         state = page.evaluate("() => { const v = document.querySelector('video');"
                               " return { t: v.currentTime, rs: v.readyState, w: v.videoWidth }; }")
-        step(5, f"PASS — playing at {state['t']:.1f}s, {state['w']}px wide")
+        step(5, f"PASS - playing at {state['t']:.1f}s, {state['w']}px wide")
 
         # (A segment-request listener used to live here, as step 8's way of
         # telling a genuinely new stream from a recovered old one. It could not
-        # do that — playback fetches segments continuously, so its "two new
+        # do that - playback fetches segments continuously, so its "two new
         # segments" threshold was met within seconds regardless. Step 8 now
         # reloads the page instead, which needs no such signal.)
 
@@ -340,14 +340,14 @@ def main():
          if menus["mine"] != 1:
              fail(6, f"expected exactly 1 subtitle menu, found {menus['mine']}")
          if menus["native"]:
-             fail(6, "video.js's own captions button is still present — two menus disagree")
+             fail(6, "video.js's own captions button is still present - two menus disagree")
          chosen = " ".join(menus["selected"]).lower()
          if not chosen:
              fail(6, "no subtitle track selected by default")
          for bad in ("sdh", "dubtitle", "forced", "hearing impaired"):
              if bad in chosen:
                  fail(6, f"default track is a {bad} track: {menus['selected']}")
-         step(6, f"PASS — one menu, default {menus['selected']}")
+         step(6, f"PASS - one menu, default {menus['selected']}")
 
         if want(7):
          step(7, "] and [ step playback rate by 0.10 without waking the control bar")
@@ -370,18 +370,18 @@ def main():
          if abs(rates["down"] - (rates["up"] - 0.1)) > 0.001:
              fail(7, f"[ should subtract 0.10: {rates}")
          # VHS never touches playbackRate, so the media element must track the
-         # player exactly at both ends — that pass-through is the whole feature.
+         # player exactly at both ends - that pass-through is the whole feature.
          if abs(rates["mediaUp"] - rates["up"]) > 0.001 or \
             abs(rates["mediaDown"] - rates["down"]) > 0.001:
              fail(7, f"the media element didn't follow the player: {rates}")
          if rates["active"]:
              fail(7, "changing speed woke the control bar")
-         step(7, f"PASS — {rates['before']:.2f} → {rates['up']:.2f} → {rates['down']:.2f}, bar stayed hidden")
+         step(7, f"PASS - {rates['before']:.2f} -> {rates['up']:.2f} -> {rates['down']:.2f}, bar stayed hidden")
 
         if want(8):
          step(8, "subtitles are burned into the picture, and Off removes them")
          # This is the check that could not exist before. libass painted into a
-         # canvas it transferred to a worker, so nothing could read the pixels —
+         # canvas it transferred to a worker, so nothing could read the pixels -
          # which is exactly how a renderer that drew *empty frames* passed a
          # "canvas is correctly sized" assertion. Burned-in subtitles are part of
          # the video, so the same frame can simply be compared with them on and
@@ -423,11 +423,11 @@ def main():
          # one of them. Restarting the stream in place does not evict those, so
          # the second pass could read pass one's frames straight back: every band
          # compared byte-identical to itself and the step reported "they are not
-         # being burned in" against perfectly healthy code (verified by hand —
+         # being burned in" against perfectly healthy code (verified by hand -
          # toggling subtitles in a browser works fine).
          #
          # Waiting for "two new segments" did not save it either. Playback fetches
-         # segments continuously — 142 had arrived by this point in one run — so
+         # segments continuously - 142 had arrived by this point in one run - so
          # that threshold is met within seconds whether or not anything restarted.
          #
          # Whether the stale ranges survived was up to the browser's eviction
@@ -492,15 +492,15 @@ def main():
          report = ", ".join(f"{t}s:{d * 100:.1f}%" for t, d in zip(SAMPLE_TIMES, deltas))
          # Measured on this library rather than guessed: a band holding a line of
          # dialogue moves 1-4% of its pixels, and a band with no subtitle moves
-         # 0.0% — the two encodes agree exactly where nothing was drawn. So the
+         # 0.0% - the two encodes agree exactly where nothing was drawn. So the
          # threshold sits well above the noise floor, and the requirement is two
          # independent hits so one bright scene change cannot carry the test.
          HIT = 0.01
          hits = sum(d >= HIT for d in deltas)
          if hits < 2:
              fail(8, f"only {hits} of {len(deltas)} sampled frames changed when "
-                     f"subtitles were turned off — they are not being burned in: {report}")
-         step(8, f"PASS — subtitle band changed on {hits}/{len(deltas)} sampled "
+                     f"subtitles were turned off - they are not being burned in: {report}")
+         step(8, f"PASS - subtitle band changed on {hits}/{len(deltas)} sampled "
                  f"frames ({report})")
 
         if want(9):
@@ -544,25 +544,25 @@ def main():
          # playhead still so `bar_before` is a stable reading to compare against.
          #
          # It used to be described as what provoked the AbortError too. It isn't
-         # — `play()` runs inside `one('loadedmetadata')` after a `currentTime()`
+         # - `play()` runs inside `one('loadedmetadata')` after a `currentTime()`
          # seek, so a pause this far upstream interrupts nothing. The rejection
          # is stubbed in explicitly below; relying on it happening by itself left
          # the play-button assertion passing against a build with no guard at all.
          # Seek well in first, so the played bar is wide enough for a collapse
          # to be measurable. Step 8 used to leave the playhead deep in the
          # episode; now that steps can run in isolation this cannot rely on
-         # that, and at ~10s in the bar is under 1% — below the threshold, so
+         # that, and at ~10s in the bar is under 1% - below the threshold, so
          # the seek-bar assertion would quietly skip itself.
          page.evaluate("() => document.querySelector('.video-js').player.currentTime(600)")
          page.wait_for_timeout(6000)
          page.evaluate("() => document.querySelector('.video-js').player.pause()")
          page.wait_for_timeout(600)
          # Where the played bar sits before the rebuild, measured as rendered
-         # geometry — `style.width` is the inline value video.js writes, which a
+         # geometry - `style.width` is the inline value video.js writes, which a
          # CSS `!important` rule overrides without erasing.
          bar_before = page.evaluate(BAR_FRACTION)
          # Track the lowest the bar goes for the rest of the switch. Sampled per
-         # animation frame because the collapse is transient — a 250ms poll
+         # animation frame because the collapse is transient - a 250ms poll
          # missed it entirely when this was first investigated.
          page.evaluate("""() => {
              window.__barMin = 1;
@@ -584,8 +584,8 @@ def main():
          # Force the exact condition the guard exists for: the next play()
          # rejects with AbortError while playback carries on regardless.
          #
-         # That is what an interrupted play *is* — the promise rejects, the video
-         # resumes on its own — and the invariant is that it must not put a big
+         # That is what an interrupted play *is* - the promise rejects, the video
+         # resumes on its own - and the invariant is that it must not put a big
          # play button over a video that is already restarting. Waiting for it to
          # happen by itself does not work: `play()` is called inside
          # `one('loadedmetadata')` after a `currentTime()` seek, so nothing
@@ -593,8 +593,8 @@ def main():
          # passes against a build with the guard removed entirely, which is
          # precisely what the mutation audit reported.
          #
-         # The real play() is still called, so the rest of step 9 — decoding
-         # frames, the resumed clock, the pinned bar — is unaffected.
+         # The real play() is still called, so the rest of step 9 - decoding
+         # frames, the resumed clock, the pinned bar - is unaffected.
          page.evaluate("""() => {
              const proto = HTMLMediaElement.prototype;
              const real = proto.play;
@@ -624,10 +624,10 @@ def main():
                  "() => document.querySelector('video')?.videoWidth === 854", timeout=60_000)
          except Exception:
              got = page.evaluate("() => document.querySelector('video')?.videoWidth")
-             fail(9, f"selecting 480p left the picture at {got}px — the restart did "
+             fail(9, f"selecting 480p left the picture at {got}px - the restart did "
                      f"not carry the new quality")
          # A quality change is one restart. Two means the watchdog joined in, and
-         # the second rebuild races the first — which is how the tier silently
+         # the second rebuild races the first - which is how the tier silently
          # reverted while the menu showed the new one.
          page.wait_for_timeout(12_000)
          if len(restarts) != 1:
@@ -642,23 +642,23 @@ def main():
              fail(9, f"playback did not resume after the quality change: {playing}")
          if playing["bigPlayHits"]:
              fail(9, "video.js's big play button flashed over the video during the "
-                     "switch — it must only appear when play() is actually rejected: "
+                     "switch - it must only appear when play() is actually rejected: "
                      + "; ".join(f"display={h['display']} opacity={h['opacity']} "
                                  f"root=[{h['root']}]" for h in playing["bigPlayHits"][:2]))
          if not stops_mid:
-             fail(9, "the abandoned session was never stopped — its ffmpeg keeps "
+             fail(9, "the abandoned session was never stopped - its ffmpeg keeps "
                      "writing the whole episode to Jellyfin's transcode cache")
          # The played section must stay where the viewer is while the stream is
          # rebuilt. `player.src()` resets the tech's clock to 0 and the bar
          # repaints from that before we can seek back, so without pinning it the
-         # bar empties for seconds while the time readout stays correct — which
+         # bar empties for seconds while the time readout stays correct - which
          # reads as "you lost your place" mid-switch.
          bar_min = page.evaluate("() => window.__barMin")
          if bar_before > 0.02 and (bar_min is None or bar_min < bar_before * 0.5):
              fail(9, f"the seek bar collapsed during the rebuild: it was at "
                      f"{bar_before * 100:.1f}% and fell to {(bar_min or 0) * 100:.1f}%, "
                      f"so a viewer mid-episode appears to have lost their place")
-         step(9, f"PASS — 480p in one restart, {playing['w']}px and decoding "
+         step(9, f"PASS - 480p in one restart, {playing['w']}px and decoding "
                  f"({playing['frames']} frames), old session stopped, no play-button "
                  f"flash, seek bar held at {(bar_min or 0) * 100:.0f}%")
 
@@ -676,15 +676,15 @@ def main():
         if not stops:
             fail(10, "closing did not tell Jellyfin to stop the transcode")
 
-        # Reopening the SAME episode reuses a cached playbackInfo — including
+        # Reopening the SAME episode reuses a cached playbackInfo - including
         # the playSessionId we just told Jellyfin to tear down. It works, but
         # only because Jellyfin is lenient about it, so pin the behaviour.
         # Closing the player leaves the show pop-up open behind it, so the
-        # Watch button is still there — no need to reselect the series.
+        # Watch button is still there - no need to reselect the series.
         if not want(10):
-            step(10, "PASS — closed and transcode stopped (reopen check not selected)")
+            step(10, "PASS - closed and transcode stopped (reopen check not selected)")
             browser.close()
-            print(f"Player: steps {sorted(ONLY or [])} passed — OK", flush=True)
+            print(f"Player: steps {sorted(ONLY or [])} passed - OK", flush=True)
             return
         watch2 = page.locator("button", has_text="Watch here (via Jellyfin)").first
         watch2.wait_for(timeout=30_000)
@@ -698,16 +698,16 @@ def main():
             fail(10, "reopening the same episode did not play (stale playSessionId?)")
         page.keyboard.press("Escape")
         page.wait_for_timeout(1500)
-        step(10, "PASS — closed, transcode stopped, and the same episode reopens")
+        step(10, "PASS - closed, transcode stopped, and the same episode reopens")
 
         browser.close()
 
-    print(f"Player: {TOTAL}/{TOTAL} passed — OK", flush=True)
+    print(f"Player: {TOTAL}/{TOTAL} passed - OK", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
     except requests.RequestException as e:
-        print(f"\nPlayer: FAIL — backend unreachable: {e}", flush=True)
+        print(f"\nPlayer: FAIL - backend unreachable: {e}", flush=True)
         sys.exit(1)

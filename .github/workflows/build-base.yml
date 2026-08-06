@@ -1,7 +1,7 @@
 # Builds the heavy backend base image (python/ffmpeg/pip deps/Whisper models,
 # ~3.3 GB) and pushes it to GHCR under an explicit version tag.
 #
-# Manual-dispatch ONLY — base bumps are deliberate. After this succeeds,
+# Manual-dispatch ONLY - base bumps are deliberate. After this succeeds,
 # update the `FROM ghcr.io/drohack/saltychart-backend-base:<version>` line in
 # backend/Dockerfile to match, and push that change so deploy.yml uses it.
 

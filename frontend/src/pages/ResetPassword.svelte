@@ -86,12 +86,12 @@
       <p class="text-sm">Reset password for <strong>{username}</strong>?</p>
       <input bind:this={passInput} class="input w-full" type="password" placeholder="New password" bind:value={newPassword} />
       <button class="btn btn-primary w-full" type="submit" disabled={loading}>
-        {loading ? 'Resetting…' : 'Reset Password'}
+        {loading ? 'Resetting...' : 'Reset Password'}
       </button>
       <button type="button" class="btn btn-ghost w-full btn-sm" on:click={goBack}>Back</button>
     </form>
   {:else}
     <p class="text-sm text-center">Password updated successfully.</p>
-    <button class="btn btn-primary w-full" on:click={goToLogin}>Log in here →</button>
+    <button class="btn btn-primary w-full" on:click={goToLogin}>Log in here &rarr;</button>
   {/if}
 </div>

@@ -9,14 +9,14 @@ Requirements:
   pip install faster-whisper yt-dlp easyocr sentence-transformers Pillow demucs
   Ollama installed + `ollama pull qwen3.5:9b`  (split-pipeline translator; it's the
   Ollama vision build, so its ~1.2 GB vision encoder sits unused in RAM, but it
-  benchmarks clearly better than text-only qwen3:8b — see CLAUDE.md)
+  benchmarks clearly better than text-only qwen3:8b - see CLAUDE.md)
 
   For GPU (recommended):
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-  Do NOT install torchcodec — torchaudio routes through it and it breaks
+  Do NOT install torchcodec - torchaudio routes through it and it breaks
   faster-whisper's decoder; audio I/O here uses the ffmpeg binary instead.
 
-Pipeline (the champion config from the bake-off — see CLAUDE.md):
+Pipeline (the champion config from the bake-off - see CLAUDE.md):
   bestaudio -> Demucs vocal separation -> large-v3 transcribe(ja, beam10 +
   rep_penalty1.2 + vad_min300) -> qwen3.5:9b translate (via Ollama). Uploaded as
   modelName 'large-v3-split' (rank 6, above plain 'large-v3'). The script starts
@@ -66,7 +66,7 @@ Flags:
   --force            Force re-translation even if cached
   --log [PATH]       Log output to file (default: tools/logs/translate.log)
   --within-days N    Exit if next season is more than N days away (not used
-                     in translate.bat — runs always, covering 3 seasons)
+                     in translate.bat - runs always, covering 3 seasons)
   --legacy-translate Use old end-to-end Whisper translate (skip Demucs + Qwen)
   --translate-model  Ollama model for the split translator (default: qwen3.5:9b)
   --ollama-host      Ollama server URL (default: http://127.0.0.1:11434)
@@ -125,13 +125,28 @@ ELIGIBLE_FORMATS = {"TV", "TV_SHORT", "OVA", "ONA", "SPECIAL"}
 SEQUEL_RELATIONS = {"SEQUEL", "PREQUEL", "SIDE_STORY", "SPINOFF"}
 
 
+#: Stop before this many pages whatever upstream claims. A season is 3-4 pages
+#: at perPage 50; this is a runaway guard, not a limit anyone should reach.
+MAX_SEASON_PAGES = 20
+PER_PAGE = 50
+
+
 def fetch_season_anime(season: str, year: int) -> list:
-    """Fetch all anime for a season from AniList (paginated)."""
+    """Fetch all anime for a season from AniList (paginated).
+
+    Stops on a SHORT PAGE, never on `hasNextPage`. That field does not describe
+    the filtered result set for this query: measured live, a 113-entry season
+    reports `total: 5000, lastPage: 100, hasNextPage: true` on page 1 and keeps
+    saying so. This loop used to believe it and walked all 100 pages, ~97 of
+    them empty, at one second apart - about 100 requests per season, three
+    seasons per run, every Sunday, against a 30/min budget shared with the whole
+    house. The backend had the identical bug in routes/anime.ts.
+    """
     all_media = []
     page = 1
 
-    while True:
-        variables = {"page": page, "perPage": 50, "season": season, "seasonYear": year}
+    while page <= MAX_SEASON_PAGES:
+        variables = {"page": page, "perPage": PER_PAGE, "season": season, "seasonYear": year}
         body = json.dumps({"query": ANILIST_QUERY, "variables": variables}).encode()
         req = urllib.request.Request(
             ANILIST_URL,
@@ -154,11 +169,15 @@ def fetch_season_anime(season: str, year: int) -> list:
                 time.sleep((attempt + 1) * 5)
 
         page_data = data.get("data", {}).get("Page", {})
-        all_media.extend(page_data.get("media", []))
-        if not page_data.get("pageInfo", {}).get("hasNextPage", False):
+        media = page_data.get("media", [])
+        all_media.extend(media)
+        if len(media) < PER_PAGE:
             break
         page += 1
         time.sleep(1)
+    else:
+        print(f"  [WARN] {season} {year}: hit the {MAX_SEASON_PAGES}-page cap "
+              f"with {len(all_media)} entries", flush=True)
 
     return all_media
 
@@ -175,7 +194,7 @@ def get_title(show: dict) -> str:
 
 def filter_eligible(anime_list: list) -> list:
     """Local translate runs on the user's stronger PC, so we translate ALL
-    anime with YouTube trailers — including movies, sequels, TV_SHORT, and 18+.
+    anime with YouTube trailers - including movies, sequels, TV_SHORT, and 18+.
     The server's batch script still filters to the narrower set."""
     eligible = []
     for show in anime_list:
@@ -219,10 +238,10 @@ def get_seasons_to_process() -> list:
     idx = SEASONS.index(current)
 
     prev_idx = (idx - 1) % 4
-    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER→FALL wraps back a year
+    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER->FALL wraps back a year
 
     next_idx = (idx + 1) % 4
-    next_year = year + (1 if next_idx == 0 else 0)   # FALL→WINTER wraps forward a year
+    next_year = year + (1 if next_idx == 0 else 0)   # FALL->WINTER wraps forward a year
 
     return [
         (SEASONS[prev_idx], prev_year),
@@ -355,7 +374,7 @@ def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
 # ---------------------------------------------------------------------------
 
 def _whisper_segments(segs_gen, offset: float = 0.0):
-    """faster-whisper segment generator → [{start, end, text}], using word-level
+    """faster-whisper segment generator -> [{start, end, text}], using word-level
     start/end (eliminates pre-speech lead-in). offset shifts a chunk into global time."""
     out = []
     for seg in segs_gen:
@@ -376,10 +395,10 @@ def translate_video(model, video_id: str, use_chunking: bool = True, *,
                     translate_model: str = "qwen3.5:9b",
                     ollama_host: str = "http://127.0.0.1:11434",
                     ollama_ready: bool = False):
-    """Translate a video → (segments, video_url, used_split).
+    """Translate a video -> (segments, video_url, used_split).
 
-    Champion split pipeline (split=True, full-audio): Demucs vocal separation →
-    large-v3 transcribe(ja, beam10+rep_penalty1.2+vad_min300) → qwen3.5 translate.
+    Champion split pipeline (split=True, full-audio): Demucs vocal separation ->
+    large-v3 transcribe(ja, beam10+rep_penalty1.2+vad_min300) -> qwen3.5 translate.
     Falls back to end-to-end Whisper translate (on the separated vocals) if Ollama
     isn't ready or anything fails. `used_split` tells the caller which modelName
     tag to upload (large-v3-split vs large-v3).
@@ -434,7 +453,7 @@ def translate_video(model, video_id: str, use_chunking: bool = True, *,
             )
             return _whisper_segments(segs), video_url, False
 
-        # Chunked pass — for small model / CPU / low memory (legacy e2e translate)
+        # Chunked pass - for small model / CPU / low memory (legacy e2e translate)
         from concurrent.futures import ThreadPoolExecutor, Future
         chunks = generate_chunks(duration)
         segments = []
@@ -464,12 +483,12 @@ def translate_video(model, video_id: str, use_chunking: bool = True, *,
 
 
 # ---------------------------------------------------------------------------
-# Phased split-pipeline stages (one model resident at a time — fits 10 GB)
+# Phased split-pipeline stages (one model resident at a time - fits 10 GB)
 # ---------------------------------------------------------------------------
 
 def _download_audio_to_tmp(video_id: str):
     """Phase-1a unit: download bestaudio into a fresh tmpdir. Called SERIALLY
-    with a delay between trailers — bursty parallel downloads are what trip
+    with a delay between trailers - bursty parallel downloads are what trip
     YouTube's bot wall (see _run_phased). Demucs separation runs later in
     phase 1b (GPU, sequential). Returns (tmpdir, full_audio, video_url)."""
     tmpdir = tempfile.mkdtemp()
@@ -757,7 +776,7 @@ def upload_segments(server: str, token: str, video_id: str, media_id: int, model
 
 
 # ---------------------------------------------------------------------------
-# Ollama lifecycle — start the server if needed, unload model + stop when done
+# Ollama lifecycle - start the server if needed, unload model + stop when done
 # ---------------------------------------------------------------------------
 
 def _ollama_up(host: str) -> bool:
@@ -779,12 +798,12 @@ def _ollama_has_model(host: str, model: str) -> bool:
 
 def ensure_ollama_running(host: str, model: str):
     """Ensure Ollama is serving and `model` is present; start `ollama serve` if
-    it's down. Returns (ready, proc): ready=False → caller falls back to Whisper
+    it's down. Returns (ready, proc): ready=False -> caller falls back to Whisper
     translate; proc is the serve process if we started it (so we can stop it)."""
     proc = None
     if not _ollama_up(host):
         if not shutil.which("ollama"):
-            print("[local] Ollama not installed — using Whisper translate.")
+            print("[local] Ollama not installed - using Whisper translate.")
             return False, None
         print("[local] Starting Ollama server...")
         kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -793,17 +812,17 @@ def ensure_ollama_running(host: str, model: str):
         try:
             proc = subprocess.Popen(["ollama", "serve"], **kwargs)
         except Exception as e:
-            print(f"[local] Could not start Ollama ({e}) — using Whisper translate.")
+            print(f"[local] Could not start Ollama ({e}) - using Whisper translate.")
             return False, None
         for _ in range(30):
             if _ollama_up(host):
                 break
             time.sleep(1)
         else:
-            print("[local] Ollama did not start in time — using Whisper translate.")
+            print("[local] Ollama did not start in time - using Whisper translate.")
             return False, proc
     if not _ollama_has_model(host, model):
-        print(f"[local] Ollama model '{model}' not found (try: ollama pull {model}) — using Whisper translate.")
+        print(f"[local] Ollama model '{model}' not found (try: ollama pull {model}) - using Whisper translate.")
         return False, proc
     print(f"[local] Ollama ready ({model}).")
     return True, proc
@@ -849,7 +868,7 @@ def shutdown_ollama(host: str, model: str, proc, keep: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# VRAM monitor (diagnostic) — samples total GPU memory and interleaves it with
+# VRAM monitor (diagnostic) - samples total GPU memory and interleaves it with
 # the phase log so a peak can be attributed to Demucs / Whisper / translate.
 # ---------------------------------------------------------------------------
 
@@ -867,7 +886,7 @@ def _vram_used_mb():
 
 def start_vram_monitor(interval=0.5):
     """Spawn a daemon thread that prints `[vram +Ns] used=X peak=Y` every
-    `interval`s. Returns (stop_event, peak_dict) — set the event to stop."""
+    `interval`s. Returns (stop_event, peak_dict) - set the event to stop."""
     import threading
     stop = threading.Event()
     peak = {"v": 0}
@@ -886,12 +905,12 @@ def start_vram_monitor(interval=0.5):
 
 
 # ---------------------------------------------------------------------------
-# Phased split run — separate-all -> transcribe-all -> translate-all
+# Phased split run - separate-all -> transcribe-all -> translate-all
 # ---------------------------------------------------------------------------
 
 def run_phased(items, server, token, args, device, compute_type, verbose=False, prefix=""):
     """Guarantee every downloaded temp dir is removed even if a phase raises
-    (BotBlockError in Phase 1, model-load failure in Phase 2, etc.) — the
+    (BotBlockError in Phase 1, model-load failure in Phase 2, etc.) - the
     per-item Phase-3 finally only covers items that actually reach Phase 3."""
     tmpdirs = set()
     try:
@@ -915,7 +934,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
         """Self-contained progress label: [<season pos> | <step> k/total]."""
         return f"[{prefix + ' | ' if prefix else ''}{step} {k}/{total}]"
 
-    # Phase 1: download SERIALLY with a delay between trailers (never parallel —
+    # Phase 1: download SERIALLY with a delay between trailers (never parallel -
     # bursty parallel downloads are what trip YouTube's bot-detection), then
     # Demucs-separate sequentially (GPU, loaded once). One season at a time.
     delay = max(0.0, getattr(args, "download_delay", 5.0) or 0.0)
@@ -936,7 +955,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
             print(f"  {tag('download', i + 1, n)} {label}: DOWNLOAD ERROR: {msg[:120]}")
             errors += 1
             if _is_bot_block(msg):
-                # Bubbles up to abort the whole run — rationale on BotBlockError.
+                # Bubbles up to abort the whole run - rationale on BotBlockError.
                 raise BotBlockError(
                     "YouTube is challenging downloads ('not a bot'). Aborted before "
                     "the remaining trailers. Wait for a cool-down, then re-run with "
@@ -962,7 +981,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
 
     # Phase 2: transcribe (Whisper loaded once, then freed to reclaim VRAM).
     np = len(prepared)
-    print(f"[local] {head}Phase 2/3: transcribe ({args.model}) — {np} trailer(s)...")
+    print(f"[local] {head}Phase 2/3: transcribe ({args.model}) - {np} trailer(s)...")
     from faster_whisper import WhisperModel
     model = WhisperModel(args.model, device=device, compute_type=compute_type)
     for i, p in enumerate(prepared, 1):
@@ -981,8 +1000,8 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
         except Exception:
             pass
 
-    # Phase 3: translate + burned-in + upload (qwen3.5 stays warm — no reload).
-    print(f"[local] {head}Phase 3/3: translate ({args.translate_model}) + upload — {np} trailer(s)...")
+    # Phase 3: translate + burned-in + upload (qwen3.5 stays warm - no reload).
+    print(f"[local] {head}Phase 3/3: translate ({args.translate_model}) + upload - {np} trailer(s)...")
     translated = 0
     for i, p in enumerate(prepared, 1):
         label = p["title"] or p["vid"]
@@ -1015,7 +1034,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
             shutil.rmtree(p["tmpdir"], ignore_errors=True)
 
     # Free the translator's VRAM before returning so the NEXT season's Demucs +
-    # Whisper don't stack on top of a still-warm qwen3.5 — that cross-season
+    # Whisper don't stack on top of a still-warm qwen3.5 - that cross-season
     # co-residence is the ~9.8 GB shape the phasing exists to avoid (see the
     # _run_phased docstring). qwen reloads at the next season's Phase 3 (one
     # quick reload/season).
@@ -1055,7 +1074,7 @@ def main():
                         help="Use the old end-to-end Whisper translate (skip Demucs + Qwen split); tags subs 'large-v3'")
     parser.add_argument("--translate-model", type=str, default="qwen3.5:9b",
                         help="Ollama model for the split-pipeline translation step "
-                             "(default: qwen3.5:9b — benchmarked better than qwen3:8b; "
+                             "(default: qwen3.5:9b - benchmarked better than qwen3:8b; "
                              "it's a vision build so ~1.2 GB of vision weights sit unused "
                              "in RAM, but the LLM runs on GPU)")
     parser.add_argument("--ollama-host", type=str, default="http://127.0.0.1:11434",
@@ -1069,7 +1088,7 @@ def main():
                              "phase log (diagnostic for peak-usage attribution)")
     parser.add_argument("--download-delay", type=float, default=5.0, metavar="SECONDS",
                         help="Seconds between trailer downloads (default: 5). Downloads "
-                             "are always serial — bursty parallel downloads trip YouTube "
+                             "are always serial - bursty parallel downloads trip YouTube "
                              "bot-detection. Raise it if you still get challenged.")
     parser.add_argument("--download-workers", type=int, default=1, metavar="N",
                         help=argparse.SUPPRESS)  # deprecated/ignored: downloads are serial now
@@ -1092,7 +1111,7 @@ def main():
     if args.log:
         log_path = args.log
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        # Rotate when the log exceeds 5 MB — keeps current + one .old archive.
+        # Rotate when the log exceeds 5 MB - keeps current + one .old archive.
         if os.path.exists(log_path) and os.path.getsize(log_path) > 5 * 1024 * 1024:
             os.replace(log_path, log_path + '.old')
         log_file = open(log_path, "a", encoding="utf-8")
@@ -1121,7 +1140,7 @@ def main():
             return
         else:
             season, year = next_season_info()
-            print(f"[local] Next season ({season} {year}) is {days} days away — within {args.within_days}-day window, proceeding.")
+            print(f"[local] Next season ({season} {year}) is {days} days away - within {args.within_days}-day window, proceeding.")
 
     server = args.server.rstrip("/")
 
@@ -1145,7 +1164,7 @@ def main():
     else:
         seasons_to_process = get_seasons_to_process()
 
-    # Detect device — auto-install GPU dependencies if missing
+    # Detect device - auto-install GPU dependencies if missing
     device = args.device
     if not device:
         try:
@@ -1175,7 +1194,7 @@ def main():
     print(f"[local] Server: {server}")
     print(f"[local] Model:  {args.model} ({compute_type} on {device})")
     if device == "cpu":
-        print(f"[local] WARNING: Running on CPU — this will be slow. Install CUDA for GPU acceleration.")
+        print(f"[local] WARNING: Running on CPU - this will be slow. Install CUDA for GPU acceleration.")
 
     # Champion split pipeline (Demucs vocals -> transcribe -> qwen3.5) is the
     # default for the full-audio (large) path; the small model keeps the legacy
@@ -1190,7 +1209,7 @@ def main():
         ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
 
     # Guarantee the spawned `ollama serve` is stopped even if an unhandled
-    # exception (e.g. a Phase-2 model-load failure) escapes main() — a bare
+    # exception (e.g. a Phase-2 model-load failure) escapes main() - a bare
     # straight-line shutdown call would be skipped, orphaning the server. atexit
     # runs on normal exit AND on unhandled-exception termination; the flag makes
     # it idempotent so the explicit calls below don't double-stop.
@@ -1205,14 +1224,14 @@ def main():
 
     # If the split translator is unavailable, the run falls back to end-to-end
     # Whisper translate (uploaded as args.model, e.g. large-v3). Lower target_tag
-    # to match — otherwise the cache/skip comparison treats every already-
+    # to match - otherwise the cache/skip comparison treats every already-
     # large-v3 row as a large-v3-split upgrade target and reprocesses the whole
     # back-catalog only to have each upload rejected as a downgrade.
     if split_enabled and not ollama_ready and not args.dry_run:
         target_tag = args.model
-        print(f"[local] Ollama unavailable — falling back to e2e translate; target tag now '{target_tag}'")
+        print(f"[local] Ollama unavailable - falling back to e2e translate; target tag now '{target_tag}'")
 
-    # Optional VRAM diagnostic — runs for the whole job; prints a final PEAK line.
+    # Optional VRAM diagnostic - runs for the whole job; prints a final PEAK line.
     if getattr(args, "vram_log", False):
         import atexit
         _vstop, _vpeak = start_vram_monitor()
@@ -1288,7 +1307,7 @@ def main():
             else:
                 is_cached, cached_model = check_server_cache(server, vid, target_tag)
                 if is_cached:
-                    print(f"  [SKIP] {get_title(show)} ({vid}) — cached ({cached_model})")
+                    print(f"  [SKIP] {get_title(show)} ({vid}) - cached ({cached_model})")
                 else:
                     reason = f"upgrade from {cached_model}" if cached_model else "not cached"
                     uncached.append((show, reason))
@@ -1302,7 +1321,7 @@ def main():
         print()
 
         if args.dry_run:
-            print(f"[local] DRY RUN — {season} {year} trailers that would be translated:")
+            print(f"[local] DRY RUN - {season} {year} trailers that would be translated:")
             for show, reason in uncached:
                 vid = show["trailer"]["id"]
                 print(f"  {show['format']:10s} {get_title(show)} ({vid}) [{reason}]")
@@ -1370,19 +1389,19 @@ def main():
                     msg = str(e)
                     print(f"  ERROR: {msg}")
                     errors += 1
-                    # Bot-challenge → abort the run (rationale on BotBlockError).
+                    # Bot-challenge -> abort the run (rationale on BotBlockError).
                     if _is_bot_block(msg):
-                        print("\n[local] ABORT: YouTube bot-challenge detected — stopping to avoid deepening the block.")
+                        print("\n[local] ABORT: YouTube bot-challenge detected - stopping to avoid deepening the block.")
                         bot_blocked = True
                         break
 
-            # A bot-challenge is IP-wide — stop the whole run, not just this season.
+            # A bot-challenge is IP-wide - stop the whole run, not just this season.
             if bot_blocked:
                 break
 
         print()
         remaining = len(uncached) - translated - errors
-        print(f"[local] SEASON {si}/{ns} done — {season} {year}: {translated} translated, {errors} errors"
+        print(f"[local] SEASON {si}/{ns} done - {season} {year}: {translated} translated, {errors} errors"
               + (f", {remaining} remaining" if remaining > 0 else ""))
         print()
 

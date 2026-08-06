@@ -1,9 +1,9 @@
 """
-CPU live-translation benchmark — find the cheapest config that still feels instant.
+CPU live-translation benchmark - find the cheapest config that still feels instant.
 
 The on-demand subtitle daemon (backend/scripts/translate_daemon.py) runs CPU-only
 on the Unraid box, sharing the box with Plex (which transcodes most of the time).
-So the goal is NOT to max the cores — it's the lowest time-to-first-subtitle (TTFS)
+So the goal is NOT to max the cores - it's the lowest time-to-first-subtitle (TTFS)
 and the lowest CPU cost, with speed prioritised over quality (live subs are
 throwaway: the Wednesday batch upgrades them to `medium`, the Sunday GPU run to
 `large-v3-split`).
@@ -21,19 +21,19 @@ It reuses the real-trailer corpus + scoring from benchmark_whisper_settings.py
 (tools/benchmark_data/<vid>/audio.wav + cc_segments.json). Run `--download` there
 first if the corpus is missing.
 
-IMPORTANT: benchmark on the DEV PC, not the server — the server runs prod and
+IMPORTANT: benchmark on the DEV PC, not the server - the server runs prod and
 can't be tested on. This PC's CPU is faster per-core than the i5-10400 and isn't
 Plex-contended, so treat absolute numbers as optimistic and prefer RELATIVE
 ranking + low thread counts; quality numbers transfer exactly. It loads a fresh
 model per video (timing excludes load; also dodges the base+VAD poisoning quirk
-— see translate_daemon.py).
+- see translate_daemon.py).
 
-Finding (suite `live_cpu`, 2026-06): `small` wins on both axes — keep it.
+Finding (suite `live_cpu`, 2026-06): `small` wins on both axes - keep it.
 tiny/base are SLOWER in total wall-clock (they hallucinate into repetition
 loops) and far worse quality (tiny 86-93% halluc = garbage, base 63% vs small
 47%). Transcription is not the bottleneck either: small at 1 thread runs at
-xRT ≈ 0.13 (≈8× faster than playback), so thread count only shifts TTFS 1-2 s
-while doubling cpu_s per extra thread — the latency the viewer feels is the
+xRT ~ 0.13 (~8× faster than playback), so thread count only shifts TTFS 1-2 s
+while doubling cpu_s per extra thread - the latency the viewer feels is the
 audio download, which this bench excludes. `word_timestamps` stays on despite
 a ~10-20% cost: it trims the pre-speech lead-in and playback is never waiting.
 
@@ -137,7 +137,7 @@ def _transcribe(model, audio_path, vad, word_ts):
         word_timestamps=word_ts,
     )
     out = []
-    for seg in segments:  # generator — consuming it does the work
+    for seg in segments:  # generator - consuming it does the work
         text = seg.text.strip()
         if not text:
             continue
@@ -253,7 +253,7 @@ def run(videos, models, threads_list, start, vad, word_ts, do_quality):
 def format_report(rows, samples, videos, start, vad, word_ts, do_quality):
     lines = []
     when = time.strftime("%Y-%m-%d %H:%M")
-    lines.append(f"Benchmark: suite '{SUITE}' — live CPU translation  ({when})")
+    lines.append(f"Benchmark: suite '{SUITE}' - live CPU translation  ({when})")
     lines.append(f"Host: {platform.node() or 'unknown'} ({platform.processor() or platform.machine()})"
                  f"  |  Videos: {len(videos)}  |  start={start}s  vad={vad}  word_ts={word_ts}")
     lines.append("Lower is better for ttfs/total/xRT/cpu/rss/halluc; higher for content.")
@@ -282,7 +282,7 @@ def format_report(rows, samples, videos, start, vad, word_ts, do_quality):
             continue
         seen_models.add(model_name)
         lines.append("")
-        lines.append(f"SAMPLE — {model_name} on {title[:40]}")
+        lines.append(f"SAMPLE - {model_name} on {title[:40]}")
         for s in segs:
             lines.append(f"  [{s['start']:.1f}->{s['end']:.1f}] {s['text']}")
     return "\n".join(lines)

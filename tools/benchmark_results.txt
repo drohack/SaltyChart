@@ -1,10 +1,10 @@
-SaltyChart benchmark results — one section per suite. Each run replaces only its own suite's section.
+SaltyChart benchmark results - one section per suite. Each run replaces only its own suite's section.
 
 @@@ BENCHMARK SUITE: baseline @@@
 
-Benchmark: suite 'baseline' — SUMMER 2026 trailers  (2026-06-12 11:57)
+Benchmark: suite 'baseline' - SUMMER 2026 trailers  (2026-06-12 11:57)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU vs CC; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU vs CC; SCORE = overlap - halluc
 
 ================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -165,49 +165,49 @@ SETTING: beam10_rep120_vadmin300  {'asr_model': 'large-v3', 'asr_kwargs': {'beam
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    15    50.6%    49.9%    13.3%   37.2
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- baseline (10 segs, score=-10.2) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you.
-    [35.0→43.2] I'm the last one.
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you.
+    [35.0->43.2] I'm the last one.
 
   --- beam10 (10 segs, score=-6.8) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you for a long time.
-    [35.0→43.2] I'm the last one.
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you for a long time.
+    [35.0->43.2] I'm the last one.
 
   --- reppenalty_120 (6 segs, score=-4.2) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→34.2] My name is Ritsu Minetsuki, nice to meet you for a long time.
-    [35.0→45.0] I'm the last one in my team...
-    [45.0→47.9] Don't lose, Fuji Miyako!
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->34.2] My name is Ritsu Minetsuki, nice to meet you for a long time.
+    [35.0->45.0] I'm the last one in my team...
+    [45.0->47.9] Don't lose, Fuji Miyako!
 
   --- beam10_rep120 (7 segs, score=-2.6) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you for a long time.
-    [35.0→45.1] I'm the last one, Wanderage...
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you for a long time.
+    [35.0->45.1] I'm the last one, Wanderage...
 
   --- suppress_blank (10 segs, score=-10.2) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you.
-    [35.0→43.2] I'm the last one.
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you.
+    [35.0->43.2] I'm the last one.
 
   --- beam10_rep120_suppress (7 segs, score=-2.6) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you for a long time.
-    [35.0→45.1] I'm the last one, Wanderage...
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you for a long time.
+    [35.0->45.1] I'm the last one, Wanderage...
 
 @@@ BENCHMARK SUITE: phase1 @@@
 
-Benchmark: suite 'phase1' — SUMMER 2026 trailers  (2026-06-12 11:12)
+Benchmark: suite 'phase1' - SUMMER 2026 trailers  (2026-06-12 11:12)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU vs CC; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU vs CC; SCORE = overlap - halluc
 
 ================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -351,49 +351,49 @@ SETTING: beam10_rep120__vocals  {'audio': 'vocals', 'asr_model': 'large-v3', 'as
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    44.8%    49.2%    22.7%   22.1
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- baseline__raw (10 segs, score=-10.2) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you.
-    [35.0→43.2] I'm the last one.
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you.
+    [35.0->43.2] I'm the last one.
 
   --- beam10__raw (10 segs, score=-7.1) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you for a long time.
-    [35.0→43.2] I'm the last one.
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you for a long time.
+    [35.0->43.2] I'm the last one.
 
   --- reppenalty_120__raw (6 segs, score=-4.2) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→34.2] My name is Ritsu Minetsuki, nice to meet you for a long time.
-    [35.0→45.0] I'm the last one in my team...
-    [45.0→47.9] Don't lose, Fuji Miyako!
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->34.2] My name is Ritsu Minetsuki, nice to meet you for a long time.
+    [35.0->45.0] I'm the last one in my team...
+    [45.0->47.9] Don't lose, Fuji Miyako!
 
   --- beam10_rep120__raw (7 segs, score=-2.6) ---
-    [10.9→11.7] My name is Akamachi Arale.
-    [12.6→32.0] My name is Ritsu Minetsuki.
-    [32.9→34.9] Nice to meet you for a long time.
-    [35.0→45.1] I'm the last one, Wanderage...
+    [10.9->11.7] My name is Akamachi Arale.
+    [12.6->32.0] My name is Ritsu Minetsuki.
+    [32.9->34.9] Nice to meet you for a long time.
+    [35.0->45.1] I'm the last one, Wanderage...
 
   --- baseline__vocals (16 segs, score=0.9) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.1→14.4] I love singing and talking!
-    [22.2→22.8] I love everyone!
-    [23.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.1->14.4] I love singing and talking!
+    [22.2->22.8] I love everyone!
+    [23.9->31.9] My name is Ritsu Minetsuki.
 
   --- beam10__vocals (16 segs, score=1.5) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.2→14.9] I love to sing and talk a lot.
-    [22.2→22.8] I love everyone.
-    [30.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.2->14.9] I love to sing and talk a lot.
+    [22.2->22.8] I love everyone.
+    [30.9->31.9] My name is Ritsu Minetsuki.
 
 @@@ BENCHMARK SUITE: phase2 @@@
 
-Benchmark: suite 'phase2' — SUMMER 2026 trailers  (2026-06-12 14:33)
+Benchmark: suite 'phase2' - SUMMER 2026 trailers  (2026-06-12 14:33)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -452,31 +452,31 @@ SETTING: jpCC_then_qwen  {'asr_model': 'large-v3', 'translator': 'ollama_qwen'}
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    40.7%    54.4%    54.1%    31.8%    8.8
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- e2e_translate (16 segs, score=35.7) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.2→14.9] I love to sing and talk a lot.
-    [22.2→22.8] I love everyone.
-    [30.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.2->14.9] I love to sing and talk a lot.
+    [22.2->22.8] I love everyone.
+    [30.9->31.9] My name is Ritsu Minetsuki.
 
   --- whisperJP_then_qwen (13 segs, score=37.4) ---
-    [10.5→11.8] I'm Nakamachi Arare!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsui.
+    [10.5->11.8] I'm Nakamachi Arare!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsui.
 
   --- jpCC_then_qwen (17 segs, score=57.1) ---
-    [0.2→14.9] [Music]
-    [10.2→18.5] My name is Nana Arare! I love singing and playing the flute so much!
-    [14.9→18.5] 大好きです。
-    [20.7→27.5] Nana-chan loves everyone here.
+    [0.2->14.9] [Music]
+    [10.2->18.5] My name is Nana Arare! I love singing and playing the flute so much!
+    [14.9->18.5] 大好きです。
+    [20.7->27.5] Nana-chan loves everyone here.
 
 @@@ BENCHMARK SUITE: phase3 @@@
 
-Benchmark: suite 'phase3' — SUMMER 2026 trailers  (2026-06-12 12:14)
+Benchmark: suite 'phase3' - SUMMER 2026 trailers  (2026-06-12 12:14)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -535,31 +535,31 @@ SETTING: kotobaJP_then_qwen  {'audio': 'vocals', 'asr_model': 'kotoba-tech/kotob
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    19    37.7%    57.3%    60.1%    31.6%    6.1
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- e2e_translate (16 segs, score=35.7) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.2→14.9] I love to sing and talk a lot.
-    [22.2→22.8] I love everyone.
-    [30.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.2->14.9] I love to sing and talk a lot.
+    [22.2->22.8] I love everyone.
+    [30.9->31.9] My name is Ritsu Minetsuki.
 
   --- whisperJP_then_qwen (13 segs, score=37.4) ---
-    [10.5→11.8] I'm Nakamachi Arare!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsui.
+    [10.5->11.8] I'm Nakamachi Arare!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsui.
 
   --- kotobaJP_then_qwen (14 segs, score=48.8) ---
-    [0.0→12.0] Nakanaka Town Arare here!
-    [12.0→16.0] I love singing and chatting!
-    [16.0→21.9] Nanachan loves everyone so much,
-    [21.9→27.0] My name is Minetsukiri.
+    [0.0->12.0] Nakanaka Town Arare here!
+    [12.0->16.0] I love singing and chatting!
+    [16.0->21.9] Nanachan loves everyone so much,
+    [21.9->27.0] My name is Minetsukiri.
 
 @@@ BENCHMARK SUITE: phase4 @@@
 
-Benchmark: suite 'phase4' — SUMMER 2026 trailers  (2026-06-12 12:27)
+Benchmark: suite 'phase4' - SUMMER 2026 trailers  (2026-06-12 12:27)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -618,31 +618,31 @@ SETTING: qwen3asrJP_then_qwen  {'audio': 'vocals', 'asr_model': 'Qwen/Qwen3-ASR-
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    17    50.2%    47.1%    75.2%    23.5%   26.7
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- e2e_translate (16 segs, score=35.7) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.2→14.9] I love to sing and talk a lot.
-    [22.2→22.8] I love everyone.
-    [30.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.2->14.9] I love to sing and talk a lot.
+    [22.2->22.8] I love everyone.
+    [30.9->31.9] My name is Ritsu Minetsuki.
 
   --- whisperJP_then_qwen (13 segs, score=37.4) ---
-    [10.5→11.8] I'm Nakamachi Arare!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsui.
+    [10.5->11.8] I'm Nakamachi Arare!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsui.
 
   --- qwen3asrJP_then_qwen (13 segs, score=58.8) ---
-    [0.0→6.8] That's Interim-chan!
-    [6.8→13.6] She loves singing and chatting so much.
-    [13.6→20.4] Ushinaga-chan really loves everyone here.
-    [20.4→27.2] My name is Shimetsuki Ritsuru.
+    [0.0->6.8] That's Interim-chan!
+    [6.8->13.6] She loves singing and chatting so much.
+    [13.6->20.4] Ushinaga-chan really loves everyone here.
+    [20.4->27.2] My name is Shimetsuki Ritsuru.
 
 @@@ BENCHMARK SUITE: champion @@@
 
-Benchmark: suite 'champion' — SUMMER 2026 trailers  (2026-06-12 12:44)
+Benchmark: suite 'champion' - SUMMER 2026 trailers  (2026-06-12 12:44)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -718,37 +718,37 @@ SETTING: split_best  {'audio': 'vocals', 'asr_model': 'large-v3', 'asr_kwargs': 
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    47.9%    60.8%    67.0%    18.2%   29.7
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- e2e_beam10 (16 segs, score=35.7) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.2→14.9] I love to sing and talk a lot.
-    [22.2→22.8] I love everyone.
-    [30.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.2->14.9] I love to sing and talk a lot.
+    [22.2->22.8] I love everyone.
+    [30.9->31.9] My name is Ritsu Minetsuki.
 
   --- e2e_best (16 segs, score=36.8) ---
-    [10.5→11.2] My name is Arale Nakamachi.
-    [12.1→14.9] I love to sing and talk a lot!
-    [22.2→22.8] I love everyone!
-    [23.9→31.9] My name is Ritsu Minetsuki.
+    [10.5->11.2] My name is Arale Nakamachi.
+    [12.1->14.9] I love to sing and talk a lot!
+    [22.2->22.8] I love everyone!
+    [23.9->31.9] My name is Ritsu Minetsuki.
 
   --- split_beam10 (13 segs, score=37.4) ---
-    [10.5→11.8] I'm Nakamachi Arare!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsui.
+    [10.5->11.8] I'm Nakamachi Arare!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsui.
 
   --- split_best (16 segs, score=34.5) ---
-    [10.5→11.8] Nakamachi Arare here!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsuko.
+    [10.5->11.8] Nakamachi Arare here!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsuko.
 
 @@@ BENCHMARK SUITE: qwen38 @@@
 
-Benchmark: suite 'qwen38' — SUMMER 2026 trailers  (2026-06-12 14:09)
+Benchmark: suite 'qwen38' - SUMMER 2026 trailers  (2026-06-12 14:09)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -773,19 +773,19 @@ SETTING: split_qwen3-8b  {'audio': 'vocals', 'asr_model': 'large-v3', 'asr_kwarg
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    52.1%    60.8%    71.6%     4.5%   47.6
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- split_qwen3-8b (16 segs, score=41.0) ---
-    [10.5→11.8] 仲町ありれです
-    [12.9→14.9] 歌とおしゃべりが大好き
-    [22.2→24.3] みんなのことが大好き
-    [31.2→32.7] 峰月りつと申します
+    [10.5->11.8] 仲町ありれです
+    [12.9->14.9] 歌とおしゃべりが大好き
+    [22.2->24.3] みんなのことが大好き
+    [31.2->32.7] 峰月りつと申します
 
 @@@ BENCHMARK SUITE: qwen359 @@@
 
-Benchmark: suite 'qwen359' — SUMMER 2026 trailers  (2026-06-12 14:10)
+Benchmark: suite 'qwen359' - SUMMER 2026 trailers  (2026-06-12 14:10)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -810,19 +810,19 @@ SETTING: split_qwen3.5-9b  {'audio': 'vocals', 'asr_model': 'large-v3', 'asr_kwa
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    22    47.9%    60.8%    67.0%    18.2%   29.7
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- split_qwen3.5-9b (16 segs, score=34.5) ---
-    [10.5→11.8] Nakamachi Arare here!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsuko.
+    [10.5->11.8] Nakamachi Arare here!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsuko.
 
 @@@ BENCHMARK SUITE: turbocmp @@@
 
-Benchmark: suite 'turbocmp' — SUMMER 2026 trailers  (2026-06-12 14:54)
+Benchmark: suite 'turbocmp' - SUMMER 2026 trailers  (2026-06-12 14:54)
 Device: cuda (float16)  |  Videos: 11  |  With CC: 11
-Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
+Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; content = timing-free best-match similarity; SCORE = overlap - halluc
 
 ========================================================================================
 SUMMARY  (sorted by score; metrics averaged across all videos)
@@ -864,23 +864,23 @@ SETTING: split_large-v3-turbo  {'audio': 'vocals', 'asr_model': 'large-v3-turbo'
   ODxfIvSgWuo Mushoku Tensei: Jobless Reinca    18    51.2%    75.7%    71.8%    11.1%   40.1
 
 ================================================================================
-SAMPLE — 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
+SAMPLE - 7fdSXo-be7o (BanG Dream! Yume Infinity Mita)
 
   --- split_large-v3 (16 segs, score=33.9) ---
-    [10.5→11.8] Nakamachi Arare here!
-    [12.9→14.9] I love singing and chatting!
-    [22.2→24.3] I love everyone so much!
-    [31.2→32.7] My name is Minazuki Ritsuko.
+    [10.5->11.8] Nakamachi Arare here!
+    [12.9->14.9] I love singing and chatting!
+    [22.2->24.3] I love everyone so much!
+    [31.2->32.7] My name is Minazuki Ritsuko.
 
   --- split_large-v3-turbo (17 segs, score=37.8) ---
-    [10.5→12.0] Nakamachi Arare here!
-    [13.2→14.9] I love singing and chatting so much!
-    [22.2→24.3] Everyone is my favorite!
-    [31.2→32.8] My name is Minazuki Ritsuri.
+    [10.5->12.0] Nakamachi Arare here!
+    [13.2->14.9] I love singing and chatting so much!
+    [22.2->24.3] Everyone is my favorite!
+    [31.2->32.8] My name is Minazuki Ritsuri.
 
 @@@ BENCHMARK SUITE: live_cpu @@@
 
-Benchmark: suite 'live_cpu' — live CPU translation  (2026-06-12 16:01)
+Benchmark: suite 'live_cpu' - live CPU translation  (2026-06-12 16:01)
 Host: DESKTOP-6LPKKLU (Intel64 Family 6 Model 151 Stepping 2, GenuineIntel)  |  Videos: 11  |  start=0.0s  vad=True  word_ts=True
 Lower is better for ttfs/total/xRT/cpu/rss/halluc; higher for content.
 TTFS = extract(5s)+transcribe(5s); xRT = total/audio_len (<1 = faster than realtime).
@@ -900,19 +900,19 @@ small     2    2.5     8.5  0.10   16.7    1702  18.9    50    47
 small     1    4.0    11.3  0.13   11.2    1667  18.6    51    47
 ============================================================================================
 
-SAMPLE — small on BanG Dream! Yume Infinity Mita
+SAMPLE - small on BanG Dream! Yume Infinity Mita
   [10.9->11.7] I'm Akama-chan Arale.
   [12.6->32.2] I'm Minetsu Kiritsu.
   [33.0->34.9] Nice to meet you.
   [35.3->44.2] Shime Kiri...
 
-SAMPLE — base on BanG Dream! Yume Infinity Mita
+SAMPLE - base on BanG Dream! Yume Infinity Mita
   [10.9->11.7] I'm Akamachi Araru.
   [12.7->13.6] Hmm...
   [31.4->32.0] I'll take care of Minetsuki.
   [33.0->33.9] I'll take care of Tsuenagakku.
 
-SAMPLE — tiny on BanG Dream! Yume Infinity Mita
+SAMPLE - tiny on BanG Dream! Yume Infinity Mita
   [10.9->11.7] I'm a little bit tired.
   [31.4->32.0] I'll be back soon.
   [33.3->34.0] I'll be back soon.
@@ -920,7 +920,7 @@ SAMPLE — tiny on BanG Dream! Yume Infinity Mita
 
 @@@ BENCHMARK SUITE: download @@@
 
-Benchmark: suite 'download' — live download config  (2026-06-12 16:25)
+Benchmark: suite 'download' - live download config  (2026-06-12 16:25)
 Videos: 3  |  runs/video: 2 (last run = warm, yt-dlp player JS cached)
 download time is extraction-bound (~1-2 MB file); lower is better.
 
@@ -942,7 +942,7 @@ Note: a config that errors or returns a fragmented (m3u8/dash) protocol is NOT a
 
 @@@ BENCHMARK SUITE: player_startup @@@
 
-episode: Nijusseiki Denki Mokuroku: Eureka Evrika  (itemId acab3ca4172f…)
+episode: Nijusseiki Denki Mokuroku: Eureka Evrika  (itemId acab3ca4172f...)
 
 SERVER STAGES              n     min      med      max   spread    size
 --------------------------------------------------------------------------

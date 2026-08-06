@@ -23,7 +23,7 @@ import { options } from './stores/options';
   let showOptions = false;
 
   // Deploy version (YYYYMMDD-<sha> image tag), baked in by CI via the
-  // APP_VERSION build-arg → VITE_APP_VERSION. 'dev' outside Docker builds.
+  // APP_VERSION build-arg -> VITE_APP_VERSION. 'dev' outside Docker builds.
   const appVersion: string = import.meta.env.VITE_APP_VERSION || 'dev';
 // Apply theme by setting data-theme or class on document <html>
 $: {
@@ -94,7 +94,7 @@ $: {
   <!-- Header layout: logo left, actions right, primary navigation hard-centered -->
   <header class="flex flex-col sm:flex-row px-2 sm:px-4 py-2 sm:py-4 w-full sm:w-3/4 mx-0 sm:mx-auto relative">
 
-  <!-- ── Row 1: logo left, actions right ─────────────────────────────── -->
+  <!-- -- Row 1: logo left, actions right ------------------------------- -->
   <div class="w-full flex items-center justify-between">
     <!-- Logo / Home link (with version tooltip at its top-right corner) -->
     <h1 class="text-3xl font-bold relative inline-block">
@@ -153,7 +153,7 @@ $: {
     </div>
   </div>
 
-  <!-- ── Row 2: primary navigation ──────────────────────────────────── -->
+  <!-- -- Row 2: primary navigation ------------------------------------ -->
   <nav class="mt-2 sm:mt-0 flex items-center gap-4 text-lg \
       sm:absolute sm:left-1/2 sm:-translate-x-1/2 sm:pointer-events-none">
     <a

@@ -4,7 +4,7 @@ import { isValidSeason, isValidYear } from '../lib/validateSeason';
 
 /**
  * Public endpoint used by the Compare page to fetch _any_ user's ranked list
- * for a given season/year – no authentication required.
+ * for a given season/year - no authentication required.
  *
  *   GET /api/public-list?username=foo&season=SPRING&year=2024
  */

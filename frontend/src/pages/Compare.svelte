@@ -18,9 +18,9 @@ const rankOptions = [
   { value: 'post', label: 'Post-watch' }
 ] as const;
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // Local state – season/year/user selection
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
+  // Local state - season/year/user selection
+  // ----------------------------------------------------------------------------
 
   let season: Season = get(seasonYear).season;
   let year: number = get(seasonYear).year;
@@ -39,7 +39,7 @@ const rankOptions = [
   let userA: string | null = null;
 
   // ------------------------------------------------------------------
-  // User B selection – auto-complete dropdown
+  // User B selection - auto-complete dropdown
   // ------------------------------------------------------------------
 
   let otherInput = '';
@@ -50,7 +50,7 @@ const rankOptions = [
   /**
    * Options for the second-user combobox.
    *
-   * Declared as `string[]` until now, which was simply untrue — every write puts
+   * Declared as `string[]` until now, which was simply untrue - every write puts
    * `{ value, label }` in and every read uses `.value`. svelte-check had two
    * standing errors from that mismatch; typing it honestly clears both.
    */
@@ -58,7 +58,7 @@ const rankOptions = [
   // load matching users (debounced)
   /**
    * The query the current `suggestions` were fetched for. Needed to tell "no
-   * such user" from "we haven't asked yet" — an unknown name returns an *empty*
+   * such user" from "we haven't asked yet" - an unknown name returns an *empty*
    * list, which is indistinguishable from the initial state without this.
    */
   let suggestionsFor: string | null = null;
@@ -71,7 +71,7 @@ const rankOptions = [
     const url = q ? `/api/users?q=${encodeURIComponent(q)}` : `/api/users`;
     try {
       // A failure here used to be swallowed whole: the picker stayed empty with
-      // no explanation, *and* the "No user named…" warning could never fire,
+      // no explanation, *and* the "No user named..." warning could never fire,
       // because it keys off a completed fetch. So a broken /api/users looked
       // exactly like a username that doesn't exist.
       const users = await apiJson<string[]>(url, undefined, { label: 'users', timeoutMs: QUICK });
@@ -93,7 +93,7 @@ const rankOptions = [
    *
    * Driven off the bound `filterText` rather than an event, because the event
    * route failed silently in both directions: this was `bind:searchText` with
-   * `on:search`, and svelte-select 5 has neither — it exposes `filterText` and
+   * `on:search`, and svelte-select 5 has neither - it exposes `filterText` and
    * dispatches `filter`/`input`. So the box never sent what was typed, the
    * suggestion list stayed as the unfiltered top slice from `/api/users`, and
    * anyone outside it simply could not be picked. A reactive statement on a
@@ -104,7 +104,7 @@ const rankOptions = [
   /**
    * The combobox only writes `selectedOther` when a real suggestion is picked,
    * so typing a name that doesn't exist left the *previous* user's ranks on
-   * screen under a heading naming them — it read as "this is what they rated".
+   * screen under a heading naming them - it read as "this is what they rated".
    * Flag it instead: the typed text is non-empty, the suggestions have caught up
    * with it, and none of them match.
    */
@@ -116,7 +116,7 @@ const rankOptions = [
     // Gating on an empty list rather than on the absence of an *exact* match
     // matters: `/api/users?q=` is a prefix search, so mid-typing ("droh" on the
     // way to "drohack") still returns candidates and must stay quiet. Gating on
-    // `suggestionsFor` rather than `suggestions.length > 0` matters too — an
+    // `suggestionsFor` rather than `suggestions.length > 0` matters too - an
     // unknown name is precisely the case that comes back empty.
     suggestionsFor === typedOther &&
     suggestions.length === 0;
@@ -177,9 +177,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   let loading = false;
   let error: string | null = null;
 
-  /* ──────────────────────────────────────────────────────────────────────────
+  /* --------------------------------------------------------------------------
    * Share-as-image functionality (clone & export as JPEG)
-   * ───────────────────────────────────────────────────────────────────────*/
+   * -----------------------------------------------------------------------*/
 
   // Wrapper that contains the compare header + table (bound in markup)
   let captureEl: HTMLElement;
@@ -264,7 +264,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     const posterDisplay = posters.map((p) => p.style.display);
     posters.forEach((p) => (p.style.display = 'none'));
 
-    // Global border fix – remove default white borders some components gain
+    // Global border fix - remove default white borders some components gain
     // when CSS variables aren’t resolved in the cloned DOM (mirrors My List).
     const borderFix = document.createElement('style');
     borderFix.textContent = '*{border-color:transparent !important;}';
@@ -281,7 +281,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     // Dimensions will be recalculated after final tweaks later.
 
     // Declared before the try so the finally can always re-enable the sheets,
-    // even if an early await (the dynamic import) throws — otherwise the finally
+    // even if an early await (the dynamic import) throws - otherwise the finally
     // throws a ReferenceError and the off-screen clone leaks into the DOM.
     const disabledSheets: CSSStyleSheet[] = [];
 
@@ -304,7 +304,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         }
       });
 
-      // Determine a reasonable background colour – prefer the first cell’s
+      // Determine a reasonable background colour - prefer the first cell’s
       // background; fallback to the document body.
       let bgOverride = getComputedStyle(document.body).backgroundColor || '#ffffff';
       const firstCell = clone.querySelector('div,header') as HTMLElement | null;
@@ -363,7 +363,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       const usernameB = selectedOther ? getSelectedUsername(selectedOther) : null;
 
       // User A is always the authenticated current user, so fetch their own
-      // list via the authenticated endpoint — it isn't gated by hideFromCompare
+      // list via the authenticated endpoint - it isn't gated by hideFromCompare
       // (the public endpoint now 404s opted-out users, which would otherwise
       // break the user's own Compare page). User B (someone else) still uses
       // public-list, which correctly 404s a user who opted out.
@@ -380,7 +380,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       if (!aResp.ok) throw new Error(`Failed to fetch your list (${aResp.status})`);
 
       // A saved comparison target who has since enabled hideFromCompare now
-      // 404s — clear the stale selection and drop the comparison rather than
+      // 404s - clear the stale selection and drop the comparison rather than
       // wedging the page on an error every load.
       if (bResp && bResp.status === 404) {
         try { localStorage.removeItem('compare-other'); } catch {}
@@ -420,7 +420,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   $: userA = $userName;
 
   // ------------------------------------------------------------------
-  // Logout handler – when the auth token disappears we should:
+  // Logout handler - when the auth token disappears we should:
   //   • Clear any stored comparison target in localStorage.
   //   • Reset local component state (selectedOther, lists, etc.).
   //   • Navigate the user back to the main anime page (/).
@@ -472,7 +472,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   // preload all users for the dropdown combobox
   queueSuggest();
   
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
   // Persist comparison target to localStorage
   //
   // This block used to run as soon as the component module was evaluated, i.e.
@@ -482,7 +482,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
   //
   // We now wait until the component is mounted in the browser (signalled by
   // the `mounted` flag) before running the persistence logic.
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
 
   let mounted = false;
   onMount(() => (mounted = true));
@@ -651,7 +651,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 {#if !$authToken}
   <p class="p-6 text-red-500">You must be logged-in to compare lists.</p>
 {:else}
-  <!-- Season/year header (plain wrapper, left-aligned — matches the pattern on Home and Randomize).
+  <!-- Season/year header (plain wrapper, left-aligned - matches the pattern on Home and Randomize).
        Kill SeasonSelect's internal mb-6 on mobile only (desktop keeps the 24px gap to the user controls). -->
   <div class="w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] sm:mx-auto [&>div]:!mb-0 md:[&>div]:!mb-6">
     <SeasonSelect
@@ -738,8 +738,8 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       <div class="h-2 w-full rounded" style="background: linear-gradient(to right, hsl(145 70% 45%), hsl(0 70% 45%));"></div>
       <div class="flex items-center gap-6">
         <div class="flex items-center gap-1"><span class="font-mono">0</span><span>= same rank</span></div>
-        <div class="flex items-center gap-1"><span class="font-mono">←</span><span>= you ranked higher</span></div>
-        <div class="flex items-center gap-1"><span class="font-mono">→</span><span>= other ranked higher</span></div>
+        <div class="flex items-center gap-1"><span class="font-mono">&larr;</span><span>= you ranked higher</span></div>
+        <div class="flex items-center gap-1"><span class="font-mono">&rarr;</span><span>= other ranked higher</span></div>
       </div>
     </div>
     <!-- Capture wrapper starts -->
@@ -747,9 +747,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     <header class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto p-2 grid grid-cols-[1fr_auto] items-center gap-2">
       <h2 class="text-xl font-bold text-left leading-tight">
         {#if selectedOther}
-          {$userName} vs {displayOther} — {season} {year}
+          {$userName} vs {displayOther} - {season} {year}
         {:else}
-          {$userName} — {season} {year}
+          {$userName} - {season} {year}
         {/if}
       </h2>
       <label class="text-sm justify-self-end flex items-center gap-1 whitespace-nowrap">Sort:
@@ -783,7 +783,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
         </button>
       </label>
     </header>
-    <!-- Sticky name bar — pins to viewport top while cards scroll (shared by mobile and desktop) -->
+    <!-- Sticky name bar - pins to viewport top while cards scroll (shared by mobile and desktop) -->
     <div class="sticky top-0 z-20 bg-base-200 shadow-md">
       <div class="w-full sm:max-w-[42rem] lg:max-w-[54rem] 2xl:max-w-[64rem] sm:mx-auto px-2 py-2 flex gap-3 items-center">
         <div class="w-12 flex-shrink-0"></div>
@@ -814,7 +814,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           {#if row.cover}
             <img src={row.cover} alt={row.title} class="flex-shrink-0 rounded object-cover" style="width:48px;height:66px;" />
           {:else}
-            <div class="flex-shrink-0 rounded bg-base-300 flex items-center justify-center opacity-40" style="width:48px;height:66px;">—</div>
+            <div class="flex-shrink-0 rounded bg-base-300 flex items-center justify-center opacity-40" style="width:48px;height:66px;">-</div>
           {/if}
           <div class="flex-1 min-w-0">
             <div class="italic opacity-70 text-xs leading-tight mb-2 break-words" title={row.title}>
@@ -825,7 +825,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
             <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
               <div class="text-center min-w-0">
                 <div class="font-semibold text-base">
-                  {#if row.rankA != null}#{row.rankA}{:else}—{/if}
+                  {#if row.rankA != null}#{row.rankA}{:else}-{/if}
                 </div>
                 {#if row.customA}
                   <div class="font-medium text-sm line-clamp-2" title={row.customA}>{row.customA}</div>
@@ -836,22 +836,22 @@ let rankTypeB: 'pre' | 'post' = 'pre';
                   {#if row.diff != null}
                     <span class="px-2 py-1 rounded-full text-sm font-semibold whitespace-nowrap" style="background:{heat(row.diff)};color:{textColor(row.diff)};">
                       {#if row.rankA < row.rankB}
-                        ←{row.diff}
+                        &larr;{row.diff}
                       {:else if row.rankA > row.rankB}
-                        {row.diff}→
+                        {row.diff}&rarr;
                       {:else}
                         {row.diff}
                       {/if}
                     </span>
                   {:else}
-                    <span class="text-gray-400">—</span>
+                    <span class="text-gray-400">-</span>
                   {/if}
                 {/if}
               </div>
               <div class="text-center min-w-0">
                 {#if selectedOther}
                   <div class="font-semibold text-base">
-                    {#if row.rankB != null}#{row.rankB}{:else}—{/if}
+                    {#if row.rankB != null}#{row.rankB}{:else}-{/if}
                   </div>
                   {#if row.customB}
                     <div class="font-medium text-sm line-clamp-2" title={row.customB}>{row.customB}</div>

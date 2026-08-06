@@ -1,7 +1,7 @@
 """
 Benchmark subtitle-pipeline variants against Summer 2026 anime trailers.
 
-Data lives in tools/benchmark_data/ — downloaded once, reused forever.
+Data lives in tools/benchmark_data/ - downloaded once, reused forever.
 
   py -3.13 tools/benchmark_whisper_settings.py --download          # fetch audio + CC once
   py -3.13 tools/benchmark_whisper_settings.py                     # baseline decode-param sweep
@@ -9,22 +9,22 @@ Data lives in tools/benchmark_data/ — downloaded once, reused forever.
       --output tools/results_phase1.txt                            # raw vs Demucs vocals
 
 A "variant" is a full pipeline spec (audio source -> ASR -> optional translate
--> optional align), not just transcribe kwargs — see DEFAULT_SPEC / _spec().
+-> optional align), not just transcribe kwargs - see DEFAULT_SPEC / _spec().
 The swappable backends live in tools/bench_pipeline.py so a winning config can
 later be lifted into local_translate.py.
 
 Scoring (two metrics, both vs YouTube English CC ground truth):
-  * overlap — mean sentence-embedding cosine similarity of each segment vs the
-    CC text within ±4 s of its midpoint (tolerant of paraphrase + loose timing).
-  * timing  — mean span IoU of each segment against its best-overlapping CC
+  * overlap - mean sentence-embedding cosine similarity of each segment vs the
+    CC text within +/-4 s of its midpoint (tolerant of paraphrase + loose timing).
+  * timing  - mean span IoU of each segment against its best-overlapping CC
     segment (rewards tight timestamps; moves with forced alignment).
-  * content — timing-independent best-match similarity; judges text quality
+  * content - timing-independent best-match similarity; judges text quality
     when timestamps are unreliable.
   halluc is the % of segments scoring <0.25 semantic similarity.
   SCORE = overlap - halluc.
 
 Corpus: 11 Summer 2026 trailers with REAL timestamped English CC fetched via
-youtube_transcript_api (`--refetch-cc`) — NOT yt-dlp VTT, which silently
+youtube_transcript_api (`--refetch-cc`) - NOT yt-dlp VTT, which silently
 returned empty files and made the harness fall back to fabricated even-spaced
 timestamps. One video (OMCPr9YwHdM) is excluded: its auto-generated CC doesn't
 match its audio. Data-prep flags: --download (16 kHz mono for Whisper),
@@ -37,17 +37,17 @@ benchmark_data/<vid>/cache/ keyed on audio+model+decode-args, so re-runs and
 translator-only sweeps skip transcription (--no-cache to force). All results
 go to ONE consolidated tools/benchmark_results.txt with a delimited section
 per suite (@@@ BENCHMARK SUITE: <name> @@@); each run replaces only its own
-suite's section — no ad-hoc result files. --output overrides the path.
+suite's section - no ad-hoc result files. --output overrides the path.
 
-Environment gotchas (Windows, this machine — each cost a debugging session):
+Environment gotchas (Windows, this machine - each cost a debugging session):
   * Do NOT leave torchcodec installed: torchaudio>=2.9 routes through it and
     it hijacks faster-whisper's decoder (gibberish/crash). separate_vocals
     does audio I/O via the ffmpeg BINARY instead.
-  * qwen2.5 produces multilingual word-salad in this Ollama build (0.30.6) —
+  * qwen2.5 produces multilingual word-salad in this Ollama build (0.30.6) -
     use qwen3/qwen3.5, and disable thinking (think:false).
-  * The qwen-asr package downgrades transformers (5.5.3→4.57.6); core
+  * The qwen-asr package downgrades transformers (5.5.3->4.57.6); core
     (faster-whisper, sentence-transformers) still works, verify after install.
-  * kotoba can't emit word-level timestamps (distilled → DTW alignment crash)
+  * kotoba can't emit word-level timestamps (distilled -> DTW alignment crash)
     and its chunk timestamps are coarse; Qwen3-ASR needs a separate
     Qwen3-ForcedAligner for timing. Both are poor subtitle-timing fits
     regardless of text quality.
@@ -76,19 +76,19 @@ TEST_VIDEOS = [
     ("HZW_fbHDsT8", "Toumei na Yoru ni Kakeru Kimi to"),
     ("-FVOUh7_obU", "Goodbye, Lara"),
     ("7ObipYqbOd8", "Sparks of Tomorrow"),
-    # Added to backfill the OMCPr9YwHdM drop — both verified to have *manual*
+    # Added to backfill the OMCPr9YwHdM drop - both verified to have *manual*
     # (not auto-generated) English CC, the lesson from that exclusion.
     ("3-Cj3dXwQWI", "Saga of Tanya the Evil Season 2"),
     ("ODxfIvSgWuo", "Mushoku Tensei: Jobless Reincarnation Season 3"),
     # OMCPr9YwHdM (Iwamoto-senpai no Suisen) excluded: its only English CC is
-    # auto-generated and does NOT match the audio — 100% halluc / 8% overlap on
+    # auto-generated and does NOT match the audio - 100% halluc / 8% overlap on
     # every setting, a broken reference that polluted absolute scores. Cached
     # files are kept in benchmark_data/ but it's dropped from the scored set.
 ]
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "benchmark_data")
 # Single consolidated results file: one delimited section per suite. A run only
-# replaces (or appends) its own suite's section — other suites are left intact.
+# replaces (or appends) its own suite's section - other suites are left intact.
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "benchmark_results.txt")
 _SECTION_MARK = "@@@ BENCHMARK SUITE: {} @@@"
 
@@ -118,7 +118,7 @@ def _spec(entry):
     return {**DEFAULT_SPEC, **entry}
 
 
-# ── Baseline suite: the original decode-param sweep on raw audio (large-v3,
+# -- Baseline suite: the original decode-param sweep on raw audio (large-v3,
 #    task=translate). Kept verbatim so results reproduce benchmark_results.txt.
 BASELINE = [
     ("baseline",                {}),
@@ -133,7 +133,7 @@ BASELINE = [
                                  "vad_parameters": {"min_speech_duration_ms": 300}}),
 ]
 
-# ── Phase 1: same top decode settings, raw vs Demucs vocals. Isolates the
+# -- Phase 1: same top decode settings, raw vs Demucs vocals. Isolates the
 #    music-removal effect with decode params held constant.
 _P1_DECODE = [
     ("baseline",       {}),
@@ -146,7 +146,7 @@ PHASE1 = (
     + [{"name": f"{n}__vocals", "audio": "vocals", "asr_kwargs": k} for n, k in _P1_DECODE]
 )
 
-# ── Phase 2: end-to-end translate vs transcribe(ja) -> Qwen translate.
+# -- Phase 2: end-to-end translate vs transcribe(ja) -> Qwen translate.
 #    Runs on the Phase-1 winner (vocals, beam10). The control `e2e_translate`
 #    on vocals == Phase-1's best (beam10__vocals), so this directly tests
 #    whether a dedicated translate step beats Whisper's translate head.
@@ -166,7 +166,7 @@ PHASE2 = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
-# ── Phase 3: model bake-off. Phase 2 showed the split's bottleneck is Whisper's
+# -- Phase 3: model bake-off. Phase 2 showed the split's bottleneck is Whisper's
 #    Japanese ASR, so lead with a JP-specialised ASR (kotoba-whisper-v2) for the
 #    transcribe step, vs the large-v3 baselines. ASR for the first two arms is
 #    served from Phase-2 cache; only kotoba transcribes fresh.
@@ -185,9 +185,9 @@ PHASE3 = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
-# ── Phase 4: Qwen3-ASR (current JP CER leader) for the transcribe step, vs the
+# -- Phase 4: Qwen3-ASR (current JP CER leader) for the transcribe step, vs the
 #    large-v3 baselines (their ASR is served from cache). Judge the `content`
-#    metric — Qwen3-ASR timestamps here are approximate (no forced aligner).
+#    metric - Qwen3-ASR timestamps here are approximate (no forced aligner).
 PHASE4 = [
     {"name": "e2e_translate", "audio": "vocals",
      "asr_kwargs": {"task": "translate", "beam_size": 10}},
@@ -199,7 +199,7 @@ PHASE4 = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
-# ── Champion: stack the per-phase winners (vocals + best decode + the two real
+# -- Champion: stack the per-phase winners (vocals + best decode + the two real
 #    translate contenders). `_BEST` = the top decode combo from the real-CC
 #    baseline; included beam10-only rows so we can see if the extra decode params
 #    actually help on top of vocals + the split.
@@ -218,12 +218,12 @@ CHAMPION = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": _QWEN_P2}},
 ]
 
-# ── Translator comparison: same champion ASR (cached), only the translator model
+# -- Translator comparison: same champion ASR (cached), only the translator model
 #    differs. Run as TWO separate single-arm suites (warm, default keep_alive) so
 #    the two models never co-reside in VRAM and neither suffers cold-reload
-#    corruption — `ollama stop <model>` between runs. Judge `content`.
+#    corruption - `ollama stop <model>` between runs. Judge `content`.
 #    (An earlier combined suite with keep_alive=0 cold-reloaded per video and
-#    corrupted qwen3:8b's output — don't do that.)
+#    corrupted qwen3:8b's output - don't do that.)
 _SPLIT_ASR = {"task": "transcribe", **_BEST}
 QWEN38 = [
     {"name": "split_qwen3-8b", "audio": "vocals", "asr_kwargs": _SPLIT_ASR,
@@ -234,7 +234,7 @@ QWEN359 = [
      "translator": "ollama_qwen", "translator_kwargs": {"model": "qwen3.5:9b"}},
 ]
 
-# ── Turbo comparison: large-v3 vs large-v3-turbo for the transcribe step (both
+# -- Turbo comparison: large-v3 vs large-v3-turbo for the transcribe step (both
 #    -> qwen3.5). Quantifies turbo's quality trade (it's ~4-8x faster). large-v3
 #    is kept as the default; turbo stays available via --model large-v3-turbo.
 TURBOCMP = [
@@ -410,7 +410,7 @@ def download_video_data(video_id, title, vid_dir):
     return True
 
 # ---------------------------------------------------------------------------
-# Scoring — semantic similarity via sentence embeddings
+# Scoring - semantic similarity via sentence embeddings
 # ---------------------------------------------------------------------------
 
 _embed_model = None
@@ -431,7 +431,7 @@ def _cosine(a, b):
 
 def score_segments(whisper_segs, cc_segs, window=4.0):
     """
-    For each Whisper segment, find the CC text within ±window seconds and
+    For each Whisper segment, find the CC text within +/-window seconds and
     measure semantic similarity using sentence embeddings.
 
     "I'm looking forward to working with you for a long time" and
@@ -461,7 +461,7 @@ def score_segments(whisper_segs, cc_segs, window=4.0):
             if abs((cs["start"] + cs["end"]) / 2 - mid) <= window
         ).strip()
         if not nearby_text:
-            continue  # No CC near this point — skip, don't penalise
+            continue  # No CC near this point - skip, don't penalise
         w_emb, c_emb = embed.encode([seg["text"], nearby_text])
         sim = max(0.0, _cosine(w_emb, c_emb))
         scores.append(sim)
@@ -475,8 +475,8 @@ def score_segments(whisper_segs, cc_segs, window=4.0):
 
 def score_content(whisper_segs, cc_segs):
     """Timing-independent content match: for each output segment, its best
-    semantic similarity to ANY CC segment (no ±window). Isolates transcription/
-    translation QUALITY from timestamp accuracy — used to judge models (like
+    semantic similarity to ANY CC segment (no +/-window). Isolates transcription/
+    translation QUALITY from timestamp accuracy - used to judge models (like
     kotoba) whose timestamps are poor but whose text may be fine. Returns %."""
     if not whisper_segs or not cc_segs:
         return 0.0
@@ -516,7 +516,7 @@ def run_pipeline(spec, vdata, cache_dir=None):
     [{start, end, text}].  The ASR step is cached to disk (cache_dir) keyed by
     audio+model+decode-args; translation/alignment run fresh (they're the
     variables under test and are comparatively cheap)."""
-    # jp_cc: not an ASR model — use the cached YouTube Japanese CC as the
+    # jp_cc: not an ASR model - use the cached YouTube Japanese CC as the
     # transcription input (isolates ASR error from translation error).
     if spec["asr"] == "jp_cc":
         cc_ja = vdata.get("cc_ja")
@@ -599,7 +599,7 @@ def write_result_section(path, suite, report):
     """Replace (or append) this suite's section in the consolidated file, leaving
     every other suite's section intact."""
     sections = read_result_sections(path)
-    # Refuse to clobber a non-empty file that isn't in our sectioned format —
+    # Refuse to clobber a non-empty file that isn't in our sectioned format -
     # opening it "w" below would erase it (the parse dropped its content).
     if not sections and os.path.exists(path) and os.path.getsize(path) > 0:
         raise SystemExit(
@@ -611,7 +611,7 @@ def write_result_section(path, suite, report):
     order += [s for s in sections if s not in order]
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("SaltyChart benchmark results — one section per suite. Each run "
+        f.write("SaltyChart benchmark results - one section per suite. Each run "
                 "replaces only its own suite's section.\n")
         for s in order:
             f.write("\n" + _SECTION_MARK.format(s) + "\n\n")
@@ -641,7 +641,7 @@ def main():
                         help="Override every variant's audio source (e.g. carry "
                              "the Phase-1 winner into later suites)")
     parser.add_argument("--output", default=None,
-                        help="Output file (default: tools/benchmark_results.txt — one "
+                        help="Output file (default: tools/benchmark_results.txt - one "
                              "consolidated file; a run replaces only its suite's section)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable the on-disk ASR result cache (force recompute)")
@@ -655,17 +655,17 @@ def main():
         for s in specs:
             s["audio"] = args.audio
     if not specs:
-        print(f"Suite '{args.suite}' is empty — nothing to run.")
+        print(f"Suite '{args.suite}' is empty - nothing to run.")
         return
 
-    # ── Download ─────────────────────────────────────────────────────────────
+    # -- Download -------------------------------------------------------------
     if args.download:
         print(f"Downloading to {DATA_DIR}/\n")
         for vid, title in TEST_VIDEOS:
             vid_dir = os.path.join(DATA_DIR, vid)
             print(f"{vid}  {title}")
             ok = download_video_data(vid, title, vid_dir)
-            print(f"  {'✓' if ok else '✗'}\n")
+            print(f"  {'OK' if ok else 'FAILED'}\n")
             time.sleep(1)
         print("Done.")
         return
@@ -677,7 +677,7 @@ def main():
             vid_dir = os.path.join(DATA_DIR, vid)
             sys.stdout.write(f"  [{i}/{len(TEST_VIDEOS)}] {vid}  {title[:30]}: ")
             sys.stdout.flush()
-            # Skip videos that already have real CC — avoids re-hitting YouTube
+            # Skip videos that already have real CC - avoids re-hitting YouTube
             # (lockout risk). Delete cc_segments.json to force a re-fetch.
             cc_json = os.path.join(vid_dir, "cc_segments.json")
             if os.path.exists(cc_json):
@@ -744,7 +744,7 @@ def main():
         print("Done.")
         return
 
-    # ── Load ──────────────────────────────────────────────────────────────────
+    # -- Load ------------------------------------------------------------------
     video_data = {}
     for vid, title in TEST_VIDEOS:
         vid_dir    = os.path.join(DATA_DIR, vid)
@@ -752,7 +752,7 @@ def main():
         cc_json    = os.path.join(vid_dir, "cc_segments.json")
         cc_txt     = os.path.join(vid_dir, "cc.txt")
         if not os.path.exists(audio_path):
-            print(f"MISSING audio: {vid} — run with --download first")
+            print(f"MISSING audio: {vid} - run with --download first")
             continue
 
         # Prefer timestamped cc_segments.json; fall back to cc.txt with
@@ -795,7 +795,7 @@ def main():
     print(f"Loaded {len(video_data)} videos ({have_cc} with CC).  "
           f"Suite '{args.suite}': {len(specs)} variant(s) on {device}.\n")
 
-    # ── Vocal separation (only if a variant needs it) ──────────────────────────
+    # -- Vocal separation (only if a variant needs it) --------------------------
     if any(s["audio"] == "vocals" for s in specs):
         print("Separating vocals (Demucs) for variants that need it...")
         for i, (vid, vdata) in enumerate(video_data.items(), 1):
@@ -809,7 +809,7 @@ def main():
                 print(f"  [{i}/{len(video_data)}] {vid}: SEPARATION FAILED: {e}")
         print()
 
-    # ── Benchmark ─────────────────────────────────────────────────────────────
+    # -- Benchmark -------------------------------------------------------------
     all_results = {}
     total = len(specs) * len(video_data)
     done  = 0
@@ -840,13 +840,13 @@ def main():
                 }
         print()
 
-    # ── Report ────────────────────────────────────────────────────────────────
+    # -- Report ----------------------------------------------------------------
     lines = []
-    lines.append(f"Benchmark: suite '{args.suite}' — SUMMER 2026 trailers  "
+    lines.append(f"Benchmark: suite '{args.suite}' - SUMMER 2026 trailers  "
                  f"({datetime.now().strftime('%Y-%m-%d %H:%M')})")
     lines.append(f"Device: {device} ({compute_type})  |  "
                  f"Videos: {len(video_data)}  |  With CC: {have_cc}")
-    lines.append("Scoring: overlap = ±4s semantic similarity; timing = mean span IoU; "
+    lines.append("Scoring: overlap = +/-4s semantic similarity; timing = mean span IoU; "
                  "content = timing-free best-match similarity; SCORE = overlap - halluc")
     lines.append("")
 
@@ -906,7 +906,7 @@ def main():
     sample_vid = next((v for v, d in video_data.items() if d["cc"]),
                       list(video_data.keys())[0])
     lines.append("=" * 80)
-    lines.append(f"SAMPLE — {sample_vid} ({video_data[sample_vid]['title']})")
+    lines.append(f"SAMPLE - {sample_vid} ({video_data[sample_vid]['title']})")
     lines.append("")
     for spec in specs[:6]:  # first 6 settings only to keep report readable
         sname = spec["name"]
@@ -915,7 +915,7 @@ def main():
         score_str = f"score={row[5]:.1f}" if row else ""
         lines.append(f"  --- {sname} ({len(segs)} segs, {score_str}) ---")
         for seg in segs[:4]:
-            lines.append(f"    [{seg['start']:.1f}→{seg['end']:.1f}] {seg['text'][:80]}")
+            lines.append(f"    [{seg['start']:.1f}->{seg['end']:.1f}] {seg['text'][:80]}")
         lines.append("")
 
     report = "\n".join(lines)

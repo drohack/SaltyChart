@@ -20,7 +20,7 @@ import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './e
 
 const DAY = 24 * 60 * 60 * 1000;
 
-test('the acceptance ladder — real pairs measured against the live library', () => {
+test('the acceptance ladder - real pairs measured against the live library', () => {
   // Every row here was produced by the resolver and checked against the real
   // library. `days` is how far the air-date tier landed from the AniList
   // premiere, and it is the only signal that separates these: by title alone,
@@ -78,15 +78,15 @@ test('a film is judged on release year, having no episodes to date', () => {
   );
 });
 
-test('the year rung is for films only — a TV candidate cannot be accepted on release year', () => {
-  // TMDB's Year-filtered search makes a ±1 production year nearly free for an
+test('the year rung is for films only - a TV candidate cannot be accepted on release year', () => {
+  // TMDB's Year-filtered search makes a +/-1 production year nearly free for an
   // unrelated series, and unlike a film a series has episodes whose air date
-  // could decide — when we don't hold it, "queue" is the honest verdict. An
+  // could decide - when we don't hold it, "queue" is the honest verdict. An
   // accept here writes a wrong id as permanent fact with no human in the loop.
   assert.equal(
     verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
-    'year rung is for films only — a same-year TV sibling must queue for review'
+    'year rung is for films only - a same-year TV sibling must queue for review'
   );
   assert.equal(
     verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: null, premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
@@ -95,32 +95,32 @@ test('the year rung is for films only — a TV candidate cannot be accepted on r
   );
 });
 
-test('a premiere date outranks title text — the Echo class', () => {
+test('a premiere date outranks title text - the Echo class', () => {
   // Echo (anime film, premiere 2026-07-19) resolved to TMDB "Echo" (2023):
-  // exact title, 1012 days off. The old ladder accepted on the text alone —
+  // exact title, 1012 days off. The old ladder accepted on the text alone -
   // date evidence must send it to review instead.
   assert.equal(
     verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 3, kind: 'movie', premiereDeltaMs: 1012 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue',
     'an exact title dated 1012d from the premiere must not blind-accept'
   );
-  // cocoon: 523d off and it is the CORRECT film — TMDB dates the theatrical
+  // cocoon: 523d off and it is the CORRECT film - TMDB dates the theatrical
   // release, AniList the broadcast. That pair is why beyond-tolerance QUEUES
   // for a human and must never auto-reject.
   assert.equal(
     verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 1, kind: 'movie', premiereDeltaMs: 523 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
     'queue'
   );
-  // And within tolerance the date VERIFIES the accept — the rung must say so,
+  // And within tolerance the date VERIFIES the accept - the rung must say so,
   // because /admin/matching renders trust straight from it.
   const good = verdictFor({ exact: true, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 3 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(good.verdict, 'accept');
   assert.equal(good.rung, 'premiere date 3d');
 });
 
-test('a dated non-exact candidate within tolerance is accepted — localized titles', () => {
+test('a dated non-exact candidate within tolerance is accepted - localized titles', () => {
   // 14 of the 105 queued rows resolve this way: TMDB holds the work under a
-  // localized English title ("Kagaku×Bouken Survival!" → "Surviving Science!",
+  // localized English title ("Kagaku×Bouken Survival!" -> "Surviving Science!",
   // 0 days). Title text can never match those; the date is a fingerprint.
   const v = verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'tv', premiereDeltaMs: 0, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(v.verdict, 'accept');
@@ -129,7 +129,7 @@ test('a dated non-exact candidate within tolerance is accepted — localized tit
 
 test('library episode evidence outranks a big series-premiere delta', () => {
   // Bananya Around the World -> Bananya: the SERIES premiered years before the
-  // entry, so the premiere delta is huge — but the entry's own episode lands
+  // entry, so the premiere delta is huge - but the entry's own episode lands
   // 1 day off. Episode evidence must win or every held sequel gets queued.
   const v = verdictFor({ exact: false, inLibrary: true, deltaMs: 1 * DAY, yearDelta: null, kind: 'tv', premiereDeltaMs: 3300 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false });
   assert.equal(v.verdict, 'accept');
@@ -138,7 +138,7 @@ test('library episode evidence outranks a big series-premiere delta', () => {
 
 test('a contradicting premiere date blocks the year rung', () => {
   // Measured: 4 of 51 release-year accepts were contradicted by day precision
-  // (62–201d) — a ±1 year window admits up to ~730 days, and the day already
+  // (62-201d) - a +/-1 year window admits up to ~730 days, and the day already
   // knows better.
   assert.equal(
     verdictFor({ exact: false, inLibrary: false, deltaMs: null, yearDelta: 0, kind: 'movie', premiereDeltaMs: 201 * DAY, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: false }).verdict,
@@ -150,7 +150,7 @@ test('a contradicting premiere date blocks the year rung', () => {
 test('a TVDB season premiere accepts a held sequel the stale library rejected', () => {
   // Ranma1/2 (2024) Season 3: we hold seasons 1-2, so the nearest HELD episode
   // is 287d from the entry premiere and the old gate rejected the correct
-  // parent. TVDB's schedule has S3E1 on the premiere day — that evidence must
+  // parent. TVDB's schedule has S3E1 on the premiere day - that evidence must
   // win, because held episodes are naturally stale for a season nobody has
   // grabbed yet.
   const v = verdictFor({
@@ -165,7 +165,7 @@ test('a TVDB season premiere accepts a held sequel the stale library rejected', 
 test('an undated future season at TVDB softens a held rejection to review', () => {
   // Sousou no Frieren 3rd Season: held episodes end 553d before the entry
   // premiere, and TVDB lists season 3 but has not dated it. Rejecting writes
-  // "not this series" about the show's own parent — queue it instead.
+  // "not this series" about the show's own parent - queue it instead.
   const v = verdictFor({
     exact: false, inLibrary: true, deltaMs: 553 * DAY, yearDelta: null, kind: 'tv',
     premiereDeltaMs: null, tvdbSeasonDeltaMs: null, tvdbHasUndatedFutureSeason: true,
@@ -173,7 +173,7 @@ test('an undated future season at TVDB softens a held rejection to review', () =
   assert.equal(v.verdict, 'queue',
     'a rejection is premature while TVDB lists an undated future season');
   // And the rejections that were CORRECT stay rejections: One Piece Fan Letter
-  // (329d) and Babylon 5 (9,441d) — no undated future season on either.
+  // (329d) and Babylon 5 (9,441d) - no undated future season on either.
   for (const days of [329, 9441]) {
     assert.equal(
       verdictFor({
@@ -194,7 +194,7 @@ const cand = (
   image: null, premiereDate,
 });
 
-test('pickCandidate prefers the dated-within exact by distance — the DIVE IN! pair', () => {
+test('pickCandidate prefers the dated-within exact by distance - the DIVE IN! pair', () => {
   // Real pair: two exact-title films, 167d and 16d from the 2025-03-09
   // premiere. The old pick took whichever TMDB ranked first (167d).
   const airMs = anilistDateToMs({ year: 2025, month: 3, day: 9 })!;
@@ -206,7 +206,7 @@ test('pickCandidate prefers the dated-within exact by distance — the DIVE IN! 
     'with two exact titles, the one the premiere date vouches for must win');
 });
 
-test('pickCandidate lets a dated non-exact beat an undatable exact — Hyakki Yakou Shou', () => {
+test('pickCandidate lets a dated non-exact beat an undatable exact - Hyakki Yakou Shou', () => {
   // Real pair: the exact-title candidate is a same-named 2007 work (7003d);
   // the correct match is the localized "Beyond Twilight" at 0 days.
   const airMs = anilistDateToMs({ year: 2026, month: 4, day: 7 })!;
@@ -227,14 +227,14 @@ test('pickCandidate: undated exacts tie-break on year, and no dates at all keeps
     cand('1614268', 'Echo', true, null, 2026),
   ], airMs);
   assert.equal(byYear?.tmdbId, '1614268', 'the entry-year sibling must win the undated tie');
-  // No dates, no years, or no entry date → stored (provider) order, unchanged
+  // No dates, no years, or no entry date -> stored (provider) order, unchanged
   // from today.
   const asToday = pickCandidate([
     cand('1', 'A', true, null),
     cand('2', 'B', true, null),
   ], null);
   assert.equal(asToday?.tmdbId, '1');
-  // Everything dated-beyond → the ladder queues whatever is picked, but the
+  // Everything dated-beyond -> the ladder queues whatever is picked, but the
   // stored best-guess should still be the exact title, not whatever TMDB
   // ranked first: the real Echo re-grade stored "Echo Boomers" (non-exact,
   // 2020) over the exact-titled "Echo" because the fallback took all[0].
@@ -261,7 +261,7 @@ test('premiere dates parse defensively', () => {
 
 test('baseTitles strips what TMDB does not catalogue, least-destructive first', () => {
   // Marker stripping keeps its measured behaviour: the marker goes, not the
-  // franchise root — "Punirunes Puni", never "Punirunes". The probe that first
+  // franchise root - "Punirunes Puni", never "Punirunes". The probe that first
   // demonstrated the base pass typed the shorter form by hand.
   assert.deepEqual(baseTitles('Punirunes Puni 2'), ['Punirunes Puni']);
   assert.deepEqual(baseTitles('Kumarba Season 2'), ['Kumarba']);
@@ -277,8 +277,8 @@ test('baseTitles strips what TMDB does not catalogue, least-destructive first', 
 
 test('markers are stripped BEFORE the subtitle, and they stack', () => {
   // The real false positive this ordering fixes: the old form stripped at the
-  // first separator first, so this title collapsed straight to "Mission" —
-  // which TMDB answered with *Mission: Impossible* — and the form that
+  // first separator first, so this title collapsed straight to "Mission" -
+  // which TMDB answered with *Mission: Impossible* - and the form that
   // actually resolves on TVDB (tvdb 424019) was never generated.
   assert.deepEqual(baseTitles('Mission: Yozakura Family Season 2 Part 2'), [
     'Mission: Yozakura Family', // tried first; resolves, so "Mission" is never searched
@@ -293,13 +293,13 @@ test('a separator must look like a separator', () => {
     baseTitles('Re:Zero kara Hajimeru Kyuukei Jikan (Break Time) 3rd Season'),
     ['Re:Zero kara Hajimeru Kyuukei Jikan (Break Time)']
   );
-  // A dash without leading whitespace is part of the word — mid-word splits
+  // A dash without leading whitespace is part of the word - mid-word splits
   // truncated this to "Shin Tennis no Ouji", which matches nothing.
   assert.deepEqual(
     baseTitles('Shin Tennis no Ouji-sama: U-17 WORLD CUP Semifinal'),
     ['Shin Tennis no Ouji-sama']
   );
-  // …and "5-Oku-nen" collapsing to "5" is the entire Babylon 5 story.
+  // ...and "5-Oku-nen" collapsing to "5" is the entire Babylon 5 story.
   assert.deepEqual(baseTitles('5-Oku-nen Button Part 2'), ['5-Oku-nen Button']);
   // A spaced dash IS a separator, as before.
   assert.deepEqual(baseTitles('Solo Leveling -ReAwakening-'), ['Solo Leveling']);
@@ -317,7 +317,7 @@ test('closestDatedEpisode ignores season 0 and prefers the earlier of a tie', ()
   ];
   const hit = closestDatedEpisode(eps, air);
   assert.equal(hit?.episode.ParentIndexNumber, 2,
-    'season 0 must not compete for air-date ties — specials ship alongside ' +
+    'season 0 must not compete for air-date ties - specials ship alongside ' +
     'the season and would win them');
   assert.equal(hit?.episode.IndexNumber, 1, 'ties go to the earlier episode');
   assert.equal(hit?.deltaMs, 0);
@@ -325,7 +325,7 @@ test('closestDatedEpisode ignores season 0 and prefers the earlier of a tie', ()
 
 test('the tie-break holds regardless of the order Jellyfin returns', () => {
   // The docstring promises "ties go to the earlier episode", but the first
-  // implementation kept whichever the response yielded first — and Jellyfin's
+  // implementation kept whichever the response yielded first - and Jellyfin's
   // episode order is not a contract (the tier-2 picker in routes/jellyfin.ts
   // has always sorted before trusting it). A same-day double premiere then
   // opened Watch on episode 2 whenever the API happened to list it first.
@@ -374,7 +374,7 @@ test('lookup terms: a prefixed id is an id, bare digits are a title', () => {
   assert.deepEqual(parseLookupTerm('TMDB: 37854'), { kind: 'tmdb', id: '37854' },
     'the prefix is case-insensitive and tolerates a space, like Sonarr');
   assert.deepEqual(parseLookupTerm('86'), { kind: 'name', name: '86' },
-    'bare digits are a real title (the anime "86") — the prefix is required on purpose');
+    'bare digits are a real title (the anime "86") - the prefix is required on purpose');
   assert.deepEqual(parseLookupTerm('  One Piece '), { kind: 'name', name: 'One Piece' });
 });
 
@@ -392,12 +392,12 @@ test('a malformed sweep status degrades to null, never a throw', () => {
 });
 
 test('miss retries tier by air-date distance, and a two-year-old miss is retired', () => {
-  // The tiers exist because TMDB gains records as a show approaches airing —
+  // The tiers exist because TMDB gains records as a show approaches airing -
   // and stops gaining them once it is long past. The Infinity rung is the
   // retirement rule: an entry that aired more than two years ago and is STILL
   // unknown upstream has been unknown for its whole life; re-asking monthly
   // forever is budget spent on lost causes (measured: the 2024 leftovers in
-  // the dev cache are exactly these). First-ever lookups are unaffected — the
+  // the dev cache are exactly these). First-ever lookups are unaffected - the
   // sweep consults this only for entries that already have a recorded miss.
   const y = new Date().getFullYear();
   assert.equal(retryAfterFor(null), 14 * DAY, 'unknown year: the flat fortnight');
@@ -408,15 +408,15 @@ test('miss retries tier by air-date distance, and a two-year-old miss is retired
   assert.equal(retryAfterFor(y - 2), 30 * DAY, 'two years back still gets the slow lane');
   assert.equal(retryAfterFor(y + 2), 30 * DAY, 'far-future announcements are not retired');
   assert.equal(retryAfterFor(y - 3), Infinity,
-    'a miss more than two years old must be retired — never re-asked');
+    'a miss more than two years old must be retired - never re-asked');
   assert.equal(retryAfterFor(1998), Infinity,
-    'a decades-old miss must be retired — never re-asked');
+    'a decades-old miss must be retired - never re-asked');
 });
 
 test('retryStateFor names each unmatched row honestly: eligible, cooldown, retired', () => {
-  // The admin page shows this verbatim ("searched 2 d ago — retries in ~5 h" /
+  // The admin page shows this verbatim ("searched 2 d ago - retries in ~5 h" /
   // "retired" / "never searched"). It is retryAfterFor read from a single
-  // row's point of view, so the tier arithmetic stays in one module — the
+  // row's point of view, so the tier arithmetic stays in one module - the
   // first sketch had the frontend re-deriving it, which rots the day a tier
   // changes. `now` is a parameter because a state that flips with the wall
   // clock cannot be table-tested otherwise.
@@ -424,28 +424,28 @@ test('retryStateFor names each unmatched row honestly: eligible, cooldown, retir
   const y = new Date(now).getFullYear();
 
   assert.deepEqual(retryStateFor(null, y, now), { state: 'eligible', lastLookupAt: null, nextRetryAt: null },
-    'never searched must be eligible — a first lookup is unconditional at any age');
+    'never searched must be eligible - a first lookup is unconditional at any age');
   assert.deepEqual(retryStateFor(now - DAY, y, now),
     { state: 'cooldown', lastLookupAt: now - DAY, nextRetryAt: now - DAY + 2 * DAY },
     'a fresh miss on a current-year entry cools down until lastLookup + 2 days');
   assert.deepEqual(retryStateFor(now - 3 * DAY, y, now),
     { state: 'eligible', lastLookupAt: now - 3 * DAY, nextRetryAt: null },
-    'a miss past its window is eligible again — cooldown must expire, not stick');
+    'a miss past its window is eligible again - cooldown must expire, not stick');
   assert.deepEqual(retryStateFor(now - DAY, y - 2, now),
     { state: 'cooldown', lastLookupAt: now - DAY, nextRetryAt: now - DAY + 30 * DAY },
     'two years back is the slow lane, not retirement');
   assert.deepEqual(retryStateFor(now - DAY, y - 3, now),
     { state: 'retired', lastLookupAt: now - DAY, nextRetryAt: null },
-    'a miss on an entry that aired >2 years ago is retired — never re-asked');
+    'a miss on an entry that aired >2 years ago is retired - never re-asked');
   assert.deepEqual(retryStateFor(null, y - 10, now),
     { state: 'eligible', lastLookupAt: null, nextRetryAt: null },
-    'retirement applies to misses, never to a first look — even a decade back');
+    'retirement applies to misses, never to a first look - even a decade back');
 });
 
 test('candidates from two providers merge on an id cross-reference, never on a title', () => {
   // Chikyuu Daisuki! Kikkun, verbatim: TVDB knows it (undated) and TMDB knows
   // it (dated 2026-07-01, the entry's premiere day). Two candidates that look
-  // ambiguous in the picker and are the same show — provably, because
+  // ambiguous in the picker and are the same show - provably, because
   // skyhook's own show record for tvdb 479768 names tmdbId 326697.
   const chikyuu: RemoteCandidate[] = [
     { matchedTitle: 'Chikyuu Daisuki! Kikkun', year: null, premiereDate: null, tvdbId: '479768', tmdbId: null, tmdbKind: null, exact: true, image: null },
@@ -454,10 +454,10 @@ test('candidates from two providers merge on an id cross-reference, never on a t
   const merged = mergeCrossReferencedCandidates(chikyuu, new Map([['479768', '326697']]));
   assert.equal(merged.length, 1, 'one show must be one option, not two');
   assert.equal(merged[0].tvdbId, '479768', 'the merged option keeps the TVDB id');
-  assert.equal(merged[0].tmdbId, '326697', 'and gains the TMDB id — the pair a Sonarr flow needs');
+  assert.equal(merged[0].tmdbId, '326697', 'and gains the TMDB id - the pair a Sonarr flow needs');
   assert.equal(merged[0].tmdbKind, 'tv');
   assert.equal(merged[0].premiereDate, '2026-07-01',
-    'the date must survive the merge — it is the only thing that can verify the match');
+    'the date must survive the merge - it is the only thing that can verify the match');
   assert.equal(merged[0].year, 2026);
 
   // The guard that matters: same exact title is NOT evidence. Echo's three
@@ -469,7 +469,7 @@ test('candidates from two providers merge on an id cross-reference, never on a t
     { matchedTitle: 'Echo', year: 2026, premiereDate: '2026-02-05', tvdbId: null, tmdbId: '1614268', tmdbKind: 'movie', exact: true, image: null },
   ];
   // The map must be NON-EMPTY or this asserts nothing: an empty one hits the
-  // early return and the merge logic never runs. (It didn't, at first — the
+  // early return and the merge logic never runs. (It didn't, at first - the
   // title-merge mutant sailed through a green test.) These references exist
   // and simply don't apply to any candidate here.
   const unrelatedXrefs = new Map([['399042', '69346'], ['479768', '326697']]);
@@ -487,7 +487,7 @@ test('candidates from two providers merge on an id cross-reference, never on a t
 test('pickCandidate: outside tolerance, the closest premiere still wins over provider order', () => {
   // Echo (AniList 214068, premieres 2026-07-19), verbatim from the resolver's
   // stored candidates. Three exact-title matches, none inside the 31-day
-  // tolerance, so every dated rung falls through — and the old last line took
+  // tolerance, so every dated rung falls through - and the old last line took
   // "the first exact in provider order", i.e. TMDB's popularity ranking, which
   // put the 2023 film (1,012 d away) ahead of the 2026 one 46 d away. The
   // verdict was always right (it queues for review either way); what was wrong
@@ -513,7 +513,7 @@ test('pickCandidate: outside tolerance, the closest premiere still wins over pro
 });
 
 test('planSweep: scheduled runs respect cooldowns, a manual drain overrides them', () => {
-  // The selection half of the sweep, extracted so it can be tested at all —
+  // The selection half of the sweep, extracted so it can be tested at all -
   // it used to live inside runRemoteIdentitySweep, which needs Prisma and a
   // Jellyfin Api, so the rules that decide WHAT gets looked up were the least
   // covered part of the most consequential loop.
@@ -521,9 +521,9 @@ test('planSweep: scheduled runs respect cooldowns, a manual drain overrides them
   const y = new Date(now).getFullYear();
   const todo = [
     { anilistId: 1, year: y },       // never asked
-    { anilistId: 2, year: y },       // asked yesterday — cooling (2 d tier)
-    { anilistId: 3, year: y },       // asked 3 days ago — window passed
-    { anilistId: 4, year: y - 5 },   // asked yesterday, aired 5 y ago — retired
+    { anilistId: 2, year: y },       // asked yesterday - cooling (2 d tier)
+    { anilistId: 3, year: y },       // asked 3 days ago - window passed
+    { anilistId: 4, year: y - 5 },   // asked yesterday, aired 5 y ago - retired
     { anilistId: 5, year: y },       // never asked
   ];
   const askedAt = new Map([[2, now - DAY], [3, now - 3 * DAY], [4, now - DAY]]);
@@ -536,7 +536,7 @@ test('planSweep: scheduled runs respect cooldowns, a manual drain overrides them
   assert.equal(scheduled.eligible, 3, 'eligible excludes both cooldown and retired');
 
   // The cap bounds the batch but must NOT shrink the queue figure the admin
-  // page reports — that conflation is what made `remaining` unable to reach 0.
+  // page reports - that conflation is what made `remaining` unable to reach 0.
   const capped = planSweep(todo, askedAt, { max: 2, now });
   assert.deepEqual(capped.batch.map((q) => q.anilistId), [1, 3],
     'the cap truncates the batch in queue order');
@@ -545,9 +545,9 @@ test('planSweep: scheduled runs respect cooldowns, a manual drain overrides them
   // The manual button's contract: everything we still owe an answer for, now.
   const drain = planSweep(todo, askedAt, { max: Infinity, ignoreCooldown: true, now });
   assert.deepEqual(drain.batch.map((q) => q.anilistId), [1, 2, 3, 5],
-    'a drain must include the cooling entry — an admin pressing the button is not the daily budget');
+    'a drain must include the cooling entry - an admin pressing the button is not the daily budget');
   assert.ok(!drain.batch.some((q) => q.anilistId === 4),
-    'a drain still skips retired entries — upstream has never heard of them and re-asking forever is the churn retirement removed');
+    'a drain still skips retired entries - upstream has never heard of them and re-asking forever is the churn retirement removed');
 });
 
 test('the tolerance is far tighter than the gap to a neighbouring season', () => {

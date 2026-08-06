@@ -1,16 +1,16 @@
 #!/bin/bash
-# SaltyChart DB backup — reference copy of the Unraid User Script
-# "backup_saltychart_db" (Settings → User Scripts, scheduled monthly).
+# SaltyChart DB backup - reference copy of the Unraid User Script
+# "backup_saltychart_db" (Settings -> User Scripts, scheduled monthly).
 #
 # Backs up the LIVE SQLite DB, which is bind-mounted at
 # /mnt/user/appdata/saltychart/prisma (NOT the legacy `saltychart_db` docker
-# volume — that volume went stale in April 2026 when the stack moved to a
+# volume - that volume went stale in April 2026 when the stack moved to a
 # bind mount, and the old volume-based script silently backed up April data
 # for months).
 #
 # Uses the SQLite online-backup API through the running backend container,
 # so the snapshot is consistent even if the app writes mid-backup. Falls
-# back to a raw file copy if the container is down (safe then — no writers).
+# back to a raw file copy if the container is down (safe then - no writers).
 
 BACKUP_DIR="/mnt/user/backup/saltychart"
 DATA_DIR="/mnt/user/appdata/saltychart/prisma"
@@ -25,7 +25,7 @@ if docker exec saltychart-backend python3 -c "import sqlite3; s=sqlite3.connect(
   tar czf "$BACKUP_FILE" -C "$DATA_DIR" backup_snapshot.db
   rm -f "$DATA_DIR/backup_snapshot.db"
 else
-  echo "[WARN] Backend container not running — raw copy of data.db (+wal/shm)"
+  echo "[WARN] Backend container not running - raw copy of data.db (+wal/shm)"
   (cd "$DATA_DIR" && tar czf "$BACKUP_FILE" data.db $(ls data.db-wal data.db-shm 2>/dev/null))
 fi
 

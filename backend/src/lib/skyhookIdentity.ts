@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// TVDB via skyhook — Sonarr's own keyless metadata proxy.
+// TVDB via skyhook - Sonarr's own keyless metadata proxy.
 //
 // Why this exists: Jellyfin's remote search fronts TMDB only on this server,
 // so a resolved series row carried a TVDB id only when the library or the
-// community map could cross-walk it — which is exactly what failed for 125
+// community map could cross-walk it - which is exactly what failed for 125
 // stored rows, the population a Sonarr request flow needs. skyhook answers
 // with TVDB ids natively AND with per-episode air dates for seasons nobody
 // holds yet (Frieren's S3 is listed before it airs), which is the evidence
@@ -11,12 +11,12 @@
 // Measured before building: 37/125 gap rows gain a date-verified TVDB id,
 // 18 more an exact-title one, and the rejected-sequel class resolves.
 //
-// A hit here is by definition a show Sonarr can resolve — same service.
+// A hit here is by definition a show Sonarr can resolve - same service.
 //
 // TWO RULES, same as every remote source in this codebase:
 //   1. Never on a viewer's request path. Sweep and admin lookup only.
 //   2. This is someone else's free service, run for Sonarr installs. Calls are
-//      paced, bounded per sweep run, and every failure degrades to "no data" —
+//      paced, bounded per sweep run, and every failure degrades to "no data" -
 //      if skyhook dies, resolution falls back to the Jellyfin/TMDB path.
 // ---------------------------------------------------------------------------
 import axios from 'axios';
@@ -64,7 +64,7 @@ export function __setSkyhookFetchForTest(f: Fetcher | null): void {
  * cross-reference between the two providers available for free here, and
  * without it the same show found in TVDB and in TMDB stays two separate
  * candidates that look ambiguous but aren't. Merging them on matching titles
- * instead would be actively wrong — Echo's three candidates are all titled
+ * instead would be actively wrong - Echo's three candidates are all titled
  * exactly "Echo" and are three different films.
  */
 export interface SkyhookShow {
@@ -73,7 +73,7 @@ export interface SkyhookShow {
   tmdbId: string | null;
 }
 
-/** Per series, memoised — a sweep run asks about the same parent repeatedly. */
+/** Per series, memoised - a sweep run asks about the same parent repeatedly. */
 const _showCache = new Map<string, SkyhookShow>();
 export function __clearSkyhookCachesForTest(): void {
   _showCache.clear();
@@ -127,12 +127,12 @@ export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
   return show;
 }
 
-/** Kept for callers that only want dates — one fetch either way. */
+/** Kept for callers that only want dates - one fetch either way. */
 export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]> {
   return (await skyhookShow(tvdbId)).episodes;
 }
 
-/** TVDB's own TMDB cross-reference — the evidence a candidate merge needs. */
+/** TVDB's own TMDB cross-reference - the evidence a candidate merge needs. */
 export async function skyhookTmdbId(tvdbId: string): Promise<string | null> {
   return (await skyhookShow(tvdbId)).tmdbId;
 }
@@ -144,7 +144,7 @@ export async function skyhookTmdbId(tvdbId: string): Promise<string | null> {
  * meaning. The floor originally existed because an earlier single-form version
  * of `baseTitles` collapsed "Re:Zero kara ..." to "Re", and a 2-char prefix
  * relates to everything ("Re:Born", in the measurement that shaped this).
- * `baseTitles` no longer produces that collapse — but the floor STAYS, because
+ * `baseTitles` no longer produces that collapse - but the floor STAYS, because
  * genuinely short titles arrive regardless ("Q" and "mono" are full titles,
  * and "Mission" is a legitimate variant). Sharing a word is not a relation
  * either: "Lego Friends" vs "Natsume's Book of Friends" must fail here.
@@ -168,7 +168,7 @@ export function titleRelated(candidate: string | null | undefined, searched: str
  * Distance from the entry premiere to the nearest SEASON PREMIERE (episode 1
  * of a season > 0), in ms. Episode-1-only is load-bearing: an AniList entry's
  * start date is a season start, and any weekly series has some mid-run episode
- * within days of any date — the first pass of the measurement "verified"
+ * within days of any date - the first pass of the measurement "verified"
  * Natsume S7 against a Lego Friends episode that way. Season 0 is skipped for
  * the same reason `closestDatedEpisode` skips it: specials cluster around the
  * seasons they ship with.
@@ -190,7 +190,7 @@ export function seasonPremiereDelta(episodes: SkyhookEpisode[], airDateMs: numbe
 
 /**
  * Does TVDB list a season NEWER than its newest dated one, with no dates yet?
- * That is the Frieren-S3 shape: the season exists, its schedule doesn't — and
+ * That is the Frieren-S3 shape: the season exists, its schedule doesn't - and
  * a held-library rejection of the parent is premature while it lasts. A dated
  * catalogue with holes behind the frontier (TVDB gaps happen) is NOT that.
  */

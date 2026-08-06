@@ -64,7 +64,7 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
   }
   try {
     // Upsert *known* columns using Prisma, then update the nickname JSON,
-    // addWatchedTo, and subtitlePrefs separately via raw SQL — those columns
+    // addWatchedTo, and subtitlePrefs separately via raw SQL - those columns
     // exist in the DB but are not in the Prisma schema.
     const createData: Prisma.SettingsCreateInput = {
       theme, titleLanguage, videoAutoplay, hideFromCompare,

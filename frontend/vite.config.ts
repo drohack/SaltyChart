@@ -11,7 +11,7 @@ export default ({ mode }) => {
   return defineConfig({
     plugins: [svelte()],
     // jassub (libass) runs libass in a web worker. Vite bundles workers as
-    // `iife` by default, which cannot code-split — and jassub's worker does,
+    // `iife` by default, which cannot code-split - and jassub's worker does,
     // so the build fails outright. ES workers are supported everywhere the
     // rest of the player already requires.
     worker: { format: 'es' },
@@ -26,10 +26,10 @@ export default ({ mode }) => {
     },
     server: {
       // Listen on all interfaces so the dev server is reachable via the PC's
-      // LAN IP (e.g. from a phone) — default is loopback-only.
+      // LAN IP (e.g. from a phone) - default is loopback-only.
       host: true,
       port: 5173,
-      // Fail fast if 5173 is taken — forces us to clean up stale node processes
+      // Fail fast if 5173 is taken - forces us to clean up stale node processes
       // rather than silently falling through to 5174 and confusing the test suite.
       strictPort: true,
       proxy: {

@@ -1,8 +1,8 @@
 """
 Where does the time go between pressing Watch and seeing video?
 
-One-off measurements kept disagreeing with each other — 1.7s, 2.4s, 11.4s for
-the same code path — so this measures every stage repeatedly and reports the
+One-off measurements kept disagreeing with each other - 1.7s, 2.4s, 11.4s for
+the same code path - so this measures every stage repeatedly and reports the
 spread rather than a single number. Variance turned out to be the story, and a
 median alone hides it.
 
@@ -16,11 +16,11 @@ Two halves, because they fail differently:
 
 The stream shape is not invented here: it comes from the `transcodingUrl`
 that `/api/jellyfin/playback` returns, and the manifests are followed the way a
-player follows them. An earlier version hand-built `?videoCodec=h264&…`, which
+player follows them. An earlier version hand-built `?videoCodec=h264&...`, which
 by the end was measuring a stream the app no longer requests.
 
-⚠ This starts REAL playback sessions, and Jellyfin's ffmpeg writes segments
-until the whole file is done regardless of the playhead — its cleanup timers do
+(!) This starts REAL playback sessions, and Jellyfin's ffmpeg writes segments
+until the whole file is done regardless of the playhead - its cleanup timers do
 not keep up for remux jobs (jellyfin#16608). Each run therefore leaves most of a
 ~1.4 GB episode in the transcode cache; killing the encoder does not delete what
 it already wrote. Nine runs filled the cache on a real server and made Jellyfin
@@ -136,12 +136,12 @@ def stop_session(backend: str, auth: dict, play_session_id: str) -> None:
 
     Jellyfin's transcoder races ahead writing the whole file regardless of the
     playhead, so leaving five of them running turns a startup benchmark into a
-    measurement of the load the benchmark itself created — which is exactly what
+    measurement of the load the benchmark itself created - which is exactly what
     the first version of this script did.
 
     Torn down by playSessionId through the app's own endpoint, the way the
     player does it. Killing by deviceId would take out every SaltyChart encode
-    on the server, including a real viewer's — the app and this bench now share
+    on the server, including a real viewer's - the app and this bench now share
     one device id.
     """
     if not play_session_id:
@@ -159,7 +159,7 @@ def follow(playlist_path: str, text: str) -> str | None:
     playlist, resolved against the playlist's own location.
 
     The resolution is the point. Jellyfin writes these as bare relative URIs
-    ("main.m3u8?…", "hls1/main/0.ts?…"), so joining them to the proxy root
+    ("main.m3u8?...", "hls1/main/0.ts?..."), so joining them to the proxy root
     instead of to the playlist's directory produces a 404 that looks like an
     empty playlist.
     """
@@ -189,11 +189,11 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
         # Registered the moment the session exists, not only at the end of the
         # loop. This script starts real encodes, and an exception between here
         # and the teardown below would leave ffmpeg writing out the rest of a
-        # ~1.4 GB episode — which is how the transcode cache filled once before.
+        # ~1.4 GB episode - which is how the transcode cache filled once before.
         atexit.register(stop_session, backend, auth, psid)
         turl = pb.get("transcodingUrl") or ""
         if not turl:
-            log("  no transcodingUrl — Jellyfin refused the profile; skipping this run")
+            log("  no transcodingUrl - Jellyfin refused the profile; skipping this run")
             continue
 
         log(f"[run {i}/{n}] step 2/4: HLS through the SaltyChart proxy")
@@ -221,7 +221,7 @@ def bench_server(backend: str, token: str, auth: dict, ep: dict, n: int) -> Time
             log("  rendition playlist named no segment; the wait was not measured")
 
         log(f"[run {i}/{n}] step 3/4: the same stream straight from Jellyfin")
-        # Same URL, no proxy — so the proxy's own cost is separable. A second
+        # Same URL, no proxy - so the proxy's own cost is separable. A second
         # session, torn down alongside the first.
         pb2 = requests.get(f"{backend}/api/jellyfin/playback/{iid}"
                            f"?mediaSourceId={urllib.parse.quote(msid)}",
@@ -252,7 +252,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
     """Browser timeline: Watch click -> decoding video.
 
     Subtitles are burned into the picture server-side, so there is no renderer,
-    wasm or font fetch left to place against the stream wait — what remains is
+    wasm or font fetch left to place against the stream wait - what remains is
     the player chunk and the stream itself.
     """
     from playwright.sync_api import sync_playwright
@@ -262,7 +262,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
                      headers={"Authorization": f"Bearer {token}"},
                      json={"season": season, "year": year, "items": [ep["mediaId"]]})
     if r.status_code != 200:
-        log(f"  could not seed the list ({r.status_code} {r.text[:80]}) — client bench will skip")
+        log(f"  could not seed the list ({r.status_code} {r.text[:80]}) - client bench will skip")
     runs = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -275,7 +275,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
             page.goto(f"{frontend}/random")
             page.wait_for_timeout(3000)
             # The page defaults to the look-ahead season, which is not the one
-            # the list was seeded for — without this the show is never on screen.
+            # the list was seeded for - without this the show is never on screen.
             btn = page.locator(f"button:text-is('{season.capitalize()}')")
             if btn.count():
                 btn.first.click()
@@ -316,7 +316,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
                 return m;
             }""", ep["title"][:24])
             if marks.get("err"):
-                log(f"[client {i}/{n}] SKIP — {marks['err']}")
+                log(f"[client {i}/{n}] SKIP - {marks['err']}")
                 continue
             runs.append(marks)
             log(f"[client {i}/{n}] playing at {round(marks.get('playing') or 0)}ms "
@@ -329,7 +329,7 @@ def bench_client(frontend: str, backend: str, token: str, ep: dict, n: int) -> l
 def render(t: Timer, client: list[dict], ep: dict) -> str:
     out: list[str] = []
     add = out.append
-    add(f"episode: {ep['title']}  (itemId {ep['itemId'][:12]}…)")
+    add(f"episode: {ep['title']}  (itemId {ep['itemId'][:12]}...)")
     add("")
     add("SERVER STAGES              n     min      med      max   spread    size")
     add("-" * 74)
@@ -406,14 +406,14 @@ def main() -> int:
     print("\n" + body, flush=True)
     write_suite(Path(args.output), body)
     # The headline number is the only stage that ever really varies. If it was
-    # never measured, say so rather than dying on a missing key — a benchmark
+    # never measured, say so rather than dying on a missing key - a benchmark
     # that crashes at the finish line loses the run it just spent minutes on.
     seg = t.stats("proxy segment 0  <-- the wait")
     if seg:
         log(f"\nDone: segment 0 median {seg['med']:.1f}s ({seg['min']:.1f}-{seg['max']:.1f}s, "
-            f"{seg['spread']:.1f}x spread) — written to {args.output}")
+            f"{seg['spread']:.1f}x spread) - written to {args.output}")
     else:
-        log(f"\nDone: segment 0 was never measured — written to {args.output}")
+        log(f"\nDone: segment 0 was never measured - written to {args.output}")
     return 0
 
 
@@ -421,5 +421,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except requests.RequestException as e:
-        log(f"Done: backend unreachable — {e}")
+        log(f"Done: backend unreachable - {e}")
         sys.exit(1)

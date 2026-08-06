@@ -11,7 +11,7 @@ const LIB: PickableSeries[] = [
   series('s1', 'Bananya', '313676', 2016),
   series('s2', 'Bananya and the Curious Bunch', '350001', 2019),
   series('s3', 'One Piece', '81797', 1999),
-  // Held, but no id in either space — a pick could not be expressed as an
+  // Held, but no id in either space - a pick could not be expressed as an
   // identity override, so offering it would be a control that does nothing.
   series('s4', 'Nameless Show', null),
   series('s5', '転生貴族、鑑定スキルで成り上がる', '400001', 2022),
@@ -23,7 +23,7 @@ const FILMS: Record<string, PickableFilm> = {
 };
 
 test('searchLibrary ranks exact titles first, then prefix, then contains', () => {
-  // A human is choosing here, so recall beats precision — the opposite of
+  // A human is choosing here, so recall beats precision - the opposite of
   // `matchSeries`, whose contains-anywhere tier was removed for being wrong 9
   // times out of 9. That rule is about AUTOMATIC matching; a picker that hides
   // the right answer because the title is a substring is just broken.
@@ -31,7 +31,7 @@ test('searchLibrary ranks exact titles first, then prefix, then contains', () =>
   assert.equal(hits[0].title, 'Bananya', 'the exact normalized title must lead');
   assert.ok(
     hits.some((h) => h.title === 'Bananya and the Curious Bunch'),
-    'a prefix match must still be offered — it is often the sequel being looked for'
+    'a prefix match must still be offered - it is often the sequel being looked for'
   );
 });
 
@@ -45,7 +45,7 @@ test('searchLibrary never offers an item that cannot be pinned', () => {
 
 test('searchLibrary finds films, which carry no precomputed norms', () => {
   // jellyfinFilmIndex is deliberately an id index, not a matchable corpus, so
-  // film titles arrive unnormalized — the search has to do that work itself or
+  // film titles arrive unnormalized - the search has to do that work itself or
   // films are silently unpickable.
   const hits = searchLibrary('echo', LIB, FILMS, 10);
   assert.equal(hits[0].title, 'Echo', 'the exact film title leads');

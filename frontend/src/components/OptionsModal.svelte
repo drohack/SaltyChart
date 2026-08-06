@@ -47,7 +47,7 @@
     window.removeEventListener('keydown', handleKey);
   });
 
-  // ── Batch translation (admin only) ─────────────────────────────────
+  // -- Batch translation (admin only) ---------------------------------
   let batchRunning = false;
   let batchMessage = '';
   let batchIsAdmin: boolean | null = null; // null = not checked yet
@@ -106,7 +106,7 @@
         batchRunning = false;
       } else {
         batchMessage = dryRun ? 'Fetching anime list...' : 'Batch started, fetching anime list...';
-        // Poll quickly — dry runs finish in seconds
+        // Poll quickly - dry runs finish in seconds
         pollBatchStatus();
       }
     } catch (e) {

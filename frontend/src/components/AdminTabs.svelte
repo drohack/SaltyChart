@@ -3,7 +3,7 @@
    * Tab strip shared by the admin pages.
    *
    * Navigation goes through `history.pushState` + a `popstate` event because
-   * that is what `App.svelte`'s router listens to — a plain `<a href>` would
+   * that is what `App.svelte`'s router listens to - a plain `<a href>` would
    * full-page reload and drop the lazily-loaded chunk cache.
    */
   export let current: 'connection' | 'matching';

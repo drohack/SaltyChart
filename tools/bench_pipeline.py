@@ -26,7 +26,7 @@ import sys
 import tempfile
 import urllib.request
 
-# Hiragana, katakana, CJK ideographs, halfwidth katakana — used to detect lines
+# Hiragana, katakana, CJK ideographs, halfwidth katakana - used to detect lines
 # the translator left untranslated (still Japanese) so we can retry them.
 _CJK_RE = re.compile("[぀-ヿ㐀-鿿ｦ-ﾟ]")
 
@@ -35,7 +35,7 @@ def _has_cjk(text):
     return bool(_CJK_RE.search(text or ""))
 
 # ---------------------------------------------------------------------------
-# Model cache — lazy-load each backend once, reuse across all videos/variants
+# Model cache - lazy-load each backend once, reuse across all videos/variants
 # ---------------------------------------------------------------------------
 
 _models = {}
@@ -65,7 +65,7 @@ def get_faster_whisper(model_name="large-v3"):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — background-audio removal (Demucs vocal separation)
+# Phase 1 - background-audio removal (Demucs vocal separation)
 # ---------------------------------------------------------------------------
 
 _demucs_model = None
@@ -122,7 +122,7 @@ def separate_vocals(audio_path, out_path=None, model="htdemucs"):
     matching FFmpeg shared DLLs (unreliable on Windows). Demucs runs on CUDA.
 
     Note: benchmark_data audio is already 16 kHz mono, so separation works on
-    upsampled audio — fine for a *relative* raw-vs-vocals comparison (both come
+    upsampled audio - fine for a *relative* raw-vs-vocals comparison (both come
     from the same source); production could separate from higher-quality audio."""
     import torch
     from demucs.apply import apply_model
@@ -134,7 +134,7 @@ def separate_vocals(audio_path, out_path=None, model="htdemucs"):
 
     m = _get_demucs(model)
     device, _ = _device_compute()
-    # Prefer a high-quality source sibling (audio_hq.*) for separation — Demucs
+    # Prefer a high-quality source sibling (audio_hq.*) for separation - Demucs
     # is trained on 44.1 kHz stereo, so separating the 16 kHz mono benchmark wav
     # produces far worse artifacts. We still emit a 16 kHz mono stem for Whisper.
     import glob as _glob
@@ -167,7 +167,7 @@ def separate_vocals(audio_path, out_path=None, model="htdemucs"):
 
 
 # ---------------------------------------------------------------------------
-# ASR adapters — each returns [{start, end, text}, ...]
+# ASR adapters - each returns [{start, end, text}, ...]
 # ---------------------------------------------------------------------------
 
 _FW_DEFAULTS = dict(
@@ -213,7 +213,7 @@ def asr_kotoba(audio_path, model_name="kotoba-tech/kotoba-whisper-v2.0",
 
     word_segments=True requests WORD-level timestamps and groups them into
     sentence-level segments (break on sentence-ending punctuation, a >gap_s
-    pause, or >max_seg_s duration) — this gives faster-whisper-comparable timing
+    pause, or >max_seg_s duration) - this gives faster-whisper-comparable timing
     granularity instead of coarse 15 s chunk timestamps."""
     import torch
     from transformers import pipeline
@@ -290,7 +290,7 @@ def asr_qwen3(audio_path, model_repo="Qwen/Qwen3-ASR-1.7B", **kwargs):
     """Qwen3-ASR (current JP CER leader, ~2x lower than Whisper) via the official
     qwen-asr package. It returns one text blob; we split on Japanese sentence
     punctuation into segments. Timestamps here are EVEN-SPREAD approximations
-    (real word timestamps need the separate Qwen3-ForcedAligner) — so for this
+    (real word timestamps need the separate Qwen3-ForcedAligner) - so for this
     arm judge the timing-independent `content` metric, not overlap/timing."""
     import re
     import torch
@@ -321,7 +321,7 @@ ASR_BACKENDS = {
 
 
 # ---------------------------------------------------------------------------
-# Translator adapters — take [{start,end,text(JP)}] -> same list, text->EN.
+# Translator adapters - take [{start,end,text(JP)}] -> same list, text->EN.
 # Order and timestamps are preserved 1:1.
 # ---------------------------------------------------------------------------
 
@@ -336,14 +336,14 @@ _ANIME_SYS_PROMPT = (
 
 def _ollama_generate(prompt, model, host="http://127.0.0.1:11434", system=None,
                      think=False, temperature=0.0, keep_alive=None):
-    # temperature 0 (greedy) for reproducible benchmark scores — at 0.2 the
+    # temperature 0 (greedy) for reproducible benchmark scores - at 0.2 the
     # translation varied several SCORE points run-to-run, making rankings noisy.
     body = {"model": model, "prompt": prompt, "stream": False,
             "think": think, "options": {"temperature": temperature, "seed": 1}}
     if system:
         body["system"] = system
     if keep_alive is not None:
-        # e.g. 0 → unload the model right after this call (frees VRAM between videos)
+        # e.g. 0 -> unload the model right after this call (frees VRAM between videos)
         body["keep_alive"] = keep_alive
     req = urllib.request.Request(
         f"{host}/api/generate",
@@ -388,12 +388,12 @@ def translate_ollama_qwen(segs, model="qwen3.5:9b", host="http://127.0.0.1:11434
                           context=None, keep_alive=None, max_lines=20):
     """Translate a trailer's lines via Ollama, preserving 1:1 segment alignment.
 
-    Default qwen3.5:9b — benchmarked clearly better than text-only qwen3:8b on the
+    Default qwen3.5:9b - benchmarked clearly better than text-only qwen3:8b on the
     bake-off corpus (content 57.3 vs 53.6, halluc 34.5% vs 41.0%; see suites
     `qwen359`/`qwen38`), so worth keeping despite a downside: the Ollama qwen3.5:9b
     build is a *vision* model whose ~1.2 GB vision encoder sits unused in RAM (the
     LLM itself runs 100% on GPU). qwen2.5 produces multilingual word-salad in this
-    Ollama build — avoid. Thinking is disabled.
+    Ollama build - avoid. Thinking is disabled.
 
     Long trailers are split into <=max_lines chunks (short numbered prompts are
     reliable; a single long prompt occasionally drops lines). Any line the model
@@ -406,7 +406,7 @@ def translate_ollama_qwen(segs, model="qwen3.5:9b", host="http://127.0.0.1:11434
         return segs
     system = _ANIME_SYS_PROMPT
     if context:
-        system += f" This dialogue is from the anime \"{context}\" — use it to get character and place names right."
+        system += f" This dialogue is from the anime \"{context}\" - use it to get character and place names right."
 
     texts = [s["text"] for s in segs]
     out = []
@@ -446,7 +446,7 @@ TRANSLATORS = {
 
 
 # ---------------------------------------------------------------------------
-# Alignment — Phase 3 (WhisperX forced alignment for tight timestamps)
+# Alignment - Phase 3 (WhisperX forced alignment for tight timestamps)
 # ---------------------------------------------------------------------------
 
 def align_whisperx(segs, audio_path, language="ja"):  # Phase 3
@@ -459,14 +459,14 @@ ALIGNERS = {
 
 
 # ---------------------------------------------------------------------------
-# Timing metric — span IoU of each segment against the nearest CC span
+# Timing metric - span IoU of each segment against the nearest CC span
 # ---------------------------------------------------------------------------
 
 def score_timing(whisper_segs, cc_segs):
     """Mean intersection-over-union (%) of each Whisper segment's [start,end]
     against its best-overlapping CC segment. 0 if either side is empty.
 
-    Unlike the ±4s semantic score, this rewards *tight* timestamps — the metric
+    Unlike the +/-4s semantic score, this rewards *tight* timestamps - the metric
     forced alignment / WhisperX is meant to move in Phase 3."""
     if not whisper_segs or not cc_segs:
         return 0.0

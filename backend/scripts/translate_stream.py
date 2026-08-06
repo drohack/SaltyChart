@@ -35,7 +35,7 @@ def check_subtitles(video_id: str, timeout: int = 10) -> dict:
             from youtube_transcript_api import YouTubeTranscriptApi
             ytt = YouTubeTranscriptApi()
             # list() + find_transcript() checks manually uploaded, auto-generated,
-            # AND transcripts translatable to English — not just manually uploaded ones.
+            # AND transcripts translatable to English - not just manually uploaded ones.
             # The old ytt.fetch(languages=["en"]) only found manually uploaded tracks.
             transcript_list = ytt.list(video_id)
             transcript_list.find_transcript(['en'])
@@ -51,7 +51,7 @@ def check_subtitles(video_id: str, timeout: int = 10) -> dict:
 
 def extract_chunk(chunk_start, chunk_end, tmpdir, full_audio):
     """Extract a 16 kHz-mono audio chunk via ffmpeg, decoding straight from the
-    native downloaded file (single pass — no whole-file WAV transcode upfront).
+    native downloaded file (single pass - no whole-file WAV transcode upfront).
     `-threads 1` keeps ffmpeg from grabbing cores Plex needs on the server.
     Only used by the small model for chunked streaming. Medium/large use full-audio."""
     chunk_path = os.path.join(tmpdir, f"chunk_{chunk_start}.wav")
@@ -87,7 +87,7 @@ def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
     """Download the worst-quality audio track. Returns (audio_path, duration).
 
     as_wav=True  (default; used by batch_translate): transcode the whole file to
-                 WAV via yt-dlp's postprocessor — convenient for full-audio passes.
+                 WAV via yt-dlp's postprocessor - convenient for full-audio passes.
     as_wav=False (live daemon): keep the NATIVE audio (m4a/webm/opus) and skip the
                  whole-file transcode. The chunked path slices 16 kHz-mono chunks
                  straight from it via extract_chunk(), so the upfront full-file WAV
@@ -146,7 +146,7 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
     """Transcribe audio chunks with pipelined extraction.
 
     For short videos (<=30s / 4 or fewer chunks), skips chunking and transcribes
-    the full audio in one pass — faster and better quality since Whisper has full
+    the full audio in one pass - faster and better quality since Whisper has full
     context. For longer videos, uses the ramp-up chunking strategy for fast
     time-to-first-segment.
 
@@ -160,7 +160,7 @@ def transcribe_chunks(model, chunks, tmpdir, full_audio, emit, cancelled=None):
     """
     # Short videos: one full-tail pass beats chunking overhead. Extract a single
     # 16 kHz-mono WAV from the native download (from the playhead onward) and
-    # transcribe it — still a single decode pass, and reliable regardless of the
+    # transcribe it - still a single decode pass, and reliable regardless of the
     # native audio codec.
     if len(chunks) <= 4:
         seg_start = chunks[0][0] if chunks else 0.0
@@ -250,7 +250,7 @@ def translate_audio(video_id: str, start: float = 0.0):
         tmpdir = tempfile.mkdtemp()
 
         # Start model loading in background while we download audio (native, no
-        # whole-file WAV transcode — chunks are sliced from it on the fly).
+        # whole-file WAV transcode - chunks are sliced from it on the fly).
         with ThreadPoolExecutor(max_workers=1) as model_pool:
             model_future: Future = model_pool.submit(_load_model)
             full_audio, duration = download_audio(video_id, tmpdir, as_wav=False)

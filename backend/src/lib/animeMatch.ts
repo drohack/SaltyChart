@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Matching AniList entries to a media library.
 //
-// Pure functions only — no HTTP, no database, no config. That keeps them
+// Pure functions only - no HTTP, no database, no config. That keeps them
 // unit-testable without a running server and reusable by anything that needs
 // to resolve an AniList entry against a list of series (the availability
 // lookup today; a Sonarr sync later).
@@ -16,7 +16,7 @@
  * same code works against Jellyfin items, Plex shows, or a Sonarr lookup.
  */
 export interface MatchableSeries {
-  /** The library's own id (Jellyfin ItemId, Plex ratingKey, …). */
+  /** The library's own id (Jellyfin ItemId, Plex ratingKey, ...). */
   id: string;
   title: string;
   /** Normalized `title` plus, when present, the native-script original title. */
@@ -27,7 +27,7 @@ export interface MatchableSeries {
   year?: number | null;
   /**
    * Also from the library's metadata. Jellyfin carries `Tmdb` on ~99% of both
-   * series and movies, and it is the only usable id for films — TVDB is a *TV*
+   * series and movies, and it is the only usable id for films - TVDB is a *TV*
    * database and covers 4 of 117 corpus movies against TMDB's 43.
    */
   tmdbId?: string | null;
@@ -36,7 +36,7 @@ export interface MatchableSeries {
 export interface MatchResult {
   series: MatchableSeries;
   /**
-   * How we got here. `id` means an AniList → TVDB → library-id chain, which is
+   * How we got here. `id` means an AniList -> TVDB -> library-id chain, which is
    * exact. `title` means fuzzy string matching, which is right most of the
    * time but produced a real false positive in testing (AniList's 2026
    * "Mahou Shoujo Lyrical Nanoha EXCEEDS" matching a 2004 library entry), so
@@ -48,7 +48,7 @@ export interface MatchResult {
 }
 
 /**
- * Lowercase, strip diacritics, drop punctuation/whitespace — but KEEP
+ * Lowercase, strip diacritics, drop punctuation/whitespace - but KEEP
  * letters/digits of every script. Stripping to [a-z0-9] reduced an
  * all-Japanese title like 「転生貴族、鑑定スキルで成り上がる 第3期」 to
  * just "3", which then garbage-matched short English titles.
@@ -63,7 +63,7 @@ export function normalizeTitle(s: string): string {
 
 /**
  * Expand title candidates with season-suffix-stripped variants so sequels
- * match their base series ("… 3rd Season" → "…"), which is where the library
+ * match their base series ("... 3rd Season" -> "..."), which is where the library
  * keeps the episodes anyway.
  */
 export function expandCandidates(candidates: string[]): string[] {
@@ -85,7 +85,7 @@ export function expandCandidates(candidates: string[]): string[] {
  * Within a tier the shortest library title wins (least extra noise).
  *
  * Length floors matter: an all-Japanese title can normalize to almost nothing
- * — see normalizeTitle — and a 1-char prefix candidate happily matched
+ * - see normalizeTitle - and a 1-char prefix candidate happily matched
  * "30 Rock", so candidates shorter than 4 normalized chars only count for
  * exact matches.
  *
@@ -94,20 +94,20 @@ export function expandCandidates(candidates: string[]): string[] {
  * (2271 series) across 6 seasons of AniList data (696 shows) it fired 9 times
  * and was wrong all 9:
  *
- *   Agents of the Four Seasons  → The Four Seasons (2025)   [live-action comedy]
- *   Record of Ragnarok III      → Ragnarok                  [Norwegian drama]
- *   Kingdom Season 6            → The 10th Kingdom          [2000 miniseries]
- *   Koisuru ONE PIECE           → One Piece                 [different series]
- *   HEAD START AT BIRTH         → Monogatari
- *   …and four spin-offs/movies pointed at the TV series they are named after.
+ *   Agents of the Four Seasons  -> The Four Seasons (2025)   [live-action comedy]
+ *   Record of Ragnarok III      -> Ragnarok                  [Norwegian drama]
+ *   Kingdom Season 6            -> The 10th Kingdom          [2000 miniseries]
+ *   Koisuru ONE PIECE           -> One Piece                 [different series]
+ *   HEAD START AT BIRTH         -> Monogatari
+ *   ...and four spin-offs/movies pointed at the TV series they are named after.
  *
- * The failure is structural, not a bad constant — the *Four Seasons* pair sat
+ * The failure is structural, not a bad constant - the *Four Seasons* pair sat
  * at exactly the 0.4 floor while two correct-looking ones sat above it, so no
  * threshold separates them. A short standalone title appearing somewhere
  * inside a longer, different one is simply not evidence: "Ragnarok" is inside
  * "Record of Ragnarok" for the same reason "Kingdom" is inside "The 10th
- * Kingdom". Prefix already covers the case that legitimately needs fuzz — a
- * shared beginning with a subtitle appended — which is why it keeps its 61
+ * Kingdom". Prefix already covers the case that legitimately needs fuzz - a
+ * shared beginning with a subtitle appended - which is why it keeps its 61
  * matches while this tier kept none. Don't reintroduce it with a higher
  * threshold; re-run the measurement instead.
  */
@@ -168,22 +168,22 @@ export function detectSeasonNumber(titles: string[]): number | null {
  * Resolve one AniList entry against the library.
  *
  * **A known id is authoritative in BOTH directions.** If the caller supplies an
- * id and no library series carries it, that is the answer — we do not fall back
+ * id and no library series carries it, that is the answer - we do not fall back
  * to titles. This is the single rule that fixed the "franchise sibling" class,
  * and it replaced three weeks of threshold tuning.
  *
  * Measured over 8 seasons (945 entries) against the real 2271-series library:
  * the title tier, graded blind against the id tier, was 99% precise on exact
  * matches (205/207) but only **60% on prefix matches (18/30)**. All 12 prefix
- * failures were the same shape — a new work matched onto the franchise parent:
+ * failures were the same shape - a new work matched onto the franchise parent:
  *
- *   Pokémon Concierge          → Pokémon                     (S20E109!)
- *   SAO Alternative: Gun Gale  → Sword Art Online
- *   Nanoha EXCEEDS (2026)      → Magical Girl Lyrical Nanoha (2004)
- *   Seven Deadly Sins: Four Knights of the Apocalypse → The Seven Deadly Sins
+ *   Pokémon Concierge          -> Pokémon                     (S20E109!)
+ *   SAO Alternative: Gun Gale  -> Sword Art Online
+ *   Nanoha EXCEEDS (2026)      -> Magical Girl Lyrical Nanoha (2004)
+ *   Seven Deadly Sins: Four Knights of the Apocalypse -> The Seven Deadly Sins
  *
  * **Every one of those 12 already had a TVDB id, and in every case the library
- * did not hold it** — we knew the right answer and let the fuzzy matcher
+ * did not hold it** - we knew the right answer and let the fuzzy matcher
  * overwrite it. Rejecting instead costs nothing: the 18 *correct* matches in
  * that bucket were all found by id anyway, so the title tier contributed
  * exactly zero of them.
@@ -193,7 +193,7 @@ export function detectSeasonNumber(titles: string[]): number | null {
  *   Bleach (26 seasons) is a correct match; Pokémon (23) is wrong; Mononoke (1)
  *   is wrong; Dorohedoro (2) is right. The ranges overlap completely.
  * - **Neither does the text.** "BLEACH: Thousand-Year Blood War" (right) and
- *   "SAO Alternative: Gun Gale Online" (wrong) are the same shape — parent
+ *   "SAO Alternative: Gun Gale Online" (wrong) are the same shape - parent
  *   title plus a distinctive subtitle. An arc name and a spin-off name are
  *   indistinguishable as strings.
  *
@@ -202,7 +202,7 @@ export function detectSeasonNumber(titles: string[]): number | null {
  * library" where titles would have found it. Zero such cases in the corpus. The
  * `SeriesIdentity` override table is the permanent fix when one appears.
  *
- * Title matching remains permanent for entries with **no id at all** — 65 of the
+ * Title matching remains permanent for entries with **no id at all** - 65 of the
  * corpus resolved that way and nothing else could have found them.
  */
 export function matchSeries(
@@ -214,7 +214,7 @@ export function matchSeries(
      * May an id *miss* end the lookup?
      *
      * True (the default) for ids we trust outright: the community map, and rows
-     * a human confirmed on /admin/matching. Those carry negative evidence — see
+     * a human confirmed on /admin/matching. Those carry negative evidence - see
      * the note above.
      *
      * **False for ids the remote resolver guessed.** Those are positive-only:
@@ -237,29 +237,29 @@ export function matchSeries(
         (wantTmdb != null && s.tmdbId != null && String(s.tmdbId) === wantTmdb)
     );
     if (hit) return { series: hit, confidence: 'id' };
-    // Negative evidence — see the note above. Do NOT "improve" this by adding a
+    // Negative evidence - see the note above. Do NOT "improve" this by adding a
     // title fallback; that is precisely the bug it exists to remove.
     if (entry.idIsAuthoritative !== false) return null;
-    // …unless the id was a guess, in which case fall through to titles.
+    // ...unless the id was a guess, in which case fall through to titles.
   }
   const fuzzy = matchByTitle(entry.titles, library);
   return fuzzy ? { series: fuzzy.series, confidence: 'title', tier: fuzzy.tier } : null;
 }
 
 /**
- * Which bucket does one entry fall in — the single definition of "how did this
+ * Which bucket does one entry fall in - the single definition of "how did this
  * match", used by BOTH the per-season view and the all-seasons sweep tally.
  *
  * It exists because the two were about to be computed twice: the admin page
  * derived buckets from `resolveAvailability`'s `matchedBy`, and a sweep-side
  * tally would have had to re-derive them. Two implementations of the same
  * question drift, and a reader comparing the rows sees numbers that don't
- * reconcile — which is exactly the confusion this whole panel was added to
+ * reconcile - which is exactly the confusion this whole panel was added to
  * remove.
  *
  * Pure and I/O-free on purpose: the library and the held-film ids are both
  * already in memory, so classifying all ~950 cached entries costs no provider
- * calls at all. Availability's extra step — *which episode* plays — is the part
+ * calls at all. Availability's extra step - *which episode* plays - is the part
  * that needs Jellyfin, and no count here depends on it.
  *
  * The four values partition entries exactly once. `noMatch` means "nothing
@@ -286,7 +286,7 @@ export function classifyMatch(
   // resolveAvailability: it carries no ids and would otherwise fall through to
   // the very title match being rejected.
   if (entry.rejected) return 'notHeld';
-  // A film is resolved against films, never against the series list — matching
+  // A film is resolved against films, never against the series list - matching
   // a movie's id against TV series could only hit by coincidence, and title
   // matching one against them is the category error that produced
   // "The Last Blossom" -> *House*.

@@ -31,7 +31,7 @@
   ];
 
   const currentYear: number = new Date().getFullYear();
-  // Provide a selectable range of years (current ±10 years)
+  // Provide a selectable range of years (current +/-10 years)
   const years: number[] = Array.from({ length: 21 }, (_, i) => currentYear - 10 + i);
 
   const dispatch = createEventDispatcher();

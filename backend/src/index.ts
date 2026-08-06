@@ -9,7 +9,7 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// In production, refuse to boot on a missing or insecure default JWT_SECRET —
+// In production, refuse to boot on a missing or insecure default JWT_SECRET -
 // otherwise tokens would be signed with the publicly-known 'dev-secret' and
 // anyone could forge an admin token. Dev keeps the fallback for convenience.
 if (
@@ -52,7 +52,7 @@ import dns from 'node:dns';
 try {
   // Supported since Node 18.  Guarded so local older runtimes don’t crash.
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore – `setDefaultResultOrder` is available at runtime.
+  // @ts-ignore - `setDefaultResultOrder` is available at runtime.
   if (typeof dns.setDefaultResultOrder === 'function') {
     dns.setDefaultResultOrder('ipv4first');
   }
@@ -93,9 +93,9 @@ app.set('trust proxy', 'loopback');
 app.use(cors());
 app.use(helmet());
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------------------
 // Rate limiting
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------------------
 
 // General limiter: 120 requests per minute per IP. Disabled in dev so the
 // parallel pre-deploy test suite doesn't trip it. Defined before the translate
@@ -113,7 +113,7 @@ const generalLimiter = rateLimit({
 // Register SSE translate route BEFORE compression middleware.
 // compression() wraps response streams and buffers them internally,
 // which prevents SSE from streaming in real-time to the browser. The rate
-// limiter doesn't buffer responses, so it's safe (and necessary) here — the
+// limiter doesn't buffer responses, so it's safe (and necessary) here - the
 // unthrottled /check-batch loop otherwise lets a client fan out YouTube hits.
 app.use('/api/translate', generalLimiter, translateRouter);
 
@@ -128,11 +128,11 @@ app.use(compression());
 app.use(generalLimiter);
 app.use(express.json());
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Runtime schema bootstrap — all environments. Production does NOT run
+// -----------------------------------------------------------------------------
+// Runtime schema bootstrap - all environments. Production does NOT run
 // `prisma migrate`; this raw-SQL path creates tables, adds missing columns,
 // builds indexes and drops retired tables idempotently on every startup.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 async function ensureDatabaseSchema() {
   // Re-use the singleton Prisma instance so we keep a single connection pool
   // across the entire application.
@@ -250,7 +250,7 @@ async function ensureDatabaseSchema() {
       console.log('[DB] Adding watchedRank column');
       await prisma.$executeRawUnsafe(`ALTER TABLE "WatchList" ADD COLUMN "watchedRank" INTEGER`);
 
-      // Seed existing watched rows so oldest watched gets rank 0,1,… per season/year
+      // Seed existing watched rows so oldest watched gets rank 0,1,... per season/year
       await prisma.$executeRawUnsafe(`
         WITH ranked AS (
           SELECT id,
@@ -312,9 +312,9 @@ async function ensureDatabaseSchema() {
       }
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ----------------------------------------------------------------
     // Seed missing Settings rows for existing users
-    // ────────────────────────────────────────────────────────────────
+    // ----------------------------------------------------------------
     try {
       const missingUserIds: Array<{ id: number }> = await prisma.$queryRaw`
         SELECT id FROM "User" WHERE id NOT IN (SELECT userId FROM "Settings");
@@ -335,7 +335,7 @@ async function ensureDatabaseSchema() {
     // - hasEnglishSubs: cached result of /check (null = not checked); negatives
     //   re-checked after 7 days via lastEnCheckAt (added below)
     // - segments: JSON array of {start, end, text} objects (null = not translated)
-    // - modelName: Whisper model that produced the segments — drives the
+    // - modelName: Whisper model that produced the segments - drives the
     //   rank-based upgrade in routes/translate.ts (uploads only ever upgrade)
     // - subtitlesDisabled: true if a user dismissed our subtitles
     // - hasBurnedInSubs: OCR-detected burned-in subs (added below); frontend
@@ -395,7 +395,7 @@ async function ensureDatabaseSchema() {
 
     // --------------------- AppConfig table ---------------------
     // Server-wide key/value config (Jellyfin URL + API key set via the admin
-    // page, plus the cached AniList→TVDB map). Mirrored in schema.prisma like
+    // page, plus the cached AniList->TVDB map). Mirrored in schema.prisma like
     // the other runtime-created tables.
     try {
       await prisma.$executeRawUnsafe(`
@@ -409,7 +409,7 @@ async function ensureDatabaseSchema() {
     }
 
     // --------------------- SeriesIdentity table ---------------------
-    // Our own AniList → TVDB/TMDB overrides. Deliberately an override *layer*,
+    // Our own AniList -> TVDB/TMDB overrides. Deliberately an override *layer*,
     // not a copy of the community map: that map already answers 94% of TV
     // correctly, so duplicating its 7,179 rows would add a staleness problem and
     // no reach. Rows exist only for corrections, confirmations of title-only
@@ -437,7 +437,7 @@ async function ensureDatabaseSchema() {
     }
     // `rejected` must be its own column, not inferred from "confirmed with no
     // ids": confirming a good title match also leaves the id boxes empty, so the
-    // two states are indistinguishable without it — and guessing wrong means the
+    // two states are indistinguishable without it - and guessing wrong means the
     // Reject button silently does nothing while looking like it worked.
     try {
       await prisma.$executeRawUnsafe(
@@ -446,7 +446,7 @@ async function ensureDatabaseSchema() {
     } catch {
       /* already present */
     }
-    // `pending` marks a row whose ids are a *suggestion* — written by the remote
+    // `pending` marks a row whose ids are a *suggestion* - written by the remote
     // resolver when it wasn't confident enough to act. The ids are recorded so a
     // human can approve them in one click, but they are NOT used for matching:
     // an id here is authoritative in both directions, so a fuzzy search writing
@@ -459,7 +459,7 @@ async function ensureDatabaseSchema() {
       /* already present */
     }
     // The identity's release year, from the source that named it (TMDB via the
-    // sweep, or the admin lookup). Display only — matching never reads it. It
+    // sweep, or the admin lookup). Display only - matching never reads it. It
     // exists because unheld gap entries have no other local source of a date,
     // and a match control reading "Title TMDB 128386" with no year made the
     // admin look the show up elsewhere to know what they were confirming.
@@ -490,7 +490,7 @@ async function ensureDatabaseSchema() {
     }
     // Every candidate the lookup returned, as JSON, so the review page can offer
     // a picker. A search returns one result most of the time and up to twenty for
-    // a franchise name — and those are precisely the rows a human needs to
+    // a franchise name - and those are precisely the rows a human needs to
     // disambiguate, so throwing away all but the winner made review harder
     // exactly where it mattered.
     try {
@@ -501,7 +501,7 @@ async function ensureDatabaseSchema() {
 
     // --------------------- Drop the Plex subtitle cache ---------------------
     // Held WebVTT extracted from Plex media parts, which existed only because
-    // Plex had no endpoint to serve a subtitle track — Jellyfin does, so the
+    // Plex had no endpoint to serve a subtitle track - Jellyfin does, so the
     // extraction and its cache are gone. Purely derived data: dropping it
     // reclaims the space and loses nothing.
     try {
@@ -511,7 +511,7 @@ async function ensureDatabaseSchema() {
     }
 
     // --------------------- Performance indexes ---------------------
-    // CREATE INDEX IF NOT EXISTS is idempotent — runs on every startup, only
+    // CREATE INDEX IF NOT EXISTS is idempotent - runs on every startup, only
     // actually builds the index on first boot after deploy. Indexes match the
     // Prisma schema declarations.
     try {
@@ -534,9 +534,9 @@ async function ensureDatabaseSchema() {
 
 // Ensure DB schema first, then start server
 ensureDatabaseSchema().then(() => {
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
   // Routes
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
 
   app.get('/api/health', (_, res) => {
     res.json({ status: 'ok' });
@@ -566,9 +566,9 @@ ensureDatabaseSchema().then(() => {
 
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
-    // Warm the AniList→TVDB map after the server is up, never during a
+    // Warm the AniList->TVDB map after the server is up, never during a
     // request: it's a 7.5MB download and availability lookups must not wait
-    // on it. Failure is fine — matching falls back to titles alone.
+    // on it. Failure is fine - matching falls back to titles alone.
     //
     // This was already the intent, but `resolveAvailability` awaited the same
     // function, so a viewer's request joined this download whenever the stored
@@ -579,14 +579,14 @@ ensureDatabaseSchema().then(() => {
     // pick up new entries. The check is conditional (If-None-Match), so an
     // unchanged file costs a 304.
     setInterval(() => void ensureAnilistTvdbMap(true), 24 * 60 * 60 * 1000).unref();
-    // Our own overrides — a handful of rows, read on every availability lookup,
+    // Our own overrides - a handful of rows, read on every availability lookup,
     // so they load once here rather than being queried per show.
     void loadIdentityOverrides();
     // Warm the film index NOW, not on the sweep's 90-second delay and never on
     // a viewer's request. On a restart the persisted copy answers anyway; the
     // case this covers is a genuinely fresh deployment (no AppConfig row yet),
     // where any movie lookup inside the sweep delay paid for the whole
-    // 6,638-item fetch — the "first person pays" window, narrowed to first-ever
+    // 6,638-item fetch - the "first person pays" window, narrowed to first-ever
     // boot and now closed.
     void (async () => {
       try {
@@ -601,9 +601,9 @@ ensureDatabaseSchema().then(() => {
     // providers. On a timer for the same reason as the map refresh: an id is a
     // permanent fact, so finding one shouldn't wait for someone to press a
     // button (though /admin/matching now HAS the button, for draining a
-    // backlog — triggerSweep in routes/jellyfin.ts is the shared entry).
+    // backlog - triggerSweep in routes/jellyfin.ts is the shared entry).
     // Delayed at boot so it never competes with the first page load, and
-    // bounded per run — see `runRemoteIdentitySweep`.
+    // bounded per run - see `runRemoteIdentitySweep`.
     const sweep = async () => {
       try {
         const cfg = await getJellyfinConfig();
@@ -622,16 +622,16 @@ ensureDatabaseSchema().then(() => {
     setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
   });
 
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
   // Batch translation scheduler (medium model, server-side fallback)
   // Runs on Wednesdays 2am-4am, within 50 days of the next season start.
   // The local GPU large-v3 script (Sunday 5am, no window gate) runs first
-  // and covers all 3 seasons — this batch only translates what large-v3
+  // and covers all 3 seasons - this batch only translates what large-v3
   // hasn't cached yet. 50 days gives medium a chance to catch up on anything
   // the local script missed without starting too aggressively early.
-  // ────────────────────────────────────────────────────────────────────────────
+  // ----------------------------------------------------------------------------
   const BATCH_SCHEDULER_HOUR_START = 2;  // Start window (2am)
-  const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) — only starts new batches in this range
+  const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) - only starts new batches in this range
   const BATCH_DAYS_BEFORE_SEASON = 50;   // How many days before season start to begin batching
   const BATCH_DAY_OF_WEEK = 3;           // Wednesday (0=Sun, 3=Wed)
 
@@ -669,7 +669,7 @@ ensureDatabaseSchema().then(() => {
     if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
 
     // Already ran today? Build the key from the same local clock the day/hour
-    // gates above use — mixing a UTC date key with local gates could flip the
+    // gates above use - mixing a UTC date key with local gates could flip the
     // key mid-window in a non-UTC zone and allow a second run the same night.
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     if (lastBatchDate === todayStr) return;
@@ -703,7 +703,7 @@ ensureDatabaseSchema().then(() => {
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
   signals.forEach((sig) =>
     process.on(sig, async () => {
-      console.log(`\n[Server] ${sig} received – shutting down`);
+      console.log(`\n[Server] ${sig} received - shutting down`);
       await prisma.$disconnect();
       process.exit(0);
     })

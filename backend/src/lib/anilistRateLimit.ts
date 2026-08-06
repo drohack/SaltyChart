@@ -1,7 +1,7 @@
 /**
  * Reading AniList's rate-limit headers, and deciding how long to wait after a 429.
  *
- * Pure, so it can be unit-tested — the bug this exists to fix cost a viewer a
+ * Pure, so it can be unit-tested - the bug this exists to fix cost a viewer a
  * three-minute wait and was invisible in every integration test, because it only
  * shows up as "slow" rather than "wrong".
  *
@@ -31,7 +31,7 @@ export interface BackoffDecision {
 export const DEFAULT_LOCKOUT_MS = 60_000;
 
 /**
- * Attempts before giving up — deliberately small, and it must stay that way.
+ * Attempts before giving up - deliberately small, and it must stay that way.
  *
  * Waits are now a full lockout each, so attempts multiply directly into how long
  * a request can hang: at 4 attempts a viewer waits three minutes and then gets an

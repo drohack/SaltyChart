@@ -1,17 +1,17 @@
-# Push to master → build + publish both app images to GHCR.
+# Push to master -> build + publish both app images to GHCR.
 #
 # The Unraid server polls GHCR every 10 minutes (User Script
 # `update_saltychart`, reference copy at tools/unraid/update_saltychart.sh)
-# and swaps containers when a new :latest appears — so a green run here IS a
+# and swaps containers when a new :latest appears - so a green run here IS a
 # deploy. The backend image builds FROM the pinned saltychart-backend-base
 # tag (built by build-base.yml), so routine runs only push ~100 MB of app
 # layers, never the Whisper models.
 #
 # Single job on purpose: images are built first and pushed together at the
-# end, so the backend/frontend :latest pair updates atomically — a failed
+# end, so the backend/frontend :latest pair updates atomically - a failed
 # backend build can never produce a frontend-only deploy.
 #
-# The full pre-deploy suite (tools/tests/run_all.py — Playwright + GPU) can't
+# The full pre-deploy suite (tools/tests/run_all.py - Playwright + GPU) can't
 # run on hosted runners; run it locally BEFORE pushing to master.
 
 name: deploy

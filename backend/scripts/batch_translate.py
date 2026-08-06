@@ -53,9 +53,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from translate_stream import download_audio, check_subtitles
 
-# Model quality ranking — used for cache comparison. Keep in sync with the
+# Model quality ranking - used for cache comparison. Keep in sync with the
 # copies in backend/src/routes/translate.ts and tools/local_translate.py.
-# 'large-v3-split' (the local champion pipeline) MUST be here — without it a
+# 'large-v3-split' (the local champion pipeline) MUST be here - without it a
 # Sunday-uploaded large-v3-split row ranks as 0 and the Wednesday batch
 # needlessly re-downloads + re-transcribes the whole season for a no-op write.
 MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5, "large-v3-split": 6}
@@ -206,16 +206,16 @@ def next_season_info() -> tuple:
 
 
 def get_seasons_to_process() -> list:
-    """[(season, year), ...] for prev, current-displayed, and next season —
+    """[(season, year), ...] for prev, current-displayed, and next season -
     rationale at local_translate.get_seasons_to_process."""
     current, year = next_season_info()
     idx = SEASONS.index(current)
 
     prev_idx = (idx - 1) % 4
-    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER→FALL wraps back a year
+    prev_year = year - (1 if prev_idx == 3 else 0)   # WINTER->FALL wraps back a year
 
     next_idx = (idx + 1) % 4
-    next_year = year + (1 if next_idx == 0 else 0)   # FALL→WINTER wraps forward a year
+    next_year = year + (1 if next_idx == 0 else 0)   # FALL->WINTER wraps forward a year
 
     return [
         (SEASONS[prev_idx], prev_year),
@@ -229,7 +229,7 @@ def get_seasons_to_process() -> list:
 # ---------------------------------------------------------------------------
 
 def _is_bot_block(msg: str) -> bool:
-    """True if YouTube returned a 'confirm you're not a bot' challenge — we abort
+    """True if YouTube returned a 'confirm you're not a bot' challenge - we abort
     the run on this rather than hammering YouTube with the remaining trailers."""
     m = (msg or "").lower()
     return ("confirm you" in m and "not a bot" in m) or "sign in to confirm" in m
@@ -251,7 +251,7 @@ def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connectio
     try:
         full_audio, duration = download_audio(video_id, tmpdir)
 
-        # Full-audio transcription — better quality than chunking because
+        # Full-audio transcription - better quality than chunking because
         # Whisper has full conversation context. Fine for batch since it
         # runs off-hours and quality matters more than speed.
         segments = []
@@ -384,7 +384,7 @@ def main():
                 print()
                 continue
 
-            # Batch cache check — one query per video, reusing connection
+            # Batch cache check - one query per video, reusing connection
             uncached = []
             for show in eligible:
                 vid = show["trailer"]["id"]
@@ -416,7 +416,7 @@ def main():
                 print()
                 continue
 
-            # Load model lazily — once, then reused for all subsequent seasons
+            # Load model lazily - once, then reused for all subsequent seasons
             if model is None:
                 print(f"[batch] Loading Whisper medium model (int8)... this may take a while on first run")
                 from faster_whisper import WhisperModel
@@ -430,7 +430,7 @@ def main():
             elapsed_sum = 0.0
             cutoff_hit = False
             for i, (show, reason, has_english) in enumerate(uncached):
-                # Time cutoff check — stop all remaining seasons too
+                # Time cutoff check - stop all remaining seasons too
                 now = datetime.now()
                 if now.hour >= args.cutoff:
                     print(f"\n[batch] Cutoff reached ({now.strftime('%H:%M')} >= {args.cutoff}:00). Stopping.")
@@ -464,7 +464,7 @@ def main():
                     translated += 1
                 except Exception as e:
                     if _is_bot_block(str(e)):
-                        print(f"\n[batch] ABORT: YouTube bot-challenge ('not a bot') — "
+                        print(f"\n[batch] ABORT: YouTube bot-challenge ('not a bot') - "
                               f"stopping to avoid deepening the block. Re-run after a cool-down.")
                         bot_blocked = True
                         break

@@ -1,7 +1,7 @@
 """Delete the throwaway users the test suite creates.
 
 Every run signs up fresh `smoke_test_*` / `ui_test_*` / `ui_cmp_*` users and
-never deletes them — ~90 had accumulated in the dev DB, and every one showed
+never deletes them - ~90 had accumulated in the dev DB, and every one showed
 up auto-checked in Randomize's "Nicknames from" panel, because
 `/users-with-ratings` counts them like real people.
 
@@ -34,7 +34,7 @@ EPOCH_GLOB = "*_1[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
 
 def cleanup() -> int:
     if not DB.exists():
-        print(f"cleanup_users: no dev DB at {DB} — nothing to do", flush=True)
+        print(f"cleanup_users: no dev DB at {DB} - nothing to do", flush=True)
         return 0
     con = sqlite3.connect(DB, timeout=15)
     try:
@@ -61,6 +61,6 @@ if __name__ == "__main__":
     try:
         cleanup()
     except sqlite3.OperationalError as e:
-        # Locked DB must not block a test run — the users just linger one more run.
+        # Locked DB must not block a test run - the users just linger one more run.
         print(f"cleanup_users: skipped ({e})", flush=True)
         sys.exit(0)

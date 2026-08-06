@@ -1,7 +1,7 @@
-################  Backend – multi-stage build ################
+################  Backend - multi-stage build ################
 
-# 1) builder  – installs dev deps, generates Prisma client, compiles TS
-# 2) runtime  – pinned base image (Dockerfile.base: python/ffmpeg/Whisper
+# 1) builder  - installs dev deps, generates Prisma client, compiles TS
+# 2) runtime  - pinned base image (Dockerfile.base: python/ffmpeg/Whisper
 #               models) + production node_modules copied from builder
 
 # ---------- builder ---------------------------------------------------------
@@ -27,7 +27,7 @@ RUN npm prune --production
 # The base image (see Dockerfile.base) carries the heavy, slow-changing
 # layers: apt packages (python3, ffmpeg, curl, openssl), pip translation
 # deps, and the pre-downloaded Whisper models. It is pinned by tag so those
-# ~3.3 GB of layers keep identical digests across deploys — the server only
+# ~3.3 GB of layers keep identical digests across deploys - the server only
 # ever pulls the app layers below. Bump the tag only after dispatching the
 # `build-base` workflow with the matching version.
 FROM ghcr.io/drohack/saltychart-backend-base:v1 AS runtime

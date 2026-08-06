@@ -27,7 +27,7 @@ let daemonBuffer = '';
 const pendingStreams = new Map<string, Response>();
 const pendingChecks = new Map<string, { resolve: (data: any) => void }>();
 // Segments collected per request, cached to the DB when translation completes
-// (`cache: false` for partial start>0 runs — the batch makes the full version).
+// (`cache: false` for partial start>0 runs - the batch makes the full version).
 const pendingSegments = new Map<string, { videoId: string; mediaId: number | null; segments: any[]; cache: boolean }>();
 // In-flight translations by videoId, so concurrent requests for the same
 // uncached video share one run instead of translating twice.
@@ -90,7 +90,7 @@ function handleDaemonLine(line: string): void {
     // Save collected segments to cache and resolve in-flight waiters
     const pending = pendingSegments.get(rid);
     if (pending && !pending.cache) {
-      // Partial run (started mid-playback at start>0) — don't cache it as if it
+      // Partial run (started mid-playback at start>0) - don't cache it as if it
       // were the full video; the batch produces the complete cached version.
       // Still resolve any in-flight waiters so they fall through and re-translate.
       pendingSegments.delete(rid);
@@ -99,7 +99,7 @@ function handleDaemonLine(line: string): void {
         inFlightTranslations.delete(pending.videoId);
         inFlight.resolve();
       }
-    } else if (pending) {  // cache even 0-segment results — prevents re-translating silent videos
+    } else if (pending) {  // cache even 0-segment results - prevents re-translating silent videos
       pendingSegments.delete(rid);
       const segJson = JSON.stringify(pending.segments);
       prisma.$executeRawUnsafe(
@@ -181,7 +181,7 @@ function cleanupDaemon(): void {
   daemonReady = false;
   daemonBuffer = '';
 
-  // Pending checks resolve WITH an error (not reject) — callers treat any
+  // Pending checks resolve WITH an error (not reject) - callers treat any
   // shape without hasEnglish as "unknown" and move on.
   for (const [rid, check] of pendingChecks) {
     check.resolve({ error: 'Daemon exited' });
@@ -307,7 +307,7 @@ router.get('/check-batch', async (req: Request, res: Response) => {
   res.json(result);
 
   // Background: queue Python checks for IDs not in DB at all so the cache
-  // self-populates while the user browses. Bounded concurrency — a burst of
+  // self-populates while the user browses. Bounded concurrency - a burst of
   // ~80 parallel youtube_transcript_api hits from one IP trips YouTube's bot
   // wall and poisons results with false negatives.
   const uncached = ids.filter(id => !known.has(id));
@@ -363,7 +363,7 @@ router.get('/check', async (req: Request, res: Response) => {
   // Re-check stale "no English CC" results every 7 days so newly-added YouTube
   // CC eventually gets picked up. Positives are trusted forever (English CC
   // doesn't get removed). This keeps YouTube API calls roughly bounded by
-  // "1 per uncached video per week" instead of "every play" — the rate-limit
+  // "1 per uncached video per week" instead of "every play" - the rate-limit
   // risk that hit us before.
   const NEG_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
   try {
@@ -386,7 +386,7 @@ router.get('/check', async (req: Request, res: Response) => {
       if (cachedHasEn === 0 && cached[0].lastEnCheckAt) {
         const age = Date.now() - new Date(cached[0].lastEnCheckAt).getTime();
         if (age < NEG_RECHECK_MS) {
-          // Negative is fresh — trust it, skip the YouTube hit
+          // Negative is fresh - trust it, skip the YouTube hit
           return res.json({ hasEnglish: false, ...cachedExtra });
         }
         // Otherwise: stale negative, fall through to re-check
@@ -443,7 +443,7 @@ router.get('/check', async (req: Request, res: Response) => {
   }
 
   // Cache the result + stamp lastEnCheckAt so we don't re-hit YouTube for 7
-  // days. Only update hasEnglishSubs when the new value is true — never
+  // days. Only update hasEnglishSubs when the new value is true - never
   // overwrite a correct true with a potentially wrong false from a transient
   // network failure.
   if (result && result.hasEnglish !== undefined) {
@@ -499,7 +499,7 @@ router.get('/stream', async (req: Request, res: Response) => {
     );
     if (cached.length > 0 && cached[0].segments) {
       const segments = JSON.parse(cached[0].segments);
-      // Stream cached segments immediately — no daemon needed
+      // Stream cached segments immediately - no daemon needed
       res.write(`data: ${JSON.stringify({ cached: true })}\n\n`);
       for (const seg of segments) {
         res.write(`data: ${JSON.stringify(seg)}\n\n`);
@@ -517,7 +517,7 @@ router.get('/stream', async (req: Request, res: Response) => {
   if (inFlight) {
     try {
       await inFlight.promise;
-      // Translation finished — serve from cache
+      // Translation finished - serve from cache
       const cached: any[] = await prisma.$queryRawUnsafe(
         `SELECT "segments" FROM "SubtitleCache" WHERE "videoId" = ? LIMIT 1`,
         videoId
@@ -538,7 +538,7 @@ router.get('/stream', async (req: Request, res: Response) => {
     // If cache still empty after waiting, fall through to translate
   }
 
-  // Cache miss — translate via daemon
+  // Cache miss - translate via daemon
   if (activeTranslations >= MAX_CONCURRENT) {
     res.write(`data: ${JSON.stringify({ error: 'Server busy, try again shortly' })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
@@ -618,7 +618,7 @@ router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => 
 /**
  * PATCH /dismiss?videoId=xxx
  * Mark a video's subtitles as dismissed (e.g. burned-in subs make ours redundant).
- * Persists for all users — if anyone dismisses, future opens default to off.
+ * Persists for all users - if anyone dismisses, future opens default to off.
  */
 router.patch('/dismiss', express.json(), async (req: Request, res: Response) => {
   const videoId = req.query.videoId as string;
@@ -645,7 +645,7 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
 /**
  * POST /upload
  * Upload pre-translated subtitles from a local machine (e.g. GPU translation).
- * Admin only. Upserts into SubtitleCache — upgrades if new model is higher rank.
+ * Admin only. Upserts into SubtitleCache - upgrades if new model is higher rank.
  * Body: { videoId, mediaId?, modelName, segments: [{start, end, text}, ...] }
  */
 // 'large-v3-split' (6) = local champion pipeline (Demucs vocals + large-v3
@@ -752,7 +752,7 @@ router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res:
 /**
  * Spawn the batch pre-translation script and wire up status tracking. Shared by
  * POST /batch and the auto-scheduler (index.ts) so BOTH paths flip
- * batchStatus.running — otherwise a scheduler-spawned run is invisible to the
+ * batchStatus.running - otherwise a scheduler-spawned run is invisible to the
  * 409 guard and /batch/status, allowing a concurrent double-run. Callers must
  * check the 409 guard / batchStatus.running first. `args` are the batch script
  * flags after the script path (e.g. ['--cutoff','10']).
@@ -778,7 +778,7 @@ export function startBatch(args: string[], meta: { season?: string; year?: numbe
     const lines = chunk.toString().split('\n').filter(Boolean);
     for (const line of lines) {
       batchStatus.log.push(line);
-      // Keep last 2000 lines — a full 8-hour batch produces ~500-1000 lines
+      // Keep last 2000 lines - a full 8-hour batch produces ~500-1000 lines
       if (batchStatus.log.length > 2000) batchStatus.log.shift();
     }
   });

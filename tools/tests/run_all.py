@@ -61,7 +61,7 @@ def run(n: int, total: int, label: str, cmd: list[str], cwd: Path | None = None,
     import os
     env = {**os.environ, **(env_extra or {}), "PYTHONUNBUFFERED": "1"}
     t0 = time.time()
-    # On Windows, npm/npx are .cmd shims — Popen with a list fails to find them
+    # On Windows, npm/npx are .cmd shims - Popen with a list fails to find them
     # unless shell=True. Convert the list to a properly-quoted string.
     use_shell = sys.platform == "win32" and cmd[0] in ("npm", "npx")
     spawn_cmd: list[str] | str = " ".join(f'"{a}"' if " " in a else a for a in cmd) if use_shell else cmd
@@ -78,9 +78,9 @@ def run(n: int, total: int, label: str, cmd: list[str], cwd: Path | None = None,
     proc.wait(timeout=timeout)
     elapsed = time.time() - t0
     if proc.returncode != 0:
-        step(n, total, f"FAIL — {label} exit {proc.returncode} after {elapsed:.1f}s")
+        step(n, total, f"FAIL - {label} exit {proc.returncode} after {elapsed:.1f}s")
         return False
-    step(n, total, f"PASS — {label} ({elapsed:.1f}s)")
+    step(n, total, f"PASS - {label} ({elapsed:.1f}s)")
     return True
 
 
@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--skip-burned-in", action="store_true",
                         help="Skip the GPU-heavy burned-in detection test")
     parser.add_argument("--frontend", default="http://localhost:5173",
-                        help="Frontend URL (Vite strictPort=true → always 5173)")
+                        help="Frontend URL (Vite strictPort=true -> always 5173)")
     parser.add_argument("--backend", default="http://localhost:3000")
     args = parser.parse_args()
 
@@ -106,20 +106,20 @@ def main():
         print(f"cleanup_users: skipped ({e})", flush=True)
 
     # Warm the season cache first. Several checks below read `/api/anime`, and
-    # a cold key is 8-12 AniList requests against a 30/min per-IP limit — start
+    # a cold key is 8-12 AniList requests against a 30/min per-IP limit - start
     # cold and the run can trip the limiter before its first assertion.
     warmed, warm_failed = warm_cache.warm(args.backend)
     if warm_failed:
-        # Refuse rather than run. A missing season doesn't make the suite fail —
+        # Refuse rather than run. A missing season doesn't make the suite fail -
         # it makes it pass vacuously, because every fixture joins against an
         # empty list and every assertion is trivially satisfied. A green run
         # that proved nothing is worse than no run.
-        print(f"\nPre-deploy: FAILED before step 1 — {warm_failed} season key(s) "
+        print(f"\nPre-deploy: FAILED before step 1 - {warm_failed} season key(s) "
               f"could not be fetched, so the suite would test against missing "
               f"data. DO NOT deploy.", flush=True)
         # sys.exit, not `return`: __main__ calls main() without inspecting its
         # return value, so returning a code here would print "FAILED" and then
-        # exit 0 — the one outcome worse than failing.
+        # exit 0 - the one outcome worse than failing.
         sys.exit(1)
 
     # The independent checks: no browser, no shared state, so they run in
@@ -172,10 +172,10 @@ def main():
                                   None, 300))
 
     total = len(parallel_checks) + len(sequential_checks)
-    print(f"Pre-deploy suite — {total} checks", flush=True)
+    print(f"Pre-deploy suite - {total} checks", flush=True)
     print(f"  backend={args.backend} frontend={args.frontend}\n", flush=True)
 
-    # ── Parallel phase ────────────────────────────────────────────────────────
+    # -- Parallel phase --------------------------------------------------------
     n_parallel = len(parallel_checks)
     print(f"[parallel 1-{n_parallel}/{total}] running {n_parallel} independent checks concurrently...", flush=True)
     t0 = time.time()
@@ -184,7 +184,7 @@ def main():
                    for i, (lbl, cmd, cwd, to) in enumerate(parallel_checks, 1)}
         results: dict[int, tuple[str, bool, float, str]] = {}
         # These run concurrently, so their own output can't be streamed without
-        # interleaving into nonsense — which left the status bar frozen on one
+        # interleaving into nonsense - which left the status bar frozen on one
         # line for the ~30s the phase takes. Announce each completion instead:
         # the line names what finished, what is still outstanding, and how far
         # through the whole suite we are, so it stands alone.
@@ -197,7 +197,7 @@ def main():
             pending = [futures[g][0] for g in futures if not g.done()]
             still = f"waiting on {', '.join(sorted(pending)[:3])}" if pending else "all in"
             print(f"[parallel {done_n}/{n_parallel} of {total} pre-deploy] "
-                  f"{'ok' if ok else 'FAILED'}: {label} ({elapsed:.1f}s) — {still}",
+                  f"{'ok' if ok else 'FAILED'}: {label} ({elapsed:.1f}s) - {still}",
                   flush=True)
 
     # Print results in deterministic order (i=1..N) so output is readable
@@ -205,9 +205,9 @@ def main():
     for i in sorted(results):
         label, ok, elapsed, output = results[i]
         if ok:
-            print(f"[{i}/{total} pre-deploy] PASS — {label} ({elapsed:.1f}s)", flush=True)
+            print(f"[{i}/{total} pre-deploy] PASS - {label} ({elapsed:.1f}s)", flush=True)
         else:
-            print(f"[{i}/{total} pre-deploy] FAIL — {label} after {elapsed:.1f}s", flush=True)
+            print(f"[{i}/{total} pre-deploy] FAIL - {label} after {elapsed:.1f}s", flush=True)
             # Tail the failure output for debugging
             tail = "\n".join(output.splitlines()[-30:])
             print(f"--- output tail for {label} ---", flush=True)
@@ -217,17 +217,17 @@ def main():
     parallel_elapsed = time.time() - t0
     print(f"[parallel] completed in {parallel_elapsed:.1f}s\n", flush=True)
     if any_failed:
-        print(f"Pre-deploy: FAILED in parallel phase — DO NOT deploy", flush=True)
+        print(f"Pre-deploy: FAILED in parallel phase - DO NOT deploy", flush=True)
         sys.exit(1)
 
-    # ── Sequential phase ──────────────────────────────────────────────────────
+    # -- Sequential phase ------------------------------------------------------
     for j, (label, cmd, cwd, to) in enumerate(sequential_checks, 1):
         step_n = n_parallel + j
         if not run(step_n, total, label, cmd, cwd=cwd, timeout=to):
-            print(f"\nPre-deploy: FAILED at step {step_n} ({label}) — DO NOT deploy", flush=True)
+            print(f"\nPre-deploy: FAILED at step {step_n} ({label}) - DO NOT deploy", flush=True)
             sys.exit(1)
 
-    print(f"\nPre-deploy: {total}/{total} passed — ready to build", flush=True)
+    print(f"\nPre-deploy: {total}/{total} passed - ready to build", flush=True)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,8 @@
   /**
    * Review and correct how AniList entries resolve to the library.
    *
-   * Exists because identity is a permanent fact that we were re-deriving —
-   * and re-breaking — on every cache expiry. A wrong match is now a row you fix
+   * Exists because identity is a permanent fact that we were re-deriving -
+   * and re-breaking - on every cache expiry. A wrong match is now a row you fix
    * once rather than a threshold someone re-tunes.
    *
    * The default queue ("Needs attention") is what a human can settle:
@@ -17,11 +17,11 @@
    *  - a **title-only** match, which resolved but has no id to verify it;
    *  - a suggestion from our own remote lookup that no air date could confirm;
    *  - any row where the lookup returned **more than one plausible answer**,
-   *    even if the air-date gate accepted one — that is precisely where a
+   *    even if the air-date gate accepted one - that is precisely where a
    *    picker earns its keep.
    *
    * Resolver **accepts decided on title text or release year alone** are
-   * trusted but unverified — they live behind the "+ resolver accepts" filter,
+   * trusted but unverified - they live behind the "+ resolver accepts" filter,
    * listed after the queue, because the admin treats them as correct and only
    * needs them *reachable* (a wrong exact-title collision used to be permanent
    * and invisible; low-priority-but-visible is the fix, not a demand for
@@ -29,7 +29,7 @@
    *
    * Everything else is left alone: a community-map id is exact, and an entry
    * whose known id the library lacks is reported missing rather than guessed at.
-   * Nothing here is a *gate* — resolver ids are positive-only and already in
+   * Nothing here is a *gate* - resolver ids are positive-only and already in
    * use, marked unverified. This is a cleanup list, not a queue that blocks.
    *
    * UI contract:
@@ -37,11 +37,11 @@
    *  - Three-mode filter: "Needs attention" (the work queue above),
    *    "+ unverified auto-matches" (adds the title-text accepts after the
    *    queue), "Everything". Air-date and premiere-date accepts skip even the
-   *    middle view — a date-verified match needs nobody.
+   *    middle view - a date-verified match needs nobody.
    *  - The per-row state column answers "is it matched, how well, is it not,
    *    why not" as a colored verdict over a terse reason DERIVED FROM THE
    *    STORED ACCEPTANCE RUNG, so the column can never contradict what
-   *    verified the match — a date-verified auto-match reads green like a map
+   *    verified the match - a date-verified auto-match reads green like a map
    *    id; a title-text accept stays blue-unverified. A highlighted
    *    "N possible matches" line appears when the picker has alternatives.
    *  - The user-facing word is auto-match / auto-search, never "resolver".
@@ -53,7 +53,7 @@
    *    FILLS, NEVER SAVES; a changed selection shows "Confirm saves this as a
    *    manual correction" with a reset, and Confirm is the act of agreement.
    *  - A changed Confirm writes source:'manual'; an untouched one preserves
-   *    the resolver's provenance. The discriminator is selection-vs-baseline —
+   *    the resolver's provenance. The discriminator is selection-vs-baseline -
    *    made explicit after a prefill-comparison version relabelled every
    *    id-bearing confirm as manual (the boxes are prefilled with the stored
    *    ids, so "typed" must mean "changed").
@@ -81,7 +81,7 @@
     year?: number | null;
     confirmed?: boolean;
     rejected?: boolean;
-    /** The resolver found something but wasn't confident — ids are a suggestion. */
+    /** The resolver found something but wasn't confident - ids are a suggestion. */
     pending?: boolean;
     /** What the resolver matched against, so the suggestion can be judged here. */
     matchedTitle?: string | null;
@@ -89,7 +89,7 @@
     candidates?: Choice[] | null;
     /**
      * How this row resolves against the library, from the backend's shared
-     * classifier — the season tiles count these, and the sweep tallies the
+     * classifier - the season tiles count these, and the sweep tallies the
      * same values across every cached season.
      */
     tier?: 'id' | 'title' | 'notHeld' | 'noMatch' | null;
@@ -98,7 +98,7 @@
     /**
      * Where an unmatched row stands with the auto-search: never searched,
      * cooling down until nextRetryAt, or retired (aired >2 y ago). null on
-     * settled rows — there is nothing to retry.
+     * settled rows - there is nothing to retry.
      */
     retry?: {
       state: 'eligible' | 'cooldown' | 'retired';
@@ -122,13 +122,13 @@
   let status: 'idle' | 'loading' | 'ok' | 'failed' = 'idle';
   let error = '';
   let saving = new Set<number>();
-  /** What the list shows — the queue/accepts split is in the header's UI contract. */
+  /** What the list shows - the queue/accepts split is in the header's UI contract. */
   let filterMode: 'attention' | 'attention+accepts' | 'all' = 'attention';
   /**
    * The Sonarr-style lookup: one field per row takes a name, `tvdb:12345`, or
    * `tmdb:12345`. Typing a name searches Jellyfin's remote providers; pasting
    * an id resolves it through the library + community-map cross-walk. Picking
-   * a result FILLS `chosen` and previews it — nothing is written until
+   * a result FILLS `chosen` and previews it - nothing is written until
    * Confirm, which stays the act of agreement. This replaced raw id boxes,
    * where the human keyed a number blind into a control that couldn't say
    * what it pointed at.
@@ -165,7 +165,7 @@
            (a?.tmdbKind ?? null) === (b?.tmdbKind ?? null);
   }
 
-  /** "Ranma ½ (2024)" + 2024 must not render "(2024) (2024)" — TVDB titles
+  /** "Ranma ½ (2024)" + 2024 must not render "(2024) (2024)" - TVDB titles
    *  embed the disambiguation year that we'd otherwise append. */
   function withYear(title: string | null | undefined, year: number | null | undefined): string {
     const t = title ?? '';
@@ -176,9 +176,9 @@
   function openPicker(r: Row) {
     openFor = r.mediaId;
     // Prefill with the entry's own title and search right away, like Sonarr's
-    // import dropdown — the common case should show options without typing.
+    // import dropdown - the common case should show options without typing.
     // AniList titles sometimes carry a "(2026)" disambiguator, which TMDB's
-    // search takes literally and finds nothing for — strip it.
+    // search takes literally and finds nothing for - strip it.
     if (searchText[r.mediaId] == null) {
       const term = r.title.replace(/\s*\(\d{4}\)\s*$/, '');
       searchText[r.mediaId] = term;
@@ -221,7 +221,7 @@
       if (!o.tvdbId && !o.tmdbId) continue;
       const prior = byKey.get(key(o));
       if (prior) {
-        // The stored candidate and the live result are the same identity —
+        // The stored candidate and the live result are the same identity -
         // MERGE, don't drop: candidates stored before the sweep learned to
         // keep years/posters have neither, and the live result has both. The
         // first version kept the poorer of the two.
@@ -257,7 +257,7 @@
       const data = await apiJson<{ results: LookupResult[] }>(
         `/api/jellyfin/identity/lookup?term=${encodeURIComponent(term)}&anilistId=${mediaId}`,
         { headers: auth() },
-        // A remote provider search sits behind this — QUICK's 15s is too tight.
+        // A remote provider search sits behind this - QUICK's 15s is too tight.
         { label: 'admin/identity-lookup', timeoutMs: 30_000 }
       );
       if (reqId !== lookupReqIds[mediaId]) return;
@@ -307,9 +307,9 @@
   /**
    * The manual sweep trigger. POST starts a drain run on the server and
    * returns immediately (a cold-start drain runs for minutes); completion is
-   * detected by polling the sweep summary — via `/identity/resolve` with an
+   * detected by polling the sweep summary - via `/identity/resolve` with an
    * empty `mediaIds`, which skips the identity work and returns just the
-   * status — until `finishedAt` advances past the run we started from.
+   * status - until `finishedAt` advances past the run we started from.
    * Completion updates the status line only: reloading the rows out from
    * under an admin mid-review is worse than a stale list, so Reload stays a
    * deliberate click.
@@ -334,7 +334,7 @@
         { label: 'admin/sweep', timeoutMs: QUICK }
       );
     } catch {
-      // 503 (not configured / identity still loading) or unreachable — either
+      // 503 (not configured / identity still loading) or unreachable - either
       // way nothing is running; don't sit polling for a run that never began.
       stopSweepPoll();
       return;
@@ -355,7 +355,7 @@
           stopSweepPoll();
         }
       } catch {
-        /* one missed poll is fine — the next tick asks again */
+        /* one missed poll is fine - the next tick asks again */
       }
     }, 10_000);
   }
@@ -369,7 +369,7 @@
     return `${Math.round(h / 24)} d ago`;
   }
 
-  /** ago()'s forward twin, for "retries in ~…". */
+  /** ago()'s forward twin, for "retries in ~...". */
   function inAbout(ms: number): string {
     const m = Math.round((ms - Date.now()) / 60_000);
     if (m < 60) return `in ~${Math.max(1, m)} min`;
@@ -380,16 +380,16 @@
 
   /** The per-row caption beside an unmatched match control. */
   function retryText(r: NonNullable<Row['retry']>): string {
-    if (r.state === 'retired') return 'retired — aired years ago and still unknown upstream; not re-asked';
-    if (r.state === 'cooldown') return `auto-searched ${ago(r.lastLookupAt!)} — retries ${inAbout(r.nextRetryAt!)}`;
+    if (r.state === 'retired') return 'retired - aired years ago and still unknown upstream; not re-asked';
+    if (r.state === 'cooldown') return `auto-searched ${ago(r.lastLookupAt!)} - retries ${inAbout(r.nextRetryAt!)}`;
     return r.lastLookupAt == null
-      ? 'never auto-searched — eligible for the next sweep'
-      : `auto-searched ${ago(r.lastLookupAt)} — retries on the next sweep`;
+      ? 'never auto-searched - eligible for the next sweep'
+      : `auto-searched ${ago(r.lastLookupAt)} - retries on the next sweep`;
   }
 
   /**
    * The at-a-glance tiles. Two groups on purpose: what the season resolved to
-   * (already fine) and where the auto-search queue stands (work remaining) —
+   * (already fine) and where the auto-search queue stands (work remaining) -
    * blended into one line these read as noise, which is what the user said
    * about the first sketch. Title-matched rows appear in BOTH groups when
    * they carry no id: the sweep still owes them a lookup.
@@ -445,7 +445,7 @@
       // signed off. Neither alone tells you what needs review.
       //
       // Chunked at the endpoints' own 100-item limit rather than truncated. A
-      // season can exceed it — FALL 2025 has 128 — and slicing silently hid
+      // season can exceed it - FALL 2025 has 128 - and slicing silently hid
       // every entry past the first hundred, so a review page could report
       // "nothing needs review" while a third of the season was never looked at.
       const CHUNK = 100;
@@ -463,7 +463,7 @@
           apiJson<{ identities: Record<string, any>; sweep?: typeof sweep }>(
             '/api/jellyfin/identity/resolve',
             { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
-              // years feed the per-row retry state — the tier arithmetic
+              // years feed the per-row retry state - the tier arithmetic
               // lives on the backend, but only this page knows the premiere.
               body: JSON.stringify({
                 mediaIds: slice.map((x) => x.mediaId),
@@ -514,11 +514,11 @@
             : null,
         };
       });
-      // By display title — the API returns AniList's default (media id
+      // By display title - the API returns AniList's default (media id
       // ascending, i.e. entry-creation order), which reads as arbitrary here.
       rows.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
       // Pre-populate every match control with what the row currently
-      // resolves to — the admin changes it only when it looks wrong.
+      // resolves to - the admin changes it only when it looks wrong.
       selected = {};
       baseline = {};
       searchText = {};
@@ -530,7 +530,7 @@
         const base: LookupResult | null = (r.tvdbId || r.tmdbId)
           ? {
               // A community-map identity names no title of its own, but the
-              // map is a 1:1 assertion — "this entry IS tvdb X" — so the
+              // map is a 1:1 assertion - "this entry IS tvdb X" - so the
               // entry's own title is the honest name for it.
               title: r.matchedTitle ?? r.libraryTitle ?? (r.source === 'map' ? r.title : null),
               year: def?.year ?? r.year ?? null,
@@ -554,10 +554,10 @@
     }
   }
 
-  // The "Needs attention" queue — the three row kinds are in the header doc.
+  // The "Needs attention" queue - the three row kinds are in the header doc.
   // A pending row with NO ids is a recorded *miss* (the resolver searched and
   // found nothing), so it stays out of the queue.
-  /** A viewer corrected this from the Watch pop-up — see `viewerPick`. */
+  /** A viewer corrected this from the Watch pop-up - see `viewerPick`. */
   const isViewerPick = (r: Row) => (r.note ?? '').startsWith('viewer:');
   const needsAttention = (r: Row) =>
     // A viewer contradicted the matcher from the pop-up. That is exactly the
@@ -567,7 +567,7 @@
     (!r.confirmed && (r.candidates?.length ?? 0) > 1) ||
     (!r.pending && r.matchedBy === 'title' && !r.confirmed);
 
-  // Title-text / release-year accepts: reachable but never demanding review —
+  // Title-text / release-year accepts: reachable but never demanding review -
   // the rationale is the "resolver accepts" bullet in the header doc.
   const dateVerified = (r: Row) => {
     const n = r.note ?? '';
@@ -591,7 +591,7 @@
    * on: how far the match's own premiere is from this entry's.
    *
    * Derived from the stored candidate, so it says nothing when the evidence
-   * isn't there rather than inventing a reason — which is the bug this
+   * isn't there rather than inventing a reason - which is the bug this
    * replaced.
    */
   function unverifiedBecause(r: Row): string {
@@ -600,19 +600,19 @@
     if (prem && r.startDateMs != null) {
       const days = Math.round(Math.abs(Date.parse(prem) - r.startDateMs) / 86_400_000);
       if (Number.isFinite(days)) {
-        return `nothing could verify it — the match premiered ${prem}, ${days.toLocaleString()} days off`;
+        return `nothing could verify it - the match premiered ${prem}, ${days.toLocaleString()} days off`;
       }
     }
     const y = chosen?.year ?? r.year;
     const mine = r.startDateMs != null ? new Date(r.startDateMs).getUTCFullYear() : null;
     if (y && mine && y !== mine) {
-      return `nothing could verify it — the match is from ${y}, this premieres ${mine}`;
+      return `nothing could verify it - the match is from ${y}, this premieres ${mine}`;
     }
-    return 'nothing could verify it — no date to check against';
+    return 'nothing could verify it - no date to check against';
   }
 
   /** The state column: verdict + reason, derived from the stored acceptance
-   * rung so it can't contradict it — see the header's UI contract. */
+   * rung so it can't contradict it - see the header's UI contract. */
   function statusOf(r: Row): { verdict: string; detail: string; cls: string; options: number | null } {
     const options = (r.candidates?.length ?? 0) > 1 && !r.confirmed ? (r.candidates?.length ?? 0) : null;
     const rung = (r.note ?? '').replace(/^remote:\s*/, '');
@@ -621,8 +621,8 @@
     }
     if (r.confirmed) {
       return r.libraryTitle
-        ? { verdict: 'Matched ✓', detail: 'human-confirmed', cls: 'badge-success', options: null }
-        : { verdict: 'Confirmed', detail: 'human-confirmed — not in library yet', cls: 'badge-success', options: null };
+        ? { verdict: 'Matched', detail: 'human-confirmed', cls: 'badge-success', options: null }
+        : { verdict: 'Confirmed', detail: 'human-confirmed - not in library yet', cls: 'badge-success', options: null };
     }
     if (r.libraryTitle) {
       if (r.matchedBy === 'id') {
@@ -643,10 +643,10 @@
           // reaching here accepted on NO rung at all (`remote: unverified`),
           // and claiming a rung it didn't use broke this page's own contract:
           // measured on the dev deployment, 81 rows read "on exact title"
-          // against 13 that genuinely used it — and Bananya's candidate was
+          // against 13 that genuinely used it - and Bananya's candidate was
           // not even an exact match.
           if (rung.startsWith('exact title')) {
-            return { verdict: 'Matched', detail: 'auto-match on exact title — no date could confirm it', cls: 'badge-info', options };
+            return { verdict: 'Matched', detail: 'auto-match on exact title - no date could confirm it', cls: 'badge-info', options };
           }
           return { verdict: 'Matched', detail: `auto-match, ${unverifiedBecause(r)}`, cls: 'badge-info', options };
         }
@@ -666,13 +666,13 @@
       }
       if (r.matchedBy === 'title') {
         return r.titleTier === 1
-          ? { verdict: 'Matched?', detail: 'title prefix only — weakest tier', cls: 'badge-warning', options }
+          ? { verdict: 'Matched?', detail: 'title prefix only - weakest tier', cls: 'badge-warning', options }
           : { verdict: 'Matched?', detail: 'same title, no id to verify', cls: 'badge-warning', options };
       }
-      return { verdict: 'Matched', detail: `→ ${r.libraryTitle}`, cls: 'badge-success', options };
+      return { verdict: 'Matched', detail: `-> ${r.libraryTitle}`, cls: 'badge-success', options };
     }
     if (r.pending && (r.tvdbId || r.tmdbId)) {
-      return { verdict: 'Needs review', detail: `auto-search found a likely match — ${unverifiedBecause(r)}`, cls: 'badge-warning', options };
+      return { verdict: 'Needs review', detail: `auto-search found a likely match - ${unverifiedBecause(r)}`, cls: 'badge-warning', options };
     }
     if (r.tvdbId || r.tmdbId) {
       const from = r.source === 'map' ? 'community map' : r.source === 'remote' ? 'auto-search' : 'stored';
@@ -728,7 +728,7 @@
     <div class="alert alert-warning"><span>This page is only available to the site admin.</span></div>
   {:else}
     <p class="text-sm opacity-70">
-      Review how this season matched the library — Confirm or correct a match to
+      Review how this season matched the library - Confirm or correct a match to
       record it permanently.
     </p>
 
@@ -749,7 +749,7 @@
       </button>
       <button class="btn btn-sm btn-outline normal-case ml-auto" data-run-sweep on:click={runSweep}
         disabled={status === 'loading' || sweepRun !== 'idle'}
-        title="Look up every entry still missing an id right now — including ones on a retry cooldown — instead of waiting for the daily run">
+        title="Look up every entry still missing an id right now - including ones on a retry cooldown - instead of waiting for the daily run">
         {#if sweepRun !== 'idle'}<span class="loading loading-spinner loading-xs"></span>{/if}
         Run sweep now
       </button>
@@ -767,14 +767,14 @@
            screen and for every cached season, so the two scopes are read by
            comparison and the numbers line up BY CONSTRUCTION. Two earlier
            tile layouts drifted out of alignment the moment one group gained
-           a line the other lacked, and a prose "of those: …" caption below
+           a line the other lacked, and a prose "of those: ..." caption below
            them read as applying to every column instead of one.
            `entries` = by id + by title + not in library + no id yet, and the
-           row is ordered that way — unexplained arithmetic reads as a bug
+           row is ordered that way - unexplained arithmetic reads as a bug
            even when each number is individually right. All-seasons cells the
            sweep can't know are an em-dash, never a zero. -->
       <!-- One panel, two halves: the counts on the left (aligned to the same
-           left edge as every other element on this page — a centred table
+           left edge as every other element on this page - a centred table
            would float free of that spine) and, on the right, WHEN they were
            measured. The provenance used to sit in its own paragraph below,
            where it both repeated the queue numbers and left the table alone
@@ -784,10 +784,10 @@
         <div class="overflow-x-auto -my-1" data-matching-stats>
           <table class="table table-xs w-auto [&_td]:py-1 [&_th]:py-1">
           <!-- Two header tiers, because the data is two levels deep and a flat
-               row of eight numbers hid it: columns 1–4 partition `entries`,
+               row of eight numbers hid it: columns 1-4 partition `entries`,
                and the last four partition `no id yet`. Group rules mark both
                boundaries. Flat columns had a reader asking which numbers were
-               subsets of which — that is the structure failing to say
+               subsets of which - that is the structure failing to say
                something true about the content. -->
           <thead>
             <tr class="text-[10px] uppercase tracking-wider opacity-40">
@@ -809,13 +809,13 @@
                 title="Id known, but it points at nothing the library holds (includes rejections)">not in library</th>
               <th class="font-normal text-right" title="Nothing found by id or by title">no match</th>
               <th class="font-normal text-right border-l border-base-300"
-                title="Entries with no known id that the auto-search still owes an answer for — some of these DO match by title today, so this is not a slice of the four columns to the left">queued</th>
+                title="Entries with no known id that the auto-search still owes an answer for - some of these DO match by title today, so this is not a slice of the four columns to the left">queued</th>
               <th class="font-normal text-right border-l border-base-300">never searched</th>
               <th class="font-normal text-right"
-                title="Searched before and past its retry window — the next sweep picks these up">ready to retry</th>
+                title="Searched before and past its retry window - the next sweep picks these up">ready to retry</th>
               <th class="font-normal text-right">on cooldown</th>
               <th class="font-normal text-right"
-                title="Aired more than 2 years ago and still unknown upstream — no longer re-asked automatically">retired</th>
+                title="Aired more than 2 years ago and still unknown upstream - no longer re-asked automatically">retired</th>
             </tr>
           </thead>
           <tbody class="[&_td]:tabular-nums [&_td]:text-right [&_td]:text-base">
@@ -841,7 +841,7 @@
             </tr>
             <tr>
               <th class="text-[11px] font-normal opacity-60 uppercase tracking-wide text-left whitespace-nowrap"
-                title="Every season in the cache, all years — from the last auto-search sweep">
+                title="Every season in the cache, all years - from the last auto-search sweep">
                 <!-- No timestamp here: the provenance beside the table already
                      dates these numbers, and saying it twice invites the two
                      copies to disagree. -->
@@ -860,14 +860,14 @@
                   <td class="opacity-25 font-normal border-l border-base-300" colspan="4"
                     title="Counted from the next sweep onwards">after the next sweep</td>
                 {/if}
-                <td class="font-semibold border-l border-base-300">{sweep.unmatched ?? '—'}</td>
-                <td class="border-l border-base-300">{sweep.never ?? '—'}</td>
-                <td>{sweep.ready ?? '—'}</td>
-                <td>{sweep.cooldown ?? '—'}</td>
-                <td>{sweep.retired ?? '—'}</td>
+                <td class="font-semibold border-l border-base-300">{sweep.unmatched ?? '-'}</td>
+                <td class="border-l border-base-300">{sweep.never ?? '-'}</td>
+                <td>{sweep.ready ?? '-'}</td>
+                <td>{sweep.cooldown ?? '-'}</td>
+                <td>{sweep.retired ?? '-'}</td>
               {:else}
                 <td colspan="9" class="text-left text-xs opacity-60 font-normal">
-                  Appears after the next sweep — press Run sweep now.
+                  Appears after the next sweep - press Run sweep now.
                 </td>
               {/if}
             </tr>
@@ -877,13 +877,13 @@
                which numbers were subsets of which, and a legend answers that
                far more directly than a tooltip nobody hovers. -->
           <p class="text-[10px] opacity-40 mt-1">
-            entries = by id + by title + not in library + no match &nbsp;·&nbsp;
+            entries = by id + by title + not in library + no match &nbsp;-&nbsp;
             queued = never searched + ready to retry + on cooldown + retired
             <span class="opacity-70">(queued counts entries with no known id, so it overlaps
             &ldquo;by title&rdquo; &mdash; it is not a slice of the four)</span>
           </p>
         </div>
-        <!-- The daily resolver had no admin-visible trace at all — a background
+        <!-- The daily resolver had no admin-visible trace at all - a background
              system that "silently stops improving" is this codebase's
              most-repeated failure class, and its only signal was a backend
              console line. This says what the last run DID; the table beside it
@@ -891,20 +891,20 @@
         <div class="text-[11px] leading-relaxed opacity-70 sm:text-right" data-sweep-status>
           {#if sweepRun !== 'idle'}
             <span class="loading loading-spinner loading-xs align-middle"></span>
-            Sweep running now — these numbers update when it finishes
+            Sweep running now - these numbers update when it finishes
           {:else if sweep}
             Last sweep {ago(sweep.finishedAt)}: looked up {sweep.looked},
             matched {sweep.accepted}, queued {sweep.queued} for review,
             ruled out {sweep.rejected} on air date
           {:else}
             No sweep has finished yet. One runs 90 s after the server starts and
-            daily after that — or press Run sweep now.
+            daily after that - or press Run sweep now.
           {/if}
           {#if sweep}
             <br />
             <span class="opacity-70">
               {sweep.overrides.toLocaleString()} saved match{sweep.overrides === 1 ? '' : 'es'}
-              · community map {sweep.mapSize.toLocaleString()} pairs
+              - community map {sweep.mapSize.toLocaleString()} pairs
             </span>
           {/if}
         </div>
@@ -912,10 +912,10 @@
     {/if}
 
     {#if status === 'loading'}
-      <p class="opacity-70 text-sm">Loading {season} {year}…</p>
+      <p class="opacity-70 text-sm">Loading {season} {year}...</p>
     {:else if status === 'ok' && !visible.length}
       <p class="opacity-70 text-sm" data-matching-empty>
-        Nothing needs review in {season} {year} — every resolved entry was matched by id
+        Nothing needs review in {season} {year} - every resolved entry was matched by id
         or already confirmed.
       </p>
     {/if}
@@ -932,9 +932,9 @@
               <p class="text-xs opacity-70">
                 {r.format ?? ''}
                 {#if r.libraryTitle}
-                  → <span class="italic">{r.libraryTitle}</span>
+                  &rarr; <span class="italic">{r.libraryTitle}</span>
                 {:else}
-                  → <span class="opacity-60">not in library</span>
+                  &rarr; <span class="opacity-60">not in library</span>
                 {/if}
 
               </p>
@@ -952,7 +952,7 @@
               {/if}
             </div>
             <div class="relative flex-1 min-w-[24rem] max-w-2xl flex flex-col gap-0.5" data-match-cell>
-              <!-- Sonarr-import-style match control — behaviour (picking FILLS,
+              <!-- Sonarr-import-style match control - behaviour (picking FILLS,
                    never saves; Confirm agrees) is in the header's UI contract. -->
               <button type="button"
                 class="btn btn-sm btn-outline w-full justify-start normal-case font-normal overflow-hidden flex-nowrap gap-2"
@@ -962,15 +962,15 @@
               >
                 {#if selected[r.mediaId]}
                   <span class="truncate">
-                    {selected[r.mediaId]?.title ? withYear(selected[r.mediaId]?.title, selected[r.mediaId]?.year) : 'Id known — open to name it'}
+                    {selected[r.mediaId]?.title ? withYear(selected[r.mediaId]?.title, selected[r.mediaId]?.year) : 'Id known - open to name it'}
                   </span>
                   <!-- Sonarr/Radarr convention: a series shows its TVDB id, a
                        film its TMDB id. The other appears only when the
-                       canonical one is unknown — which on this deployment
+                       canonical one is unknown - which on this deployment
                        means a gap entry no free source can cross-walk. The
                        full pair is on the hover title. -->
                   <span class="opacity-60 text-xs truncate"
-                    title={`TVDB ${selected[r.mediaId]?.tvdbId ?? '—'} · TMDB ${selected[r.mediaId]?.tmdbId ?? '—'}`}
+                    title={`TVDB ${selected[r.mediaId]?.tvdbId ?? '-'} - TMDB ${selected[r.mediaId]?.tmdbId ?? '-'}`}
                   >
                     {#if selected[r.mediaId]?.tmdbKind === 'movie'}
                       {#if selected[r.mediaId]?.tmdbId}TMDB {selected[r.mediaId]?.tmdbId}
@@ -979,7 +979,7 @@
                     {:else if selected[r.mediaId]?.tmdbId}TMDB {selected[r.mediaId]?.tmdbId}{/if}
                   </span>
                 {:else}
-                  <span class="opacity-60">No match — search…</span>
+                  <span class="opacity-60">No match - search...</span>
                 {/if}
               </button>
               {#if r.retry}
@@ -987,7 +987,7 @@
               {/if}
               {#if !sameIdentity(selected[r.mediaId] ?? null, baseline[r.mediaId] ?? null)}
                 <p class="text-xs text-info" data-match-changed>
-                  changed — Confirm saves this as a manual correction
+                  changed - Confirm saves this as a manual correction
                   <button type="button" class="btn btn-ghost btn-xs"
                     aria-label={`Reset the match for ${r.title}`}
                     on:click={() => resetPick(r.mediaId)}
@@ -995,7 +995,7 @@
                 </p>
               {:else if selected[r.mediaId] && !selected[r.mediaId]?.library && !r.libraryTitle}
                 <p class="text-xs opacity-60">
-                  not in your library — positive-only until the library gains it
+                  not in your library - positive-only until the library gains it
                 </p>
               {/if}
               {#if openFor === r.mediaId}
@@ -1044,12 +1044,12 @@
                             <span class="badge badge-xs shrink-0">not in library</span>
                           {/if}
                           {#if sameIdentity(opt, selected[r.mediaId] ?? null)}
-                            <span class="shrink-0">✓</span>
+                            <span class="shrink-0">&check;</span>
                           {/if}
                         </button>
                       </li>
                     {:else}
-                      <li class="opacity-60 p-1">No results yet — type a name or paste an id.</li>
+                      <li class="opacity-60 p-1">No results yet - type a name or paste an id.</li>
                     {/each}
                   </ul>
                 </div>
@@ -1062,7 +1062,7 @@
                 title="Record this match as correct"
                 on:click={() => {
                   // Selection-vs-baseline decides manual correction vs sign-off
-                  // — the provenance rules are in the header's UI contract.
+                  // - the provenance rules are in the header's UI contract.
                   const sel = selected[r.mediaId] ?? null;
                   const changed = !sameIdentity(sel, baseline[r.mediaId] ?? null);
                   save(r, changed && sel
@@ -1078,7 +1078,7 @@
                       }
                     : {
                         // Fields left out keep their stored values, so source,
-                        // note and candidates survive — Confirm means "yes,
+                        // note and candidates survive - Confirm means "yes,
                         // this", never "clear".
                         tvdbId: r.tvdbId ?? null,
                         tmdbId: r.tmdbId ?? null,
@@ -1091,7 +1091,7 @@
               <button
                 class="btn btn-xs btn-error btn-outline"
                 disabled={saving.has(r.mediaId)}
-                title="Record that this is NOT in the library — stops the title match"
+                title="Record that this is NOT in the library - stops the title match"
                 on:click={() => save(r, { tvdbId: null, tmdbId: null, confirmed: true, rejected: true })}
               >Reject</button>
               {#if r.source === 'manual'}

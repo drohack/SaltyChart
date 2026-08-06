@@ -117,7 +117,7 @@ if (typeof window !== 'undefined') {
     if (isLoading) return;
 
     // Always mirror to localStorage, signed in or not. The server stays
-    // authoritative on load for a logged-in user — this copy exists so the
+    // authoritative on load for a logged-in user - this copy exists so the
     // theme survives the gap before that fetch returns, and so logging out
     // doesn't snap the UI back to whatever was last written as a guest.
     // Previously this only ran on the `else` branch, so a signed-in user who

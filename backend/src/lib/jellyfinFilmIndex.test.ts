@@ -6,7 +6,7 @@ const api = {} as any;
 
 test('concurrent cold callers share ONE film fetch', async () => {
   // The guard's whole job. Its first shape checked the in-flight promise, then
-  // awaited the persisted-copy read, then assigned it — so two callers racing
+  // awaited the persisted-copy read, then assigned it - so two callers racing
   // through the cold path (the availability batch runs a concurrency-5 pool)
   // both passed the check and each started its own ~6,600-item Jellyfin scan.
   let fetches = 0;
@@ -22,7 +22,7 @@ test('concurrent cold callers share ONE film fetch', async () => {
   const [x, y] = await Promise.all([getFilmIndex(api), getFilmIndex(api)]);
   assert.equal(
     fetches, 1,
-    'two concurrent cold lookups must share one in-flight fetch — each starting ' +
+    'two concurrent cold lookups must share one in-flight fetch - each starting ' +
     'its own full film scan is the stampede the guard exists to stop'
   );
   assert.deepEqual(x, y);
@@ -37,7 +37,7 @@ test('a persisted copy answers immediately while the refresh runs behind', async
   });
   const first = await getFilmIndex(api);
   assert.equal(first['2']?.itemId, 'b',
-    'the stale persisted copy must answer without waiting on the refresh — ' +
+    'the stale persisted copy must answer without waiting on the refresh - ' +
     'a viewer sat on this await once, for the whole fetch');
   resolveFetch({ '3': { itemId: 'c', title: 'C' } });
 });

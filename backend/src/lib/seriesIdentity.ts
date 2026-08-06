@@ -10,11 +10,11 @@ import { tvdbIdForAnilist, tmdbRefForAnilist, anilistTvdbMapReady } from './anil
 // deleted. This module owns the first one.
 //
 // Resolution order:
-//   1. our override table  — always wins, and is how a bad match gets fixed once
-//   2. the community map   — answers 94% of TV, 0% of the rest
+//   1. our override table  - always wins, and is how a bad match gets fixed once
+//   2. the community map   - answers 94% of TV, 0% of the rest
 //   3. a remote lookup we make ourselves (see remoteIdentity.ts), which fills
 //      about half of what the map misses and is POSITIVE-ONLY
-//   4. nothing             — and only then may titles be consulted
+//   4. nothing             - and only then may titles be consulted
 //
 // The override table is an *overlay*, not a mirror. Copying all 7,179 map rows
 // into it would mean maintaining a second stale copy of something already
@@ -24,7 +24,7 @@ import { tvdbIdForAnilist, tmdbRefForAnilist, anilistTvdbMapReady } from './anil
 
 export interface Identity {
   tvdbId: string | null;
-  /** TMDB id, namespaced — `kind` must be checked before comparing. */
+  /** TMDB id, namespaced - `kind` must be checked before comparing. */
   tmdbId: string | null;
   tmdbKind: 'tv' | 'movie' | null;
   /** Where the answer came from. `manual` means a human decided it. */
@@ -35,7 +35,7 @@ export interface Identity {
    * "This entry is definitively NOT in the library."
    *
    * Its own field rather than an inference from "confirmed with no ids",
-   * because confirming a *good* title match also leaves the id boxes empty —
+   * because confirming a *good* title match also leaves the id boxes empty -
    * the two states are indistinguishable otherwise, and guessing wrong makes
    * the Reject button appear to work while the Watch button stays put. That
    * exact bug shipped for about ten minutes and was caught in a browser, not
@@ -45,10 +45,10 @@ export interface Identity {
   /**
    * The ids here are a suggestion the resolver could not verify.
    *
-   * It had no air date to check against — usually because we do not hold the
-   * candidate — so the match rests on a search result alone. The ids are still
+   * It had no air date to check against - usually because we do not hold the
+   * candidate - so the match rests on a search result alone. The ids are still
    * used: `matchSeries` treats a `remote` id as positive-only, so it can add a
-   * Watch button and never remove one. What `pending` buys is honesty — the UI
+   * Watch button and never remove one. What `pending` buys is honesty - the UI
    * marks it unverified and /admin/matching lists it for a one-click confirm.
    */
   pending: boolean;
@@ -109,7 +109,7 @@ const NONE: Identity = {
  * In-memory copy of the override table.
  *
  * Small by construction (corrections only), read on every availability lookup,
- * and — like every other cache here — loaded from the DB at boot, because the
+ * and - like every other cache here - loaded from the DB at boot, because the
  * load these caches guard against is *caused* by restarts.
  */
 let _overrides = new Map<number, Identity>();
@@ -119,12 +119,12 @@ let _loaded = false;
  * Run when an identity row is written or removed, with the anilistId.
  *
  * The availability cache in routes/jellyfin.ts embeds identity answers, so an
- * identity write must bust (and re-persist) the cached verdict — the route
+ * identity write must bust (and re-persist) the cached verdict - the route
  * handlers used to do this themselves, which left the daily sweep's writes
  * uncovered and never rewrote the persisted blob, so a restart inside the
  * debounce window resurrected the pre-correction verdict. The cache registers
- * here instead; every writer — admin PUT/DELETE and all three sweep call
- * sites — then notifies without knowing the cache exists.
+ * here instead; every writer - admin PUT/DELETE and all three sweep call
+ * sites - then notifies without knowing the cache exists.
  */
 const _changeListeners: Array<(anilistId: number) => void> = [];
 
@@ -182,11 +182,11 @@ export async function loadIdentityOverrides(): Promise<void> {
 export function resolveIdentity(anilistId: number): Identity {
   const override = _overrides.get(anilistId);
   // Pending rows are returned too, and that is deliberate: a remote id is
-  // positive-only — see `pending` on Identity above.
+  // positive-only - see `pending` on Identity above.
   //
   // A row with NO ids is different, and must not win. The resolver writes one
   // to record "we looked and found nothing", so it doesn't re-search the same
-  // dead end daily — but that is bookkeeping, not an answer. Returning it early
+  // dead end daily - but that is bookkeeping, not an answer. Returning it early
   // shadowed the community map *permanently*: once we had looked and failed,
   // Fribb adding the pair the next week could never take effect, because our
   // empty row answered first. A human decision (confirmed, or an explicit
@@ -230,7 +230,7 @@ function parseCandidates(raw: string | null | undefined): RemoteChoice[] | null 
  * Is an identity answer trustworthy enough to *cache*, and to reject a title
  * match on?
  *
- * Before the map has loaded, every lookup returns "no id" for the wrong reason —
+ * Before the map has loaded, every lookup returns "no id" for the wrong reason -
  * not "this entry is unmapped" but "we haven't read the map yet". Treating that
  * as negative evidence would reject good title matches for the first seconds
  * after every restart, and caching it would pin the mistake for an hour.
@@ -316,12 +316,12 @@ export interface IdentityPatch {
  * Merge an edit onto the stored row: absent means "keep what's stored",
  * an explicit value (including null) means "change it".
  *
- * Only provenance/display fields are preserved — `note`, `matchedTitle`,
+ * Only provenance/display fields are preserved - `note`, `matchedTitle`,
  * `candidates`, `year`, `source`. Everything else passes through exactly as sent, because the review
  * page always sends the id/flag fields it means. Without this, one click of
  * Confirm relabelled a resolver id as a human decision (`source` defaulted back
- * to 'manual') and erased which rung of the ladder accepted it (`note` → null)
- * — the review page destroyed its own evidence.
+ * to 'manual') and erased which rung of the ladder accepted it (`note` -> null)
+ * - the review page destroyed its own evidence.
  *
  * This lives here and NOT inside `setIdentityOverride`, whose absent-means-null
  * contract the sweep depends on: its "no match" bookkeeping write omits
@@ -355,10 +355,10 @@ export function identityOverrideCount(): number {
 }
 
 /**
- * The stored row exactly as written — bookkeeping rows included.
+ * The stored row exactly as written - bookkeeping rows included.
  *
  * `resolveIdentity` withholds an id-less bookkeeping row so it can't shadow
- * the community map (pending rows with ids it returns — they're positive-only).
+ * the community map (pending rows with ids it returns - they're positive-only).
  * The admin page needs the raw truth either way: it exists to show what was
  * recorded, so it reads through here instead.
  */
@@ -368,12 +368,12 @@ export function rawIdentityOverride(anilistId: number): Identity | null {
 
 /**
  * The resolver's own version. **Bump it whenever a change would decide an
- * already-stored row differently** — a new/changed acceptance rung, a change to
+ * already-stored row differently** - a new/changed acceptance rung, a change to
  * how candidates are ranked or merged. Rows stamped below it are re-resolved by
  * `regradeStoredRows`, which stamps them current, so the pass drains and stops.
  *
  * History, so a reader can tell what a stamp means:
- *   1 — first stamped resolver: air-date ladder, premiere-date ranking outside
+ *   1 - first stamped resolver: air-date ladder, premiere-date ranking outside
  *       tolerance, cross-provider candidate merge on an id reference.
  */
 export const RESOLVER_VERSION = 1;
@@ -382,13 +382,13 @@ export const RESOLVER_VERSION = 1;
  * Did a DATE vouch for this resolver id, as opposed to title text or a year?
  *
  * The rung is recorded in the note at accept time, and only three of them are
- * date evidence. That distinction is the strongest signal in this codebase —
- * correct matches land 0–31 days from the AniList premiere and wrong ones
- * 62–21,929, with nothing in between — so a date-verified resolver row is as
+ * date evidence. That distinction is the strongest signal in this codebase -
+ * correct matches land 0-31 days from the AniList premiere and wrong ones
+ * 62-21,929, with nothing in between - so a date-verified resolver row is as
  * settled as a community-map id.
  *
  * `exact title` and `release year` are deliberately NOT dates: an exact title
- * 1,012 days from the premiere is the Echo class, and a ±1 production year is
+ * 1,012 days from the premiere is the Echo class, and a +/-1 production year is
  * nearly free for an unrelated sibling.
  */
 const DATE_RUNGS = ['remote: air date', 'remote: premiere date', 'remote: tvdb season premiere'];
@@ -425,7 +425,7 @@ export function needsRegrade(
  * Should the remote resolver look at this entry again?
  *
  * True when we still have no usable id and no human has settled it. A recorded
- * miss does NOT make an entry permanently off-limits — that was the bug: the
+ * miss does NOT make an entry permanently off-limits - that was the bug: the
  * sweep filtered on "has any identity row", so a single failed search retired
  * the entry forever and the tiered retry below it could never fire. TMDB gains
  * records as a show approaches airing, which is exactly when it matters.
@@ -434,15 +434,15 @@ export function needsRemoteLookup(anilistId: number): boolean {
   const o = _overrides.get(anilistId);
   if (o?.confirmed || o?.rejected) return false;      // a human has decided
   if (o?.tvdbId || o?.tmdbId) return false;           // we already have an id
-  // No override worth keeping — but the map may still know it.
+  // No override worth keeping - but the map may still know it.
   return !tvdbIdForAnilist(anilistId) && !tmdbRefForAnilist(anilistId);
 }
 
 /**
  * Test seam: set the in-memory overrides directly.
  *
- * The real loader reads the DB. These invariants are about *precedence* — which
- * source answers when several could — and that is pure logic worth testing
+ * The real loader reads the DB. These invariants are about *precedence* - which
+ * source answers when several could - and that is pure logic worth testing
  * without a database.
  */
 export function __setOverridesForTest(rows: Record<number, Identity>): void {

@@ -8,8 +8,8 @@ import { backoffFor, readBudget, MAX_ATTEMPTS, DEFAULT_LOCKOUT_MS } from '../lib
 
 const router = Router();
 // In-memory cache to avoid hitting SQLite (and AniList) for hot requests.
-// 20 keys ≈ two years of data including format variants; each payload is a
-// couple of hundred kilobytes at most → memory footprint is negligible.
+// 20 keys ~ two years of data including format variants; each payload is a
+// couple of hundred kilobytes at most -> memory footprint is negligible.
 // The default ttl matches the DB row's; a copy seeded from an aging DB row gets
 // only that row's *remaining* freshness (see the memory.set below).
 const memory = new LRUCache<string, any[]>({ max: 20, ttl: 6 * 60 * 60 * 1000 });
@@ -18,8 +18,8 @@ const memory = new LRUCache<string, any[]>({ max: 20, ttl: 6 * 60 * 60 * 1000 })
  * What AniList last told us about our budget, and which keys are locked out.
  *
  * Both are mirrored into `AppConfig` because the load they guard against is
- * *caused* by restarts. Every other throttle here — the LRU, the in-flight
- * coalescing map — dies with the process, which is fine because losing them
+ * *caused* by restarts. Every other throttle here - the LRU, the in-flight
+ * coalescing map - dies with the process, which is fine because losing them
  * costs a SQLite read. Losing these costs upstream requests: a fresh backend
  * would believe it has full budget and no key is failing, and immediately go
  * and find out the hard way. A mutation audit restarts the backend ~26 times an
@@ -99,7 +99,7 @@ function lockedOut(key: string): boolean {
 
 /**
  * Remember that this key just failed, so the next request doesn't immediately
- * try again — which is what turned a single 429 into a storm, since a stale row
+ * try again - which is what turned a single 429 into a storm, since a stale row
  * re-triggers its refresh on *every* request and on every restart.
  */
 function markFailed(key: string, waitMs: number): void {
@@ -152,7 +152,7 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
     );
 
     // AniList reports the remaining budget on *every* response, not just 429s.
-    // This is the number pacing decisions are made from — anything else is a
+    // This is the number pacing decisions are made from - anything else is a
     // guess at a value we are already being told.
     recordBudget(readBudget(response.headers as Record<string, unknown>));
 
@@ -166,56 +166,86 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
       throw new RateLimitedError(waitMs);
     }
 
+    // Name the key and page. This line is often the only thing on screen for a
+    // full minute (the status bar shows the last line written), and without the
+    // key it says only "something is rate-limited" - which is exactly the
+    // question a reader has. Derived from the variables rather than passed in,
+    // so a new call site cannot forget it.
+    const who = [baseVariables.season, baseVariables.seasonYear, baseVariables.format]
+      .filter(Boolean).join('-');
     console.warn(
-      `AniList 429 (attempt ${attempt}/${MAX_ATTEMPTS}), waiting ${(waitMs / 1000).toFixed(0)}s [${source}]…`
+      `AniList 429 for ${who || 'unknown key'} p${page} (attempt ${attempt}/${MAX_ATTEMPTS}), ` +
+      `waiting ${(waitMs / 1000).toFixed(0)}s [${source}]`
     );
     await delay(waitMs);
   }
 }
 
+//: Pages fetched at once. Still gentle on the rate limit, and it keeps the
+//: cold-load latency win that the old pool was written for.
+const PAGE_CONCURRENCY = 3;
+
+//: Refuse to walk past this many pages. Nothing legitimate comes close (a big
+//: season is 3-4 pages at perPage 50); it exists so a wrong answer from
+//: upstream can never again turn one refresh into a hundred requests.
+const MAX_SEASON_PAGES = 20;
+
 /**
- * Fetch every page of a season from AniList. Page 1 tells us lastPage, so
- * the remaining pages are fetched with a small concurrency pool instead of
- * one-at-a-time — a mid-season list is 6-12 pages and the sequential round
- * trips dominated cold-load latency.
+ * Fetch every page of a season from AniList.
+ *
+ * **`pageInfo` cannot be trusted for this query, and trusting it was expensive.**
+ * Measured directly against the API for SPRING 2026:
+ *
+ *     pageInfo: { total: 5000, lastPage: 100, hasNextPage: true, perPage: 50 }
+ *     media returned on page 1: 50      <- the season really holds ~113 entries
+ *
+ * `Page.pageInfo` does not reflect the `media(season:, seasonYear:)` filter; it
+ * reports an unfiltered, capped total. The previous implementation read
+ * `lastPage` and dutifully fetched **100 pages per season refresh**, ~97 of
+ * them empty. Six cache keys is ~600 requests against a shared 30/min budget,
+ * which is why a single "warm once at the start" never held and why a mutation
+ * audit logged 219 live 429s. The old comment here claimed "a mid-season list
+ * is 6-12 pages"; that was a belief about lastPage, never a measurement.
+ *
+ * So paging stops on a SHORT PAGE (fewer items than `perPage`) - the standard
+ * way to page an API whose counts you cannot rely on, and the only signal here
+ * that actually tracks the filtered result set. `hasNextPage` is deliberately
+ * not consulted: it is true on page 1 of a 113-entry season and stays true.
  */
 async function fetchSeasonFromAniList(query: string, baseVariables: Record<string, unknown>): Promise<any[]> {
-  const firstPage = await fetchAniListPage(query, baseVariables, 1);
-  const allMedia: any[] = [...(firstPage.media ?? [])];
-  const lastPage: number = firstPage.pageInfo?.lastPage
-    ?? (firstPage.pageInfo?.hasNextPage ? 2 : 1);
+  const perPage = Number(baseVariables.perPage) || 50;
+  const allMedia: any[] = [];
+  let next = 1;
 
-  if (lastPage > 1) {
-    const pageNums = Array.from({ length: lastPage - 1 }, (_, i) => i + 2);
-    const results: any[][] = new Array(pageNums.length);
-    let nextIdx = 0;
-    let lastPageInfo: any = firstPage.pageInfo;
-    const worker = async () => {
-      while (nextIdx < pageNums.length) {
-        const i = nextIdx++;
-        const pageData = await fetchAniListPage(query, baseVariables, pageNums[i]);
-        results[i] = pageData.media ?? [];
-        if (pageNums[i] === lastPage) lastPageInfo = pageData.pageInfo;
-      }
-    };
-    const CONCURRENCY = 3; // gentle on AniList's rate limit (429 backoff still applies per page)
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pageNums.length) }, worker));
-    for (const media of results) allMedia.push(...media);
+  while (next <= MAX_SEASON_PAGES) {
+    // A wave of pages at once, then decide. Over-fetching by at most
+    // CONCURRENCY-1 pages is the price of not doing this one round trip at a
+    // time; against the old 100 pages it is not a price worth optimising.
+    const wave = [];
+    for (let i = 0; i < PAGE_CONCURRENCY && next + i <= MAX_SEASON_PAGES; i++) {
+      wave.push(fetchAniListPage(query, baseVariables, next + i));
+    }
+    const pages = await Promise.all(wave);
+    next += pages.length;
 
-    // Safety net: if lastPage under-reported (entries added mid-fetch), keep
-    // walking sequentially like the old loop did.
-    let page = lastPage;
-    while (lastPageInfo?.hasNextPage) {
-      page += 1;
-      const pageData = await fetchAniListPage(query, baseVariables, page);
-      allMedia.push(...(pageData.media ?? []));
-      lastPageInfo = pageData.pageInfo;
+    for (const pageData of pages) {
+      const media = pageData.media ?? [];
+      allMedia.push(...media);
+      // Short page: this was the end of the real result set. Anything the rest
+      // of the wave returned has already been collected above, so stopping
+      // here loses nothing.
+      if (media.length < perPage) return allMedia;
     }
   }
+
+  console.warn(
+    `[anime] stopped at the ${MAX_SEASON_PAGES}-page cap with ${allMedia.length} entries - ` +
+    `either a season really is this large, or upstream paging changed shape again`
+  );
   return allMedia;
 }
 
-// In-flight cold fetches keyed like the memory cache — concurrent requests
+// In-flight cold fetches keyed like the memory cache - concurrent requests
 // for the same season await one shared AniList chain.
 const inflight = new Map<string, Promise<any[]>>();
 
@@ -299,8 +329,8 @@ router.get('/', async (req, res) => {
     // strings such as 'TV'.
     const cacheKeyFormat: string = format ? format.toUpperCase() : '';
     // `updatedAt` is stored via SQLite's `datetime('now')`, a non-ISO string
-    // whose direct Date-parse is implementation-defined — so SQLite converts
-    // it to a Unix epoch (`strftime('%s', …)`) and age math stays integer.
+    // whose direct Date-parse is implementation-defined - so SQLite converts
+    // it to a Unix epoch (`strftime('%s', ...)`) and age math stays integer.
     const cached = await prisma.$queryRawUnsafe(
       `SELECT data, strftime('%s', updatedAt) AS updatedEpoch
        FROM   "SeasonCache"
@@ -329,8 +359,8 @@ router.get('/', async (req, res) => {
               ...(format ? { format: format.toUpperCase() } : {})
             });
           } catch (err) {
-            // Record the lockout against this key so the next request — and the
-            // next process — doesn't walk straight back into it.
+            // Record the lockout against this key so the next request - and the
+            // next process - doesn't walk straight back into it.
             markFailed(memKey, err instanceof RateLimitedError ? err.waitMs : DEFAULT_LOCKOUT_MS);
             throw err;
           }
@@ -355,8 +385,8 @@ router.get('/', async (req, res) => {
 
     // Six hours for every season, deliberately flat. Two boundaries, both real:
     // pinning a finished season for DAYS decides on AniList's behalf that its
-    // data is frozen — entries get added and corrected long after a season ends
-    // (late OVAs, retitles, metadata fixes) — while refreshing every HOUR spends
+    // data is frozen - entries get added and corrected long after a season ends
+    // (late OVAs, retitles, metadata fixes) - while refreshing every HOUR spends
     // the shared ~30 req/min per-IP budget on data that barely moves, and it was
     // the background-refresh frequency behind every 429 storm here (a ~90-minute
     // test run outgrew a 1h TTL and re-fired a refresh on each of ~114 backend
@@ -379,12 +409,12 @@ router.get('/', async (req, res) => {
         return res.json(data);
       }
       // Stale-while-revalidate: season data barely changes hour-to-hour, and
-      // a cold AniList fetch can take minutes under rate-limit pressure —
+      // a cold AniList fetch can take minutes under rate-limit pressure -
       // serve the expired copy instantly and refresh in the background.
       //
       // Skipped when the budget is thin or this key is in a cooldown. We
       // already have an answer to serve, so standing down costs the viewer
-      // nothing — whereas spending the last of the window here leaves a
+      // nothing - whereas spending the last of the window here leaves a
       // never-cached season, which has nothing to show anyone, with none.
       if (budgetAllowsOptionalWork() && !lockedOut(memKey)) {
         startColdFetch().catch((err) =>
@@ -395,7 +425,7 @@ router.get('/', async (req, res) => {
     }
 
     // Never-fetched season: nothing to serve until AniList answers. This path
-    // is never delayed on purpose — a viewer is watching a spinner — but it does
+    // is never delayed on purpose - a viewer is watching a spinner - but it does
     // refuse to queue behind a known lockout, because waiting out a 429 with a
     // request held open is how a page comes to hang for minutes.
     if (lockedOut(memKey)) {

@@ -1,14 +1,14 @@
 // ---------------------------------------------------------------------------
 // Which episode does an AniList entry start at?
 //
-// Pure, so it is unit-testable without a server and — more importantly — so the
+// Pure, so it is unit-testable without a server and - more importantly - so the
 // availability path and the remote id resolver share ONE definition of "how far
 // off is this". They ask the same question for different reasons:
 //
 //   availability : which episode should Watch open?
 //   resolver     : is this candidate id even the right series?
 //
-// Both answers turn on the same measurement — the one recorded on
+// Both answers turn on the same measurement - the one recorded on
 // AIR_DATE_TOLERANCE_MS below. Two copies of that arithmetic would eventually
 // disagree, and the disagreement would be invisible.
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ export interface DatedEpisode {
  * Season 0 is skipped: specials' dates cluster around the seasons they ship
  * with and would otherwise win ties against the real episode.
  *
- * Ties go to the *earlier* episode by (season, episode) number — enforced here,
+ * Ties go to the *earlier* episode by (season, episode) number - enforced here,
  * not assumed of the input, because Jellyfin's episode order is not a contract
  * (the episode picker in routes/jellyfin.ts has always sorted before trusting
  * it) and a same-day double premiere would otherwise open Watch on whichever
@@ -63,7 +63,7 @@ function earlier(a: DatedEpisode, b: DatedEpisode): boolean {
  * still be considered the same broadcast. Anime premieres land within a few days
  * of AniList's date; a month absorbs timezone/region skew and a `day: null`
  * partial date (which we read as the 1st), while still being far tighter than
- * the gap to any *other* season — the nearest neighbouring season is a cour
+ * the gap to any *other* season - the nearest neighbouring season is a cour
  * away, ~90 days.
  *
  * Measured against the real library, the separation is far larger than the

@@ -11,7 +11,7 @@ import {
 } from './animeMatch';
 
 // Fixtures are taken from the real library, including the cases that actually
-// went wrong — see the comments on each.
+// went wrong - see the comments on each.
 function series(id: string, title: string, original?: string, tvdbId?: string): MatchableSeries {
   const norms = [normalizeTitle(title)];
   if (original) {
@@ -53,8 +53,8 @@ test('short normalized titles cannot prefix-match unrelated shows', () => {
 });
 
 test('genuine title-only matches still work', () => {
-  // Both of these were found ONLY by title in the live library — no usable id
-  // mapping exists for them — so the fuzzy tier can never be dropped.
+  // Both of these were found ONLY by title in the live library - no usable id
+  // mapping exists for them - so the fuzzy tier can never be dropped.
   const library = [
     series('a', 'KAIJU GIRL CARAMELISE'),
     series('b', 'Chainsmoker Cat'),
@@ -73,7 +73,7 @@ test('genuine title-only matches still work', () => {
 
 test('a title inside a longer, different title is not a match', () => {
   // Every one of these is a real pair the removed contains-anywhere tier
-  // produced against the live library — 9 fired across 6 seasons (696 shows)
+  // produced against the live library - 9 fired across 6 seasons (696 shows)
   // and all 9 were wrong. They are kept as fixtures because the tier looked
   // reasonable in isolation and the temptation is to bring it back with a
   // higher threshold; the *Four Seasons* pair sat at exactly the old 0.4 floor,
@@ -110,7 +110,7 @@ test('an id match is reported as confirmed', () => {
   assert.equal(r?.series.id, 'jf-1');
 });
 
-test('a title-only match is reported as unconfirmed — the Nanoha false positive', () => {
+test('a title-only match is reported as unconfirmed - the Nanoha false positive', () => {
   // Real case: AniList's 2026 "Mahou Shoujo Lyrical Nanoha EXCEEDS" matched the
   // library's 2004 "Magical Girl Lyrical Nanoha". The match still happens (we
   // can't tell from titles alone that it's wrong), but it must NOT claim to be
@@ -127,7 +127,7 @@ test('a title-only match is reported as unconfirmed — the Nanoha false positiv
 test('a known id that the library lacks is the ANSWER, not a reason to guess', () => {
   // This test asserted the opposite until the corpus was measured: an id miss
   // used to fall through to titles. That fallback was the entire remaining
-  // false-positive class — 12 of 945 entries, every one of them a new work
+  // false-positive class - 12 of 945 entries, every one of them a new work
   // matched onto its franchise parent, and every one of them carrying an id the
   // library did not have. We knew the answer and overwrote it with a guess.
   const library = [series('x', 'Sakamoto Days', undefined, '999')];
@@ -136,12 +136,12 @@ test('a known id that the library lacks is the ANSWER, not a reason to guess', (
     null,
     'an id we hold must not be overridden by a title that happens to look close'
   );
-  // …but only when we actually have an id. With none, titles are all we have
+  // ...but only when we actually have an id. With none, titles are all we have
   // and they resolve 65 corpus entries nothing else could reach.
   assert.equal(matchSeries({ titles: ['Sakamoto Days'] }, library)?.confidence, 'title');
 });
 
-test('a guessed id is positive-only — it must not suppress a working title match', () => {
+test('a guessed id is positive-only - it must not suppress a working title match', () => {
   // The remote resolver hands us TMDB search results, which are guesses. Those
   // may ADD a match and must never remove one, because the entries it touches
   // are exactly the ones that resolve by title today: granting a guess negative
@@ -153,12 +153,12 @@ test('a guessed id is positive-only — it must not suppress a working title mat
     'title',
     'a resolver guess that misses must fall through to titles'
   );
-  // The same miss from the community map DOES end the lookup — that is the rule
+  // The same miss from the community map DOES end the lookup - that is the rule
   // that removed 11 wrong matches, and it stays.
   assert.equal(matchSeries({ tvdbId: '999999', titles: ['Mebius Dust'] }, library), null);
 });
 
-test('the franchise-sibling class — real pairs that used to resolve wrongly', () => {
+test('the franchise-sibling class - real pairs that used to resolve wrongly', () => {
   // Every pair below was produced against the live library. In each case the
   // AniList entry has a TVDB id, the library does not hold that id, and the
   // title tier matched the parent series anyway. Pokémon Concierge resolved to
@@ -185,7 +185,7 @@ test('the franchise-sibling class — real pairs that used to resolve wrongly', 
     assert.equal(matchSeries({ tvdbId, titles: [title] }, library), null, `"${title}" must not match`);
 });
 
-test('a tmdb id resolves when tvdb is absent — the movie case', () => {
+test('a tmdb id resolves when tvdb is absent - the movie case', () => {
   // TVDB is a TV database: it covers 4 of 117 corpus movies against TMDB's 43.
   const lib: MatchableSeries[] = [
     { id: 'mv', title: 'Some Anime Film', norms: [normalizeTitle('Some Anime Film')], tmdbId: '778899' },
@@ -216,10 +216,10 @@ test('classifyMatch partitions entries the way the admin panel reports them', ()
     'a known id the library carries is the id tier');
   assert.equal(
     classifyMatch({ tvdbId: '999999', titles: ['Bananya'] }, library, heldFilms), 'notHeld',
-    'an authoritative id the library lacks is NOT in the library — it must not fall through to titles');
+    'an authoritative id the library lacks is NOT in the library - it must not fall through to titles');
   assert.equal(
     classifyMatch({ titles: ['One Piece'] }, library, heldFilms), 'title',
-    'no id at all still matches by title — 65 corpus entries resolve only this way');
+    'no id at all still matches by title - 65 corpus entries resolve only this way');
   assert.equal(
     classifyMatch({ titles: ['Nothing Like This Exists'] }, library, heldFilms), 'noMatch',
     'nothing found by id or title is its own bucket, not "not in library"');
@@ -233,7 +233,7 @@ test('classifyMatch partitions entries the way the admin panel reports them', ()
   assert.equal(
     classifyMatch({ tmdbId: '551', tmdbKind: 'movie', titles: ['One Piece'] }, library, heldFilms),
     'notHeld',
-    'an unheld film must NOT title-match the series list — that is the House category error');
+    'an unheld film must NOT title-match the series list - that is the House category error');
   assert.equal(
     classifyMatch({ tmdbId: '550', tmdbKind: 'movie', titles: ['Some Film'] }, library, heldFilms),
     'id',
