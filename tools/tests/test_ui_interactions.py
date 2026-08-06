@@ -1575,20 +1575,23 @@ def test_theme_survives_signup_and_reload(page, backend: str, frontend: str):
             "a theme chosen as a guest did not survive signing up, or the three "
             f"surfaces disagree about it: {surfaces}")
 
-        step(27, "step 3/5: reload behind a slow /api/options - no wrong-theme flash")
-        # Two things make this deterministic instead of a coin flip, and the first
-        # version of this step had neither, so it passed with the fix mutated out:
-        #   - the 400 ms delay, so "before the server answered" is a real window
-        #     rather than a few microseconds;
-        #   - forcing prefers-color-scheme to light, because the fallback the bug
-        #     exposes is `SYSTEM`, and SYSTEM resolves to whatever the *browser*
-        #     prefers. On a dark-preferring browser the wrong fallback also renders
-        #     dark, so "never painted light" is satisfied by the bug itself.
-        # With those pinned, the first paint is `dark` only if the stored value was
-        # read synchronously.
+        step(27, "step 3/5: reload with /api/options unavailable - the stored theme must show")
+        # Two things make this deterministic, and the first version of this step had
+        # neither, so it passed with the fix mutated out:
+        #
+        #   - /api/options is ABORTED rather than merely delayed. The invariant is
+        #     "the first paint uses the stored value, not `defaultOptions`", and
+        #     killing the response widens that window to the whole load. Delaying it
+        #     from inside the route handler was the first attempt and it deadlocked
+        #     the sync API under the mutation audit - the row scored WRONG REASON
+        #     with `CRASHED before asserting`, which is a coverage hole wearing a
+        #     red result.
+        #   - `prefers-color-scheme` is pinned to light, because the fallback this
+        #     bug exposes is `SYSTEM` and SYSTEM follows the *browser*. On a
+        #     dark-preferring browser the wrong fallback also renders dark, so
+        #     "never painted light" is satisfied by the bug itself.
         page.emulate_media(color_scheme="light")
-        page.route("**/api/options", lambda route: (page.wait_for_timeout(400),
-                                                    route.continue_()))
+        page.route("**/api/options", lambda route: route.abort())
         try:
             # An IIFE, not a bare arrow function: Playwright *Python* executes this
             # string as a script, so `() => {...}` on its own just constructs a
