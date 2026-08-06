@@ -1,19 +1,24 @@
 # CLAUDE.md - SaltyChart backend
 
 **Nested guide.** This file loads automatically when you work with files under
-`backend/`. It holds reference material for the two largest backend subsystems,
+`backend/`. It holds the backend's reference material - the two route
+subsystems, how identities are actually resolved, and the database schema -
 moved out of the root guide so it is not paid for on every unrelated session.
 
-The root `CLAUDE.md` stays authoritative for everything project-wide - the
-working conventions, the measurement rules, the secrets rule, *Matching AniList
-entries to the library*, the schema, and deployment. Read it first; nothing
-here overrides it.
+The root `CLAUDE.md` stays authoritative for everything project-wide: the
+working conventions, the measurement rules, the secrets rule, deployment, and
+*Matching AniList entries to the library*, which states the matching **rules**
+this file's *Matching internals* implements. Read it first; nothing here
+overrides it.
 
 Rules that bind from **outside** this directory deliberately stay in the root
 file, because a rule that isn't loaded when it matters is not a rule: the
 Jellyfin API key never reaching a browser, the `tools/bench_player.py`
-transcode-cache hazard, and the YouTube download pacing that keeps batch runs
-off the bot wall.
+transcode-cache hazard, the YouTube download pacing that keeps batch runs off
+the bot wall, bumping `RESOLVER_VERSION` when a change would decide a stored
+row differently, keeping skyhook off a viewer's request path, the raw-SQL
+schema path being authoritative in production, and the `modelName` rank table
+that lives in three files - one of them `tools/local_translate.py`.
 
 ---
 
@@ -362,3 +367,310 @@ Scheduler -> Properties -> Actions -> Edit (needs the Windows password; created
 2026-04-08, LogonType: Password). The Sunday run ensures large-v3 completes
 before Wednesday's medium batch.
 
+
+## Matching internals - how identities get made
+
+The *rules* - identity versus availability, an id being authoritative in both
+directions, air date separating right from wrong by three orders of magnitude -
+are in the root `CLAUDE.md` under *Matching AniList entries to the library*,
+and they still govern everything here. This section is the mechanism: the
+resolver that makes the links nobody else has, how films avoid being matched
+against TV, and where Jellyfin actually gets its identification from.
+
+### Making the links nobody else has - `lib/remoteIdentity.ts`
+
+The community map answers 94% of TV and **0% of the 292-entry gap**; the
+upstream anime databases know 284 of those 292 but none carries a TVDB/TMDB
+id. So we make the links from two keyless sources: **series go to TVDB first**
+via `lib/skyhookIdentity.ts` -> `skyhook.sonarr.tv` (Sonarr's own proxy: native
+TVDB ids, plus per-episode air dates for seasons nobody holds yet - the
+evidence class the held-library gate cannot produce); movies and skyhook
+misses use Jellyfin's own TMDB remote search (Radarr's proxy was measured and
+rescued zero movies, so no new dependency). skyhook is someone else's free
+service: calls are paced, bounded per run, degrade to the Jellyfin path, and
+**never appear on a viewer's request path**.
+
+A sweep runs 90 s after boot and daily, reads entries from `SeasonCache`
+(every cached season, however old - a first-ever lookup is made regardless of
+age), and is bounded at **150 lookups per run** (the re-grade pass shares that
+figure via `REGRADE_PER_RUN` - it carries correctness fixes now, not grooming,
+and 40/day would take over a week to propagate one across a few hundred rows) - sized at ~one year's worth
+of gap entries (measured: ~150 of a year's ~470 entries lack any map id), so
+a season rollover clears in one run. The three maintenance passes
+(legacy-row dating, `regradeStoredRows`, `fillTvdbGaps`) keep a smaller
+40-per-run cap; they groom already-stored rows and nothing an admin waits on
+depends on them. `POST /identity/sweep` (the *Run sweep now* button on
+`/admin/matching`) runs the same sweep with **both the cap and the retry
+cooldowns dropped** (`planSweep`'s `ignoreCooldown`) - a human pressing it is
+not the daily budget, and without the override the button is a no-op on
+exactly the state it exists for, since one sweep leaves every row cooling.
+A drain also removes the re-grade cap, so one press propagates a matcher change
+across every stored row. Retirement is *not* overridable: those entries aired
+years ago and no upstream source has ever heard of them, so re-asking on every
+press is the churn retirement removed. Pacing still applies; drain removes the truncation, not
+the politeness. Cold starts once took eight container restarts at the old cap
+of 40 - measured after: one click, 375 lookups, 11.5 min. Two selection rules were broken at first, invisibly
+(the system just silently stops improving - both are commented at the code):
+
+- A row recording *"we looked and found nothing"* must **not** shadow the
+  community map - an id-less, unconfirmed, un-rejected row is bookkeeping,
+  not an answer (`resolveIdentity`).
+- The sweep selects on **`needsRemoteLookup`**, not "has an identity row" -
+  the latter retired an entry on its first empty search and made the retry
+  tiering dead code.
+
+A human decision (confirmed or rejected) still wins over everything - so a
+mistaken Reject is permanent until cleared on `/admin/matching`. Stored rows
+are **completed in both id spaces** (`completeIdentityIds`: held item first,
+community-map cross-walk second), because this server's remote search returns
+TMDB only and a Sonarr user expects TVDB on series rows. Misses are recorded
+and retried on a tier keyed to how close the entry is to airing (2 days
+within +/-1 year, 30 days within +/-2, unknown year 14) - that is when records
+actually appear. A miss whose entry aired **more than 2 years ago is retired**
+(`retryAfterFor` returns Infinity, unit-tested): still unknown upstream after
+that long means unknown for good, and re-asking monthly forever was budget
+spent on lost causes. Retirement never blocks a *first* lookup, and a human
+can still resolve a retired entry by hand on `/admin/matching`.
+
+Three search rules, each measured (evidence in the module header):
+**both search kinds are tried** (AniList's format does not predict how TMDB
+files a work; +22 and it upgraded wrong matches to right ones); **the base
+title is searched too** (+59 - and it also reaches *Babylon 5*, which is why
+nothing is ever accepted on title alone; `baseTitles` strips season markers
+before subtitles and only treats separator-looking separators as such -
+`Re:Zero` must not collapse to `Re`); and **a guessed id is POSITIVE-ONLY**
+(`idIsAuthoritative: false`) - it may add a Watch button, never remove one,
+because many gap entries resolve by title today and a guess must not delete a
+working match. The UI marks such matches `unverified`.
+
+**Which candidate is offered is decided by air date too, not provider
+relevance.** `pickCandidate`'s last rung sorts *exact* titles by premiere
+distance rather than taking TMDB's first: Echo (premiering 2026-07-19) was
+offered its 2023 namesake 1,012 days away while the 2026 film 46 days away sat
+third in the list. Only the suggestion changes - nothing within tolerance
+means the ladder still queues the row for review.
+
+**A ladder or ranking change reaches rows already stored, via
+`RESOLVER_VERSION`.** The sweep selects on `needsRemoteLookup`, so an entry
+that already carries an id is never re-asked - which used to mean a matcher
+fix healed only NEW lookups and left every old suggestion as it was (Echo kept
+offering its 2023 namesake until its row was deleted by hand). Every write
+stamps the resolver's version; `needsRegrade` selects machine-decided rows
+carrying an id whose stamp is below the current one, and re-resolving stamps
+them, so the pass drains and stops. **Bump `RESOLVER_VERSION` whenever a change
+would decide a stored row differently** - that is the whole trigger. Human
+decisions (confirmed/rejected/manual) are never re-graded, and id-less
+bookkeeping rows belong to the main sweep's retry tier instead. Measured on a
+deployment carrying 295 stale rows: one *Run sweep now* healed all of them in
+~11 min and the next run selects none.
+
+**Acceptance is decided by air date, not title confidence** (`verdictFor` -
+the full ladder, its rungs, and the measured day-distance tables are its
+JSDoc). The shape that matters: correct results land 0-31 days from the
+AniList premiere, wrong ones 62-21,929, with nothing in between - and this
+holds for library air dates, TVDB season premieres, and TMDB premiere dates
+alike. Consequences encoded in the ladder:
+
+- An exact title the premiere date *refutes* is never blind-accepted (the
+  Echo bug: the refuting day sat unread in the same response for months).
+- The TVDB season-premiere rung sits **above** the held-library rung: held
+  episodes are stale by construction for a season nobody has grabbed yet
+  (Ranma S3 rejected at 287 d while TVDB had S3E1 on the entry's premiere day).
+- A held-library rejection softens to queue while TVDB lists an **undated
+  future season** (the Frieren-S3 shape); One Piece Fan Letter and Babylon 5
+  list none and still reject.
+- A dated candidate beyond tolerance **queues, never rejects** (*cocoon* at
+  523 d is the correct film - TMDB dates the theatrical release, AniList the
+  broadcast).
+- The release-year rung is **gated to movie-kind candidates in code** - for a
+  series a +/-1 production year is nearly free and an ungated rung wrote
+  coincidental TV siblings in as accepted fact.
+- `pickCandidate` applies the same evidence to title collisions (dated-within
+  exacts by distance first - DIVE IN! shipped its 167 d sibling while the
+  16 d one sat second in TMDB's popularity order).
+- There was an `isRelation` guard rejecting results related to the entry; it
+  was wrong and was removed (sequel->parent is *correct* - TVDB/TMDB put
+  seasons inside one series). Don't reintroduce a title or relation heuristic
+  without re-measuring.
+
+**A viewer can correct a match from the Watch pop-up**, and it is remembered
+for everyone: the pop-up is where a wrong match is actually noticed, and
+`/admin/matching` - where it could be fixed - is a page nobody visits. The
+picker offers held library items only (a resolver candidate is usually
+something we DON'T hold, which is why the row is unverified), the pick writes a
+`manual` row carrying a `viewer:` note, and that note puts it in the admin
+review queue as *Viewer pick* with Confirm/Reject. A human decision always
+wins - see `POST /identity/pick`.
+
+**The same show found in both providers becomes ONE candidate, merged on an
+id cross-reference - never on a title.** TVDB and TMDB answer the search
+separately, so a work both know arrived as two identical-looking options and
+only one id was ever stored (`Chikyuu Daisuki! Kikkun`: TVDB undated, TMDB
+dated on the entry's premiere day). skyhook's *show* record carries TVDB's own
+`tmdbId`, and that request is already made for the season-premiere check - the
+field was simply being discarded. `mergeCrossReferencedCandidates` collapses a
+TVDB-only candidate into a TMDB-only one only when that reference points at it,
+keeping the TVDB side as the base and taking the date. Measured after: Chikyuu
+stores both ids, drops from two candidates to one, and leaves the review queue.
+**Merging on matching titles would be actively wrong** - Echo's three
+candidates are all titled exactly "Echo" and are three different films - and
+the guard is a mutation row. A duplicate *within* one provider (Cyborg 009:
+Nemesis exists twice in TVDB, one copy undated) is NOT merged: nothing proves
+the two are the same show, so it stays in review.
+
+**The top five candidates are kept, not just the winner** (TMDB orders by
+relevance; the tail past five is noise - commented at the `slice` in
+`searchOne`), stored as JSON on `SeriesIdentity.candidates`; `/admin/matching`
+renders a picker defaulting to the resolver's choice, and a multi-candidate
+row stays in review even when the air-date gate accepted it. Every resolver
+row shows provenance - an `our lookup` badge plus the rung that accepted it -
+because an id we guessed is not the same kind of fact as one from the map.
+Accepts decided on title text or release year alone stay reachable behind the
+"+ resolver accepts" filter (deliberately not in the default queue; their
+being *invisible* was the audited bug). Rows stored before candidates carried
+premiere dates are re-graded by a capped, self-terminating sweep pass
+(`regradeStoredRows`); it never touches confirmed/rejected/manual rows.
+
+
+### Films are resolved against films - `jellyfinFilmIndex`
+
+`getSeriesLibrary` fetches Series only, so a film's id could never match and
+the lookup used to fall through to title-matching TV shows - measured: **26
+category errors** (`The Last Blossom -> House`) against 1 lucky hit, and 7
+held films unreachable. A `movie`-kind identity now resolves via a TMDB-id ->
+item **index** (`lib/jellyfinFilmIndex.ts` -> `AppConfig.jellyfinFilmIndex`,
+6 h TTL, persisted, stale-while-revalidate, warmed at boot). Deliberately an
+index and not a second matchable corpus: films are only ever looked up by id,
+so titles are never compared - the error class is removed, not re-tuned. Its
+cold-path coalescing is unit-tested (check-and-set with nothing awaited
+between; the first shape raced and was watched to fail). **When the film
+isn't there, that is the answer** - no title fallback; `finishEpisode`
+already returns the right shape for a movie item.
+
+
+### Jellyfin identification is controlled by `tvshow.nfo`, not folder names
+
+The Anime library reads local metadata first (`LocalMetadataReaderOrder:
+['Nfo']`, always on - the "Metadata savers" checkbox is the *opposite* thing:
+it makes Jellyfin WRITE NFOs, which fights Sonarr; leave it empty), and its
+remote fetchers are disabled, so the NFO is effectively the only source of
+identification. Sonarr -> Settings -> Metadata -> **Kodi (XBMC) / Emby** writes
+those files and refreshes them on its daily scan; Radarr ditto for movies.
+Enabling it + Refresh Series backfilled 833/836 anime folders and dropped
+stored-id/NFO disagreements from 46 to 0, fixing shows matched to entirely
+wrong series. No folder renaming, no watched state touched.
+
+Folder-name id tags are a red herring here, but the syntax differs by server
+and is worth knowing: **Plex** reads `{tvdb-12345}` (curly, no `id`) plus
+`.plexmatch`; **Jellyfin** reads `[tvdbid-12345]` (square, with `id`) and
+ignores `.plexmatch`. This library's folders mostly carry `[tvdb-12345]`,
+which matches *neither* - those tags do nothing on either server.
+
+**When measuring any of this, compare ids (not names), scope to the seasons
+the app shows, and send what the real caller sends.**
+`tools/check_match_corpus.py` measures the thing that counts - how a real
+season resolves end to end - and it sends `fresh: true` AND `startDate`
+because each omission produced a wrong conclusion (the rows in *Measure
+before claiming* above): without `fresh` it grades a recording of an earlier
+run; without `startDate` the air-date tier is silently disabled and it
+reports false positives the real frontend never shows (20 vs 12 measured).
+
+
+## Database schema
+
+Auto-created / updated at startup via raw SQL in `ensureDatabaseSchema()`.
+Production does **not** run `prisma migrate`; keep
+`backend/prisma/schema.prisma` and the raw SQL in `backend/src/index.ts`
+in sync when adding columns/tables/indexes.
+
+Tables / columns:
+
+- `Settings` - per-user record storing theme, title language, autoplay,
+  hide-from-compare, JSON columns `nicknameUserSel` and `subtitlePrefs`,
+  and `addWatchedTo`.
+- `WatchList.watchedRank` - integer; 0-based rank assigned after a show is
+  watched and ranked in the Randomize page.
+- `WatchList.hidden` - boolean; when true the show is skipped by the
+  Randomize wheel.
+- `AppConfig` - server-wide key/value config (`key` TEXT PK, `value` TEXT).
+  Holds `jellyfinUrl` / `jellyfinApiKey`, written by the admin `/admin` page
+  via `PUT /api/jellyfin/config`, plus `anilistTmdbMap` (AniList -> `tv:N` /
+  `movie:N`, the namespace kept because TMDB numbers films and shows
+  independently), `anilistTvdbMap` / `anilistTvdbMapAt`
+  (the cached AniList->TVDB id map, refreshed at boot and daily on a timer,
+  conditionally via `If-None-Match`, never on the request path),
+  `jellyfinLibrary` / `jellyfinLibraryAt` (the match corpus - 2271 series on this
+  deployment; the "836" figure elsewhere in this file counts *anime folders*, not
+  the library), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched
+  against TV series), and
+  `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
+  per-season cooldowns after a 429), `jellyfinAvailability` /
+  `jellyfinSourceDims` (the two per-item caches), and `remoteSweepStatus` (the
+  last identity sweep's summary - persisted because "did the background
+  resolver run, and what did it do" must survive the restart that follows a
+  deploy, which is exactly when someone wonders; its `remaining` counts only
+  what future runs will actually process, `retired` the old misses no longer
+  re-asked, and `tracked`/`unmatched`/`cooldown`/`never`/`ready` plus `tiers`
+  the whole-cache counts behind the admin page's all-seasons row. `tiers`
+  (`id`/`title`/`notHeld`/`noMatch`) comes from `classifyMatch`, the *same*
+  classifier `/identity/resolve` reports per row - so the panel's two scopes
+  reconcile instead of being two computations that drift. It costs no provider
+  calls: the library, the film index and the id maps are all in memory by the
+  time the sweep runs). Everything in this table that
+  caches an upstream answer is persisted for the same reason as the library:
+  the load it guards against is *caused* by restarts, so an in-memory-only copy
+  is empty exactly when it is needed most.
+  The library cache is persisted because it used to be in-memory only: every
+  restart refetched all of it with `ProviderIds,OriginalTitle`, so each deploy
+  made the first viewer pay for it, and a development session with frequent
+  reloads ran it dozens of times an hour - most of what drove the Jellyfin
+  server process to ~800% CPU. Refresh is incremental where it safely can be:
+  a `TotalRecordCount` probe (`limit: 0`, so no items are serialised) detects
+  additions and removals, and when the count is unchanged only items matching
+  `minDateLastSaved` are refetched and merged. Jellyfin does not return
+  `DateLastSaved` on items, so the watermark is our own fetch time with a few
+  minutes of overlap. A full refresh runs weekly regardless, because an
+  incremental fetch can never reveal a deletion.
+- `SeriesIdentity` - our AniList->TVDB/TMDB **overrides**: `anilistId` INTEGER PK,
+  `tvdbId`, `tmdbId`, `tmdbKind` (`tv`|`movie`), `source`, `confirmed`,
+  `rejected`, `pending`, `resolverVersion` (which resolver decided the row -
+  `RESOLVER_VERSION` in `seriesIdentity.ts`; rows below it are re-resolved by
+  the sweep's re-grade pass, which is how a matcher change reaches rows already
+  stored, and stamping on write is what makes that self-terminating),
+  `matchedTitle`, `note`, `year` (release year from whatever source named the identity - display only, never matched on; the sweep stores it at accept time, dates legacy rows via a capped remote pass each run, and the admin lookup/Confirm carry it through), `updatedAt`. `pending` marks a
+row the remote resolver could not verify - it still counts (resolver ids are
+positive-only, so they can only help) but it is what `/admin/matching` lists for
+review. **`rejected` has to be its own column** - it
+  means "definitively not in the library" and must suppress the *title* fallback
+  as well as the map. Inferring it from "confirmed with no ids" is ambiguous,
+  because confirming a good title match also leaves the id boxes empty; that
+  ambiguity shipped and made Reject a no-op that still looked like it worked. An overlay over the community map, not a copy of it - see
+  *Matching AniList entries to the library*. Written from `/admin/matching`;
+  loaded into memory at boot because it is read on every availability lookup.
+  A rejection short-circuits *before* matching, since it carries no ids and would
+  otherwise fall straight through to the title tier - i.e. to the very match
+  being rejected.
+- `SubtitleCache` - `videoId` unique, `mediaId`, `modelName`,
+  `hasEnglishSubs`, `lastEnCheckAt`, `subtitlesDisabled`, `hasBurnedInSubs`,
+  `segments` JSON, `createdAt`. Caches check results, translated segments, and
+  user subtitle preferences per YouTube video. `modelName` rank order (upload
+  only upgrades to an equal-or-higher rank): tiny < base < small < medium <
+  large-v2 < large-v3 < **large-v3-split** (the local champion pipeline). The
+  rank table lives in **three** places - `backend/src/routes/translate.ts`,
+  `backend/scripts/batch_translate.py`, and `tools/local_translate.py` - keep
+  all three in sync (a missing `large-v3-split` in any one makes that path treat
+  the champion output as rank 0 and needlessly reprocess it).
+
+Performance indexes (added via `CREATE INDEX IF NOT EXISTS` at startup):
+
+- `WatchList_userId_idx` - speeds `findMany({ where: { userId } })`
+- `WatchList_season_year_idx` - speeds `/users-with-ratings`
+- `Settings_hideFromCompare_idx` - speeds `/api/users`
+
+`ensureDatabaseSchema()` also drops the retired `PlexSubtitle` table (it
+cached WebVTT extracted from Plex media parts; Jellyfin serves subtitle
+tracks directly, so nothing extracts any more).
+
+The bootstrap logic will automatically create tables, add missing columns,
+back-fill default `Settings` rows for existing users, and build the indexes
+above idempotently on every start-up.

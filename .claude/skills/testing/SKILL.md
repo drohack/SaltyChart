@@ -171,12 +171,13 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin - an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate - it edits tracked source, restarts the
-backend twice per row (83 rows) and starts real transcodes, which is not
+backend twice per row (86 rows) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
 line is the only figure worth quoting. Last measured: **74 rows in 19 min**
-at 74 rows; it is 79 now, so that total is a floor, not a measurement
-(2026-08-05), down from 47 min at 73 rows on the same box the same night.
+(2026-08-05), down from 47 min at 73 rows on the same box the same night. The
+table is at 86 rows now, so that 19 min is a floor rather than a measurement -
+re-time it instead of quoting it.
 Where those 28 minutes went, all of it measured rather than estimated:
 
 | change | saved |

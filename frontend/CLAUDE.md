@@ -175,6 +175,36 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
 
+**`/admin/matching`** - the human end of the matching pipeline. Its full UI
+contract (filter modes, provenance rules, the changed-vs-untouched Confirm
+discriminator) is the header comment in `pages/AdminMatching.svelte`; the
+resolution rules it fronts are in *Matching AniList entries to the library* in
+the root guide. What lives nowhere else:
+
+- Shows what needs review for a season, with a per-row state verdict **derived
+  from the stored acceptance rung**, so the column can never contradict what
+  verified the match. The match control is Sonarr-import style: picking fills,
+  and only Confirm saves.
+- **Rows sort by display title.** The API returns AniList id order, which reads
+  as arbitrary.
+- **Run sweep now** fires `POST /identity/sweep` and polls the sweep summary
+  until the run finishes. It updates the status line only - rows never reload
+  out from under a review in progress - and reports `remaining`/`retired`
+  honestly.
+- A **two-row summary table**: the season on screen, and every cached season.
+  They share columns so the two scopes are read by comparison and the numbers
+  align by construction. Two earlier tile layouts drifted out of alignment the
+  moment one group gained a line the other lacked.
+- **Two header tiers**, because the data is two levels deep:
+  `by id + by title + not in library + no match = entries`, and
+  `never searched + ready to retry + on cooldown + retired = queued`.
+- **`queued` is not a slice of the first four** - an entry with no id can
+  title-match today and still be owed a lookup. The legend under the table says
+  so, because a reader asked which numbers were subsets of which and flat
+  columns could not answer.
+- Each unmatched row captions its own standing: "auto-searched 2 d ago -
+  retries in ~5 h".
+
 **Misc**
 - The header logo's `?` badge tooltip shows the deployed version - the
   `YYYYMMDD-<sha>` tag injected by CI (`APP_VERSION` build-arg ->

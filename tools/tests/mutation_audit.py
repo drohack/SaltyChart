@@ -134,6 +134,9 @@ T_SMOKE = PY + [str(TESTS / "test_api_smoke.py")]
 T_UI = PY + [str(TESTS / "test_ui_interactions.py")]
 T_UNIT = ["npm", "run", "test:unit"]
 T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
+# Runs in about a second against no servers, so the doc rows below are the
+# cheapest in the table.
+T_ANCHORS = PY + [str(TESTS / "test_audit_anchors.py")]
 
 MUTATIONS: list[Mutation] = [
     Mutation(
@@ -1360,6 +1363,63 @@ MUTATIONS: list[Mutation] = [
         guards="two watched rows hold one rank, after which the ranking "
                "sidebar's comparator returns 0 for the pair and falls back to "
                "pre-watch order - the user's chosen ranking, silently replaced",
+    ),
+    # The contributor guide is three files now: the root, plus a nested guide
+    # per service that Claude Code loads only when the work touches that
+    # directory. That bought every session ~8k tokens and created one new way
+    # to be wrong - a section moved out with no pointer left behind, or a
+    # pointer to a file nobody created - which nothing but this would catch.
+    #
+    # Three of `check_guide_pointers`' checks have NO row here, deliberately.
+    # The size budget and the stub-ratio check are thresholds, and no small
+    # find/replace can cross either (growing the root past 45,000 characters
+    # would mean a ~7,000-character `replace`). The gitignore check needs an
+    # edit to `.gitignore` itself, which is not the file the row would name.
+    # All three were proven by simulation instead - lower the constant, paste
+    # filler under a stub, or drop the `!.claude/rules/` negation, and watch
+    # the check fire. Say so rather than leaving them looking merely forgotten.
+    Mutation(
+        name="a moved section loses its pointer in the root guide",
+        path="CLAUDE.md",
+        find="### Database schema",
+        replace="### Database schema (mutation)",
+        test=T_ANCHORS,
+        expect="no pointer in the root",
+        guards="a subsystem's documentation is unreachable from the guide every "
+               "session reads - it still exists, but only someone who already "
+               "knew where to look would ever find it",
+        settle=0.0,
+    ),
+    Mutation(
+        name="the root guide points at a nested guide that does not exist",
+        path="CLAUDE.md",
+        find="`tvshow.nfo` rather than folder names are all in **`backend/CLAUDE.md`**.",
+        # The name must still end in `CLAUDE.md`: the checker only treats a
+        # citation as a guide pointer when it matches that suffix, so an
+        # earlier `backend/GONE.md` was simply not seen as a pointer at all.
+        replace="`tvshow.nfo` rather than folder names are all in **`backend/GONE-CLAUDE.md`**.",
+        test=T_ANCHORS,
+        expect="which is not in the repo",
+        guards="a pointer to a missing file reads as 'this is documented "
+               "elsewhere' and sends the reader looking for something that was "
+               "never written - worse than no pointer at all",
+        settle=0.0,
+    ),
+    Mutation(
+        name="a path-scoped rule loses the frontmatter that scopes it",
+        path=".claude/rules/tools.md",
+        find='paths:\n  - "tools/**/*"',
+        # Must not contain the literal `paths:` - an earlier replacement read
+        # "# paths: removed by mutation", which left the string the check looks
+        # for sitting in the frontmatter, so the check passed and the row
+        # scored as not-caught.
+        replace="# scope removed by mutation",
+        test=T_ANCHORS,
+        expect="no `paths:` frontmatter",
+        guards="the rule loads in every session instead of only under tools/, "
+               "which is the exact cost the move existed to avoid - and it "
+               "fails silently, because a rule that loads too often still works",
+        settle=0.0,
     ),
 ]
 
