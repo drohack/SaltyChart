@@ -235,13 +235,13 @@ whether or not that skill is loaded:
 
 - **`run_all.py` is the deploy gate, not an end-of-task ritual.** Push to
   master builds and ships, so it runs once, immediately before a push. It takes
-  ~4 min with `--skip-burned-in` and starts real transcodes on the box that
+  ~6 min with `--skip-burned-in` (measured 2026-08-06) and starts real
+  transcodes on the box that
   also serves Plex and Jellyfin.
 - **`mutation_audit.py` is NOT a gate.** It edits tracked source, restarts the
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only N` makes checking one cheap. Last
-  measured: **74 rows in 19 min** (2026-08-05); the table is at **86** rows
-  since, so re-time it rather than quoting that figure.
+  measured: **86 rows in 21 min** (2026-08-06), a full run of the whole table.
 - **A test run must never provoke a live AniList 429.** The 429/backoff logic is
   unit-tested off the network. Warm the cache first; both runners do it
   automatically and refuse to start if a season key can't be fetched, because a

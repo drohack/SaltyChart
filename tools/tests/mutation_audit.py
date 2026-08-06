@@ -1089,7 +1089,12 @@ MUTATIONS: list[Mutation] = [
         replace="          bind:searchText={otherInput}",
         flows=("compare 2 users",),
         test=T_UI,
-        expect="never offered by the picker",
+        # Was `never offered by the picker`, the flow's general "it worked out"
+        # assertion - which a full audit watched this mutation SURVIVE, because
+        # `cleanup_users` leaves the seeded user inside the unfiltered
+        # `/api/users` slice and the picker finds it without ever searching.
+        # The request-level assertion cannot be satisfied by a small database.
+        expect="never queried /api/users with what was typed",
         guards="the second-user picker is capped at whatever /api/users returns "
                "unfiltered, so most users cannot be compared with at all",
     ),

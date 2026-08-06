@@ -148,7 +148,7 @@ problem is a string so generic that the wrong assertion can satisfy it.
 
 | when | what | cost |
 |---|---|---|
-| every push to master | `run_all.py --skip-burned-in` | ~4 min |
+| every push to master | `run_all.py --skip-burned-in` | ~6 min (measured 2026-08-06) |
 | after touching `tools/tests/`, or the code a row anchors to | `mutation_audit.py --only N` for the affected rows | 1-3 min |
 | monthly, or before a large release | full `mutation_audit.py` | the run prints its own time - see below |
 | before subtitle work, when the GPU is free | `run_all.py` *with* burned-in | + GPU time |
@@ -174,10 +174,19 @@ which is exactly the load this schedule exists to avoid. The audit is **not** a 
 backend twice per row (86 rows) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
-line is the only figure worth quoting. Last measured: **74 rows in 19 min**
-(2026-08-05), down from 47 min at 73 rows on the same box the same night. The
-table is at 86 rows now, so that 19 min is a floor rather than a measurement -
-re-time it instead of quoting it.
+line is the only figure worth quoting. Last measured: **86 rows in 21 min**
+(2026-08-06) - the whole table, on a quiet box. Earlier points on the same
+curve: 74 rows in 19 min (2026-08-05), down from 47 min at 73 rows the same
+night.
+
+**Don't start an audit straight after `run_all.py`.** The first attempt at that
+86-row run wedged at row 34 - the first row that edits a backend *route* file,
+so the first real `ts-node-dev` restart - seconds after the player test's four
+transcodes. `wait_for_backend` gave up at 90 s, and every backend row after it
+reported `WRONG REASON: backend unreachable` while the offline rows kept
+passing. The supervisor process survived; the server child it manages did not
+respawn. Re-running on a quiet box gave 0 wedges. If it happens: kill the
+`ts-node-dev` pair, restart `npm run dev`, and re-run.
 Where those 28 minutes went, all of it measured rather than estimated:
 
 | change | saved |

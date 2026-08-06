@@ -6,7 +6,7 @@ Docker images to catch site-breaking regressions.
 The suite is **11 parallel checks** (no browser, no shared state) followed by
 **4 sequential browser checks** - 5 with the burned-in GPU test - so 15/16
 checks in total. Wall-clock varies with cache warmth and what Jellyfin is
-doing; ~4 min is typical with `--skip-burned-in`.
+doing; ~6 min with `--skip-burned-in` (measured 2026-08-06).
 
 ## One-shot pre-deploy
 

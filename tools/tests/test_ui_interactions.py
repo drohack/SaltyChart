@@ -613,6 +613,15 @@ def test_compare_two_users(page, backend: str, frontend: str):
     assert "/login" not in page.url, "Compare redirected to /login despite a valid token"
 
     step(10, f"step 3/5: picking {user_b} as the second user")
+    # Watch what the box actually sends. The picker re-queries
+    # `/api/users?q=<typed>` off the bound `filterText`; break that binding and
+    # typing produces no request at all. The page's initial unfiltered
+    # `/api/users` already fired during step 2's navigation, so this listener
+    # sees only what the KEYSTROKES cause - measured: 1 request carrying `q=`
+    # intact, 0 requests with the binding broken.
+    user_queries: list[str] = []
+    page.on("request",
+            lambda r: user_queries.append(r.url) if "/api/users" in r.url else None)
     # svelte-select puts the id on the input itself and only commits a
     # *highlighted* option, so typing alone leaves `selectedOther` unset and
     # every rankB renders blank.
@@ -634,7 +643,24 @@ def test_compare_two_users(page, backend: str, frontend: str):
         page.keyboard.press("Enter")
     page.wait_for_timeout(2000)
 
-    step(10, "step 4/5: confirming the second user was actually selected")
+    step(10, "step 4/5: the box queried the backend, and the user was selected")
+    # SPECIFIC FIRST. This asserts the mechanism - typing reaches `/api/users` -
+    # and it must run before the `picked` check below, which is the general
+    # "it worked out" one.
+    #
+    # `picked` alone is satisfiable by accident, and was: a full audit watched
+    # the `bind:filterText` -> `bind:searchText` mutation SURVIVE. `cleanup_users`
+    # empties the table at the start of every suite run, so the freshly seeded
+    # user_b sits inside the UNFILTERED `/api/users` slice and the picker offers
+    # it without ever searching. The fixture never reached the code the mutation
+    # broke. Asserting on the request instead cannot be satisfied by a small
+    # database.
+    assert any("q=" in u for u in user_queries), (
+        f"the search box never queried /api/users with what was typed "
+        f"({len(user_queries)} request(s), all unfiltered) - `filterText` is not "
+        f"bound, so the suggestion list stays the unfiltered top slice and "
+        f"anyone outside it cannot be picked")
+
     picked = page.evaluate(
         "() => [...document.querySelectorAll('[data-rank-b]')]"
         ".some(e => e.getAttribute('data-rank-b'))")
