@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions — 24 flows.
+Pre-deploy smoke test: frontend UI interactions — 25 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior — and that every failure
@@ -1619,11 +1619,56 @@ def test_guest_options_and_compare_warning(page, frontend: str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Flows that behave IDENTICALLY run alone — the only ones `--only-flows` accepts.
+#
+# The selector exists because the mutation audit re-runs this whole file twice
+# per UI row, which is about half the audit's wall clock. It is deliberately an
+# allowlist and not a free filter, because this exact optimisation has already
+# gone wrong here: `--only-steps` was added to test_player.py to cut transcode
+# cost and silently hollowed out six of fourteen rows, whose setup lived in the
+# steps being skipped.
+#
+# Each flow below mints its own auth, seeds its own list, pins its own season
+# and navigates itself. Everything NOT here depends on something a predecessor
+# left behind, and the dependency is rarely visible in the flow's own body:
+#
+#   - "search filter", "hide 18+ filter", "watched trailer btn", "theme
+#     dropdown" never navigate or authenticate at all — they act on whatever
+#     page the previous flow left, and several restore state FOR later flows
+#     (the search box is cleared, the season is put back).
+#   - about a dozen more read the session `main()` created rather than setting
+#     one, so they work alone only by accident of that token still existing.
+#   - "phone sidebar collapsed" is the dangerous one: run alone it PASSES with
+#     its mutation applied. The bug needs a desktop-width visit to have
+#     persisted a width preference first, which only happens because earlier
+#     flows ran. Isolated, it is green either way — a vacuous row, which is
+#     the `--only-steps` failure repeating in a new file.
+#
+# Before adding a label here: run it alone, then run it alone WITH its
+# mutation applied, and confirm it still fails. Passing alone is not enough.
+SELECTABLE_FLOWS = {
+    "compare 2 users",
+    "admin page",
+    "unknown never hides",
+    "share as image",
+    "remote accept visible",
+    "translation error visible",
+    "trailer modal esc",
+    "viewer picks the right show",
+}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--frontend", default="http://localhost:5173")
     parser.add_argument("--backend",  default="http://localhost:3000")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument(
+        "--only-flows",
+        help="comma-separated flow labels to run alone; only self-sufficient "
+             "flows are accepted (see SELECTABLE_FLOWS)",
+    )
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -1633,6 +1678,7 @@ def main():
     print(f"UI interaction smoke test — {frontend}", flush=True)
 
     failed = 0
+    ran = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page = browser.new_page()
@@ -1672,6 +1718,26 @@ def main():
                 ("viewer picks the right show", lambda: test_viewer_can_pick_the_right_show(page, args.backend, frontend, token_a)),
                 ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
             ]
+            if args.only_flows:
+                want = [x.strip() for x in args.only_flows.split(",") if x.strip()]
+                known = {label for label, _ in tests}
+                unknown = [w for w in want if w not in known]
+                if unknown:
+                    print(f"  unknown flow label(s): {unknown} — known labels are "
+                          f"{sorted(known)}", flush=True)
+                    sys.exit(2)
+                blocked = [w for w in want if w not in SELECTABLE_FLOWS]
+                if blocked:
+                    # Refusing is the whole point: a flow that inherits state
+                    # can pass alone while proving nothing.
+                    print(f"  refusing to run {blocked} in isolation — those flows "
+                          f"depend on state earlier flows leave behind, and would "
+                          f"pass vacuously. See SELECTABLE_FLOWS.", flush=True)
+                    sys.exit(2)
+                tests = [(l, fn) for l, fn in tests if l in want]
+                print(f"  --only-flows: running {len(tests)} of {TOTAL} flow(s)", flush=True)
+
+            ran = len(tests)
             for label, fn in tests:
                 try:
                     fn()
@@ -1684,10 +1750,14 @@ def main():
         finally:
             browser.close()
 
+    # Report against what actually RAN. Printing "25/25" after a one-flow
+    # selection is how a narrowed run gets mistaken for full coverage — and the
+    # mutation audit reads this line.
+    total = ran or TOTAL
     if failed:
-        print(f"\nDone: {TOTAL - failed}/{TOTAL} passed, {failed} failed", flush=True)
+        print(f"\nDone: {total - failed}/{total} passed, {failed} failed", flush=True)
         sys.exit(1)
-    print(f"\nDone: {TOTAL}/{TOTAL} passed", flush=True)
+    print(f"\nDone: {total}/{total} passed", flush=True)
 
 
 if __name__ == "__main__":

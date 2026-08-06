@@ -35,6 +35,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import datetime
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +73,20 @@ class Mutation:
     # let the audit express the invariant, not to thin out a safety guard so a
     # single-file mutation can reach it.
     extra: list[tuple[str, str, str]] = field(default_factory=list)
+    # Which test_ui_interactions flows this row needs, by their registry label.
+    #
+    # A T_UI row without this re-runs all 25 browser flows twice — about half
+    # this audit's wall clock for rows that touch one screen. Naming the flow
+    # cuts a ~110 s child to ~15 s.
+    #
+    # ONLY labels in that file's SELECTABLE_FLOWS allowlist are accepted, and
+    # the test refuses anything else: a flow that inherits state from its
+    # predecessors can pass alone while proving nothing, which is precisely how
+    # `--only-steps` hollowed out six player rows. The default (no flows) is the
+    # full suite, so forgetting this is slow rather than wrong.
+    #
+    # Never add one without watching the mutant fail UNDER THE NARROWED RUN.
+    flows: tuple[str, ...] = ()
     settle: float = 6.0       # ts-node-dev / vite need a moment to reload
     env: dict = field(default_factory=dict)
 
@@ -206,7 +221,7 @@ MUTATIONS: list[Mutation] = [
         find="    if (identity.rejected) {",
         replace="    if (false) { /* mutation */",
         test=T_JELLYFIN,
-        expect="override did not change the verdict",
+        expect="a rejection with no ids",
         guards="Reject on /admin/matching saves a row, drops the entry from the "
                "list, and leaves the wrong Watch button on screen",
     ),
@@ -299,6 +314,7 @@ MUTATIONS: list[Mutation] = [
         # trailer that simply has none.
         find="          showTranslationError(data.error);",
         replace="          /* mutation: console-only again */",
+        flows=("translation error visible",),
         test=T_UI,
         expect="data-translation-error",
         guards="a struggling translation server is indistinguishable from "
@@ -375,6 +391,7 @@ MUTATIONS: list[Mutation] = [
         # that: an untouched confirm is dressed up as a manual correction.
         find="                  const changed = !sameIdentity(sel, baseline[r.mediaId] ?? null);",
         replace="                  const changed = !!sel; /* mutation: any selection reads as a correction */",
+        flows=("remote accept visible",),
         test=T_UI,
         expect="relabelled it manual",
         guards="the review page's own Confirm button erases which rung of the "
@@ -442,6 +459,7 @@ MUTATIONS: list[Mutation] = [
     !r.confirmed && r.source === 'remote' && !r.pending &&""",
         replace="""  const resolverAccept = (r: Row) =>
     false && !r.confirmed && r.source === 'remote' && !r.pending && /* mutation */""",
+        flows=("remote accept visible",),
         test=T_UI,
         expect="remote-accepted row is invisible on /admin/matching",
         guards="everything the resolver accepts on a title string alone is "
@@ -581,6 +599,7 @@ MUTATIONS: list[Mutation] = [
         # and it was found by using the feature, not by any test.
         find="  if (pickOpen) {",
         replace="  if (false) { /* mutation: modal keys ignore pick mode */",
+        flows=("viewer picks the right show",),
         test=T_UI,
         expect="closed the picker",
         guards="typing a query and pressing Enter marks the very show being "
@@ -642,6 +661,7 @@ MUTATIONS: list[Mutation] = [
         # stated so the gap isn't mistaken for coverage.
         find="      return { verdict: 'Needs review', detail: `auto-search found a likely match — ${unverifiedBecause(r)}`, cls: 'badge-warning', options };",
         replace="      return { verdict: 'Needs review', detail: 'auto-search found a likely match — unverified', cls: 'badge-warning', options };",
+        flows=("remote accept visible",),
         test=T_UI,
         expect="gives no reason at all",
         guards="the page states a reason the match never used, which is the one "
@@ -655,6 +675,7 @@ MUTATIONS: list[Mutation] = [
         # page functional-looking and the question unanswerable.
         find='<div class="overflow-x-auto -my-1" data-matching-stats>',
         replace='<div class="hidden" data-matching-stats-mutated>',
+        flows=("remote accept visible",),
         test=T_UI,
         expect="no stats block",
         guards="the season-health and auto-search-queue tiles can vanish "
@@ -672,7 +693,7 @@ MUTATIONS: list[Mutation] = [
         find="router.post('/identity/sweep', jellyfinLimiter, requireAuth, requireAdmin, async (_req, res) => {",
         replace="router.post('/identity/sweep', jellyfinLimiter, requireAuth, async (_req, res) => { /* mutation */",
         test=T_JELLYFIN,
-        expect="ADMIN_REQUIRED",
+        expect="identity/sweep: expected 403 ADMIN_REQUIRED",
         guards="any signed-up user can trigger unbounded drain sweeps against "
                "the shared providers",
     ),
@@ -683,6 +704,7 @@ MUTATIONS: list[Mutation] = [
         # changes nothing on screen is indistinguishable from a working one.
         find="on:click={runSweep}",
         replace="on:click={() => {}}",
+        flows=("remote accept visible",),
         test=T_UI,
         expect="did not enter its running state",
         guards="the admin's only manual sweep control can break without any "
@@ -876,7 +898,7 @@ MUTATIONS: list[Mutation] = [
         find="  if (override && !isBookkeeping) return override;",
         replace="  /* mutation: overrides ignored */",
         test=T_JELLYFIN,
-        expect="override did not change the verdict",
+        expect="a correction saved on",
         guards="the admin page appears to save a correction that never takes "
                "effect, which is worse than not offering one",
     ),
@@ -984,6 +1006,7 @@ MUTATIONS: list[Mutation] = [
         extra=[("frontend/src/pages/Randomize.svelte",
                 "          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
                 "          if (!info.notAired) recordAvailability(mediaId, info.available); /* mutation */")],
+        flows=("unknown never hides",),
         test=T_UI,
         # The failure text, not the pass text — 'unknown verdicts' appears only
         # in the PASS line, so matching it reported a real catch as a hole.
@@ -996,6 +1019,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/components/WatchListSidebar.svelte",
         find="      const toJpeg = (domToImageMod.toJpeg ?? domToImageMod.default?.toJpeg) as (",
         replace="      const toJpeg = (domToImageMod.nope ?? domToImageMod.default?.nope) as (",
+        flows=("share as image",),
         test=T_UI,
         expect="Share produced nothing",
         guards="Share silently does nothing — the failure is swallowed by its own "
@@ -1006,6 +1030,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/pages/Compare.svelte",
         find="          bind:filterText={otherInput}",
         replace="          bind:searchText={otherInput}",
+        flows=("compare 2 users",),
         test=T_UI,
         expect="never offered by the picker",
         guards="the second-user picker is capped at whatever /api/users returns "
@@ -1069,7 +1094,7 @@ MUTATIONS: list[Mutation] = [
     if (failed.length) revertHidden(failed, !targetHidden, 1);""",
         replace="    void writeHidden([item.id], targetHidden); /* mutation: no single revert */",
         test=T_UI,
-        expect="single-show hide left applied",
+        expect="the eye toggle is the one hide path",
         guards="hiding one show from the list or pop-up looks applied, the server "
                "never saved it, and the next reload silently undoes it",
     ),
@@ -1100,6 +1125,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/components/AnimeGridTranslate.svelte",
         find="    if (modal && e.key === 'Escape') closeModal();",
         replace="    /* mutation: escape disabled */",
+        flows=("trailer modal esc",),
         test=T_UI,
         expect="Escape did not close the trailer modal",
         guards="the only remaining exit is the backdrop, which is a thin strip on a "
@@ -1111,6 +1137,7 @@ MUTATIONS: list[Mutation] = [
         path="frontend/src/components/AnimeGridTranslate.svelte",
         find='        aria-label="Close trailer"',
         replace='        aria-label="Close trailer mutated"',
+        flows=("trailer modal esc",),
         test=T_UI,
         expect="trailer modal has no visible close button",
         guards="viewers who don't know Escape have to guess that the dark area "
@@ -1281,9 +1308,12 @@ def run_test(m: Mutation, ctx: str = "") -> tuple[bool, str]:
     the one visible line.
     """
     cwd = REPO / "backend" if m.test is T_UNIT else REPO
+    cmd = list(m.test)
+    if m.flows:
+        cmd += ["--only-flows", ",".join(m.flows)]
     shell = sys.platform == "win32" and m.test[0] in ("npm", "npx")
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as sink:
-        p = subprocess.Popen(m.test, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
                              shell=shell, encoding="utf-8", errors="replace")
         t0 = time.time()
         while True:
@@ -1319,7 +1349,7 @@ def main() -> int:
     # affected rows" after touching code a row anchors to, and a change that
     # lands across several modules affects dozens. One row per invocation meant
     # re-warming the season cache and re-checking the tree for each, so the
-    # practical choice became "one row or all 68". Validate before indexing —
+    # practical choice became "one row or all of them". Validate before indexing —
     # the single-int version raised IndexError on an out-of-range number
     # before its own bounds check ran.
     chosen = MUTATIONS
@@ -1446,8 +1476,16 @@ def main() -> int:
             restore(m, wait=False)
 
     total = len(chosen) - len(skipped)
+    mins = (time.time() - run_started) / 60
     say(f"Done: {total - len(survived)}/{total} caught"
-        + (f", {len(skipped)} skipped" if skipped else ""))
+        + (f", {len(skipped)} skipped" if skipped else "")
+        + f" — {len(chosen)} row(s) in {mins:.0f} min"
+        + (" (full run)" if len(chosen) == len(MUTATIONS) else ""))
+    if len(chosen) == len(MUTATIONS):
+        # The only figure either doc should quote, and it re-measures itself
+        # every time — see the note at run_started.
+        say(f"   Quote this for a full audit: {len(chosen)} rows, {mins:.0f} min, "
+            f"measured {datetime.date.today().isoformat()}.")
     for s in survived:
         say(f"   COVERAGE HOLE: {s}")
     return 1 if survived else 0

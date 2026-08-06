@@ -89,8 +89,76 @@ def main() -> int:
 
     print(f"Done: all {len(rows)} mutation anchors resolve", flush=True)
 
-    rc = check_exploratory_charter(ma.REPO)
-    return rc
+    rc = check_flow_labels(ma, rows)
+    rc = check_expect_is_unambiguous(ma, rows) or rc
+    return check_exploratory_charter(ma.REPO) or rc
+
+
+def check_flow_labels(ma, rows) -> int:
+    """A row's `flows` must name a real, SELECTABLE flow.
+
+    A renamed or un-allowlisted label makes the child exit 2 before running
+    anything — which the audit reads as "the test failed", i.e. a catch. The
+    row would report green while auditing nothing at all.
+    """
+    ui = ma.TESTS / "test_ui_interactions.py"
+    src = ui.read_text(encoding="utf-8", errors="replace")
+    registry = set(re.findall(r'^\s*\("([^"]+)",\s*lambda', src, re.M))
+    selectable = set(re.findall(r'"([^"]+)",', src[src.index("SELECTABLE_FLOWS = {"):
+                                                  src.index("}", src.index("SELECTABLE_FLOWS = {"))]))
+    bad = []
+    for i, m in enumerate(rows, 1):
+        for f in getattr(m, "flows", ()):
+            if f not in registry:
+                bad.append(f"[{i}] {m.name} -> flow {f!r} is not in the registry")
+            elif f not in selectable:
+                bad.append(f"[{i}] {m.name} -> flow {f!r} is not in SELECTABLE_FLOWS")
+    if bad:
+        print("[anchors] FAIL — mutation rows name flows that cannot run:", flush=True)
+        for b in bad:
+            print(f"  {b}", flush=True)
+        print("[anchors] A bad label makes the child exit before testing, which "
+              "the audit scores as a catch — the row would audit nothing.", flush=True)
+        return 1
+    tagged = sum(1 for m in rows if getattr(m, "flows", ()))
+    print(f"Done: {tagged} row(s) name a selectable UI flow, all valid", flush=True)
+    return 0
+
+
+def check_expect_is_unambiguous(ma, rows) -> int:
+    """A row's `expect` must not match SEVERAL assertions in its own test.
+
+    The audit proves a row by finding `expect` in the failing output. When the
+    same substring is printed by more than one assertion, a mutation caught by
+    the WRONG one still scores as a catch — the exact failure the expect rule
+    was introduced to stop, sneaking back in through a too-generic string.
+    Three rows shared "override did not change the verdict", which that test
+    prints from three different checks.
+
+    Zero matches is NOT an error: plenty of messages are f-strings assembled at
+    runtime, so they cannot be found in the source.
+    """
+    bad = []
+    for i, m in enumerate(rows, 1):
+        target = next((a for a in m.test if str(a).endswith(".py")), None)
+        if target is None:
+            continue
+        try:
+            txt = Path(target).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        n = txt.count(m.expect)
+        if n > 1:
+            bad.append(f"[{i}] {m.name} -> {m.expect!r} matches {n} assertions")
+    if bad:
+        print("[anchors] FAIL — ambiguous expect string(s):", flush=True)
+        for b in bad:
+            print(f"  {b}", flush=True)
+        print("[anchors] Make it specific enough that only the intended "
+              "assertion can produce it.", flush=True)
+        return 1
+    print("Done: no row's expect can be satisfied by another assertion", flush=True)
+    return 0
 
 
 def check_exploratory_charter(repo: Path) -> int:

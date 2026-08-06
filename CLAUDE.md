@@ -256,13 +256,54 @@ What it established, each the hard way:
 nobody should trust — and one that has only been watched to fail, never to pass,
 is barely better.
 
+**Writing a row that is worth its cost.** The rule above says nothing about
+price, so one session took the table from 58 rows to 73 by adding every row at
+whatever layer its test happened to live. What that cost, and what to do about
+it:
+
+| test | per row | note |
+|---|---|---|
+| `T_UNIT` | ~5 s | runs the whole backend unit suite; still cheap |
+| `T_NEGATIVE` / `T_REPLAY` | ~10–30 s | |
+| `T_JELLYFIN` | ~60–90 s | live Jellyfin, one full 13-step run |
+| `T_UI`, no `flows` | **~110 s** | all 25 browser flows, twice per row |
+| `T_UI` with `flows=(...)` | ~5–30 s | one self-sufficient flow — prefer this |
+| `player(...)` | minutes | real transcodes; keep the step list narrow |
+
+- **Pin the invariant at the cheapest layer that can see it.** `classifyMatch`'s
+  film rule is a unit row; the same rule at the route is a 90 s one. Guarding
+  both needs a reason beyond "a guard can live at more than one layer".
+- **Name the flow on a `T_UI` row** (`flows=("remote accept visible",)`). Only
+  labels in that file's `SELECTABLE_FLOWS` are allowed, because a flow that
+  inherits state from its predecessors passes alone while proving nothing —
+  `phone sidebar collapsed` is green in isolation *with its mutation applied*.
+  Measured: retargeting twelve rows cut 22 min to 3.
+- **`expect` must be producible by exactly one assertion in that test.** Three
+  rows once shared `override did not change the verdict`, which the Jellyfin
+  test prints from three different checks — any of them would have scored a
+  catch. `test_audit_anchors.py` now fails on an ambiguous one.
+- **Mutate the guard, not the feature.** The candidate-merge row first disabled
+  merging outright; the mutation worth having is the *dangerous* direction
+  (merge on title), because that is what the test forbids.
+- **A mutant can survive because the fixture never reaches it.** The merge test
+  passed an empty map and hit an early return, so the mutation sailed through
+  green. Check the fixture actually exercises the line you changed.
+- **A mutant can fail on the wrong assertion.** The unheld-film row failed on a
+  happy-path check until its cases were reordered specific-first — red, and
+  proving nothing about the guard.
+
+A duplicate `expect` between two rows is a smell, not a verdict: two rows that
+mutate *different* code and are caught by one detector are both pulling their
+weight (the notify half and the persist half of the identity cache-bust). The
+problem is a string so generic that the wrong assertion can satisfy it.
+
 ### How often to run what
 
 | when | what | cost |
 |---|---|---|
 | every push to master | `run_all.py --skip-burned-in` | ~4 min |
 | after touching `tools/tests/`, or the code a row anchors to | `mutation_audit.py --only N` for the affected rows | 1–3 min |
-| monthly, or before a large release | full `mutation_audit.py` | ~35 min |
+| monthly, or before a large release | full `mutation_audit.py` | the run prints its own time — see below |
 | before subtitle work, when the GPU is free | `run_all.py` *with* burned-in | + GPU time |
 | before a release, or after reworking Home/Randomize/Compare or a modal | an exploratory pass — `tools/tests/EXPLORATORY.md` | ~1 h, an agent in a browser |
 
@@ -283,8 +324,13 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin — an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~146 times (two per row, 73 rows) and starts real transcodes, which is not something to do
-casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
+backend twice per row (73 rows) and starts real transcodes, which is not
+something to do casually on a box that also serves Plex and Jellyfin. **It
+times itself**: a full run ends with `N rows, M min, measured <date>`, and that
+line is the only figure worth quoting. Two hand-written estimates lived here
+for months — ~35 min (true at 18 rows) and ~118 min (arithmetic, never a
+stopwatch) — which is the "quoted a measurement in prose" rot this file warns
+about, committed in this file. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
 The trigger for the audit is not a calendar, it is **"I changed a test, or the

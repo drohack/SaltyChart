@@ -59,7 +59,7 @@ start rather than pass vacuously against missing data.
 | `test_audit_anchors.py` | Every `mutation_audit.py` row still points at code that exists, and `EXPLORATORY.md` cites no dead file paths or `file.ext:NN` line references — the cheap half of doc/anchor rot | nothing | ~2s |
 | `test_match_replay.py` | Replays the shipping `matchSeries` over a frozen 8-season corpus and diffs every verdict against a committed baseline; twelve real false positives asserted by name. SKIPs where the (gitignored) fixtures haven't been built | fixtures built locally (else SKIP) | ~30s |
 | `test_frontend_smoke.py` | Home/Login/SignUp/Randomize/Compare pages render with no console errors, auth-gated routes accessible after signup | backend + frontend | ~20s |
-| `test_ui_interactions.py` | 24 flows: button-click smoke (login, search, hide 18+, season, watched-trailer, theme, wheel, logout, modal Escape, Compare with 2 users), the exploratory-pass guards (no-results message, zero availability calls + disabled Hide button on an unaired season, check-batch chunking, visible translation errors, phone sidebar collapsed, guest options + Compare's missing-user warning), admin page, unknown-never-hides, share-as-image, progressive loading, three silent-failure paths (unreachable library, hung backend, failed hide write), and the /admin/matching review of a resolver title-text accept | backend + frontend | ~3 min |
+| `test_ui_interactions.py` | 25 flows: button-click smoke (login, search, hide 18+, season, watched-trailer, theme, wheel, logout, modal Escape, Compare with 2 users), the exploratory-pass guards (no-results message, zero availability calls + disabled Hide button on an unaired season, check-batch chunking, visible translation errors, phone sidebar collapsed, guest options + Compare's missing-user warning), admin page, unknown-never-hides, share-as-image, progressive loading, three silent-failure paths (unreachable library, hung backend, failed hide write), and the /admin/matching review of a resolver title-text accept | backend + frontend | ~3 min |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube English CC, Whisper overlay, CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
 | `test_player.py` | 10 steps driving the **real Jellyfin player**, which nothing else does: pop-up pre-warm fires and no stream starts early, playback actually advances, exactly one subtitle menu defaulting to plain English, `[`/`]` stepping 0.10 with the control bar hidden, burned-in subtitles verified in the pixels (12 frames sampled with subtitles on and off), the quality menu reaching 480p in one restart, Escape stopping the transcode. Skips when Jellyfin is unconfigured or nothing in the season is in the library | backend + frontend + Jellyfin | ~2 min |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR + sentence-transformers burned-in detection: Eren=yes, Sparks=no | CUDA GPU, backend running | ~60s |
@@ -86,6 +86,11 @@ that must exist in `SubtitleCache` with the expected state:
 If the local dev DB doesn't have these, populate via the live daemon (open the
 trailer in the app once) or copy rows from the prod DB.
 
+**Adding a test here?** It needs a `mutation_audit.py` row, and that row has a
+price — see *Is the suite load-bearing?* in `CLAUDE.md` for the cost table and
+the rules that keep a row honest (name a UI flow, keep `expect` unambiguous,
+mutate the guard rather than the feature).
+
 ## When to run
 
 - **Before every deploy** — `run_all.py` is the gate.
@@ -108,7 +113,9 @@ anything it finds twice should graduate into this suite with a
 `mutation_audit.py` row. Read its *Traps* section before starting; several
 plausible-looking "bugs" there are measurement artifacts.
 
-The mutation audit itself is 73 rows and takes ~118 minutes — it warms the
+The mutation audit itself is 73 rows, and a full run **prints its own wall
+clock** on the last line (`N rows, M min, measured <date>`) — quote that, never
+an estimate. It warms the
 season cache once at the start, so a full run has to fit inside the 6 h
 `SeasonCache` TTL or its later rows re-fetch against AniList mid-audit.
 
