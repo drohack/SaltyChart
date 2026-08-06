@@ -9,14 +9,14 @@ Requirements:
   pip install faster-whisper yt-dlp easyocr sentence-transformers Pillow demucs
   Ollama installed + `ollama pull qwen3.5:9b`  (split-pipeline translator; it's the
   Ollama vision build, so its ~1.2 GB vision encoder sits unused in RAM, but it
-  benchmarks clearly better than text-only qwen3:8b - see CLAUDE.md)
+  benchmarks clearly better than text-only qwen3:8b - see backend/CLAUDE.md)
 
   For GPU (recommended):
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
   Do NOT install torchcodec - torchaudio routes through it and it breaks
   faster-whisper's decoder; audio I/O here uses the ffmpeg binary instead.
 
-Pipeline (the champion config from the bake-off - see CLAUDE.md):
+Pipeline (the champion config from the bake-off - see backend/CLAUDE.md):
   bestaudio -> Demucs vocal separation -> large-v3 transcribe(ja, beam10 +
   rep_penalty1.2 + vad_min300) -> qwen3.5:9b translate (via Ollama). Uploaded as
   modelName 'large-v3-split' (rank 6, above plain 'large-v3'). The script starts

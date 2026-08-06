@@ -254,8 +254,10 @@ Stored per-user in the Settings table.
   `BATCH_RUNNING`, `RATE_LIMITED`, `UPSTREAM_ERROR`, `SERVER_ERROR`.
 - `dom-to-image-more` is bundled as a lazy chunk (previously a CDN import).
 
-These features are fully documented in `CLAUDE.md`; remember to update that
-guide when expanding the API or database schema.
+These features are fully documented in the contributor guides - `CLAUDE.md` at
+the repo root, with the `/api/jellyfin` and `/api/translate` contracts in
+`backend/CLAUDE.md` and the per-surface UI detail in `frontend/CLAUDE.md`.
+Remember to update them when expanding the API or database schema.
 
 The **frontend** Vite dev-server proxies all `/api/*` requests to the **backend**
 container, so no additional environment configuration is required.
