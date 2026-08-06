@@ -379,6 +379,26 @@ export function rawIdentityOverride(anilistId: number): Identity | null {
 export const RESOLVER_VERSION = 1;
 
 /**
+ * Did a DATE vouch for this resolver id, as opposed to title text or a year?
+ *
+ * The rung is recorded in the note at accept time, and only three of them are
+ * date evidence. That distinction is the strongest signal in this codebase —
+ * correct matches land 0–31 days from the AniList premiere and wrong ones
+ * 62–21,929, with nothing in between — so a date-verified resolver row is as
+ * settled as a community-map id.
+ *
+ * `exact title` and `release year` are deliberately NOT dates: an exact title
+ * 1,012 days from the premiere is the Echo class, and a ±1 production year is
+ * nearly free for an unrelated sibling.
+ */
+const DATE_RUNGS = ['remote: air date', 'remote: premiere date', 'remote: tvdb season premiere'];
+
+export function isDateVerified(note: string | null | undefined): boolean {
+  const n = note ?? '';
+  return DATE_RUNGS.some((r) => n.startsWith(r));
+}
+
+/**
  * Is this stored row from an older resolver, and safe to re-decide?
  *
  * Only rows the machine decided and that carry an id: a human decision is

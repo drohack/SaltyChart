@@ -83,6 +83,7 @@ class Mutation:
 
 
 BACKEND_JF = "backend/src/routes/jellyfin.ts"
+BACKEND_LIBPICK = "backend/src/lib/libraryPick.ts"
 BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
 BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
@@ -183,7 +184,7 @@ MUTATIONS: list[Mutation] = [
         # isn't in the film index drops through to title-matching a series-only
         # list. Measured at 26 wrong matches against 1 real one.
         find="""      if (!film) {
-        const data = { available: false, matchedBy: 'id' };
+        const data = { available: false, matchedBy: 'id', idConfident };
         rememberAvailability(mediaId, data, 10 * 60 * 1000);
         return data;
       }""",
@@ -569,6 +570,63 @@ MUTATIONS: list[Mutation] = [
         expect="cooldown must expire, not stick",
         guards="the admin page tells the admin every miss is waiting on a "
                "retry that (per the page) never arrives",
+    ),
+    Mutation(
+        name="Enter in the library search marks the show watched",
+        path="frontend/src/pages/Randomize.svelte",
+        # handleModalKey is a WINDOW listener, so the pop-up's Enter = "mark
+        # watched" fires wherever the keystroke came from — including a text
+        # box the viewer is typing a search into. The player already guards
+        # against this; pick mode reached the same trap from another direction,
+        # and it was found by using the feature, not by any test.
+        find="  if (pickOpen) {",
+        replace="  if (false) { /* mutation: modal keys ignore pick mode */",
+        test=T_UI,
+        expect="closed the picker",
+        guards="typing a query and pressing Enter marks the very show being "
+               "corrected as watched and closes the pop-up",
+    ),
+    Mutation(
+        name="title text counts as date evidence",
+        path=BACKEND_IDENTITY,
+        # The rung list decides which resolver ids are settled enough to hide
+        # the viewer's correction picker. Widening it to any accepted rung
+        # would hide the control on exact-title and release-year accepts —
+        # the Echo class, and the coincidental-sibling class — which are
+        # precisely the rows a human should be able to correct.
+        find="const DATE_RUNGS = ['remote: air date', 'remote: premiere date', 'remote: tvdb season premiere'];",
+        replace="const DATE_RUNGS = ['remote: '];",
+        test=T_UNIT,
+        expect="isDateVerified",
+        guards="a match accepted on title text alone is presented as settled, "
+               "so no viewer is offered the chance to correct it",
+    ),
+    Mutation(
+        name="a viewer pick can overwrite an admin's decision",
+        path=BACKEND_JF,
+        # The only identity endpoint any logged-in user can reach. Nothing else
+        # guards confirmed/rejected rows — setIdentityOverride upserts
+        # unconditionally, and before this endpoint existed only admin-gating
+        # stood between a viewer and a deliberate Reject.
+        find="  if (existing?.confirmed || existing?.rejected) {",
+        replace="  if (false) { /* mutation: viewers may overwrite a human decision */",
+        test=T_JELLYFIN,
+        expect="a viewer overwrote an admin-confirmed row",
+        guards="any signed-up user can silently undo an admin's Confirm or "
+               "Reject from the Watch pop-up",
+    ),
+    Mutation(
+        name="the picker offers library items that cannot be pinned",
+        path=BACKEND_LIBPICK,
+        # A pick is stored as an identity override and resolved by id, so a
+        # library item carrying neither id cannot be pinned at all. Offering it
+        # is a menu entry that silently changes nothing when clicked.
+        find="    if (!s.tvdbId && !s.tmdbId) continue;",
+        replace="    /* mutation: offer id-less items too */",
+        test=T_UNIT,
+        expect="must never be offered",
+        guards="the viewer picker lists shows whose selection cannot take "
+               "effect, so the correction appears to work and does nothing",
     ),
     Mutation(
         name="an unverifiable suggestion gives no reason on screen",

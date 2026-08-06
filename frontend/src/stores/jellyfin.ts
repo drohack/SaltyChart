@@ -38,6 +38,15 @@ export interface MediaAvailability {
    */
   matchedBy?: 'id' | 'title';
   /**
+   * Do we actually KNOW which show this is — a community-map id, a human
+   * decision, or a hand-written override?
+   *
+   * False for a resolver guess or a title match. The viewer's correction
+   * picker keys off this rather than availability: an entry we are certain
+   * about needs no correcting, even when the library doesn't hold it.
+   */
+  idConfident?: boolean;
+  /**
    * The id behind an `id` match was *guessed* by the remote resolver rather than
    * supplied by the community map or confirmed by a human.
    *

@@ -109,7 +109,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 24
+TOTAL = 25
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed — and a list whose ids aren't in the displayed season renders
@@ -1450,6 +1450,125 @@ def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
     step(23, "PASS — sidebar starts collapsed on a phone-sized viewport")
 
 
+def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token: str):
+    """The viewer's own correction path, on the page where a bad match is seen.
+
+    /admin/matching can fix a wrong match and nobody goes there; the Watch
+    pop-up is where it's noticed every season. The backend contract (the 409
+    over an admin decision, the write, the provenance) is test_jellyfin step
+    13 — what this guards is the wiring in between: that the control exists for
+    a logged-in viewer, that it searches the LIBRARY, and that choosing an
+    option actually fires the write rather than being a dead button.
+
+    The POST is stubbed: a real pick rewrites identity for everyone and would
+    leave the suite's own dev deployment altered.
+    """
+    step(25, "step 1/3: seed an entry whose identity is UNCERTAIN")
+    # The picker is deliberately ABSENT when we know the show — a community-map
+    # id or a human decision needs no correcting. Most of a season is confident,
+    # so hunting the wheel for an uncertain entry skipped this test on every
+    # run: it asserted nothing while reporting a pass. Seed the condition
+    # instead. A `remote` row is a resolver guess, which is precisely the state
+    # the picker exists for.
+    admin = admin_token()
+    if not admin:
+        step(25, "SKIP — could not sign an admin token to seed an uncertain row")
+        return
+    ah = {"Authorization": f"Bearer {admin}"}
+    shows = requests.get(f"{backend}/api/anime?season={SEEDED_SEASON}&year={SEEDED_YEAR}",
+                         timeout=200).json()
+    if not shows:
+        step(25, "SKIP — the seeded season returned no entries")
+        return
+    target = shows[0]
+    mid = target["id"]
+    seed_title = ((target.get("title") or {}).get("english")
+                  or (target.get("title") or {}).get("romaji") or str(mid))
+    seed_list(backend, token, [mid])
+    requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                 json={"anilistId": mid, "tvdbId": "99999996", "source": "remote",
+                       "pending": True, "note": "remote: unverified"})
+    def unseed():
+        requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
+
+    page.goto(frontend)
+    page.evaluate("t => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', 'ui_pick_probe'); }", token)
+    pin_season(page)
+    page.goto(f"{frontend}/random")
+    page.wait_for_timeout(3000)
+    clicked = page.evaluate(
+        "t => { const el = [...document.querySelectorAll('[role=\"button\"]')]"
+        ".find(e => (e.textContent || '').includes(t));"
+        " if (!el) return false; el.click(); return true; }", seed_title)
+    if not clicked:
+        unseed()
+        step(25, "SKIP — the seeded entry did not appear on the wheel")
+        return
+    try:
+        page.wait_for_selector("[data-pick-open]", timeout=20_000)
+    except Exception:
+        unseed()
+        step(25, "SKIP — no availability verdict for the seeded entry")
+        return
+
+    step(25, "step 2/3: the picker offers LIBRARY items, not resolver candidates")
+    page.locator("[data-pick-open]").click()
+    page.wait_for_selector("[data-pick-dropdown]", timeout=10_000)
+    page.wait_for_timeout(3000)
+    # The picker must say what the entry resolves to RIGHT NOW. Without it the
+    # list is options with no indication which is live, so a viewer cannot tell
+    # a correction from a no-op — and the prefilled search usually surfaces the
+    # current match first, making that ambiguity the default view.
+    current = (page.locator("[data-pick-current]").text_content() or "").strip()
+    assert current, "the picker does not say what the entry is currently matched to"
+
+    prefilled = page.locator("[data-pick-input]").input_value()
+    opts = page.locator("[data-pick-results] li button")
+    if not opts.count():
+        unseed()
+        step(25, "SKIP — the library returned no candidates for this title")
+        return
+
+    # Enter belongs to the search box while picking. `handleModalKey` is a
+    # WINDOW listener that marks the show watched and closes the pop-up, so
+    # typing a query and pressing Enter used to mark-watch the very show being
+    # corrected — the trap the player already guards against, reached from a
+    # second direction. A search with no hits is used deliberately: the failure
+    # was reported while looking at exactly that empty state.
+    page.locator("[data-pick-input]").fill("zzz no such show zzz")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(800)
+    assert page.locator("[data-pick-dropdown]").count(), (
+        "Enter in the library search closed the picker — the window-level modal "
+        "key handler is still marking the show watched out from under it")
+    assert "no match for" in (page.locator("[data-pick-results]").text_content() or "").lower(), (
+        "an empty library search says nothing about why — it reads as a broken "
+        "search rather than a show the library doesn't have")
+
+    step(25, "step 3/3: choosing an option fires the write and closes the picker")
+    # Restore the search that had results; the Enter check above cleared them.
+    page.locator("[data-pick-input]").fill(prefilled)
+    page.wait_for_timeout(3000)
+    if not opts.count():
+        unseed()
+        step(25, "SKIP — results did not return after the keyboard check")
+        return
+    PICK_ROUTE = "**/api/jellyfin/identity/pick"
+    page.route(PICK_ROUTE, lambda rt: rt.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"ok": True})))
+    try:
+        opts.first.click()
+        page.wait_for_timeout(2500)
+        assert not page.locator("[data-pick-dropdown]").count(), (
+            "picking a library item left the picker open — the click did not run "
+            "its handler, which is a dead button wearing a working one's clothes")
+    finally:
+        page.unroute(PICK_ROUTE)
+        unseed()
+    step(25, "PASS — the picker searches the library and a choice fires the write")
+
+
 def test_guest_options_and_compare_warning(page, frontend: str):
     """The 'small three' remnants: a guest's options must mirror to
     localStorage (a theme choice used to survive only until reload), and
@@ -1550,6 +1669,7 @@ def main():
                 ("check-batch chunked",  lambda: test_check_batch_chunked(page, frontend)),
                 ("translation error visible", lambda: test_translation_error_visible(page, frontend)),
                 ("phone sidebar collapsed", lambda: test_phone_sidebar_collapsed(page, args.backend, frontend, token_a)),
+                ("viewer picks the right show", lambda: test_viewer_can_pick_the_right_show(page, args.backend, frontend, token_a)),
                 ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
             ]
             for label, fn in tests:

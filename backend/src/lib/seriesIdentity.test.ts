@@ -5,6 +5,7 @@ import {
   resolveIdentity,
   needsRemoteLookup,
   needsRegrade,
+  isDateVerified,
   RESOLVER_VERSION,
   mergeIdentityPatch,
   type Identity,
@@ -171,4 +172,26 @@ test('needsRegrade: a ladder change reaches stored rows, but never human ones', 
   assert.equal(
     needsRegrade({ ...stale, tvdbId: null, tmdbId: null }), false,
     'a row with no ids belongs to the main sweep, not the regrade pass');
+});
+
+
+test('isDateVerified: only a DATE vouches for a resolver id', () => {
+  // The strongest evidence this system has. Measured across the corpus,
+  // correct matches land 0–31 days from the AniList premiere and wrong ones
+  // 62–21,929 — nothing in between. So a resolver row accepted on a date is
+  // as settled as a community-map id, and the viewer's correction picker is
+  // hidden for it; 105 of 166 uncertain-looking 2026 rows are this case.
+  assert.equal(isDateVerified('remote: air date 0d'), true);
+  assert.equal(isDateVerified('remote: premiere date 3d'), true);
+  assert.equal(isDateVerified('remote: tvdb season premiere 1d'), true);
+
+  // Text and year are NOT dates. An exact title dated 1,012 days off is the
+  // Echo class, and a ±1 production year is nearly free for an unrelated
+  // sibling — both must stay correctable by a viewer.
+  assert.equal(isDateVerified('remote: exact title'), false);
+  assert.equal(isDateVerified('remote: release year 0'), false);
+  assert.equal(isDateVerified('remote: unverified'), false);
+  assert.equal(isDateVerified('remote: no match'), false);
+  assert.equal(isDateVerified(null), false);
+  assert.equal(isDateVerified(''), false);
 });

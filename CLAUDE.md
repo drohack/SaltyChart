@@ -283,7 +283,7 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin — an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate — it edits tracked source, restarts the
-backend ~136 times (two per row, 68 rows) and starts real transcodes, which is not something to do
+backend ~146 times (two per row, 73 rows) and starts real transcodes, which is not something to do
 casually on a box that also serves Plex and Jellyfin. Measured on a full audit:
 Jellyfin peaked at 314% CPU (ffmpeg, three cores) and the host at 45% of twelve.
 
@@ -380,13 +380,13 @@ Suite includes:
 | `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
 | `test_api_negative.py` | 11 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates, and a **correctly signed JWT carrying no `id`** — which used to hang the request forever instead of returning 401, so the short timeout *is* the assertion |
 | `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
-| `test_ui_interactions.py` | 24 flows: nine button-click smoke (login → modal Escape), then one guard per silent-failure class found by the audits and exploratory passes — Compare ranks checked against seeded orders, no API key in /admin's DOM, `unknown`/`notAired` never hide, share-image has real content, per-section progressive loading, a visible unreachable-library / hung-backend / failed-hide-rollback, the /admin/matching resolver-accept + match-dropdown + Run-sweep-button contract, check-batch chunking, in-band translation errors, the phone sidebar default, guest options. Seeds from live season data. Every flow's history and the trap it was watched to fail on: the file's docstring |
+| `test_ui_interactions.py` | 25 flows: nine button-click smoke (login → modal Escape), then one guard per silent-failure class found by the audits and exploratory passes — Compare ranks checked against seeded orders, no API key in /admin's DOM, `unknown`/`notAired` never hide, share-image has real content, per-section progressive loading, a visible unreachable-library / hung-backend / failed-hide-rollback, the /admin/matching resolver-accept + match-dropdown + Run-sweep-button contract, check-batch chunking, in-band translation errors, the phone sidebar default, guest options, the viewer's library picker (its write stubbed — a real pick rewrites identity for everyone). Seeds from live season data. Every flow's history and the trap it was watched to fail on: the file's docstring |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D — YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) — needs GPU |
 | `test_match_replay.py` | Replays the shipping `matchSeries` (community-map ids only) over a frozen 8-season corpus — 945 real AniList entries × a 2,271-series library snapshot — and diffs every verdict against a committed baseline, in seconds with no network. Twelve real false positives asserted by name, and a named assertion matching no corpus entry is itself a failure. Fixtures are gitignored (they inventory the media library; this repo is public), so the test SKIPs where they haven't been built. Scope, privacy, and the re-baseline procedure: the file's docstring |
-| `test_jellyfin.py` | 12 steps: auth/admin gates, `?token=` paths, availability shape, stream proxy + manifest credential-leak assertion, subtitle fetch and caching headers, no credential in `transcodingUrl`, at least one `matchedBy == "id"` (the id tier proven alive), a two-path round trip through the override table (an unheld id AND an outright rejection both flip a show to unavailable, invalidation proven in the persisted blob), films never falling through to series titles, Confirm keeping provenance, and the admin lookup returning named, cross-walked, natively-TVDB picks. Live steps auto-skip when Jellyfin is unconfigured; cleanup always in a `finally`. Step-by-step history: the file's docstring |
+| `test_jellyfin.py` | 13 steps: auth/admin gates, `?token=` paths, availability shape, stream proxy + manifest credential-leak assertion, subtitle fetch and caching headers, no credential in `transcodingUrl`, at least one `matchedBy == "id"` (the id tier proven alive), a two-path round trip through the override table (an unheld id AND an outright rejection both flip a show to unavailable, invalidation proven in the persisted blob), films never falling through to series titles, Confirm keeping provenance, the admin lookup returning named, cross-walked, natively-TVDB picks, and a viewer pick that corrects a match but is refused (409) over an admin's decision. Live steps auto-skip when Jellyfin is unconfigured; cleanup always in a `finally`. Step-by-step history: the file's docstring |
 | `test_player.py` | 10 steps driving the real player: pre-warm without an early stream, playback advances, one subtitle menu with a plain-English default, `[`/`]` speed steps with the bar hidden, burned-in subtitles verified in the pixels, 480p in exactly one restart, Escape stopping the transcode. Steps 1/2/3/5 are unconditional setup, step 8 reloads before the subtitles-off pass, step 9 stubs an `AbortError` — why each rule exists is in the file's docstring. Auto-skips when Jellyfin is unconfigured or nothing in the season is in the library |
-| `backend npm run test:unit` | Pure helpers via `node --test`: `jellyfinApi` (a logged axios error never carries the API key; the auth header's `DeviceId`; the ESM SDK loads under CommonJS; the typed `DeviceProfile` is byte-identical to the hand-written one), `remoteIdentity` (the acceptance ladder and `pickCandidate` against the real measured pairs, `baseTitles` ordering, defensive premiere parsing, the miss-retry tiers incl. the >2y retirement, `retryStateFor`'s cooldown flip, `planSweep`'s cap/cooldown/retired selection incl. the drain override), `seriesIdentity` (the precedence ladder, `needsRemoteLookup`, and `needsRegrade` — stale-by-version, never a human decision, self-terminating), `skyhookIdentity` (`titleRelated` floors, season-premiere-only verification, undated-future-season, degrade-to-empty), the cross-provider candidate merge (id reference only — the title-merge mutant was watched to fuse two of Echo's three films), `episodeMatch`, `jellyfinFilmIndex` (the coalescing raced and was watched to fail), `animeMatch` (Unicode guards, positive-only guessed ids, the removed contains-tier's four pairs, `classifyMatch`'s four-way partition incl. the unheld-film category error), `anilistRateLimit` (the 60 s lockout arithmetic — the headerless rung was watched to fail at 15 s). Every assertion's story is commented at the assertion in its `.test.ts` |
+| `backend npm run test:unit` | Pure helpers via `node --test`: `jellyfinApi` (a logged axios error never carries the API key; the auth header's `DeviceId`; the ESM SDK loads under CommonJS; the typed `DeviceProfile` is byte-identical to the hand-written one), `remoteIdentity` (the acceptance ladder and `pickCandidate` against the real measured pairs, `baseTitles` ordering, defensive premiere parsing, the miss-retry tiers incl. the >2y retirement, `retryStateFor`'s cooldown flip, `planSweep`'s cap/cooldown/retired selection incl. the drain override), `seriesIdentity` (the precedence ladder, `needsRemoteLookup`, and `needsRegrade` — stale-by-version, never a human decision, self-terminating; `isDateVerified`'s rung list), `skyhookIdentity` (`titleRelated` floors, season-premiere-only verification, undated-future-season, degrade-to-empty), the cross-provider candidate merge (id reference only — the title-merge mutant was watched to fuse two of Echo's three films), `episodeMatch`, `jellyfinFilmIndex` (the coalescing raced and was watched to fail), `animeMatch` (Unicode guards, positive-only guessed ids, the removed contains-tier's four pairs, `classifyMatch`'s four-way partition incl. the unheld-film category error), `libraryPick` (the viewer picker's ranking, and that an id-less library item is never offered), `anilistRateLimit` (the 60 s lockout arithmetic — the headerless rung was watched to fail at 15 s). Every assertion's story is commented at the assertion in its `.test.ts` |
 | `test_rate_limits.py` | Every limiter carries `skip: () => _isDev`, so **not one is exercised** by anything else here — a limiter set to `max: 1` would lock everyone out and the suite would stay green. Boots a second backend in production mode on :3999 with its own throwaway SQLite file (two backends on one DB caused real lock contention mid-suite), exceeds 20/min on `/api/auth/login`, and asserts `429` + `{ code: 'RATE_LIMITED' }` + `RateLimit-*` headers |
 | `test_audit_anchors.py` | Two doc-rot checks, both cheap enough to run on every push. (1) **`EXPLORATORY.md` cites nothing dead** — every referenced file exists, and no `file.ext:NN` line references, which move silently (one did, within an hour of being written). It cannot check the prose, so a pass here does not mean the charter is accurate — see the doc-sync rule above. (2) Every `mutation_audit.py` row still matches its source. A row whose anchor text has moved reports `SKIP`, which is easy to lose in a 35-minute audit and means that invariant is silently unaudited — batching the availability lookups moved the `unknown`-never-hides guard into another file and its row went on pointing at code that no longer existed. Runs in ~1.5 s with no servers, so it sits on every push instead of waiting for the next audit. **Catches only the cheap half**: six rows were once vacuous while every anchor resolved perfectly, and only a real audit run finds that |
 | `test_svelte_check.py` | **`vite build` does not type-check `.svelte` script blocks** — a reference to an identifier that no longer exists compiles and ships, then throws at runtime inside a `try/catch` that degrades quietly. That shipped three times in one day (a deleted `let preparing`; a `.default` unwrapped twice; a renamed `repaintJassub` — the last two silently downgraded every ASS release to WebVTT). `svelte-check` catches all three. A **ratchet**, not a clean gate: 8 pre-existing type errors remain in unrelated components, so it fails only when the count rises. Lower the baseline as they are fixed; never raise it. It has already paid for itself twice over: typing an `apiJson<string[]>` call in Compare made it notice that `suggestions` had been declared `string[]` while every write put `{ value, label }` in and every read used `.value` — declaring it honestly cleared the new error *and* the two standing ones |
@@ -570,7 +570,18 @@ Routes (contracts here; each guard's story is commented at its code):
   refetches once stampeded); it exists because a cache that survives restarts
   turned `test_jellyfin`'s id-tier proof into a recording. Always 200 —
   server down/unconfigured is `{ available: false, unknown: true }` (never
-  cached). **`unknown` is load-bearing**: "couldn't ask", not "not in the
+  cached). Carries **`idConfident`** — do we actually KNOW which show this is:
+  a community-map id, a human decision, an admin's manual override, or a
+  resolver id a DATE vouched for (`isDateVerified` — the air-date,
+  premiere-date and TVDB-season-premiere rungs, and deliberately NOT `exact
+  title` or `release year`, the Echo and coincidental-sibling classes). It
+  gates the viewer's correction picker, and `unverified` follows the same rule
+  so the pop-up's "⚠ unconfirmed match" can't fire on a row /admin/matching
+  renders green. **A viewer pick is NOT confident**: it is unconfirmed by
+  construction and queued for review, and treating it as settled hid the
+  picker — and the undo inside it — the instant someone used it. Verdicts
+  cached before the field existed lack it and read falsy until they expire.
+  **`unknown` is load-bearing**: "couldn't ask", not "not in the
   library"; every consumer must refuse to hide on it.
 - `GET  /playback/:itemId` — one call: `playSessionId`, `mediaSourceId`,
   subtitle streams (with the file's own flags + codec), font attachments.
@@ -626,6 +637,32 @@ Routes (contracts here; each guard's story is commented at its code):
   `NOT_CONFIGURED` / `IDENTITY_NOT_READY` when it can't start. Exists because
   a cold start (new deployment, 245-entry backlog) used to mean one container
   restart per capped run.
+- `GET /library/search?term=` — **viewer-gated** (JWT only, no admin), the one
+  exception among the identity endpoints. Ranks the cached library + film index
+  for the Watch pop-up's picker (`lib/libraryPick.ts`); in-memory, no Jellyfin
+  calls. Items carrying neither a TVDB nor a TMDB id are never offered — a pick
+  is stored as an id override, so an id-less item cannot be pinned. It DOES use
+  a contains tier, unlike `matchSeries`: a human is choosing, so hiding the
+  right answer is the only real failure.
+- `GET /library/image/:itemId` — **viewer-gated**, `?token=` like the stream
+  and subtitle proxies because `<img>` cannot send a header. Proxies the
+  library item's Primary poster (the key stays server-side as always), 404s a
+  missing one so the picker needn't special-case it, cached a day. Posters
+  exist because a franchise's entries differ by one word and the cover is how
+  a human tells them apart.
+- `POST /identity/unpick` — **viewer-gated**; `{ mediaId }` clears the override
+  so the entry falls back to the automatic match. Same 409 guard as the pick:
+  a human decision is never touched. A pick a viewer cannot reverse is worse
+  than no pick.
+- `POST /identity/pick` — **viewer-gated**; `{ mediaId, itemId }`. The ids
+  written are read off OUR library row, never taken from the request. Refuses
+  with **409 `ALREADY_SETTLED`** when the stored row is confirmed or rejected —
+  nothing else guards those (`setIdentityOverride` upserts unconditionally), so
+  without it a viewer could silently undo an admin's Reject. Stored as
+  `source: 'manual'`, `confirmed: false`, `note: 'viewer: picked by <user>…'`;
+  a new `source` value was rejected as it would need edits in seven places and
+  still render as a community-map id. Invalidation is inherited from
+  `onIdentityChanged`.
 - `PUT /identity` — admin only; write an override. `rejected: true` means
   "not in the library" and suppresses title matching too. **Merged onto the
   stored row** (`mergeIdentityPatch`): an unsent field keeps its stored value
@@ -795,6 +832,15 @@ alike. Consequences encoded in the ladder:
   was wrong and was removed (sequel→parent is *correct* — TVDB/TMDB put
   seasons inside one series). Don't reintroduce a title or relation heuristic
   without re-measuring.
+
+**A viewer can correct a match from the Watch pop-up**, and it is remembered
+for everyone: the pop-up is where a wrong match is actually noticed, and
+`/admin/matching` — where it could be fixed — is a page nobody visits. The
+picker offers held library items only (a resolver candidate is usually
+something we DON'T hold, which is why the row is unverified), the pick writes a
+`manual` row carrying a `viewer:` note, and that note puts it in the admin
+review queue as *Viewer pick* with Confirm/Reject. A human decision always
+wins — see `POST /identity/pick`.
 
 **The same show found in both providers becomes ONE candidate, merged on an
 id cross-reference — never on a title.** TVDB and TMDB answer the search
@@ -1267,7 +1313,27 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   (`JellyfinPlayerModal.svelte`) plus a "Library: <matched title>" caption so
   a bad match is visible; title-only matches are marked **⚠ unconfirmed**.
   Season-aware: a "2nd Season" entry resolves to that season's E1 and is
-  honestly unavailable if the library lacks it. Availability for all wheel
+  honestly unavailable if the library lacks it. A **"Not the right show?"**
+  control — offered only when the identity is *uncertain* (a resolver guess or
+  a title match), since a community-map id or a human decision needs no
+  correcting. That keys off `idConfident` on the availability verdict, not on
+  availability itself: the question is "do we know what this is", not "can you
+  watch it", so an entry we're sure of shows no control even when the library
+  doesn't hold it. Reading "Find it in my library" when nothing matched, it searches the
+  held library and pins the entry to what the viewer picks — remembered for
+  everyone and queued for admin review. It **replaces the pop-up body** rather
+  than opening a menu inside it: `.modal-box` is its own scroll container, so a
+  floating panel produced two competing scrollbars, clipped the results and
+  pushed *Mark as watched* out of reach. The results list owns the only
+  scrollbar and is bounded, so a long list scrolls in place. The AniList cover
+  stays on screen beside it and each option shows its **library poster** —
+  matching is a comparison, and hiding either side made it guesswork. It states
+  what the entry resolves to now and tags that option `current`, so a viewer
+  can tell a correction from a no-op. *Reset to
+  the automatic match* undoes a pick. Enter belongs to the search box, not the
+  pop-up's mark-watched handler (a window listener; the player guards the same
+  way), and pick mode never survives the pop-up it belongs to. Logged-in viewers only: the write needs
+  a token, and a control that 401s is worse than no control. Availability for all wheel
   items comes from **one `/availability/batch` request** through
   `checkAvailabilityMany()` (`stores/jellyfin.ts`), which omits any entry it
   couldn't definitely answer — so `?.available === false` refuses to act on

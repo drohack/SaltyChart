@@ -557,7 +557,12 @@
   // The "Needs attention" queue — the three row kinds are in the header doc.
   // A pending row with NO ids is a recorded *miss* (the resolver searched and
   // found nothing), so it stays out of the queue.
+  /** A viewer corrected this from the Watch pop-up — see `viewerPick`. */
+  const isViewerPick = (r: Row) => (r.note ?? '').startsWith('viewer:');
   const needsAttention = (r: Row) =>
+    // A viewer contradicted the matcher from the pop-up. That is exactly the
+    // signal this queue exists for, and it is unconfirmed by construction.
+    (isViewerPick(r) && !r.confirmed && !r.rejected) ||
     (r.pending && !!(r.tvdbId || r.tmdbId)) ||
     (!r.confirmed && (r.candidates?.length ?? 0) > 1) ||
     (!r.pending && r.matchedBy === 'title' && !r.confirmed);
@@ -644,6 +649,14 @@
             return { verdict: 'Matched', detail: 'auto-match on exact title — no date could confirm it', cls: 'badge-info', options };
           }
           return { verdict: 'Matched', detail: `auto-match, ${unverifiedBecause(r)}`, cls: 'badge-info', options };
+        }
+        if (isViewerPick(r)) {
+          // The note carries the provenance a bare "manual id" would hide:
+          // this row was set by someone watching, not by an admin here.
+          return {
+            verdict: 'Viewer pick', detail: (r.note ?? '').replace(/^viewer:\s*/, ''),
+            cls: 'badge-info', options,
+          };
         }
         return {
           verdict: 'Matched',

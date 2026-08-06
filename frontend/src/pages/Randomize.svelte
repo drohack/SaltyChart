@@ -9,7 +9,7 @@ import { onMount } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
 import { checkAvailability, checkAvailabilityMany, mediaConfigured, libraryStatus, type MediaAvailability } from '../stores/jellyfin';
 import { loadCastSdk, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
-import { apiFetch, QUICK } from '../lib/remote';
+import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
 
 /** Set when a hide/show write failed and the optimistic change was put back. */
 let hideWriteError = '';
@@ -266,6 +266,9 @@ $: _lang = $options.titleLanguage;
     ].filter(Boolean);
     const airing = { status: selected.status, startDate: selected.startDate };
     watchInfo = null;
+    // Reopening a show must not land in the picker someone left open on a
+    // previous one — the state belongs to this pop-up, not the page.
+    closePicker();
     checkAvailability(id, titles, false, airing)
       .then((info) => {
         // Guard against a stale resolve after the user opened a different show.
@@ -327,6 +330,163 @@ $: _lang = $options.titleLanguage;
   // A plain function so the reactive block that calls it neither reads nor
   // writes `showPlayer` directly (which would drag extra invalidations
   // into that statement).
+  /**
+   * "Not the right show?" — let the viewer pin this entry to a library item.
+   *
+   * This pop-up is where a wrong match is actually noticed; /admin/matching is
+   * where it could be fixed, and nobody goes there. A pick is written as an
+   * identity override, so it is remembered FOR EVERYONE and lands in the admin
+   * review queue rather than being one person's private workaround.
+   *
+   * Options are LIBRARY items only — every one of them can actually play. The
+   * resolver's stored candidates are mostly things we don't hold, which is
+   * usually why a row is unverified in the first place.
+   */
+  type PickOption = {
+    kind: 'tv' | 'movie';
+    itemId: string;
+    title: string;
+    year: number | null;
+    tvdbId: string | null;
+    tmdbId: string | null;
+  };
+  let pickOpen = false;
+  let pickTerm = '';
+  let pickResults: PickOption[] = [];
+  let pickBusy = false;
+  let pickError = '';
+  let pickTimer: ReturnType<typeof setTimeout> | null = null;
+  let pickReqId = 0;
+
+  /** TVDB titles often embed their own disambiguation year — "ONE PIECE (2023)"
+   *  must not render as "(2023) (2023)". Same rule as /admin/matching. */
+  function pickLabel(opt: PickOption): string {
+    return opt.year == null || opt.title.endsWith(`(${opt.year})`)
+      ? opt.title
+      : `${opt.title} (${opt.year})`;
+  }
+
+  function closePicker() {
+    pickOpen = false;
+    pickError = '';
+    if (pickTimer) clearTimeout(pickTimer);
+    pickTimer = null;
+  }
+
+  function openPicker() {
+    if (!selected) return;
+    pickOpen = true;
+    pickError = '';
+    // Prefilled with the entry's own title and searched at once — the common
+    // case should show options without anyone typing.
+    pickTerm = selected.customName || getEnglishTitle(selected) || '';
+    void runPickSearch(pickTerm);
+  }
+
+  function queuePickSearch() {
+    if (pickTimer) clearTimeout(pickTimer);
+    const term = pickTerm.trim();
+    if (!term) {
+      pickResults = [];
+      return;
+    }
+    pickTimer = setTimeout(() => void runPickSearch(term), 500);
+  }
+
+  async function runPickSearch(term: string) {
+    const reqId = ++pickReqId;
+    pickBusy = true;
+    pickError = '';
+    try {
+      const r = await apiJson<{ results: PickOption[] }>(
+        `/api/jellyfin/library/search?term=${encodeURIComponent(term)}`,
+        { headers: { Authorization: `Bearer ${$authToken}` } },
+        { label: 'randomize/library-search', timeoutMs: QUICK }
+      );
+      if (reqId !== pickReqId) return; // a later keystroke already won
+      pickResults = r?.results ?? [];
+    } catch {
+      if (reqId !== pickReqId) return;
+      pickError = "Couldn't search your library.";
+      pickResults = [];
+    } finally {
+      if (reqId === pickReqId) pickBusy = false;
+    }
+  }
+
+  /** Undo — put the entry back to whatever the matcher works out on its own. */
+  async function clearPick() {
+    if (!selected) return;
+    const id = selected.id;
+    const titles = [
+      selected.customName, selected.title?.english,
+      selected.title?.romaji, selected.title?.native,
+    ].filter(Boolean) as string[];
+    const airing = { status: selected.status, startDate: selected.startDate };
+    pickBusy = true;
+    pickError = '';
+    try {
+      await apiJson('/api/jellyfin/identity/unpick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        body: JSON.stringify({ mediaId: id }),
+      }, { label: 'randomize/identity-unpick', timeoutMs: QUICK, retries: 0 });
+      closePicker();
+      const info = await checkAvailability(id, titles, true, airing);
+      if (selected?.id !== id) return;
+      watchInfo = info;
+    } catch (e) {
+      const err = e as ApiError;
+      pickError = err?.kind === 'http' && err.status === 409
+        ? 'An admin has already settled this one.'
+        : "Couldn't reset that match.";
+      pickBusy = false;
+    }
+  }
+
+  async function pickLibraryItem(opt: PickOption) {
+    if (!selected) return;
+    const id = selected.id;
+    const titles = [
+      selected.customName,
+      selected.title?.english,
+      selected.title?.romaji,
+      selected.title?.native,
+    ].filter(Boolean) as string[];
+    const airing = { status: selected.status, startDate: selected.startDate };
+    pickBusy = true;
+    pickError = '';
+    try {
+      await apiJson(
+        '/api/jellyfin/identity/pick',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+          body: JSON.stringify({ mediaId: id, itemId: opt.itemId }),
+        },
+        { label: 'randomize/identity-pick', timeoutMs: QUICK, retries: 0 }
+      );
+      closePicker();
+      // Re-resolve so the Watch button points at the picked show's episode.
+      // `fresh` bypasses both caches; the pop-up's own staleness guard applies
+      // because the viewer may have moved on while this was in flight.
+      const info = await checkAvailability(id, titles, true, airing);
+      if (selected?.id !== id) return;
+      watchInfo = info;
+      if (info.available && info.itemId && info.mediaSourceId) {
+        void loadPlayerModal();
+        prewarm(info.itemId, info.mediaSourceId);
+      }
+    } catch (e) {
+      const err = e as ApiError;
+      pickError =
+        err?.kind === 'http' && err.status === 409
+          ? 'An admin has already settled this one.'
+          : "Couldn't save that pick.";
+      pickBusy = false;
+    }
+  }
+
   function closePlayer() {
     if (showPlayer) showPlayer = false;
   }
@@ -995,6 +1155,17 @@ function handleModalKey(e: KeyboardEvent) {
   // Enter here would mark-watched and close the modal underneath it, and Escape
   // is how you leave the player, not the pop-up behind it.
   if (showPlayer) return;
+  if (pickOpen) {
+    // Pick mode owns the keyboard too: Enter is someone typing into the
+    // library search, and this window-level handler would mark the show
+    // watched and close the pop-up out from under them. Escape leaves the
+    // picker rather than the whole pop-up.
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closePicker();
+    }
+    return;
+  }
   if (e.key === 'Enter') {
     e.preventDefault();
     markWatched();
@@ -1755,6 +1926,99 @@ $: {
           {getEnglishTitle(selected)}
         </p>
 
+        {#if pickOpen}
+          <!-- Pick mode REPLACES the pop-up body rather than floating over it.
+               `.modal-box` is itself a scroll container, so a dropdown inside
+               it produced two competing scrollbars, clipped the results, and
+               pushed Mark as Watched out of reach. Here the results list owns
+               the only scrollbar and it is bounded, so a long list scrolls in
+               place instead of running off the page. -->
+          <div class="flex gap-4 mt-3" data-pick-dropdown role="group"
+            aria-label="Pick the right show from your library">
+            <!-- The AniList cover STAYS on screen: matching is a comparison,
+                 and hiding the thing being matched made it guesswork. -->
+            <img class="w-28 shrink-0 self-start rounded hidden sm:block"
+              src={selected.coverImage?.large ?? selected.coverImage?.medium}
+              alt={getDisplayTitle(selected)} />
+            <div class="flex flex-col gap-2 flex-1 min-w-0">
+            <p class="text-sm opacity-70">
+              Which show in your library is this? Your pick is used for everyone,
+              and flagged for the admin to confirm.
+            </p>
+            <!-- What it resolves to RIGHT NOW. Without this the list is a set
+                 of options with no indication which one is live, so there is
+                 no way to tell a correction from a no-op. -->
+            <p class="text-sm" data-pick-current>
+              {#if watchInfo?.libraryTitle}
+                Currently matched to <span class="font-semibold">{watchInfo.libraryTitle}</span>
+                {#if watchInfo.matchedBy === 'title'}<span class="opacity-60">(by title, unverified)</span>{/if}
+              {:else}
+                <span class="opacity-70">Not matched to anything in your library yet.</span>
+              {/if}
+            </p>
+            <!-- svelte-ignore a11y-autofocus -->
+            <input class="input input-bordered input-sm w-full" data-pick-input autofocus
+              placeholder="Search your library…" bind:value={pickTerm}
+              on:input={queuePickSearch} />
+            {#if pickError}
+              <p class="text-sm text-warning" data-pick-error>{pickError}</p>
+            {/if}
+            <ul class="h-72 overflow-y-auto flex flex-col gap-0.5 border border-base-300 rounded p-1"
+              data-pick-results>
+              {#each pickResults as opt (opt.itemId)}
+                <li>
+                  <button type="button" disabled={pickBusy}
+                    class="w-full text-left flex gap-2 items-center px-2 py-1 rounded hover:bg-base-200 disabled:opacity-50"
+                    class:bg-base-200={opt.itemId === watchInfo?.seriesId}
+                    on:click={() => pickLibraryItem(opt)}>
+                    <!-- Proxied: <img> can't send a bearer header, so the
+                         token rides the query like the stream/subtitle
+                         proxies. A missing poster 404s and just shows blank. -->
+                    <img class="w-8 h-12 object-cover rounded bg-base-300 shrink-0" alt=""
+                      loading="lazy"
+                      src={`/api/jellyfin/library/image/${opt.itemId}?token=${encodeURIComponent($authToken ?? '')}`} />
+                    <span class="flex-1 min-w-0 break-words">{pickLabel(opt)}</span>
+                    {#if opt.itemId === watchInfo?.seriesId}
+                      <span class="badge badge-sm badge-ghost shrink-0" data-pick-current-option>current</span>
+                    {/if}
+                    <span class="text-xs opacity-50 shrink-0">{opt.kind === 'movie' ? 'film' : 'series'}</span>
+                  </button>
+                </li>
+              {:else}
+                <li class="opacity-60 p-2 text-sm">
+                  {#if pickBusy}
+                    Searching…
+                  {:else if pickTerm.trim()}
+                    <!-- "Nothing matched" reads as a broken search. Name the
+                         term and the honest reason: the library really may not
+                         have it, and no amount of retyping will change that. -->
+                    No match for “{pickTerm.trim()}” in your library — try a
+                    shorter word, or the show may simply not be there yet.
+                  {:else}
+                    Type part of a title to search your library.
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            <div class="flex justify-between items-center gap-2">
+              <!-- Reversible by design: a pick a viewer can't undo is worse
+                   than no pick. Always offered — "put it back" is a valid
+                   answer even when nothing here looks right. -->
+              <button class="btn btn-sm btn-outline btn-warning normal-case" data-pick-clear
+                disabled={pickBusy} on:click={clearPick}>
+                Reset to the automatic match
+              </button>
+              <div class="flex items-center gap-2">
+                {#if pickBusy}<span class="loading loading-spinner loading-xs"></span>{/if}
+                <button class="btn btn-sm btn-outline normal-case" data-pick-cancel on:click={closePicker}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+            </div>
+          </div>
+        {:else}
+
         <!-- Only show Romaji title if different from English (non-bold) -->
         {#if !titlesAreSame(selected)}
           <p class="mb-4 text-base text-base-content/70">
@@ -1855,6 +2119,27 @@ $: {
               : ''}
           </p>
         {/if}
+        {#if $mediaConfigured && $authToken && watchInfo && !watchInfo.unknown && !watchInfo.notAired && !watchInfo.idConfident}
+          <!-- Offered only when the identity is UNCERTAIN — a resolver guess or
+               a title match. A community-map id, a human decision or a manual
+               override needs no correcting, and that holds even when we don't
+               hold the show: the question is "do we know what this is", not
+               "can you watch it". The correction belongs where the mistake is
+               seen: a pick is
+               remembered for everyone and queued for admin review, so one
+               viewer fixing it fixes it for the next. Hidden from guests —
+               the write needs a token, and a control that 401s is worse than
+               no control. Opening it swaps the pop-up into pick mode rather
+               than dropping a menu inside it; `.modal-box` scrolls its own
+               overflow, so an absolutely-positioned panel fought that scroll
+               and pushed the action buttons out of reach. -->
+          <div class="flex justify-center mb-4">
+            <button class="btn btn-sm btn-outline normal-case" data-pick-open
+              on:click={openPicker}>
+              {watchInfo.available ? 'Not the right show?' : 'Find it in my library'}
+            </button>
+          </div>
+        {/if}
         <div class="modal-action relative flex justify-center">
           {#if selected.watched || watchList.find(w => w.mediaId === selected.id)?.watched}
             <!-- Watched series: only show unwatch button (same pink color as Hide Series) -->
@@ -1872,6 +2157,7 @@ $: {
             <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
           {/if}
         </div>
+        {/if}
       </div>
     </dialog>
   {/if}

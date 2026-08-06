@@ -27,6 +27,7 @@ import {
   type RemoteCandidate,
 } from '../lib/remoteIdentity';
 import { skyhookSearch } from '../lib/skyhookIdentity';
+import { searchLibrary } from '../lib/libraryPick';
 import {
   closestDatedEpisode,
   AIR_DATE_TOLERANCE_MS,
@@ -34,6 +35,7 @@ import {
 } from '../lib/episodeMatch';
 import {
   resolveIdentity,
+  isDateVerified,
   rawIdentityOverride,
   identityReady,
   setIdentityOverride,
@@ -1341,6 +1343,26 @@ async function resolveAvailability(
     // class (12 of 945 corpus entries, every one a new work matched onto its
     // franchise parent) at zero cost to correct matches.
     const identity = resolveIdentity(mediaId);
+    // Do we actually KNOW which show this is?
+    //
+    // True for a community-map id (a 1:1 assertion), a human decision, and a
+    // hand-written override. False for a resolver guess or a title match. The
+    // viewer's "Not the right show?" picker keys off THIS, not availability:
+    // there is no reason to offer a correction for an entry we are certain
+    // about, even when the library doesn't hold it.
+    const idConfident =
+      identity.rejected || identity.confirmed ||
+      identity.source === 'map' ||
+      // A manual row an ADMIN wrote is settled; a viewer pick is not — it is
+      // unconfirmed by construction and /admin/matching queues it for review.
+      // Counting it as confident hid the picker the instant someone used it,
+      // taking the undo (which lives inside the picker) with it.
+      (identity.source === 'manual' && !(identity.note ?? '').startsWith('viewer:')) ||
+      // A resolver id a DATE vouched for is as settled as a map id — see
+      // isDateVerified. Gating on provenance alone offered the picker on 105
+      // of 166 uncertain-looking 2026 rows that had matched on the exact
+      // premiere day, which is noise on a control meant for real doubt.
+      (identity.source === 'remote' && isDateVerified(identity.note));
     // An admin has said outright that this entry is not in the library. That has
     // to short-circuit *before* matching, because a rejection carries no ids and
     // would otherwise fall straight through to the title tier — which is exactly
@@ -1348,7 +1370,7 @@ async function resolveAvailability(
     // /admin/matching writes its row, drops the entry from the review list, and
     // leaves the wrong Watch button on screen.
     if (identity.rejected) {
-      const data = { available: false, matchedBy: 'override' };
+      const data = { available: false, matchedBy: 'override', idConfident };
       rememberAvailability(mediaId, data, 60 * 60 * 1000);
       return data;
     }
@@ -1361,7 +1383,7 @@ async function resolveAvailability(
       const films = await getFilmIndex(api);
       const film = films[identity.tmdbId];
       if (!film) {
-        const data = { available: false, matchedBy: 'id' };
+        const data = { available: false, matchedBy: 'id', idConfident };
         rememberAvailability(mediaId, data, 10 * 60 * 1000);
         return data;
       }
@@ -1377,7 +1399,13 @@ async function resolveAvailability(
         episodeNumber: null,
         libraryTitle: film.title,
         matchedBy: 'id',
-        unverified: identity.source === 'remote' && !identity.confirmed,
+        idConfident,
+        // Date-verified rows are NOT flagged: /admin/matching renders them
+        // green-verified, and a warning that fires on the ordinary case is a
+        // warning nobody reads — the same lesson tier-0 titles already taught.
+        unverified:
+          identity.source === 'remote' && !identity.confirmed &&
+          !isDateVerified(identity.note),
       };
       rememberAvailability(mediaId, data, 60 * 60 * 1000);
       return data;
@@ -1407,7 +1435,7 @@ async function resolveAvailability(
       hit = matchSeries(entry, library);
     }
     if (!hit) {
-      const data = { available: false };
+      const data = { available: false, idConfident };
       rememberAvailability(mediaId, data, 10 * 60 * 1000);
       return data;
     }
@@ -1421,7 +1449,7 @@ async function resolveAvailability(
       api, hit.series.id, seasonNumber, anilistDateToMs(startDate)
     );
     if (!episode) {
-      const data = { available: false, libraryTitle: hit.series.title, matchedBy: hit.confidence };
+      const data = { available: false, libraryTitle: hit.series.title, matchedBy: hit.confidence, idConfident };
       rememberAvailability(mediaId, data, 10 * 60 * 1000);
       return data;
     }
@@ -1435,6 +1463,7 @@ async function resolveAvailability(
       episodeNumber: episode.episodeNumber,
       // Matched library title — surfaced in the UI so a bad fuzzy match is
       // visible instead of mysteriously playing the wrong series.
+      idConfident,
       libraryTitle: hit.series.title,
       // 'id' = an AniList→TVDB→library id chain (exact). 'title' = fuzzy, and
       // fuzzy has produced a real false positive, so the UI marks it and
@@ -1453,7 +1482,11 @@ async function resolveAvailability(
       // title match gets. Without this the UI would present a guess as fact,
       // which is the opposite of what the confidence markers exist for. A row a
       // human confirmed on /admin/matching is fact again.
-      unverified: hit.confidence === 'id' && identity.source === 'remote' && !identity.confirmed,
+      // Same rule as the film branch above: a date-verified resolver id is
+      // not an "unconfirmed match", and /admin/matching agrees.
+      unverified:
+        hit.confidence === 'id' && identity.source === 'remote' &&
+        !identity.confirmed && !isDateVerified(identity.note),
     };
     rememberAvailability(mediaId, data, 60 * 60 * 1000);
     return data;
@@ -1465,6 +1498,190 @@ async function resolveAvailability(
     return { available: false, unknown: true };
   }
 }
+
+/**
+ * Search the held library so a viewer can correct a wrong match.
+ *
+ * VIEWER-GATED on purpose — `requireAuth` and no `requireAdmin`, unlike every
+ * other identity route. The pop-up is where a bad match is actually noticed;
+ * /admin/matching is where it could be fixed, and nobody goes there. Reads only
+ * the cached library and film index, so it costs no Jellyfin calls.
+ */
+router.get('/library/search', jellyfinLimiter, requireAuth, async (req, res) => {
+  const term = String(req.query.term ?? '').slice(0, 200);
+  if (!term.trim()) return res.json({ results: [] });
+  try {
+    const cfg = await getJellyfinConfig();
+    if (!cfg) return res.json({ results: [] });
+    const api = await jellyfinApi(cfg);
+    const [series, films] = await Promise.all([getSeriesLibrary(api), getFilmIndex(api)]);
+    return res.json({ results: searchLibrary(term, series, films) });
+  } catch (err) {
+    console.warn('[jellyfin] library search failed:', jellyfinErrorInfo(err));
+    return res.status(502).json({ error: 'Could not search the library', code: 'UPSTREAM_ERROR' });
+  }
+});
+
+/**
+ * A library item's poster, proxied.
+ *
+ * `<img>` cannot send an Authorization header, so this takes `?token=` like
+ * the stream and subtitle proxies. The Jellyfin key stays server-side as
+ * always — it goes on the request we make, never into anything a browser sees.
+ *
+ * Posters exist because the picker without them is a list of near-identical
+ * strings: a franchise's entries differ by a word, and the cover is how a
+ * human tells them apart at a glance.
+ */
+router.get('/library/image/:itemId', streamLimiter, async (req, res) => {
+  let token: string | undefined;
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) token = auth.slice(7);
+  else if (typeof req.query.token === 'string') token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
+  try {
+    jwt.verify(token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+  }
+  // Jellyfin item ids are hex; refuse anything else rather than letting a
+  // crafted id build a path into the upstream.
+  const itemId = String(req.params.itemId ?? '');
+  if (!/^[a-f0-9-]{8,64}$/i.test(itemId)) {
+    return res.status(400).json({ error: 'Bad item id', code: 'BAD_REQUEST' });
+  }
+  const cfg = await getJellyfinConfig();
+  if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
+  try {
+    const ax = jellyfinAxios(cfg);
+    const { data, headers } = await ax.get(
+      `/Items/${itemId}/Images/Primary?maxHeight=180&quality=80`,
+      { responseType: 'arraybuffer', timeout: 20_000, maxContentLength: 8 * 1024 * 1024 }
+    );
+    // A poster for a given item id is immutable enough to keep for a day; the
+    // picker re-renders these on every keystroke.
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.type(String(headers['content-type'] ?? 'image/jpeg')).send(Buffer.from(data));
+  } catch {
+    // A missing poster is normal — answer 404 rather than an error the picker
+    // would have to special-case.
+    res.status(404).end();
+  }
+});
+
+/**
+ * Undo: drop the override so this entry goes back to the automatic match.
+ *
+ * An action a viewer cannot reverse is worse than no action — picking the
+ * wrong show would otherwise be permanent until an admin noticed. Same guard
+ * as the pick: a human decision (confirmed or rejected) is never touched.
+ */
+router.post('/identity/unpick', jellyfinLimiter, requireAuth, async (req: AuthRequest, res) => {
+  const mediaId = Number(req.body?.mediaId);
+  if (!Number.isFinite(mediaId)) {
+    return res.status(400).json({ error: 'Expected { mediaId: int }', code: 'BAD_REQUEST' });
+  }
+  const existing = rawIdentityOverride(mediaId);
+  if (existing?.confirmed || existing?.rejected) {
+    return res.status(409).json({
+      error: 'An admin has already settled this entry',
+      code: 'ALREADY_SETTLED',
+    });
+  }
+  // Nothing stored is not an error: "put it back how it was" is satisfied.
+  if (!existing) return res.json({ ok: true, cleared: false });
+  await clearIdentityOverride(mediaId);
+  return res.json({ ok: true, cleared: true });
+});
+
+/**
+ * A viewer pins this entry to a library item they picked.
+ *
+ * Remembered for everyone: it writes the same identity override an admin would,
+ * so the next viewer gets the corrected match. Two rules make that safe enough
+ * to hand to any logged-in user:
+ *
+ *  - **The ids come from OUR library, never the request.** The client sends an
+ *    itemId; everything written is read off the matching library row. A caller
+ *    cannot point an entry at an arbitrary id.
+ *  - **A human decision is never overwritten.** `setIdentityOverride` upserts
+ *    unconditionally and nothing else guards confirmed/rejected rows — only
+ *    admin-gating did. Without this check a viewer could silently undo a
+ *    deliberate Reject.
+ *
+ * Written as `manual` with a `viewer:` note rather than a new source value: a
+ * novel source would need edits in seven places and would still render on the
+ * admin page as a community-map id. The note is what /admin/matching shows, and
+ * `confirmed: false` keeps the row in the review queue.
+ */
+router.post('/identity/pick', jellyfinLimiter, requireAuth, async (req: AuthRequest, res) => {
+  const mediaId = Number(req.body?.mediaId);
+  const itemId = String(req.body?.itemId ?? '');
+  if (!Number.isFinite(mediaId) || !itemId) {
+    return res.status(400).json({ error: 'Expected { mediaId: int, itemId: string }', code: 'BAD_REQUEST' });
+  }
+  const existing = rawIdentityOverride(mediaId);
+  if (existing?.confirmed || existing?.rejected) {
+    return res.status(409).json({
+      error: 'An admin has already settled this entry',
+      code: 'ALREADY_SETTLED',
+    });
+  }
+  try {
+    const cfg = await getJellyfinConfig();
+    if (!cfg) return res.status(503).json({ error: 'Jellyfin is not configured', code: 'NOT_CONFIGURED' });
+    const api = await jellyfinApi(cfg);
+    const [series, films] = await Promise.all([getSeriesLibrary(api), getFilmIndex(api)]);
+    const hitSeries = series.find((s) => s.id === itemId);
+    const filmEntry = Object.entries(films).find(([, f]) => f.itemId === itemId);
+    if (!hitSeries && !filmEntry) {
+      return res.status(404).json({ error: 'That is not an item in your library', code: 'NOT_FOUND' });
+    }
+    const picked = hitSeries
+      ? {
+          tvdbId: hitSeries.tvdbId ? String(hitSeries.tvdbId) : null,
+          tmdbId: hitSeries.tmdbId ? String(hitSeries.tmdbId) : null,
+          tmdbKind: (hitSeries.tmdbId ? 'tv' : null) as 'tv' | 'movie' | null,
+          title: hitSeries.title,
+          year: hitSeries.year ?? null,
+        }
+      : {
+          tvdbId: null,
+          tmdbId: filmEntry![0],
+          tmdbKind: 'movie' as const,
+          title: filmEntry![1].title,
+          year: filmEntry![1].year ?? null,
+        };
+    if (!picked.tvdbId && !picked.tmdbId) {
+      // The search never offers these, so reaching here means a hand-made
+      // request — say why rather than storing a row that resolves to nothing.
+      return res.status(422).json({
+        error: 'That library item carries no TVDB or TMDB id, so it cannot be pinned',
+        code: 'NOT_PINNABLE',
+      });
+    }
+    const who = await prisma.user
+      .findUnique({ where: { id: req.userId }, select: { username: true } })
+      .catch(() => null);
+    const identity = await setIdentityOverride(mergeIdentityPatch(existing, {
+      anilistId: mediaId,
+      tvdbId: picked.tvdbId,
+      tmdbId: picked.tmdbId,
+      tmdbKind: picked.tmdbKind,
+      confirmed: false,
+      rejected: false,
+      pending: false,
+      matchedTitle: picked.title,
+      source: 'manual',
+      note: `viewer: picked by ${who?.username ?? 'a viewer'} while watching`,
+      ...(picked.year != null ? { year: picked.year } : {}),
+    }));
+    return res.json({ ok: true, identity });
+  } catch (err) {
+    console.warn('[jellyfin] viewer pick failed:', jellyfinErrorInfo(err));
+    return res.status(502).json({ error: 'Could not save that pick', code: 'UPSTREAM_ERROR' });
+  }
+});
 
 router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
   const { mediaId, titles, fresh, startDate } = req.body ?? {};

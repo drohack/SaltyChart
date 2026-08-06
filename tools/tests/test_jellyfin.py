@@ -53,7 +53,7 @@ Usage:
 Exits 0 if all steps pass (or the configured-only steps were skipped),
 1 on any failure. Each progress line is self-contained per the global
 CLAUDE.md convention:
-  [k/12 Jellyfin] step name — detail
+  [k/13 Jellyfin] step name — detail
 """
 import argparse
 import atexit
@@ -64,7 +64,7 @@ from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 12
+TOTAL_STEPS = 13
 
 
 def step(n: int, msg: str) -> None:
@@ -188,7 +188,27 @@ def main():
                       json={"mediaId": 1, "titles": ["x"]}, timeout=5)
     if r.status_code != 401:
         fail(2, f"/availability without token: expected 401, got {r.status_code}")
-    step(2, "PASS — both 401")
+    # The viewer pick routes are the only identity endpoints NOT admin-gated —
+    # deliberately, since the pop-up is where a bad match is noticed. They must
+    # still refuse an anonymous caller, or anyone on the network could rewrite
+    # matching for everyone.
+    r = requests.get(f"{backend}/api/jellyfin/library/search?term=x", timeout=5)
+    if r.status_code != 401:
+        fail(2, f"/library/search without token: expected 401, got {r.status_code}")
+    r = requests.post(f"{backend}/api/jellyfin/identity/pick",
+                      json={"mediaId": 1, "itemId": "x"}, timeout=5)
+    if r.status_code != 401:
+        fail(2, f"/identity/pick without token: expected 401, got {r.status_code}")
+    r = requests.post(f"{backend}/api/jellyfin/identity/unpick",
+                      json={"mediaId": 1}, timeout=5)
+    if r.status_code != 401:
+        fail(2, f"/identity/unpick without token: expected 401, got {r.status_code}")
+    # The poster proxy takes ?token= because <img> cannot send a header — the
+    # same door the stream proxy opens, so it gets the same check.
+    r = requests.get(f"{backend}/api/jellyfin/library/image/abcdef0123456789", timeout=5)
+    if r.status_code != 401:
+        fail(2, f"/library/image without token: expected 401, got {r.status_code}")
+    step(2, "PASS — all six 401")
 
     # ───────── 3/8  Admin gates ─────────
     step(3, "config endpoints as non-admin — expect 403 ADMIN_REQUIRED")
@@ -702,6 +722,99 @@ def main():
                          "identity arrives half-filled")
             step(12, f"PASS — name search offers ids, and tvdb:{tvdb} came back as "
                      f"{(one.get('library') or {}).get('title')!r} with TMDB {one.get('tmdbId')}")
+
+    # ───────── 13/13  A viewer can correct a match, but not a human decision ─────────
+    #
+    # The only identity endpoints reachable without admin. Two things matter:
+    # a pick actually takes effect for everyone (that is the whole feature), and
+    # it cannot overwrite a row an admin settled — nothing else guards that,
+    # since setIdentityOverride upserts unconditionally and only admin-gating
+    # protected confirmed/rejected rows before this existed.
+    step(13, "a viewer pick corrects a match, and refuses to overwrite an admin's")
+    if not configured or not playable:
+        step(13, "SKIP — Jellyfin unconfigured or nothing in the season is held")
+    elif not admin:
+        step(13, "SKIP — could not sign an admin token (needed to seed the settled row)")
+    else:
+        ah = {"Authorization": f"Bearer {admin}"}
+        mid = playable["mediaId"]
+        # A real library item to point at: whatever the search offers for the
+        # show's own library title.
+        r = requests.get(f"{backend}/api/jellyfin/library/search",
+                         params={"term": playable.get("libraryTitle") or "a"},
+                         headers=auth, timeout=30)
+        if r.status_code != 200:
+            fail(13, f"viewer library search errored: {r.status_code} {r.text[:160]}")
+        opts = r.json().get("results") or []
+        if not any(o.get("tvdbId") or o.get("tmdbId") for o in opts):
+            fail(13, "the viewer library search offered nothing pinnable — every "
+                     "option must carry an id or picking it cannot do anything")
+        target = next(o for o in opts if o.get("tvdbId") or o.get("tmdbId"))
+        try:
+            # An admin decision must win over a viewer.
+            requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                         json={"anilistId": mid, "tvdbId": "99999997", "confirmed": True})
+            r = requests.post(f"{backend}/api/jellyfin/identity/pick", headers=auth, timeout=30,
+                              json={"mediaId": mid, "itemId": target["itemId"]})
+            if r.status_code != 409:
+                fail(13, f"a viewer overwrote an admin-confirmed row: expected 409, "
+                         f"got {r.status_code} {r.text[:160]}")
+            got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                timeout=20, json={"mediaIds": [mid]}).json()
+            still = (got.get("identities") or {}).get(str(mid)) or {}
+            if still.get("tvdbId") != "99999997":
+                fail(13, f"the refused pick changed the row anyway: {still!r}")
+
+            # With the human decision cleared, the same pick must land.
+            requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
+            r = requests.post(f"{backend}/api/jellyfin/identity/pick", headers=auth, timeout=60,
+                              json={"mediaId": mid, "itemId": target["itemId"]})
+            if r.status_code != 200:
+                fail(13, f"a viewer pick was refused: {r.status_code} {r.text[:160]}")
+            got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                timeout=20, json={"mediaIds": [mid]}).json()
+            wrote = (got.get("identities") or {}).get(str(mid)) or {}
+            if wrote.get("source") != "manual" or not str(wrote.get("note") or "").startswith("viewer:"):
+                fail(13, "a viewer pick must be stored as a manual row carrying its "
+                         f"provenance note, got source={wrote.get('source')!r} "
+                         f"note={wrote.get('note')!r}")
+            if wrote.get("confirmed"):
+                fail(13, "a viewer pick must stay unconfirmed so it reaches the review queue")
+            # A viewer pick must NOT read as a settled identity. The picker is
+            # hidden for confident rows and the undo lives inside it, so the
+            # moment a pick counted as confident the correction became
+            # irreversible — found by auditing this against /admin/matching,
+            # which queues the very same row for review.
+            av = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
+                               timeout=90, json={"mediaId": mid, "titles": playable["titles"],
+                                                 "fresh": True}).json()
+            if av.get("idConfident"):
+                fail(13, "a viewer pick reads as a confident identity, so the picker "
+                         "— and the undo inside it — disappears after one use")
+
+            # Undo. A pick a viewer cannot reverse is worse than no pick, and
+            # the same human-decision guard applies to taking one back.
+            r = requests.post(f"{backend}/api/jellyfin/identity/unpick", headers=auth,
+                              timeout=30, json={"mediaId": mid})
+            if r.status_code != 200 or not r.json().get("cleared"):
+                fail(13, f"a viewer could not undo their own pick: "
+                         f"{r.status_code} {r.text[:160]}")
+            got = requests.post(f"{backend}/api/jellyfin/identity/resolve", headers=ah,
+                                timeout=20, json={"mediaIds": [mid]}).json()
+            left = (got.get("identities") or {}).get(str(mid)) or {}
+            if str(left.get("note") or "").startswith("viewer:"):
+                fail(13, f"undo left the viewer row in place: {left!r}")
+            requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
+                         json={"anilistId": mid, "tvdbId": "99999997", "rejected": True})
+            r = requests.post(f"{backend}/api/jellyfin/identity/unpick", headers=auth,
+                              timeout=30, json={"mediaId": mid})
+            if r.status_code != 409:
+                fail(13, f"a viewer cleared an admin's rejection: expected 409, "
+                         f"got {r.status_code} {r.text[:160]}")
+            step(13, f"PASS — refused over an admin decision, pinned "
+                     f"{target['title'][:40]!r} as an unconfirmed viewer row, and undid it")
+        finally:
+            requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed — OK", flush=True)
 
