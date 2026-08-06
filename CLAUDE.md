@@ -223,7 +223,7 @@ whether or not that skill is loaded:
 - **`mutation_audit.py` is NOT a gate.** It edits tracked source, restarts the
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only N` makes checking one cheap. Last
-  measured: **74 rows in 19 min** (2026-08-05); the table is at **79** rows
+  measured: **74 rows in 19 min** (2026-08-05); the table is at **83** rows
   since, so re-time it rather than quoting that figure.
 - **A test run must never provoke a live AniList 429.** The 429/backoff logic is
   unit-tested off the network. Warm the cache first; both runners do it

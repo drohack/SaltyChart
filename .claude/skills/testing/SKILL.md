@@ -96,7 +96,7 @@ A row costs what its **mutant** run costs, which is not what the test costs
 normally - and the two differ in opposite directions depending on the test.
 `test_jellyfin` and `test_player` call `fail()`, which `sys.exit(1)`s at the
 guarded step, so a caught row pays only as far as its own assertion.
-`test_ui_interactions` catches per flow and **runs all 25 regardless**, so an
+`test_ui_interactions` catches per flow and **runs all 27 regardless**, so an
 un-narrowed UI row pays the whole suite every time. That asymmetry, not the
 nominal cost of each test, is why narrowing mattered enormously for UI rows and
 not at all for Jellyfin ones. Measured per row on a full audit:
@@ -107,7 +107,7 @@ not at all for Jellyfin ones. Measured per row on a full audit:
 | `T_JELLYFIN` | ~13 s | exits at the guarded step; a *clean* 13-step run is 60-90 s |
 | `T_UI` with `flows=(...)` | ~3-37 s | one self-sufficient flow - the only way to write a UI row |
 | `T_NEGATIVE` | ~10-30 s | |
-| `T_UI`, no `flows` | **~142 s** | all 26 flows; nothing stops early. No row does this any more |
+| `T_UI`, no `flows` | **~142 s** | all 27 flows; nothing stops early. No row does this any more |
 | `player(...)` | minutes | real transcodes; keep the step list narrow |
 
 - **Pin the invariant at the cheapest layer that can see it.** `classifyMatch`'s
@@ -116,7 +116,7 @@ not at all for Jellyfin ones. Measured per row on a full audit:
 - **Name the flow on a `T_UI` row** (`flows=("remote accept visible",)`). Only
   labels in that file's `SELECTABLE_FLOWS` are allowed, because a flow that
   inherits state from its predecessors passes alone while proving nothing.
-  All 24 UI rows now name one; the un-narrowed default remains only so that
+  All 31 UI rows now name one; the un-narrowed default remains only so that
   forgetting is slow rather than wrong.
 - **An inherited precondition is a bug in the flow, not a reason to keep it off
   the allowlist.** `phone sidebar collapsed` was the standing counter-example -
@@ -171,7 +171,7 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin - an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate - it edits tracked source, restarts the
-backend twice per row (79 rows) and starts real transcodes, which is not
+backend twice per row (83 rows) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
 line is the only figure worth quoting. Last measured: **74 rows in 19 min**
@@ -334,10 +334,10 @@ Suite includes:
 | File | Covers |
 |---|---|
 | `test_season_lookahead.py` | 50-day next-season cutover logic (`LOOKAHEAD_DAYS`; regression for the "X days till" bug, and for the 76->50 move itself) |
-| `test_api_smoke.py` | 13 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users |
+| `test_api_smoke.py` | 14 happy-path API steps: health, auth, list CRUD (PUT/GET/watched/hidden/rank), anime + cache hit, public-list endpoints, options round-trip, /api/users, and that un-watching clears `watchedRank` so a re-watch appends rather than reviving it |
 | `test_api_negative.py` | 11 negative paths: signup missing/dup, password reset round-trip, missing/malformed JWT, validation errors, /translate/check shape, admin endpoint auth gates, and a **correctly signed JWT carrying no `id`** - which used to hang the request forever instead of returning 401, so the short timeout *is* the assertion |
 | `test_frontend_smoke.py` | 5 frontend routes render (Playwright) including auth-gated pages |
-| `test_ui_interactions.py` | 26 flows: nine button-click smoke (login -> modal Escape), then one guard per silent-failure class found by the audits and exploratory passes - Compare ranks checked against seeded orders, no API key in /admin's DOM, `unknown`/`notAired` never hide, share-image has real content, per-section progressive loading, a visible unreachable-library / hung-backend / failed-hide-rollback, the /admin/matching resolver-accept + match-dropdown + Run-sweep-button contract, check-batch chunking, in-band translation errors, the phone sidebar default (and that a dismissal of it is remembered), guest options, an oversized wheel image warning instead of wedging the page, the viewer's library picker (its write stubbed - a real pick rewrites identity for everyone). Seeds from live season data. Every flow's history and the trap it was watched to fail on: the file's docstring |
+| `test_ui_interactions.py` | 27 flows: nine button-click smoke (login -> modal Escape), then one guard per silent-failure class found by the audits and exploratory passes - Compare ranks checked against seeded orders, no API key in /admin's DOM, `unknown`/`notAired` never hide, share-image has real content, per-section progressive loading, a visible unreachable-library / hung-backend / failed-hide-rollback, the /admin/matching resolver-accept + match-dropdown + Run-sweep-button contract, check-batch chunking, in-band translation errors, the phone sidebar default (and that a dismissal of it is remembered), guest options, an oversized wheel image warning instead of wedging the page, a theme choice surviving signup with no wrong-theme first paint, the viewer's library picker (its write stubbed - a real pick rewrites identity for everyone). Seeds from live season data. Every flow's history and the trap it was watched to fail on: the file's docstring |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D - YouTube CC, Whisper overlay, CC toggle persistence |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR burned-in detection (Eren=yes, Sparks=no) - needs GPU |
 | `test_match_replay.py` | Replays the shipping `matchSeries` (community-map ids only) over a frozen 8-season corpus - 945 real AniList entries x a 2,271-series library snapshot - and diffs every verdict against a committed baseline, in seconds with no network. Twelve real false positives asserted by name, and a named assertion matching no corpus entry is itself a failure. Fixtures are gitignored (they inventory the media library; this repo is public), so the test SKIPs where they haven't been built. Scope, privacy, and the re-baseline procedure: the file's docstring |
