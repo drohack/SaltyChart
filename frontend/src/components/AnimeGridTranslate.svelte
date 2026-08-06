@@ -718,13 +718,21 @@ const dispatch = createEventDispatcher();
 
         <!-- YouTube thumbnail (clickable) -->
         {#if show.trailer?.site === 'youtube'}
+          <!-- The accessible name has to name the show. This button's only name
+               used to come from the image's `alt`, which was the constant
+               "Trailer thumbnail" - so a screen reader announced the same thing
+               for every card on the page with no way to tell them apart. `alt`
+               being present means no Svelte a11y rule fires, so the clean build
+               could not see it. The image is decorative now that the button is
+               named, or the show would be announced twice. -->
           <button
             class="relative flex-1 aspect-video rounded overflow-hidden cursor-pointer"
+            aria-label={`Play trailer for ${getDisplayTitle(show)}`}
             on:click={() => openModal(show.trailer.id, show.id)}
           >
             <img
               src={`https://i.ytimg.com/vi/${show.trailer.id}/hqdefault.jpg`}
-              alt="Trailer thumbnail"
+              alt=""
               class="absolute inset-0 object-cover w-full h-full"
               loading="lazy" fetchpriority="low"
             />

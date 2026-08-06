@@ -40,8 +40,18 @@ function currentSeason(date: Date = new Date()): Season {
 const STORAGE_KEY = 'season-year';
 // Persisted value expires after CACHE_TTL_MS to ensure we eventually return
 // to the real “current” season when users revisit after a longer break.
-// Keep this in sync with the backend SeasonCache TTL (1 h) so we fetch fresh
-// data when the cache becomes stale.
+//
+// This is NOT coupled to the backend's SeasonCache TTL, whatever an earlier
+// version of this comment said - it told you to keep the two in sync and named
+// the backend's as 1 h, when `SEASON_TTL_SECONDS` in routes/anime.ts is 6 h, so
+// obeying it would have changed which season the app opens on for no reason.
+// The two answer different questions: this one decides which season is
+// *remembered* for a returning visitor; the backend's decides how often AniList
+// is re-asked, and serve-stale means its value costs a viewer no latency.
+//
+// Note the expiry runs from the last *visit*, not the last explicit choice - the
+// subscriber below rewrites `saved` on every load. That is intentional: any gap
+// longer than an hour still expires it, which is most returning visits.
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // ---------------------------------------------------------------------------

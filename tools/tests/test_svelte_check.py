@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 FRONTEND = Path(__file__).resolve().parent.parent.parent / "frontend"
-BASELINE = 8
+BASELINE = 7
 
 
 def main() -> int:

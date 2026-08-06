@@ -676,19 +676,25 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       <!-- Row 2 -->
       <div class="font-semibold truncate" title={$userName ?? ''}>{$userName}:</div>
       <div class="min-w-0">
+        <!-- `noOptionsMessage` and `dropdownClass` were passed here for a long
+             time and are not props of svelte-select 5 - it logged
+             "created with unknown prop" for both and rendered its own default
+             "No options" instead. v5 exposes the empty state as a slot. -->
         <Select
           id="otherUser"
           class="w-full input input-bordered text-gray-700"
-          dropdownClass="w-full"
           items={suggestions}
           bind:filterText={otherInput}
           bind:value={selectedOther}
           placeholder="username"
-          noOptionsMessage="No users found"
           searchable={true}
           inputAttributes={{ 'data-bwignore': true }}
           on:change={() => {/* fetch triggered reactively */}}
-        />
+        >
+          <svelte:fragment slot="empty">
+            <div class="empty" data-no-users-found>No users found</div>
+          </svelte:fragment>
+        </Select>
         {#if userSearchFailed}
           <!-- Distinct from "no such user": the list never arrived, so we can't
                say whether the name exists. Claiming the latter would be a lie. -->

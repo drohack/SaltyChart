@@ -108,6 +108,7 @@ class Mutation:
 
 
 BACKEND_JF = "backend/src/routes/jellyfin.ts"
+BACKEND_LIST = "backend/src/routes/list.ts"
 BACKEND_LIBPICK = "backend/src/lib/libraryPick.ts"
 BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
@@ -127,6 +128,9 @@ def player(*steps: int) -> list[str]:
     return PY + [str(TESTS / "test_player.py"),
                  "--only-steps", ",".join(str(s) for s in steps)]
 T_NEGATIVE = PY + [str(TESTS / "test_api_negative.py")]
+# Cheap (~15 s) and it `fail()`s at the guarded step, so a caught row pays only
+# as far as its own assertion - the right layer for a purely server-side rule.
+T_SMOKE = PY + [str(TESTS / "test_api_smoke.py")]
 T_UI = PY + [str(TESTS / "test_ui_interactions.py")]
 T_UNIT = ["npm", "run", "test:unit"]
 T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
@@ -1204,6 +1208,111 @@ MUTATIONS: list[Mutation] = [
         expect="no-match search rendered nothing at all",
         guards="searching for a show that isn't in this season shows a blank page, "
                "which reads as a broken site rather than an empty result",
+    ),
+    Mutation(
+        name="the Compare user dropdown falls back to svelte-select's wording",
+        path="frontend/src/pages/Compare.svelte",
+        # `noOptionsMessage="No users found"` sat here for a long time and is not
+        # a prop of svelte-select 5 - the console said "created with unknown prop"
+        # and the list rendered the library's own default "No options". The empty
+        # state is a slot in v5.
+        find='            <div class="empty" data-no-users-found>No users found</div>',
+        replace='            <div class="empty">No options</div> <!-- mutation -->',
+        flows=("guest options + compare warning",),
+        test=T_UI,
+        expect="fell back to svelte-select's default empty text",
+        guards="a viewer searching for a teammate is told 'No options' by a "
+               "library instead of being told no such user exists",
+    ),
+    Mutation(
+        name="an explicit sidebar collapse stops being recorded",
+        path="frontend/src/pages/Home.svelte",
+        # The third door onto pass 1's full-screen-sidebar bug. `sidebarChoiceMade`
+        # used to be inferred by diffing `sidebarCollapsed` in a reactive block
+        # that runs before loadPrefs, so a stored value disagreeing with the width
+        # default made the inference wrong and a dismissal was never persisted.
+        # It is recorded at the click now.
+        find="    sidebarChoiceMade = true;\n    savePrefs($userName);",
+        replace="    savePrefs($userName); /* mutation: choice not recorded */",
+        flows=("phone sidebar collapsed",),
+        test=T_UI,
+        expect="opening the sidebar was not recorded as a choice",
+        guards="dismissing the full-screen sidebar on a phone stops sticking, so "
+               "every load buries the grid again",
+    ),
+    Mutation(
+        name="an oversized wheel image throws inside the update flush again",
+        path="frontend/src/pages/Randomize.svelte",
+        # The throw is the bug, not the lost image: it happens inside a Svelte
+        # update flush, so the rest of the flush never runs and
+        # `showImageUploadModal = false` stops reaching the DOM - Done, the X and
+        # Escape all dead, whole viewport covered, until a reload.
+        # Caught by the flow's message assertion (step 3). Its step-4 "the modal
+        # must still close" check is defence for a partial fix - a catch that
+        # rethrows, or one that guards only one of the two keys - and this mutant
+        # never reaches it.
+        find="""    try {
+      if (value) sessionStorage.setItem(key, value);
+      else sessionStorage.removeItem(key);
+      return true;
+    } catch (err) {
+      console.warn(`[randomize] could not store ${key}:`, err);
+      return false;
+    }""",
+        replace="""    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+    return true; /* mutation: unguarded */""",
+        flows=("wheel image quota",),
+        test=T_UI,
+        expect="an image too large to store failed silently",
+        guards="picking a large photo silently keeps nothing, says nothing, and "
+               "wedges the Randomize page behind a modal that no longer closes",
+    ),
+    Mutation(
+        name="Escape stops closing the image upload modal",
+        path="frontend/src/pages/Randomize.svelte",
+        # It is a `<dialog open>`, not `showModal()`, so it has no native Escape
+        # behaviour while its `.modal` backdrop still covers the viewport. Pass 1
+        # fixed Escape on the trailer modal and the spin pop-up and missed this
+        # third one entirely.
+        find="  if (showImageUploadModal) {",
+        replace="  if (showImageUploadModal && false) { /* mutation */",
+        flows=("wheel image quota",),
+        test=T_UI,
+        expect="Escape did not close the image upload modal",
+        guards="the one modal where being stuck matters most goes back to having "
+               "exactly one way out, inconsistent with every other modal here",
+    ),
+    Mutation(
+        name="an un-watched entry keeps its watchedRank",
+        path=BACKEND_LIST,
+        # Nothing else can clear it: the follow-up /rank PATCH filters on
+        # `watched: true` and its `ids` array excludes the row just un-watched.
+        # The stale value then wins the `watchedRank: null` guard on the next
+        # re-watch. Pass 1 saw this state, failed to reproduce it, and withdrew
+        # it as a harness artifact - it is reachable by one click.
+        find="        watchedRank: isWatched ? undefined : null",
+        replace="        watchedRank: undefined /* mutation */",
+        test=T_SMOKE,
+        expect="un-watching left watchedRank set on an unwatched row",
+        guards="a re-watched show revives the rank it held last time instead of "
+               "being appended, so `Add Watched to` is silently ignored and two "
+               "entries can share a rank",
+    ),
+    Mutation(
+        name="un-watching leaves a hole in the ranking",
+        path=BACKEND_LIST,
+        # The other half: clearing the rank is not enough, because the append
+        # computes `watchedCount - 1`, which is only sound while the surviving
+        # ranks are dense. Un-watch the row at 0 without compacting and the next
+        # mark-watched collides with the survivor still holding 1.
+        find="    if (updated.count > 0 && !isWatched) {",
+        replace="    if (updated.count > 0 && !isWatched && false) { /* mutation */",
+        test=T_SMOKE,
+        expect="two watched entries share a watchedRank",
+        guards="two watched rows hold one rank, after which the ranking "
+               "sidebar's comparator returns 0 for the pair and falls back to "
+               "pre-watch order - the user's chosen ranking, silently replaced",
     ),
 ]
 

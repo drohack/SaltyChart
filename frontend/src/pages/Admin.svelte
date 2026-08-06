@@ -153,7 +153,13 @@
 
 <main class="max-w-2xl mx-auto px-4 flex flex-col gap-6">
   <h1 class="text-2xl font-bold">Admin</h1>
-  <AdminTabs current="connection" />
+  <!-- Only an admin gets the tab strip. A logged-out stranger was shown the
+       "only available to the site admin" notice with working Connection /
+        Matching tabs above it, which is a confusing half-gate - the tabs made no
+        API calls and leaked nothing, but they navigated. -->
+  {#if $authToken && $isAdmin !== false}
+    <AdminTabs current="connection" />
+  {/if}
 
   {#if !$authToken || $isAdmin === false}
     <div class="alert alert-warning">

@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 25 flows.
+Pre-deploy smoke test: frontend UI interactions - 26 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -109,7 +109,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 25
+TOTAL = 26
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -1430,11 +1430,11 @@ def test_translation_error_visible(page, frontend: str):
 def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
     """On a phone, the My List sidebar must not cover the page on load.
 
-    Measured at 375×667 before the fix: the <aside> was 375×667 at (0,0),
+    Measured at 375x667 before the fix: the <aside> was 375x667 at (0,0),
     opaque, and 25/25 sampled viewport points landed on it - every fresh load
     required dismissing it before anything else was usable.
     """
-    step(23, "step 1/3: a desktop-width visit - the state a phone load must survive")
+    step(23, "step 1/6: a desktop-width visit - the state a phone load must survive")
     seed_list(backend, token, season_ids(backend, 3))
     original = page.viewport_size
     # This visit used to be INHERITED: the desktop flows simply ran first, and
@@ -1455,21 +1455,149 @@ def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
         # The prefs write is reactive, not awaited by anything on screen.
         page.wait_for_timeout(1500)
 
-        step(23, "step 2/3: now load Home at 375×667")
+        step(23, "step 2/6: now load Home at 375x667")
         page.set_viewport_size({"width": 375, "height": 667})
         page.goto(frontend)
         wait_for_grids(page)
 
-        step(23, "step 3/3: the viewport centre must not be the sidebar")
+        step(23, "step 3/6: the viewport centre must not be the sidebar")
         covered = page.evaluate(
             "() => { const el = document.elementFromPoint(187, 333);"
             " return !!(el && el.closest('aside')); }")
         assert not covered, (
             "the My List sidebar covers the viewport centre on a 375px phone load - "
             "`collapsed` is not defaulting to true below the sm breakpoint")
+
+        # Second half, found by exploratory pass 2: once the sidebar had ever been
+        # explicitly opened, dismissing it stopped persisting. `sidebarChoiceMade`
+        # was inferred by diffing `sidebarCollapsed` in a reactive block that runs
+        # BEFORE loadPrefs, so with a stored `false` it latched the width default
+        # `true`; tapping Hide made them agree, the diff saw no change, and
+        # savePrefs carried the stored `false` forward. Every load put the
+        # full-screen sidebar back - pass 1's bug through a different door.
+        # The stored value has to actually disagree with the width default for
+        # this to test anything: a first attempt just tapped Show then Hide and
+        # reloaded, which passed with the fix mutated out, because nothing was
+        # stored at all and the phone default happens to give the same answer.
+        # Opening it and reloading is what makes the stored `false` load-bearing.
+        step(23, "step 4/6: open it explicitly - that choice must be stored")
+        page.click('button[aria-label="Show My List"]')
+        page.wait_for_timeout(1500)
+        stored = page.evaluate(
+            "u => (JSON.parse(localStorage.getItem('prefs-' + u) || '{}')).sidebarCollapsed",
+            page.evaluate("() => localStorage.getItem('username')"))
+        assert stored is False, (
+            "opening the sidebar was not recorded as a choice, so the width "
+            f"default silently wins on the next load (stored: {stored!r})")
+
+        step(23, "step 5/6: reloading honours it - the sidebar is open on a phone")
+        page.reload()
+        wait_for_grids(page)
+        opened = page.evaluate(
+            "() => { const el = document.elementFromPoint(187, 333);"
+            " return !!(el && el.closest('aside')); }")
+        assert opened, (
+            "a stored open choice was dropped on reload - without it the rest of "
+            "this flow cannot reach the state the bug needs")
+
+        step(23, "step 6/6: now dismiss it - the dismissal must survive a load")
+        page.click('button[aria-label="Hide My List"]')
+        page.wait_for_timeout(1500)
+        page.reload()
+        wait_for_grids(page)
+        back = page.evaluate(
+            "() => { const el = document.elementFromPoint(187, 333);"
+            " return !!(el && el.closest('aside')); }")
+        assert not back, (
+            "the sidebar came back after being dismissed - an explicit collapse "
+            "is not being recorded over a stored open one, so every phone load "
+            "reopens it full-screen")
     finally:
         page.set_viewport_size(original)
-    step(23, "PASS - sidebar starts collapsed on a phone load that follows a desktop one")
+    step(23, "PASS - starts collapsed on a phone, and a dismissal is remembered")
+
+
+def test_wheel_image_quota(page, frontend: str, token: str):
+    """An image too big for sessionStorage must warn, not wedge the page.
+
+    Two bugs, one flow, because both are about the same modal being escapable.
+
+    Escape did nothing on the Upload Custom Images dialog for as long as it
+    existed: it is rendered as `<dialog open>` rather than via showModal(), so it
+    gets no native Escape handling while its `.modal` backdrop still covers the
+    viewport. Done was the only way out.
+
+    Worse, the two `sessionStorage.setItem` calls were bare, inside a reactive
+    block. A 19 MB PNG threw QuotaExceededError *inside a Svelte update flush*,
+    so the rest of the flush never ran and `showImageUploadModal = false` stopped
+    reaching the DOM - Done, the X and Escape all dead, 9/9 sampled viewport
+    points covered, until a reload. Nothing was stored and nothing was said.
+
+    So this asserts the message AND that the modal still closes: the message is
+    the fix, the unclosable modal is the consequence.
+    """
+    original = page.viewport_size
+    # The Upload Images button is `hidden lg:block`.
+    page.set_viewport_size({"width": 1600, "height": 950})
+    try:
+        step(26, "step 1/4: opening the image upload modal and pressing Escape")
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.wait_for_selector("button:has-text('Upload Images')", timeout=20_000)
+        page.click("button:has-text('Upload Images')")
+        page.wait_for_selector("dialog[open]", timeout=5_000)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(800)
+        assert page.locator("dialog[open]").count() == 0, (
+            "Escape did not close the image upload modal - it is a <dialog open>, "
+            "so it has no native Escape behaviour and needs the window handler")
+
+        step(26, "step 2/4: uploading an image far too big for sessionStorage")
+        page.click("button:has-text('Upload Images')")
+        page.wait_for_selector("dialog[open]", timeout=5_000)
+        # Incompressible noise, so the PNG really is ~19 MB and the data URL
+        # (~4/3 of that) cannot fit. Injected through a DataTransfer rather than
+        # set_input_files because the file is generated in-page.
+        size_mb = page.evaluate("""async () => {
+            const c = document.createElement('canvas');
+            c.width = 2400; c.height = 2400;
+            const ctx = c.getContext('2d');
+            const im = ctx.createImageData(2400, 2400);
+            for (let i = 0; i < im.data.length; i += 4) {
+              im.data[i] = Math.random() * 255 | 0;
+              im.data[i + 1] = Math.random() * 255 | 0;
+              im.data[i + 2] = Math.random() * 255 | 0;
+              im.data[i + 3] = 255;
+            }
+            ctx.putImageData(im, 0, 0);
+            const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+            const dt = new DataTransfer();
+            dt.items.add(new File([blob], 'huge.png', { type: 'image/png' }));
+            const input = document.querySelector('input[type=file]');
+            input.files = dt.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return +(blob.size / 1048576).toFixed(1);
+        }""")
+
+        step(26, f"step 3/4: {size_mb} MB uploaded - expecting a visible message")
+        page.wait_for_timeout(4000)
+        assert page.locator("[data-image-too-large]").count() == 1, (
+            "an image too large to store failed silently - nothing kept, nothing "
+            "said, exactly like the console-only 'Server busy' message")
+
+        step(26, "step 4/4: the modal must still close")
+        page.click("dialog[open] button:has-text('Done')")
+        page.wait_for_timeout(1200)
+        assert page.locator("dialog[open]").count() == 0, (
+            "the upload modal never closed after an oversized image - the quota "
+            "throw broke the Svelte update flush and wedged the whole page")
+        step(26, f"PASS - {size_mb} MB rejected with a message, modal still closes")
+    finally:
+        page.set_viewport_size(original)
+        page.evaluate("() => { sessionStorage.removeItem('wheelSpinButtonImage');"
+                      " sessionStorage.removeItem('wheelBackgroundImage'); }")
 
 
 def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token: str):
@@ -1634,7 +1762,15 @@ def test_guest_options_and_compare_warning(page, frontend: str):
     assert "No user named" in body, (
         "a typo'd second user renders silently as nothing - indistinguishable "
         "from the user having no list at all")
-    step(24, "PASS - guest options persist, and a missing user is named on screen")
+
+    # The dropdown's own empty state, which is a different string from the
+    # warning above. `noOptionsMessage` was passed to svelte-select for a long
+    # time and is not one of its v5 props - it logged "created with unknown prop"
+    # and rendered its own default "No options" instead. v5 uses a slot.
+    assert page.locator("[data-no-users-found]").count() == 1, (
+        "the user dropdown fell back to svelte-select's default empty text - the "
+        "app's own wording is being passed as a prop the library does not have")
+    step(24, "PASS - guest options persist, a missing user is named, dropdown empty state is ours")
 
 
 
@@ -1690,6 +1826,7 @@ SELECTABLE_FLOWS = {
     "check-batch chunked",
     "guest options + compare warning",
     "phone sidebar collapsed",
+    "wheel image quota",
 }
 
 
@@ -1751,6 +1888,7 @@ def main():
                 ("phone sidebar collapsed", lambda: test_phone_sidebar_collapsed(page, args.backend, frontend, token_a)),
                 ("viewer picks the right show", lambda: test_viewer_can_pick_the_right_show(page, args.backend, frontend, token_a)),
                 ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
+                ("wheel image quota", lambda: test_wheel_image_quota(page, frontend, token_a)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

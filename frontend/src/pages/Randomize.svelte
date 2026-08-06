@@ -682,13 +682,49 @@ $: _lang = $options.titleLanguage;
     imagesLoaded = true; // Mark as loaded so reactive statement can now save changes
   });
 
-  // Persist custom images to sessionStorage when they change (only after initial load)
-  $: if (imagesLoaded && typeof sessionStorage !== 'undefined') {
-    if (spinButtonImage) sessionStorage.setItem('wheelSpinButtonImage', spinButtonImage);
-    else sessionStorage.removeItem('wheelSpinButtonImage');
+  // Shown in the upload modal when an image is too big to keep. A data URL is
+  // ~4/3 of the file, and sessionStorage is a few MB per origin, so a large
+  // photo overflows it.
+  let imageStoreError: string | null = null;
 
-    if (backgroundImage) sessionStorage.setItem('wheelBackgroundImage', backgroundImage);
-    else sessionStorage.removeItem('wheelBackgroundImage');
+  /**
+   * Persist one custom image, or clear it.
+   *
+   * The `setItem` calls used to be bare, inside the reactive block below. That
+   * made an oversized upload throw `QuotaExceededError` *inside a Svelte update
+   * flush*, which is far worse than losing the image: the rest of the flush never
+   * ran, so `showImageUploadModal = false` stopped reaching the DOM and the modal
+   * became unclosable - Done, the X and Escape all dead, covering the whole
+   * viewport until a reload. Measured with a 19 MB PNG; nothing was stored and
+   * nothing was said.
+   *
+   * Every other storage write in this app is already wrapped (`stores/options.ts`,
+   * `stores/season.ts`, `Home.savePrefs`); this block was the outlier. Returns
+   * false so the caller can drop the image it could not keep.
+   */
+  function persistImage(key: string, value: string | null): boolean {
+    try {
+      if (value) sessionStorage.setItem(key, value);
+      else sessionStorage.removeItem(key);
+      return true;
+    } catch (err) {
+      console.warn(`[randomize] could not store ${key}:`, err);
+      return false;
+    }
+  }
+
+  // Persist custom images to sessionStorage when they change (only after initial
+  // load). Each key is guarded on its own so a failure on one does not skip the
+  // other.
+  $: if (imagesLoaded && typeof sessionStorage !== 'undefined') {
+    if (!persistImage('wheelSpinButtonImage', spinButtonImage)) {
+      spinButtonImage = null;
+      imageStoreError = 'That image is too large to keep - try one under a few MB.';
+    }
+    if (!persistImage('wheelBackgroundImage', backgroundImage)) {
+      backgroundImage = null;
+      imageStoreError = 'That image is too large to keep - try one under a few MB.';
+    }
   }
 
   // Separate entries into watched/unwatched for easier handling.
@@ -1155,6 +1191,19 @@ function handleModalKey(e: KeyboardEvent) {
   // Enter here would mark-watched and close the modal underneath it, and Escape
   // is how you leave the player, not the pop-up behind it.
   if (showPlayer) return;
+  // The upload modal is its own dialog, opened from the page rather than from
+  // the pop-up. It is rendered as `<dialog open>` rather than via showModal(),
+  // so it gets no native Escape behaviour while its `.modal` backdrop still
+  // covers the viewport - Escape did nothing on it for as long as it existed,
+  // and Done was the only way out. It takes priority because when it is open it
+  // is the thing on top.
+  if (showImageUploadModal) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      showImageUploadModal = false;
+    }
+    return;
+  }
   if (pickOpen) {
     // Pick mode owns the keyboard too: Enter is someone typing into the
     // library search, and this window-level handler would mark the show
@@ -1185,8 +1234,11 @@ onDestroy(() => {
 });
 
 // Dynamically attach / detach the listener whenever modal visibility changes.
+// The upload modal needs it too (it owns Escape now), so the listener's
+// lifecycle covers both - but `closePlayer()` below still keys off the pop-up
+// specifically, since the player only ever lives inside that one.
 $: {
-  if (showModal) {
+  if (showModal || showImageUploadModal) {
     window.addEventListener('keydown', handleModalKey);
   } else {
     window.removeEventListener('keydown', handleModalKey);
@@ -1239,6 +1291,7 @@ $: {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    imageStoreError = null; // a fresh pick clears a previous "too large"
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -1251,6 +1304,7 @@ $: {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    imageStoreError = null; // a fresh pick clears a previous "too large"
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -1266,6 +1320,7 @@ $: {
 
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
+    imageStoreError = null; // a fresh pick clears a previous "too large"
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -1281,6 +1336,7 @@ $: {
 
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
+    imageStoreError = null; // a fresh pick clears a previous "too large"
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -2182,6 +2238,12 @@ $: {
                 on:click={() => showImageUploadModal = false}>✕</button>
 
         <h3 class="font-bold text-lg mb-4">Upload Custom Images</h3>
+
+        <!-- An image too big for sessionStorage used to fail silently: nothing
+             stored, nothing said, and the modal wedged. -->
+        {#if imageStoreError}
+          <p class="text-sm text-error mb-4" data-image-too-large>{imageStoreError}</p>
+        {/if}
 
         <!-- Spin Button Image Section -->
         <div class="mb-6">

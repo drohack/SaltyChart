@@ -43,12 +43,19 @@ import { beforeUpdate, afterUpdate, tick } from 'svelte';
 // component's own classes key off.
 export let collapsed = typeof window !== 'undefined' && window.innerWidth < 640;
 
+// Both toggles announce the new state as well as setting it. Home needs to know
+// this was a *user choice* rather than the width default, and it must not try to
+// infer that by diffing `collapsed` across a reactive pass - it did, and the
+// inference was wrong whenever a stored value disagreed with the default (see
+// the `sidebarChoiceMade` comment in Home.svelte).
 function hideSidebar() {
   collapsed = true;
+  dispatch('collapse', true);
 }
 
 function showSidebar() {
   collapsed = false;
+  dispatch('collapse', false);
 }
 
 $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';

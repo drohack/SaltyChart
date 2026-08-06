@@ -244,21 +244,41 @@ let autoRename = false;
   }
 
   /**
-   * True once the sidebar state reflects a choice - this session's toggle, or
-   * a stored one honoured by loadPrefs. Only then may it be persisted:
-   * auto-saving the width default recorded a plain desktop visit as "chose
-   * expanded", and the next phone load honoured that over the small-screen
-   * default - the full-screen-sidebar bug, back for anyone who had ever
-   * loaded Home on a desktop first.
+   * True once the user has actually toggled the sidebar. Only then may the state
+   * be persisted: auto-saving the width default recorded a plain desktop visit
+   * as "chose expanded", and the next phone load honoured that over the
+   * small-screen default - the full-screen-sidebar bug, back for anyone who had
+   * ever loaded Home on a desktop first.
+   *
+   * This is set by `onSidebarCollapse` below, from an event the sidebar
+   * dispatches on the click. It used to be *inferred*, by diffing
+   * `sidebarCollapsed` against its previous value in a reactive block, and that
+   * was wrong whenever a stored value disagreed with the width default:
+   *
+   *   - the detector runs BEFORE `loadPrefs` (Svelte only reorders a reactive
+   *     block when another block syntactically assigns one of its dependencies,
+   *     and nothing assigns `sidebarCollapsed` outside a plain function), so it
+   *     latched the width default;
+   *   - `loadPrefs` then applied the stored value, and its `$$invalidate` could
+   *     not re-run the detector - during the first pass `ready` is still false so
+   *     nothing is marked dirty, and in a later pass `make_dirty` is reached from
+   *     inside `$$.update()` and only ORs the bit without scheduling another
+   *     pass.
+   *
+   * So on a phone with `sidebarCollapsed: false` stored, the detector held `true`
+   * while the real value was `false`; tapping Hide made them agree, the diff saw
+   * no change, and `savePrefs` rewrote the stored `false` - every load put the
+   * full-screen sidebar back. Recording the choice where it happens removes the
+   * ordering dependency instead of reshuffling it.
    */
   let sidebarChoiceMade = false;
-  let _sidebarPrev: boolean | null = null;
-  $: {
-    if (_sidebarPrev === null) _sidebarPrev = sidebarCollapsed;
-    else if (sidebarCollapsed !== _sidebarPrev) {
-      _sidebarPrev = sidebarCollapsed;
-      sidebarChoiceMade = true;
-    }
+
+  function onSidebarCollapse(next: boolean) {
+    // Take the value from the event rather than reading the bound variable, so
+    // this does not depend on when `bind:collapsed` flushes either.
+    sidebarCollapsed = next;
+    sidebarChoiceMade = true;
+    savePrefs($userName);
   }
 
   function savePrefs(user: string | null) {
@@ -339,8 +359,26 @@ let autoRename = false;
     catchUpUser = null;
   }
 
+  // The season-change block below is keyed on season+year only, so it would not
+  // re-fetch on login - and `fetchCatchUpUsers` now skips guests. Pick the list
+  // up when a user appears. Keyed on the name rather than on the list being
+  // empty, because a season legitimately has no other users and comparing a
+  // fresh array each pass would re-fire forever.
+  let _catchUpFetchedFor: string | null = null;
+  $: if ($userName && _catchUpFetchedFor !== $userName) {
+    _catchUpFetchedFor = $userName;
+    fetchCatchUpUsers();
+  }
+
   // Fetch users who have rated trailers in current season/year
   async function fetchCatchUpUsers(): Promise<void> {
+    // Catch-up is login-only (the reactive block above forces it off for a
+    // guest), so asking for the user list while logged out spent a request on
+    // the 60/min public limiter to populate a picker that is never shown.
+    if (!$userName) {
+      availableCatchUpUsers = [];
+      return;
+    }
     try {
       const res = await fetch(`/api/list/users-with-ratings?season=${season}&year=${year}`);
       if (res.ok) {
@@ -738,6 +776,7 @@ let autoRename = false;
       user={$userName}
       bind:autoRename
       bind:collapsed={sidebarCollapsed}
+      on:collapse={(e) => onSidebarCollapse(e.detail)}
       on:update={(e) => {
         watchList = e.detail;
         saveList();

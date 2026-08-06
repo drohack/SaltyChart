@@ -722,7 +722,10 @@
 
 <main class="max-w-[100rem] mx-auto px-4 flex flex-col gap-4">
   <h1 class="text-2xl font-bold">Admin</h1>
-  <AdminTabs current="matching" />
+  <!-- Admins only - see the same guard in Admin.svelte. -->
+  {#if $authToken && $isAdmin !== false}
+    <AdminTabs current="matching" />
+  {/if}
 
   {#if !$authToken || $isAdmin === false}
     <div class="alert alert-warning"><span>This page is only available to the site admin.</span></div>
