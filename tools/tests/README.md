@@ -87,9 +87,9 @@ If the local dev DB doesn't have these, populate via the live daemon (open the
 trailer in the app once) or copy rows from the prod DB.
 
 **Adding a test here?** It needs a `mutation_audit.py` row, and that row has a
-price - see *Is the suite load-bearing?* in `CLAUDE.md` for the cost table and
-the rules that keep a row honest (name a UI flow, keep `expect` unambiguous,
-mutate the guard rather than the feature).
+price - see the `testing` skill (`.claude/skills/testing/SKILL.md`) for the
+cost table and the rules that keep a row honest (name a UI flow, keep `expect`
+unambiguous, mutate the guard rather than the feature).
 
 ## When to run
 

@@ -127,9 +127,13 @@ Every one of these cost real time on the first pass. Each looked like a bug.
   `drohack`'s real list.
 - **`/admin` is read-only.** Load it, confirm the picker populates and no API key
   appears in the DOM. Never save config - that writes the live Jellyfin URL/key.
-- **AniList budget.** Stay on cached seasons; a cold key is 8-12 upstream
+- **AniList budget.** Stay on cached seasons; a cold key is **3** upstream
   requests against a degraded **30/min per-IP** limit. At most one deliberate
   cold-season click per pass, with `X-RateLimit-Remaining` read before and after.
+  That figure was 100 until 2026-08-06, when `Page.pageInfo` was found to report
+  `lastPage: 100` for a 3-page season and the paging was changed to stop on a
+  short page. If you ever see a burst of `AniList 429 for <key> pNN` lines with
+  NN above ~5, that regressed and the whole budget guardrail is void.
 - **Player budget: 2-3 short sessions, each explicitly stopped.** Escape closes
   the player *and* fires `POST /api/jellyfin/playback/stop` - verify that request
   actually goes out. Jellyfin's ffmpeg writes segments until the whole episode is
@@ -181,7 +185,7 @@ depends on the season:
   gate). If you see a lookup here, that guard has regressed and fuzzy titles will
   start offering the wrong series again.
 
-**5. Watching an episode.** Pop-up -> > Watch here -> playback advances. Speed-step
+**5. Watching an episode.** Pop-up -> the *Watch here* button -> playback advances. Speed-step
 with `[` and `]`, switch subtitle track, switch quality, seek forward and back,
 Escape out. Confirm the stop request fires. Reopen to see whether the second open
 is quicker.
