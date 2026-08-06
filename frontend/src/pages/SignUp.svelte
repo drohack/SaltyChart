@@ -1,5 +1,7 @@
 <script lang="ts">
 import { authToken, userName } from '../stores/auth';
+import { options } from '../stores/options';
+import { get } from 'svelte/store';
 
   let username = '';
   let password = '';
@@ -22,6 +24,37 @@ import { authToken, userName } from '../stores/auth';
       return;
     }
     const data = await res.json();
+
+    // Carry the choices made as a guest onto the new account, BEFORE the token
+    // lands. Setting the token makes the options store fetch this account's row -
+    // freshly created defaults - and adopt them, so someone who picked a dark
+    // theme while browsing had it silently reverted the moment they signed up,
+    // with localStorage still claiming their choice for good afterwards.
+    //
+    // "The server wins" is right for a login (a new device should not overwrite
+    // your account), but a brand-new account has no preferences yet, so there is
+    // nothing to defer to. This is the one moment that distinction is knowable.
+    //
+    // Awaited rather than fired alongside: the store's GET is triggered by
+    // `authToken.set` below, so a PUT racing it would land after the defaults had
+    // already been read and applied. A failure is not fatal - the account exists
+    // and the user just gets defaults, exactly as before.
+    try {
+      const saved = await fetch('/api/options', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${data.token}`
+        },
+        body: JSON.stringify(get(options))
+      });
+      if (!saved.ok) {
+        console.warn('[signup] could not carry guest options over:', saved.status);
+      }
+    } catch (err) {
+      console.warn('[signup] could not carry guest options over:', err);
+    }
+
     authToken.set(data.token);
     userName.set(data.username);
     window.history.pushState({}, '', '/');

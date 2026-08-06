@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 26 flows.
+Pre-deploy smoke test: frontend UI interactions - 27 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -109,7 +109,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 26
+TOTAL = 27
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -1517,6 +1517,156 @@ def test_phone_sidebar_collapsed(page, backend: str, frontend: str, token: str):
     step(23, "PASS - starts collapsed on a phone, and a dismissal is remembered")
 
 
+def test_theme_survives_signup_and_reload(page, backend: str, frontend: str):
+    """A theme choice must reach the account, and the right theme must be painted
+    first.
+
+    Three symptoms of one cause: the token branch of `authToken.subscribe` in
+    stores/options.ts never *read* the localStorage mirror, and `isLoading` stopped
+    it ever *writing* it during load.
+
+    So (a) a logged-in user's first paint used `defaultOptions` and the real theme
+    arrived only when /api/options resolved - measured `light` at 76 ms and `dark`
+    at 87 ms locally, and a 300 ms server made that a 504 ms wrong-theme window,
+    i.e. a white flash on every load for every dark-theme user; (b) a guest who
+    chose a theme and then signed up had it silently reverted, because the fresh
+    account's defaults were adopted over it, leaving the server, localStorage and
+    the DOM disagreeing permanently; and (c) logging out then flipped the site to
+    whatever that stale mirror said.
+
+    Asserts all three surfaces, not just the DOM - the DOM was the one that looked
+    right in two of the three symptoms.
+    """
+    prior_token = page.evaluate("localStorage.getItem('token')")
+    prior_name = page.evaluate("localStorage.getItem('username')")
+    user = f"ui_theme_{int(time.time())}"
+    try:
+        step(27, "step 1/5: as a guest, choose NIGHT")
+        page.goto(frontend)
+        page.evaluate("localStorage.removeItem('token'); localStorage.removeItem('username');"
+                      " localStorage.removeItem('options')")
+        page.goto(frontend)
+        page.get_by_role("button", name="Options").click()
+        page.wait_for_selector("select#themeSelect", timeout=5_000)
+        page.locator("select#themeSelect").select_option("NIGHT")
+        page.wait_for_timeout(600)
+        page.keyboard.press("Escape")
+
+        step(27, f"step 2/5: signing up as {user} - the choice must come along")
+        page.goto(f"{frontend}/signup")
+        page.wait_for_selector('input[placeholder="Username"]')
+        page.fill('input[placeholder="Username"]', user)
+        page.fill('input[type="password"]', "ui_test_pw_123")
+        page.get_by_role("button", name=re.compile(r"sign\s*up|create", re.I)).click()
+        page.wait_for_url(re.compile(r"/$|/home"), timeout=10_000)
+        page.wait_for_timeout(2500)
+
+        surfaces = page.evaluate("""async () => {
+            const res = await fetch('/api/options', {
+              headers: { Authorization: 'Bearer ' + localStorage.getItem('token') } });
+            const server = await res.json();
+            return {
+              dom: document.documentElement.getAttribute('data-theme'),
+              ls: (JSON.parse(localStorage.getItem('options') || '{}')).theme,
+              server: server.theme,
+            };
+        }""")
+        assert surfaces == {"dom": "dark", "ls": "NIGHT", "server": "NIGHT"}, (
+            "a theme chosen as a guest did not survive signing up, or the three "
+            f"surfaces disagree about it: {surfaces}")
+
+        step(27, "step 3/5: reload behind a slow /api/options - no wrong-theme flash")
+        # Two things make this deterministic instead of a coin flip, and the first
+        # version of this step had neither, so it passed with the fix mutated out:
+        #   - the 400 ms delay, so "before the server answered" is a real window
+        #     rather than a few microseconds;
+        #   - forcing prefers-color-scheme to light, because the fallback the bug
+        #     exposes is `SYSTEM`, and SYSTEM resolves to whatever the *browser*
+        #     prefers. On a dark-preferring browser the wrong fallback also renders
+        #     dark, so "never painted light" is satisfied by the bug itself.
+        # With those pinned, the first paint is `dark` only if the stored value was
+        # read synchronously.
+        page.emulate_media(color_scheme="light")
+        page.route("**/api/options", lambda route: (page.wait_for_timeout(400),
+                                                    route.continue_()))
+        try:
+            # An IIFE, not a bare arrow function: Playwright *Python* executes this
+            # string as a script, so `() => {...}` on its own just constructs a
+            # function and throws it away - which left the array empty and made
+            # this step fail for the wrong reason entirely.
+            page.add_init_script("""(() => {
+                window.__themes = [];
+                const push = () => { const de = document.documentElement;
+                  if (de) window.__themes.push(de.getAttribute('data-theme')); };
+                const start = () => { if (!document.documentElement) {
+                    requestAnimationFrame(start); return; }
+                  push();
+                  new MutationObserver(push).observe(document.documentElement,
+                    { attributes: true, attributeFilter: ['data-theme'] }); };
+                start();
+            })();""")
+            page.goto(frontend)
+            page.wait_for_timeout(2500)
+            painted = page.evaluate("() => window.__themes || []")
+        finally:
+            page.unroute("**/api/options")
+            page.emulate_media(color_scheme=None)
+        # Drop the leading null: the observer can start either side of App's very
+        # first write, so index 0 is `None` on some runs and the first real theme
+        # on others. What must hold is that the first theme ever *painted* is the
+        # account's - `['light', 'dark']` is the flash, `['dark', ...]` is the fix.
+        painted = [t for t in painted if t]
+        assert painted and painted[0] == "dark", (
+            "the page painted the wrong theme before /api/options answered - the "
+            f"stored copy is not being read on the logged-in path (saw {painted})")
+
+        # Steps 4 and 5 exist because the signup fix hides the bug they guard: with
+        # the choice carried onto the account, the server and the stored copy agree,
+        # so *not* keeping the mirror in step with the server changes nothing
+        # observable. Divergence has to be created deliberately - a LOGIN whose
+        # account theme differs from what this browser last stored. That is the real
+        # shape of the original symptom: server SYSTEM, localStorage NIGHT, forever.
+        step(27, "step 4/5: log out, choose LIGHT as a guest, log back in")
+        page.get_by_role("button", name=re.compile(r"logout", re.I)).click()
+        page.wait_for_timeout(1200)
+        page.get_by_role("button", name="Options").click()
+        page.wait_for_selector("select#themeSelect", timeout=5_000)
+        page.locator("select#themeSelect").select_option("LIGHT")
+        page.wait_for_timeout(600)
+        page.keyboard.press("Escape")
+
+        page.goto(f"{frontend}/login")
+        page.wait_for_selector('input[placeholder="Username"]')
+        page.fill('input[placeholder="Username"]', user)
+        page.fill('input[type="password"]', "ui_test_pw_123")
+        page.get_by_role("button", name=re.compile(r"login|log in", re.I)).click()
+        page.wait_for_url(re.compile(r"/$|/home"), timeout=10_000)
+        page.wait_for_timeout(2500)
+
+        reconciled = page.evaluate(
+            "() => ({ dom: document.documentElement.getAttribute('data-theme'),"
+            " ls: (JSON.parse(localStorage.getItem('options') || '{}')).theme })")
+        assert reconciled == {"dom": "dark", "ls": "NIGHT"}, (
+            "after logging in, the stored copy still disagrees with the account - "
+            "the server's answer is not being written back, so it stays stale for "
+            f"good and resurfaces on logout: {reconciled}")
+
+        step(27, "step 5/5: logging out must not flip the theme")
+        page.get_by_role("button", name=re.compile(r"logout", re.I)).click()
+        page.wait_for_timeout(1500)
+        after = page.evaluate("document.documentElement.getAttribute('data-theme')")
+        assert after == "dark", (
+            f"logging out changed the theme to {after!r} - the mirror had drifted "
+            "from what the account actually said")
+        step(27, "PASS - choice survives signup, no flash, mirror reconciled, no flip")
+    finally:
+        page.evaluate("localStorage.removeItem('options')")
+        if prior_token:
+            page.evaluate("([t, n]) => { localStorage.setItem('token', t);"
+                          " if (n) localStorage.setItem('username', n); }",
+                          [prior_token, prior_name])
+
+
 def test_wheel_image_quota(page, frontend: str, token: str):
     """An image too big for sessionStorage must warn, not wedge the page.
 
@@ -1827,6 +1977,7 @@ SELECTABLE_FLOWS = {
     "guest options + compare warning",
     "phone sidebar collapsed",
     "wheel image quota",
+    "theme survives signup",
 }
 
 
@@ -1889,6 +2040,7 @@ def main():
                 ("viewer picks the right show", lambda: test_viewer_can_pick_the_right_show(page, args.backend, frontend, token_a)),
                 ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
                 ("wheel image quota", lambda: test_wheel_image_quota(page, frontend, token_a)),
+                ("theme survives signup", lambda: test_theme_survives_signup_and_reload(page, args.backend, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

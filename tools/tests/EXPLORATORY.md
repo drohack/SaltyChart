@@ -313,7 +313,7 @@ door, which is what this log exists to detect.**
 
 | # | finding | fix + guard |
 |---|---|---|
-| 1 | **The wrong theme was painted on every load for a logged-in user, and a guest's chosen theme was discarded at signup.** `data-theme` went `light` at 76 ms, `/api/options` resolved at 85 ms, `dark` at 87 ms; with the response delayed 300 ms the wrong-theme window was **504 ms**, so it scales with server latency. Separately: pick NIGHT as a guest, sign up, and the DOM said `light`, the server `SYSTEM`, localStorage `NIGHT` - three surfaces disagreeing permanently, and logging out then flipped the site to dark | **NOT YET FIXED** - see the open items below |
+| 1 | **The wrong theme was painted on every load for a logged-in user, and a guest's chosen theme was discarded at signup.** `data-theme` went `light` at 76 ms, `/api/options` resolved at 85 ms, `dark` at 87 ms; with the response delayed 300 ms the wrong-theme window was **504 ms**, so it scales with server latency. Separately: pick NIGHT as a guest, sign up, and the DOM said `light`, the server `SYSTEM`, localStorage `NIGHT` - three surfaces disagreeing permanently, and logging out then flipped the site to dark | the token path reads the stored copy before awaiting, writes the server's answer back to it, and signup carries the guest's choices onto the new account; flow `theme survives signup` |
 | 2 | **A phone dismissal of the My List sidebar stopped persisting** once the sidebar had ever been explicitly opened; every load put the full-screen sidebar back over the grid (25/25 sampled viewport points) | explicit `on:collapse` signal - see the pass-1 table above |
 | 3 | **An oversized wheel image wedged Randomize behind a modal that could not be closed.** A 19 MB PNG threw `QuotaExceededError` from an unguarded `sessionStorage.setItem` *inside a Svelte update flush*, so the rest of the flush never ran and `showImageUploadModal = false` stopped reaching the DOM - Done, the X and Escape all dead, until a reload. Nothing stored, nothing said | guarded `persistImage()` + a `data-image-too-large` message; flow `wheel image quota` |
 | 4 | **Escape did not close the Upload Custom Images modal** - a third modal pass 1's Escape work missed. It is a `<dialog open>`, not `showModal()`, so it never had native Escape behaviour while its `.modal` backdrop still covered the screen | added to `handleModalKey`'s priority order; same flow |
@@ -340,18 +340,18 @@ wider and only the ~20 px *height* is under the WCAG 2.2 AA 24x24 floor -
 
 **Still open after pass 2:**
 
-- **The theme defect (row 1) is unfixed.** Root cause is confirmed: the token
-  branch of `authToken.subscribe` in `stores/options.ts` never *reads* the
-  localStorage mirror, and never *writes* it during load because `isLoading`
-  gates the persist subscriber - so the mirror the comment says exists "so the
-  theme survives the gap" is written and never used on the one path that needs it.
-- Four more defects in that same file, **found by reading and not yet
-  reproduced**: a logout during an in-flight login fetch applies the previous
-  account's options; there is no request-id guard on the `/api/options` fetch, so
-  a rapid account switch can PUT one user's options onto another's row; the
-  debounced save is not cancelled on an auth change and fires with a stale token;
-  and a `null` JSON body throws inside `deepMergeOptions` and silently resets to
-  defaults. Reproduce each before fixing it.
+- Four more defects in `stores/options.ts`, **found by reading while tracing the
+  theme bug, and fixed alongside it because they live in the same code - but NONE
+  of them was reproduced in a browser first.** Treat them as unverified: a logout
+  landing mid-login applied the previous account's options; there was no
+  request-id guard on the `/api/options` fetch, so a rapid account switch could
+  PUT one user's options onto another's row; the debounced save was not cancelled
+  on an auth change and fired with a stale token; and a `null` JSON body threw
+  inside `deepMergeOptions` and silently reset the user to defaults. An `authGen`
+  counter and a `clearTimeout` cover the first three and a type guard the fourth.
+  **They have no mutation rows**, deliberately - a row for a bug nobody has
+  reproduced is a guess with a test wrapped round it. Reproducing them is the
+  obvious next piece of work here.
 - `check-batch` sends ~91 ids whose response is always discarded when the
   leftovers call lands after it. **Left alone on purpose:** the fix is to merge
   rather than replace, which weakens the staleness guard that stops two seasons

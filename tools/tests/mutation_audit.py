@@ -364,8 +364,12 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="a guest's options stop reaching localStorage",
         path="frontend/src/stores/options.ts",
-        find="      localStorage.setItem('options', JSON.stringify(value));",
-        replace="      /* mutation: guests lose options on reload */",
+        # The raw `localStorage.setItem` this used to anchor became `writeMirror`
+        # when the load path started needing the same write. Anchored on the
+        # *persist* call specifically - `writeMirror(resolved)` in the load path is
+        # a different guard with its own row.
+        find="    writeMirror(value);",
+        replace="    /* mutation: guests lose options on reload */",
         flows=("guest options + compare warning",),
         test=T_UI,
         expect="did not reach localStorage",
@@ -1208,6 +1212,49 @@ MUTATIONS: list[Mutation] = [
         expect="no-match search rendered nothing at all",
         guards="searching for a show that isn't in this season shows a blank page, "
                "which reads as a broken site rather than an empty result",
+    ),
+    Mutation(
+        name="the stored theme stops covering the gap before /api/options answers",
+        path="frontend/src/stores/options.ts",
+        # The mirror exists for exactly this, and only the *guest* branch ever read
+        # it - so a logged-in user's first paint used `defaultOptions` and the real
+        # theme arrived when the fetch did. Measured as a 504 ms white flash with a
+        # 300 ms server, i.e. it scales with latency.
+        find="    if (mirrored) options.set(mirrored);",
+        replace="    /* mutation: no synchronous seed */",
+        flows=("theme survives signup",),
+        test=T_UI,
+        expect="painted the wrong theme before /api/options answered",
+        guards="every dark-theme user gets a white flash on every page load, as "
+               "long as the server takes any time at all to answer",
+    ),
+    Mutation(
+        name="the server's options stop being written back to localStorage",
+        path="frontend/src/stores/options.ts",
+        # The other half. Without it the stored copy never reconciles with the
+        # account, so it stays whatever was last written as a guest - and the guest
+        # branch reads it on logout, which is what flipped the site's theme.
+        find="      writeMirror(resolved);",
+        replace="      /* mutation: mirror left stale */",
+        flows=("theme survives signup",),
+        test=T_UI,
+        expect="the stored copy still disagrees with the account",
+        guards="localStorage drifts from the account for good, the two disagree "
+               "silently, and logging out flips the site to the stale value",
+    ),
+    Mutation(
+        name="signing up discards the theme chosen as a guest",
+        path="frontend/src/pages/SignUp.svelte",
+        # A brand-new account has no preferences, so "the server wins" - right for a
+        # login on a new device - hands the user defaults nobody picked, and the
+        # stored copy then disagrees with the server permanently.
+        find="        body: JSON.stringify(get(options))",
+        replace="        body: JSON.stringify({}) /* mutation */",
+        flows=("theme survives signup",),
+        test=T_UI,
+        expect="did not survive signing up",
+        guards="anyone who sets up the site the way they like it before making an "
+               "account has those choices thrown away the moment they sign up",
     ),
     Mutation(
         name="the Compare user dropdown falls back to svelte-select's wording",

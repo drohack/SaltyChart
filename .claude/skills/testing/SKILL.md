@@ -74,6 +74,15 @@ What it established, each the hard way:
   same cycle and the PID never changes again. It now waits for consecutive
   healthy `/api/health` replies after a grace period.
 
+- **An audit run can leave the dev backend serving a mutated build after the file
+  is reverted.** Seen right after a 6-row run: `list.ts` was clean in git and on
+  disk, both fixes present, `/api/health` 200 - and `test_api_smoke` still failed
+  step 14 with the *pre-fix* behaviour. ts-node-dev had restarted 12 times and
+  settled on a stale compile. Touching the file to force one more reload fixed it
+  and the test went green with no source change. So when a test fails immediately
+  after an audit, **check the process before believing the diff**: the same
+  stale-backend shape the drain scripts produce.
+
 **Add a row whenever you add a test.** A test nobody has watched fail is a test
 nobody should trust - and one that has only been watched to fail, never to pass,
 is barely better.
