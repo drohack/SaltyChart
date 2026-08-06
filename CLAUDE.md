@@ -489,10 +489,14 @@ Rules of thumb:
   Serve-stale means the TTL adds no viewer latency at any value - it only
   sets how often AniList gets asked - so 6 h buys ~6x less upstream traffic
   for one visible cost: a newly added show takes up to ~6 h to appear.
-- `stores/season.ts` exports `getCurrentSeasonFromAPI()`, which calls
-  `graphql.anilist.co` **directly from the browser** - invisible to every
-  control above, because the backend never sees it. It currently has no callers.
-  Don't wire it up; route it through `/api/anime` if the need returns.
+- **Nothing in the frontend may call `graphql.anilist.co`.** A request the
+  backend never sees is invisible to every control above, so none of them apply
+  to it. `stores/season.ts` used to export `getCurrentSeasonFromAPI()`, which
+  did exactly that; it had no callers and a comment asking people not to wire it
+  up, and it was deleted, because an unused hazard plus a warning is a weaker
+  safeguard than no hazard. Route any future need through `/api/anime`;
+  `computeInitialSeason()` derives the season from the browser clock with no
+  network at all.
 
 Suite includes:
 | File | Covers |

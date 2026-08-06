@@ -121,54 +121,16 @@ if (typeof localStorage !== 'undefined') {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Fetch current season/year from AniList GraphQL (once per session).
+// There was a `getCurrentSeasonFromAPI()` here that fetched the current season
+// by calling graphql.anilist.co DIRECTLY from the browser. It was deleted, not
+// because it was broken but because it was invisible: the backend never sees
+// that request, so every AniList control we have is blind to it - the pacing,
+// the budget floor, the per-key cooldowns, the page-count guard. It had no
+// callers and a comment asking people not to wire it up, which is a worse
+// safeguard than not having the function.
 //
-// (!) Calls graphql.anilist.co DIRECTLY from the browser - invisible to every
-// backend rate-limit control, because the backend never sees it. It currently
-// has no callers. Don't wire it up; route it through /api/anime if the need
-// returns.
-// ---------------------------------------------------------------------------
-
-let _apiPromise: Promise<{ season: Season; seasonYear: number }> | null = null;
-
-export function getCurrentSeasonFromAPI(): Promise<{ season: Season; seasonYear: number }> {
-  if (_apiPromise) return _apiPromise;
-
-  const body = {
-    query: 'query { Site { season seasonYear } }'
-  };
-
-  _apiPromise = fetch('https://graphql.anilist.co', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json'
-    },
-    body: JSON.stringify(body)
-  })
-    .then((r) => {
-      if (!r.ok) throw new Error(`AniList HTTP ${r.status}`);
-      return r.json();
-    })
-    .then((json) => {
-      const site = json?.data?.Site;
-      if (!site) throw new Error('Malformed AniList response');
-      return {
-        season: site.season as Season,
-        seasonYear: site.seasonYear as number
-      };
-    })
-    .catch((err) => {
-      console.error('Failed fetching current season from AniList:', err);
-      // Reset so future calls can retry
-      _apiPromise = null;
-      // Re-throw to let callers handle it
-      throw err;
-    });
-
-  return _apiPromise;
-}
+// If the need returns, route it through `/api/anime`. `computeInitialSeason()`
+// above derives the season from the browser clock and needs no network at all.
 
 // Helper to compute next season start (anime industry boundaries: Jan/Apr/Jul/Oct)
 export function nextSeasonInfo(
