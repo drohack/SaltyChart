@@ -19,6 +19,54 @@ const publicListLimiter = rateLimit({
   skip: () => _isDev,
 });
 
+/**
+ * Renumber a season's watched rows to a dense 0..n-1, preserving their current
+ * relative order.
+ *
+ * Needed because `PATCH /watched` assigns a new rank as `watchedCount - 1`,
+ * which is only sound while the existing ranks are dense. Un-watching used to
+ * leave a hole (null the rank of the row at 0 and the survivor keeps 1), so the
+ * next append also computed 1 and produced two watched rows sharing a rank -
+ * after which the ranking sidebar's comparator returns 0 for the pair and falls
+ * back to a stable sort over pre-watch `order`, i.e. the user's chosen ordering
+ * is silently replaced by an arbitrary one.
+ *
+ * Order is decided the same way `publicList.ts` decides it - rank first, then
+ * `watchedAt` - but sorted here rather than in SQL, because SQLite orders NULLs
+ * first on ASC and an unranked row belongs last.
+ */
+async function compactWatchedRanks(
+  userId: number,
+  season: string,
+  year: number
+): Promise<void> {
+  const watched = await prisma.watchList.findMany({
+    where: { userId, season, year, watched: true },
+    select: { mediaId: true, watchedRank: true, watchedAt: true }
+  });
+
+  const ordered = [...watched].sort((a, b) => {
+    const ar = a.watchedRank ?? Number.MAX_SAFE_INTEGER;
+    const br = b.watchedRank ?? Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    const at = a.watchedAt ? a.watchedAt.getTime() : 0;
+    const bt = b.watchedAt ? b.watchedAt.getTime() : 0;
+    return at - bt;
+  });
+
+  const moved = ordered.filter((row, idx) => row.watchedRank !== idx);
+  if (!moved.length) return;
+
+  await prisma.$transaction(
+    ordered.map((row, idx) =>
+      prisma.watchList.updateMany({
+        where: { userId, season, year, mediaId: row.mediaId },
+        data: { watchedRank: idx }
+      })
+    )
+  );
+}
+
 // Users who opted out of public compare (Settings.hideFromCompare) must not
 // leak through the unauthenticated endpoints below. Include a user only when
 // they have no settings row or hideFromCompare is false. Mirrors users.ts.
@@ -67,9 +115,30 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
       where: { userId: req.userId!, season, year: Number(year), mediaId },
       data: {
         watched: isWatched,
-        watchedAt: isWatched ? new Date() : null
+        watchedAt: isWatched ? new Date() : null,
+        // Un-watching must clear the rank, not just the flag. It used to leave
+        // `watchedRank` behind, and nothing else could clear it: the follow-up
+        // `PATCH /rank` filters on `watched: true` and its `ids` array excludes
+        // the row that was just un-watched (and is skipped entirely when that
+        // row was the last watched one). The stale value then won the
+        // `watchedRank: null` guard below on a later re-watch, so the entry kept
+        // its old rank instead of being appended - measured: two watched entries
+        // both holding rank 0, after which the ranking sidebar orders by
+        // pre-watch `order` and `addWatchedTo` is silently ignored. It also
+        // leaked out of `GET /nicknames`, which reads `watchedRank ?? order` for
+        // every row regardless of `watched`.
+        // `undefined` means "leave alone" to Prisma, so the mark-watched path
+        // still falls through to the rank assignment below.
+        watchedRank: isWatched ? undefined : null
       }
     });
+
+    // Un-watching leaves a hole in the ranking, and the append below computes
+    // its new rank from a count - so close the hole now rather than letting the
+    // next mark-watched collide with a survivor.
+    if (updated.count > 0 && !isWatched) {
+      await compactWatchedRanks(req.userId!, season, Number(year));
+    }
 
     // If existing row was updated to watched=true we must assign a watchedRank
     if (updated.count > 0 && isWatched) {
@@ -79,8 +148,11 @@ router.patch('/watched', requireAuth, async (req: AuthRequest, res) => {
         where: { userId: req.userId!, season, year: Number(year), watched: true }
       });
 
-      // Only update rank if it is currently null/undefined - keeps manual
-      // re-ordering intact when the user toggles back and forth.
+      // Only update rank if it is currently null/undefined - keeps a manual
+      // re-ordering intact when an already-watched row is marked watched again.
+      // A genuinely un-watched row now arrives here with a null rank (see the
+      // un-watch branch above), so it falls through this guard and gets a fresh
+      // appended one rather than reviving the rank it held last time.
       await prisma.watchList.updateMany({
         where: { userId: req.userId!, season, year: Number(year), mediaId, watchedRank: null },
         data: { watchedRank: watchedCount - 1 }
@@ -240,7 +312,10 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
             customName: entry.customName,
             watched: entry.watched,
             watchedAt: entry.watchedAt,
-            watchedRank: prior.get(entry.mediaId)?.watchedRank ?? null,
+            // Only a watched entry may carry a rank forward. Carrying it
+            // unconditionally recreated the stale-rank state the un-watch branch
+            // above exists to prevent, by a second route.
+            watchedRank: entry.watched ? prior.get(entry.mediaId)?.watchedRank ?? null : null,
             hidden: prior.get(entry.mediaId)?.hidden ?? false,
             order: idx
           }

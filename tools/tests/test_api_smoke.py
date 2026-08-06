@@ -11,7 +11,7 @@ Usage:
 
 Exits 0 if all steps pass, 1 on any failure. Each progress line is
 self-contained per the global CLAUDE.md convention:
-  [k/13 API-smoke] step name - detail
+  [k/14 API-smoke] step name - detail
 """
 import argparse
 import sys
@@ -26,7 +26,7 @@ TEST_MEDIA_ID = 158036   # Eren the Southpaw (any valid AniList ID works)
 TEST_SEASON   = "SUMMER"
 TEST_YEAR     = 2026
 
-TOTAL_STEPS = 13
+TOTAL_STEPS = 14
 
 
 def step(n: int, msg: str) -> None:
@@ -306,6 +306,56 @@ def main():
     if username not in filtered:
         fail(13, f"prefix filter didn't include our user (got {len(filtered)} matches)")
     step(13, f"PASS - {len(users)} usernames; prefix filter finds our user")
+
+    # --------- 14/14  Un-watching clears the rank; re-watching appends ---------
+    # Last, not next to the other rank steps, because it consumes the watched
+    # state step 11 leaves behind (mediaId+2 at rank 0, mediaId at rank 1).
+    #
+    # Found by an exploratory pass: un-watch wrote `watched`/`watchedAt` and left
+    # `watchedRank` behind. Nothing else could clear it - the follow-up /rank
+    # PATCH filters `watched: true` and omits the un-watched id - so a later
+    # re-watch from the grid kept the old rank and two watched rows ended up
+    # sharing one. Pass 1 saw this state, could not reproduce it by hand, and
+    # withdrew it as a harness artifact; it is reachable at human pace via the
+    # un-watch control on Randomize's Watched sidebar.
+    step(14, f"PATCH /api/list/watched mediaId={TEST_MEDIA_ID + 2} -> watched=false")
+    r = requests.patch(f"{backend}/api/list/watched",
+                       json={"season": TEST_SEASON, "year": TEST_YEAR,
+                             "mediaId": TEST_MEDIA_ID + 2, "watched": False},
+                       headers=auth_headers, timeout=5)
+    if r.status_code != 200:
+        fail(14, f"un-watch failed: {r.status_code} {r.text[:200]}")
+
+    r = requests.get(f"{backend}/api/list",
+                     params={"season": TEST_SEASON, "year": TEST_YEAR},
+                     headers=auth_headers, timeout=5)
+    rows = {x["mediaId"]: x for x in r.json()}
+    unwatched = rows.get(TEST_MEDIA_ID + 2, {})
+    if unwatched.get("watchedRank") is not None:
+        fail(14, "un-watching left watchedRank set on an unwatched row - a later "
+                 f"re-watch will revive it, got {unwatched.get('watchedRank')}")
+
+    step(14, f"re-marking mediaId={TEST_MEDIA_ID + 2} watched - must append, not revive rank")
+    r = requests.patch(f"{backend}/api/list/watched",
+                       json={"season": TEST_SEASON, "year": TEST_YEAR,
+                             "mediaId": TEST_MEDIA_ID + 2, "watched": True},
+                       headers=auth_headers, timeout=5)
+    if r.status_code != 200:
+        fail(14, f"re-watch failed: {r.status_code} {r.text[:200]}")
+
+    r = requests.get(f"{backend}/api/list",
+                     params={"season": TEST_SEASON, "year": TEST_YEAR},
+                     headers=auth_headers, timeout=5)
+    watched_ranks = {x["mediaId"]: x.get("watchedRank")
+                     for x in r.json() if x.get("watched")}
+    ranks = list(watched_ranks.values())
+    if len(ranks) != len(set(ranks)):
+        fail(14, f"two watched entries share a watchedRank: {watched_ranks}")
+    if None in ranks:
+        fail(14, f"a watched entry has no watchedRank: {watched_ranks}")
+    if sorted(ranks) != list(range(len(ranks))):
+        fail(14, f"watched ranks are not dense 0..n-1: {watched_ranks}")
+    step(14, f"PASS - rank cleared on un-watch, dense on re-watch: {watched_ranks}")
 
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 
