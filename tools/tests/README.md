@@ -113,7 +113,7 @@ anything it finds twice should graduate into this suite with a
 `mutation_audit.py` row. Read its *Traps* section before starting; several
 plausible-looking "bugs" there are measurement artifacts.
 
-The mutation audit itself is 73 rows, and a full run **prints its own wall
+The mutation audit itself is 74 rows (measured: 73 rows in 47 min on 2026-08-06), and a full run **prints its own wall
 clock** on the last line (`N rows, M min, measured <date>`) — quote that, never
 an estimate. It warms the
 season cache once at the start, so a full run has to fit inside the 6 h

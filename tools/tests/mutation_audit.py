@@ -621,14 +621,44 @@ MUTATIONS: list[Mutation] = [
                "so no viewer is offered the chance to correct it",
     ),
     Mutation(
+        name="a viewer can clear an admin's decision",
+        path=BACKEND_JF,
+        # The undo half of the same rule. Split from the pick row because
+        # the two guards are separate code that can regress separately —
+        # and because one shared anchor silently audited only this one.
+        find="""  if (existing?.confirmed || existing?.rejected) {
+    return res.status(409).json({
+      error: 'An admin has already settled this entry',
+      code: 'ALREADY_SETTLED',
+    });
+  }
+  // Nothing stored is not an error""",
+        replace="  // Nothing stored is not an error",
+        test=T_JELLYFIN,
+        expect="a viewer cleared an admin's rejection",
+        guards="any signed-up user can wipe an admin's Reject from the Watch "
+               "pop-up, putting the wrong Watch button back for everyone",
+    ),
+    Mutation(
         name="a viewer pick can overwrite an admin's decision",
         path=BACKEND_JF,
         # The only identity endpoint any logged-in user can reach. Nothing else
         # guards confirmed/rejected rows — setIdentityOverride upserts
         # unconditionally, and before this endpoint existed only admin-gating
         # stood between a viewer and a deliberate Reject.
-        find="  if (existing?.confirmed || existing?.rejected) {",
-        replace="  if (false) { /* mutation: viewers may overwrite a human decision */",
+        # ANCHORED PAST THE GUARD on purpose: /identity/unpick carries a
+        # byte-identical block, and the bare line matched THAT one — so this
+        # row spent a run proving the unpick guard while its name claimed
+        # pick, leaving pick unaudited. The audit found it; nothing else
+        # could have.
+        find="""  if (existing?.confirmed || existing?.rejected) {
+    return res.status(409).json({
+      error: 'An admin has already settled this entry',
+      code: 'ALREADY_SETTLED',
+    });
+  }
+  try {""",
+        replace="  try {",
         test=T_JELLYFIN,
         expect="a viewer overwrote an admin-confirmed row",
         guards="any signed-up user can silently undo an admin's Confirm or "
@@ -1382,6 +1412,11 @@ def main() -> int:
     say(f"Mutation audit — {len(chosen)} mutation(s), each must be CAUGHT by its test")
     say("Servers must be running, same as the suite this audits.\n")
 
+    # The run times itself so nobody has to estimate. Both docs carried a
+    # figure for years — ~35 min in CLAUDE.md, ~118 min in the tests README —
+    # and neither had ever been measured; one was true at 18 rows and the other
+    # was arithmetic. A number a tool prints about itself cannot go stale.
+    run_started = time.time()
     survived: list[str] = []
     # Warm before touching anything. The audit restarts the backend twice per
     # row, and a stale season key would re-fetch on the first request after each

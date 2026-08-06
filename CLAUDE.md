@@ -324,10 +324,12 @@ runs once, immediately before a push. It takes ~15 minutes and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin — an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate — it edits tracked source, restarts the
-backend twice per row (73 rows) and starts real transcodes, which is not
+backend twice per row (74 rows) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
-line is the only figure worth quoting. Two hand-written estimates lived here
+line is the only figure worth quoting. Last measured: **73 rows in 47 min**
+(2026-08-06), down from ~66 before twelve UI rows were narrowed to a single
+browser flow. Two hand-written estimates lived here
 for months — ~35 min (true at 18 rows) and ~118 min (arithmetic, never a
 stopwatch) — which is the "quoted a measurement in prose" rot this file warns
 about, committed in this file. Measured on a full audit:
