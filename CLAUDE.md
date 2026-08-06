@@ -223,7 +223,8 @@ whether or not that skill is loaded:
 - **`mutation_audit.py` is NOT a gate.** It edits tracked source, restarts the
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only N` makes checking one cheap. Last
-  measured: **74 rows in 19 min** (2026-08-05).
+  measured: **74 rows in 19 min** (2026-08-05); the table is at **79** rows
+  since, so re-time it rather than quoting that figure.
 - **A test run must never provoke a live AniList 429.** The 429/backoff logic is
   unit-tested off the network. Warm the cache first; both runners do it
   automatically and refuse to start if a season key can't be fetched, because a
@@ -1092,8 +1093,11 @@ hide-from-Compare, nickname user picker.
 **Season toolbar** (`SeasonSelect.svelte`): search box (client-side fuzzy),
 Hide 18+, Hide sequels, Hide in "My List".
 
-**Main Anime grid refinements**: My-List entries get a border highlight (not
-opacity), 18+ badge, **progressive loading** on Home (each section gates only
+**Main Anime grid refinements**: the marker runs the *other* way from what this
+line claimed for months - an entry **not** yet in My List carries an
+`bg-accent/10` tint overlay plus `cursor-grab` and `draggable`, and an entry
+already in the list is the plain one (measured: 104 tinted of 109). So the tint
+means "addable", not "added". 18+ badge, **progressive loading** on Home (each section gates only
 its own fetch - skeleton shimmer per section, per-section error + Retry, one
 failure never blanks the rest), covers blur-up (`coverImage.medium` blurred
 under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).

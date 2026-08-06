@@ -85,6 +85,15 @@ Every one of these cost real time on the first pass. Each looked like a bug.
 - **`/[a-f0-9]{32}/` matches a git SHA in a normalize.css comment**, so a naive
   "is the API key in the DOM?" check reports a leak on every page. Print the
   surrounding context before believing it.
+- **`button:has-text("TRAILER")` also matches the *"watched trailer"* add
+  button,** so a loop that thinks it is opening trailers silently adds shows to
+  My List. The trailer control is the **cover-image button** inside the card.
+  This produced a clean-looking pass on a path that was never exercised, and the
+  claim had to be withdrawn and re-measured.
+- **`page.reload()` on a page wedged behind a modal can be raced by the
+  measurement that follows it.** Pass 2 briefly concluded a wedge survived a
+  reload; a fresh `goto` recovered the page completely. If a reload appears not
+  to help, navigate instead before believing it.
 - **Your own script can create the bug you then report.** A loop that clicked
   "Mark as watched" and then X faster than a human left rows in a state a real
   user can't produce. If a defect only appears under automation timing, say so
@@ -171,9 +180,15 @@ remove from the sidebar; mark watched -> reorder by drag -> reload. Validate by
 reading the same fact off three surfaces - grid highlight, sidebar, and
 `GET /api/list` - and requiring all three to agree.
 
-**4. Randomize.** Spin several times. Open the pop-up, set a nickname, hide a
-show, then Hide All / Show All / Hide Not in Library, checking the wheel matches
-the visible list after each. Change season with the pop-up open. Try the custom
+**4. Randomize.** Spin several times. Open the pop-up, hide a show, then Hide
+All / Show All / Hide Not in Library, checking the wheel matches the visible list
+after each. **There is no nickname control in the pop-up** - its only controls are
+X, HIDE SERIES (UNWATCHED) and MARK AS WATCHED; nicknames are set from Home's
+sidebar by **double-clicking** a row (single and right click do nothing). And
+**you cannot change season, or log out, with the pop-up open**: it is a real
+`<dialog open class="modal">` and it intercepts pointer events on the toolbar.
+Confirm that as a property rather than trying to perform it - Playwright reports
+it as a 30 s click timeout naming the dialog. Try the custom
 Spin button image (drag-drop into `sessionStorage`; a 3 MB data URL stores fine,
 so the quota worry pass 1 raised was unfounded - a much larger one may still
 throw).
@@ -204,7 +219,8 @@ every automated test seeds past.
 **8. On a phone, 390x844,** then 768. Tap targets under ~44 px, modals
 overflowing, the wheel's usable size, whether the grid is reachable at all on
 arrival. **Check logged-in and logged-out separately** - they differ sharply
-here (only the logged-in view has a sidebar).
+here (only the logged-in view has a sidebar). Guest Compare and Randomize need
+no phone pass at all: both routes redirect a guest to `/` before rendering.
 For horizontal scroll, test `window.scrollTo(500, 0)` and see whether `scrollX`
 actually moves - **not** `scrollWidth > innerWidth`, which is non-zero on this
 app by design and produced a false finding on pass 1 (`overflow-x: clip` clips
@@ -287,6 +303,63 @@ six seconds. Module-level constants used during module initialisation must be
 declared at the top of the file, and this is the fourth runtime-only failure in
 this repo that no type check could see.
 
+### Pass 2 - 2026-08-06 (local dev)
+
+Sessions 1, 2, 3, 4, 6, 7, 8 and most of 9. Session 5 skipped (`test_player.py`
+covers it in 10 steps and it is the most expensive session in server resources);
+the cold-season load skipped deliberately on budget. **Five behaviour defects,
+all fixed with a guard; two of them were pass-1 fixes reachable through a new
+door, which is what this log exists to detect.**
+
+| # | finding | fix + guard |
+|---|---|---|
+| 1 | **The wrong theme was painted on every load for a logged-in user, and a guest's chosen theme was discarded at signup.** `data-theme` went `light` at 76 ms, `/api/options` resolved at 85 ms, `dark` at 87 ms; with the response delayed 300 ms the wrong-theme window was **504 ms**, so it scales with server latency. Separately: pick NIGHT as a guest, sign up, and the DOM said `light`, the server `SYSTEM`, localStorage `NIGHT` - three surfaces disagreeing permanently, and logging out then flipped the site to dark | **NOT YET FIXED** - see the open items below |
+| 2 | **A phone dismissal of the My List sidebar stopped persisting** once the sidebar had ever been explicitly opened; every load put the full-screen sidebar back over the grid (25/25 sampled viewport points) | explicit `on:collapse` signal - see the pass-1 table above |
+| 3 | **An oversized wheel image wedged Randomize behind a modal that could not be closed.** A 19 MB PNG threw `QuotaExceededError` from an unguarded `sessionStorage.setItem` *inside a Svelte update flush*, so the rest of the flush never ran and `showImageUploadModal = false` stopped reaching the DOM - Done, the X and Escape all dead, until a reload. Nothing stored, nothing said | guarded `persistImage()` + a `data-image-too-large` message; flow `wheel image quota` |
+| 4 | **Escape did not close the Upload Custom Images modal** - a third modal pass 1's Escape work missed. It is a `<dialog open>`, not `showModal()`, so it never had native Escape behaviour while its `.modal` backdrop still covered the screen | added to `handleModalKey`'s priority order; same flow |
+| 5 | **Un-watching left a stale `watchedRank`** - see the reversed withdrawal below | `list.ts` nulls + compacts; `test_api_smoke.py` step 14 |
+
+Smaller, all fixed: Compare's user dropdown rendered svelte-select's default
+"No options" because `noOptionsMessage` and `dropdownClass` are **not props of
+svelte-select 5** (the console said so on every visit; v5 uses an `empty` slot);
+every trailer button's accessible name was the constant `"Trailer thumbnail"`, so
+a screen reader announced all 109 cards identically; a logged-out visitor fired
+the rate-limited `/api/list/users-with-ratings` for a picker it never sees; a
+guest saw the Admin tab bar above the "only available to the site admin" notice.
+`stores/season.ts` told the reader to keep its TTL in sync with a backend TTL it
+named as 1 h when the backend's is 6 h.
+
+**Recorded and deliberately not changed** (a decision, not an oversight): the
+rename/remove modal is reachable only by **double-clicking** a sidebar row, with
+no affordance; submit buttons are not disabled in flight, so a triple-click sent
+3 `POST /auth/login`; cross-tab logout does not stop the other tab's writes
+(stateless JWT, no revocation). On tap targets: the measurement sampled the
+20x20 `<input>`, but each is wrapped in its `<label>`, so the real target is
+wider and only the ~20 px *height* is under the WCAG 2.2 AA 24x24 floor -
+**re-measure the label, not the input, before acting on it.**
+
+**Still open after pass 2:**
+
+- **The theme defect (row 1) is unfixed.** Root cause is confirmed: the token
+  branch of `authToken.subscribe` in `stores/options.ts` never *reads* the
+  localStorage mirror, and never *writes* it during load because `isLoading`
+  gates the persist subscriber - so the mirror the comment says exists "so the
+  theme survives the gap" is written and never used on the one path that needs it.
+- Four more defects in that same file, **found by reading and not yet
+  reproduced**: a logout during an in-flight login fetch applies the previous
+  account's options; there is no request-id guard on the `/api/options` fetch, so
+  a rapid account switch can PUT one user's options onto another's row; the
+  debounced save is not cancelled on an auth change and fires with a stale token;
+  and a `null` JSON body throws inside `deepMergeOptions` and silently resets to
+  defaults. Reproduce each before fixing it.
+- `check-batch` sends ~91 ids whose response is always discarded when the
+  leftovers call lands after it. **Left alone on purpose:** the fix is to merge
+  rather than replace, which weakens the staleness guard that stops two seasons
+  mixing, and the saving is one DB-only request measured at ~5 ms. Not worth it.
+- Never reached: `/admin/matching` as an admin (promoting a throwaway user in the
+  **dev DB only** is pre-authorised), Randomize's nickname-panel toggles,
+  Compare's Share-as-image, and the `2cols`/`3cols` wide-desktop breakpoints.
+
 ### Pass 1 - 2026-08-01 (local dev, `1f5b20c`)
 
 **All six were fixed the same day, and every one now has a regression test and a
@@ -316,7 +389,7 @@ What each fix was:
 | Escape / close | `<svelte:window on:keydown>` in `AnimeGridTranslate` + `Escape` added to Randomize's existing window handler; a real X button on the trailer modal |
 | check-batch | `Home.svelte` chunks at 100 and merges, staleness guard covering the whole set |
 | Server busy | transient chip beside the CC toggle, auto-clears after 6 s, never gates playback |
-| phone sidebar | `collapsed` is a bound prop defaulting to collapsed below `sm`, persisted in `prefs-<user>`; toggle tabs given 44 px targets |
+| phone sidebar | `collapsed` is a bound prop defaulting to collapsed below `sm`, persisted in `prefs-<user>`; toggle tabs given 44 px targets. **Pass 2 found a third door onto the same bug** and it is fixed differently: `sidebarChoiceMade` used to be *inferred* by diffing the value in a reactive block that runs before `loadPrefs`, so a stored value disagreeing with the width default made the inference wrong and a dismissal was never persisted. It is recorded at the click now (`on:collapse`), which removes the ordering dependency instead of reshuffling it |
 | small three | no-results message; options always mirrored to `localStorage`; "No user named ..." on Compare |
 
 Confirmed at the time (all since fixed - see the table above):
@@ -445,8 +518,21 @@ several of these failed on my speed, not the app):
 
 Nothing on the original list is now untested.
 
-Withdrawn: three entries once showed `watchedRank: 0` with `watched: false`.
-Re-tested at human pace, mark-as-watched sets `watched` + `watchedAt` +
-`watchedRank` correctly every time, and a direct DB read after the full session
-showed 12 consistent rows with nothing lost. The earlier state was created by a
-loop clicking faster than a person can - **harness artifact, not a defect**.
+~~Withdrawn: three entries once showed `watchedRank: 0` with `watched: false`~~
+- **WITHDRAWAL REVERSED by pass 2, and it was a real defect.** Pass 1 could not
+reproduce it by clicking, concluded "harness artifact", and moved on. It is
+reachable by **one click**: the un-watch X on Randomize's *Watched* sidebar
+cleared `watched` and `watchedAt` and left `watchedRank` behind. Nothing else
+could clear it - the follow-up `PATCH /list/rank` filters on `watched: true` and
+its `ids` array omits the row just un-watched - so a later re-watch revived the
+old rank and two watched entries ended up sharing one, after which the ranking
+sidebar's comparator returns 0 for the pair and silently falls back to pre-watch
+order. Fixed server-side in `list.ts`: un-watch nulls the rank *and* compacts the
+survivors, because the append computes `watchedCount - 1` and that is only sound
+while the ranks are dense. Guarded by `test_api_smoke.py` step 14 and two
+mutation rows.
+
+**The lesson is about the withdrawal, not the bug.** "I clicked it and it didn't
+happen" is not the same as "it cannot happen" - pass 1 had the state in front of
+it, in a DB read, and reasoned it away. When a measurement disagrees with your
+model of the code, prefer re-reading the code.
