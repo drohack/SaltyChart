@@ -1,0 +1,20 @@
+# Line endings: this repo stores LF, and now says so rather than relying on
+# every contributor's editor agreeing by luck.
+#
+# Without this file, a Windows tool that rewrites a file with CRLF makes git
+# report the entire file as modified while not one character of content
+# changed. That is not a cosmetic problem. It happened to 14 files in a single
+# session here - source, tests, lockfile and docs - and it buried a real
+# 46-line documentation edit inside a 1,394-line "whole file rewritten" diff.
+# A diff nobody can read is a diff nobody reviews.
+#
+# `text=auto` still lets git detect binary content and leave it alone, so this
+# stays correct if an image or font is ever committed. `eol=lf` pins the
+# working-tree ending too, so a rewrite cannot quietly reintroduce CRLF: git
+# normalises on the way in and checks out LF on the way back.
+* text=auto eol=lf
+
+# tools/translate.bat is deliberately NOT pinned to CRLF, which is the usual
+# advice for batch files. It is stored LF today and is a linear wrapper - one
+# command, no labels, no goto - which cmd.exe runs fine with LF. Forcing CRLF
+# would rewrite the working copy to buy nothing.
