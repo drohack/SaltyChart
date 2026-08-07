@@ -3,10 +3,12 @@
 Pre-deploy smoke + regression tests for SaltyChart. Run these before building
 Docker images to catch site-breaking regressions.
 
-The suite is **11 parallel checks** (no browser, no shared state) followed by
-**4 sequential browser checks** - 5 with the burned-in GPU test - so 15/16
+The suite is **12 parallel checks** (no browser, no shared state) followed by
+**4 sequential browser checks** - 5 with the burned-in GPU test - so 16/17
 checks in total. Wall-clock varies with cache warmth and what Jellyfin is
-doing; ~6 min with `--skip-burned-in` (measured 2026-08-06).
+doing; ~6 min with `--skip-burned-in` (measured 2026-08-06, before the Sonarr
+check was added - it runs inside the parallel phase and against a warm cache
+adds nothing measurable).
 
 ## One-shot pre-deploy
 

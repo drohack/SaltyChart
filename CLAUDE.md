@@ -283,7 +283,7 @@ reading the server's CPU from the mirrored syslog.
 ### API routes mounted under `/api/*`
 
 `/api/health`, `/api/auth`, `/api/list`, `/api/public-list`, `/api/users`,
-`/api/options` do what their names say - read `backend/src/routes/`. The two
+`/api/options` do what their names say - read `backend/src/routes/`. The three
 that don't:
 
 - `/api/anime` - AniList GraphQL proxy + cache; page 1 reveals `lastPage`, then
@@ -294,6 +294,11 @@ that don't:
   season blocks on AniList.
 - `/api/jellyfin` - availability, playback, streaming; contracts in
   `backend/CLAUDE.md`.
+- `/api/sonarr` - the Sonarr Custom List. **Unauthenticated**, `generalLimiter`
+  only, and it is consumed by Sonarr rather than by a browser: it must stay a
+  bare `[{title, tvdbId}]` array and must **never trigger a cold AniList
+  fetch**. Contract in `backend/CLAUDE.md`; the argument for every predicate is
+  the docstring of `backend/src/routes/sonarr.ts`.
 
 Routes inside existing routers:
 
@@ -312,6 +317,24 @@ Routes inside existing routers:
 Every route contract, the SDK's two packaging traps, the availability cache and
 what "direct stream" really costs are in **`backend/CLAUDE.md`**, which loads
 when you work under `backend/`.
+
+### Sonarr Custom List (`/api/sonarr`)
+
+The contract is in **`backend/CLAUDE.md`**; the argument behind every predicate
+is the docstring of `backend/src/routes/sonarr.ts`. Two rules stay here, because
+both bind from outside `backend/`:
+
+- **The response must stay a bare `[{title, tvdbId}]` array**, and the endpoint
+  must **never trigger a cold AniList fetch**. Sonarr consumes it unattended
+  every 6 hours and cannot tell a truncated list from a complete one.
+- **The scope filter uses relations; the matcher must not.** `lib/sonarrList.ts`
+  drops entries with a `PREQUEL`/`PARENT` edge to decide *what we auto-add* -
+  this is not licence to reintroduce a relation heuristic into *identity*, where
+  it was measured, found wrong, and removed (see *Measure before claiming*).
+
+Before pointing Sonarr at it, run `tools/sonarr_dryrun.py` - read-only, and it
+reports which gate excluded each entry plus a diff against what Sonarr already
+holds.
 
 ### Matching AniList entries to the library
 
@@ -415,7 +438,10 @@ translateRouter)` - rather than relying on the later global `app.use`.
 carries its own limiters: 120 req/min for the JSON endpoints and a separate
 **600 req/min** for `/api/jellyfin/stream/*`, `/subtitles` and `/attachments`
 (HLS playback is a playlist refresh + a segment every few seconds plus seek
-bursts - it must not eat the general budget).
+bursts - it must not eat the general budget). `/api/sonarr` deliberately adds
+**no** limiter of its own and inherits `generalLimiter`: Sonarr polls a Custom
+List once every 6 hours, so 120 req/min is headroom by four orders of magnitude
+and a dedicated limiter would be a knob nobody ever turns.
 
 ### Error response shape
 

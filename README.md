@@ -279,8 +279,8 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect the final line: "Pre-deploy: 16/16 passed - ready to build"
-   # (15/15 with --skip-burned-in - use it if no CUDA)
+   # Expect the final line: "Pre-deploy: 17/17 passed - ready to build"
+   # (16/16 with --skip-burned-in - use it if no CUDA)
    ```
 
 2. **Push to `master`.** The `deploy` workflow

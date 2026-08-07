@@ -227,6 +227,77 @@ Routes (contracts here; each guard's story is commented at its code):
   still named via the identify-by-ProviderIds search. Never on a viewer's
   path; reads only cached data.
 
+## Sonarr Custom List (`/api/sonarr`)
+
+Sonarr pulls seasonal anime from us; we never push to it, and **no Sonarr
+credentials exist anywhere in the service**. The full argument for every
+predicate - why whole first seasons rather than pilots, why `pending` is
+excluded, why relations decide scope but never identity - is the docstring of
+`backend/src/routes/sonarr.ts`, and that is its one home. What matters here is
+the contract.
+
+- `GET /list` - **unauthenticated**, `generalLimiter` only. Returns a **bare
+  `[{title, tvdbId}]` array**, which is the only shape Sonarr's Custom List
+  import accepts; wrapping it in an object parses as zero series and reads as a
+  list that silently adds nothing. Optional `?season=&year=` (both or neither,
+  else 400) pins a season for the test and the dry run; the default is the
+  calendar season plus the next.
+- `GET /list?explain=1` - the same computation with `proposed`, `rejected` (each
+  carrying the **gate that stopped it**) and `counts`. An **object**, so it can
+  never be mistaken for the list. It exists so `tools/sonarr_dryrun.py` doesn't
+  reimplement the filter in Python - a second copy would drift and start
+  describing a program we don't ship.
+- **503 `UPSTREAM_ERROR` + `Retry-After` when `identityReady()` is false**, never
+  an empty array. Before the community map loads every lookup returns "no id"
+  for the wrong reason, and Sonarr has no way to tell a truncated list from a
+  complete one - a 503 at least lands in its log. The window is too narrow to
+  race from a test (the map comes from `AppConfig`), so it is verified by hand:
+  force `identityReady()` false, confirm the 503, revert.
+- **Reads `SeasonCache` only, and never calls `startColdFetch()`.** It serves a
+  stale row happily; freshness is irrelevant here, which is also why there is no
+  second copy of `SEASON_TTL_SECONDS` to drift. A never-fetched season simply
+  contributes nothing, and a cached-but-empty one (`SUMMER 2027` was `"[]"`)
+  means "asked, nothing yet" rather than "not cached". It reads the `''` format
+  key - the `'TV'` row would silently drop every TV_SHORT.
+
+The selection itself is `lib/sonarrList.ts`: pure, I/O-free, resolver injected,
+so every predicate is unit-tested without a DB. The identity filter is
+**`tvdbId && !pending && !rejected`** - deliberately not `confirmed`, since a
+community-map row is unconfirmed by construction and requiring confirmation
+would discard the ~94% of TV the map answers. `pending` *is* excluded, and this
+is the one path stricter than the site's: elsewhere an unverified resolver id is
+positive-only because a bad guess costs a Watch button that doesn't work; here
+it downloads a season of the wrong series.
+
+Measured 2026-08-06 on the live cache: 39 proposed from SUMMER 2026's 111 cached
+entries; 157 excluded across both seasons (66 not TV/TV_SHORT, 50 with a
+PREQUEL/PARENT edge, 37 outside the 14-day air window, 4 with no usable id), and
+**zero duplicate TVDB ids** in any season or across the pair.
+
+Graded against the held library over WINTER + SPRING + SUMMER 2026: **119
+proposals, zero wrong exclusions.** Every held entry the list declines is either
+a sequel/later cour (27) or a non-TV format (14) - both deliberate. Proposals
+per season are stable (36 / 44 / 39); what swings is how much is currently held
+(14 / 3 / 36), which the library alone cannot attribute to "never grabbed"
+versus "grabbed and since deleted".
+
+**Why ONA stays excluded is precision, not id coverage** - and the distinction
+matters, because the coverage figure is the one a future reader will find first
+and it does not support the decision. Over those three seasons: 51 ONA entries,
+30 of them first-season, and **27 of those resolve to a usable TVDB id** - so
+coverage is fine here (that is not in tension with the map-only "ONA is 40%"
+figure under *The two availability tiers*; this number includes our own resolver
+rows). The problem is that only **3 of the 27 were wanted**. Nothing separates
+them: the three held span popularity 213,444 / 44,384 / **18,042**, score 85 /
+78 / **68**, favourites 10,599 / 1,812 / **314** - Hana-Kimi sits below
+seventeen unheld entries on every axis. `duration` and `episodes` DO cleanly
+identify short-form and non-full seasons (1-5 min/ep, or 3-7 episodes), but
+removing those still leaves 21-for-3. Three positives is far too few to
+establish a threshold and quite enough to refute one, so **do not add a quality,
+popularity or score heuristic here** - that is the `isRelation` guard's mistake
+in a new costume. Full-length ONA belongs to a human request path (the site
+already renders them in its OVA/ONA/Special section), not to auto-add.
+
 ## Translation routes (`/api/translate`)
 
 - `GET /api/translate/check-batch?videoIds=id1,id2,...` - bulk DB lookup for English sub status (up to 100 IDs); returns only confirmed positives; queues background Python checks for uncached IDs

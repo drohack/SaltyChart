@@ -113,6 +113,7 @@ BACKEND_LIBPICK = "backend/src/lib/libraryPick.ts"
 BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
 BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
+BACKEND_SONARR = "backend/src/lib/sonarrList.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 
@@ -208,6 +209,65 @@ MUTATIONS: list[Mutation] = [
         expect="should reject",
         guards="a TMDB search result decades away from the entry is written into "
                "the identity table as fact",
+    ),
+    Mutation(
+        name="the Sonarr list stops excluding unverified (pending) identities",
+        path=BACKEND_SONARR,
+        # Everywhere else a resolver guess is positive-only because a bad one
+        # costs a Watch button that doesn't work. On this path it costs a whole
+        # season of the wrong series on disk, so this is the ONE place the
+        # identity filter is stricter than the site's.
+        find="  if (!identity || identity.pending || identity.rejected) return null;",
+        replace="  if (!identity || identity.rejected) return null; /* mutation */",
+        test=T_UNIT,
+        expect="an unverified guess must not download a season of the wrong series",
+        guards="Sonarr grabs ~4.6 GB of a series we only guessed at, and nothing "
+               "on the list says which rows were guesses",
+    ),
+    Mutation(
+        name="the Sonarr list's scope filter is replaced by the site's sequel predicate",
+        path=BACKEND_SONARR,
+        # The exact 'correction' a future contributor is most likely to make:
+        # three other files in this repo test "has ANY of SEQUEL/PREQUEL/
+        # SIDE_STORY", and reusing one here looks like removing a duplicate. It
+        # silently shrinks the list to shows nobody ever continued, which no
+        # count assertion would catch - the list just gets quietly smaller.
+        find="    if (t === 'PREQUEL' || t === 'PARENT') return false;",
+        replace="    if (t === 'PREQUEL' || t === 'PARENT' || t === 'SEQUEL' || t === 'SIDE_STORY') return false; /* mutation */",
+        test=T_UNIT,
+        expect="a first season that later got a sequel must still be auto-added",
+        guards="every first season that has since spawned a sequel stops being "
+               "auto-added - the majority of what the list exists to catch",
+    ),
+    Mutation(
+        name="the Sonarr list stops deduping by tvdbId",
+        path=BACKEND_SONARR,
+        # Seasons and split cours of one series share a TVDB id and
+        # resolveIdentity does not dedupe. There were no live collisions when
+        # this was measured, so only a prospective assertion can catch it.
+        find="""    if (seen.has(tvdbId)) {
+      drop('duplicateTvdbId');
+      continue;
+    }""",
+        replace="    /* mutation: dedupe disabled */",
+        test=T_UNIT,
+        expect="a tvdbId must appear at most once in the list",
+        guards="Sonarr is handed the same series twice in one list",
+    ),
+    Mutation(
+        name="the Sonarr list's next season stops rolling into the next year",
+        path=BACKEND_SONARR,
+        # FALL -> WINTER is the only season step that changes the year, so this
+        # is invisible for nine months and then serves WINTER of the year that
+        # has already happened - an empty or stale second season, every Q4. The
+        # same test pins the UTC-vs-local half of this function, which is what
+        # caught the original bug.
+        find="    year: nextIdx === 0 ? current.year + 1 : current.year,",
+        replace="    year: current.year, /* mutation */",
+        test=T_UNIT,
+        expect="FALL is followed by WINTER of the NEXT year",
+        guards="from October onwards the list's second season is the wrong year, "
+               "so nothing upcoming is ever proposed",
     ),
     Mutation(
         name="a film we don't hold falls back to matching TV series",

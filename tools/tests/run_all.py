@@ -134,6 +134,10 @@ def main():
                               "--backend", args.backend],     None, 30),
         ("Jellyfin API",     ["py", "-3.13", "-u", str(TESTS / "test_jellyfin.py"),
                               "--backend", args.backend],     None, 180),
+        # Sonarr treats this list as authoritative and has no way to tell a
+        # short one from a complete one, so the shape is asserted on every push.
+        ("Sonarr list",      ["py", "-3.13", "-u", str(TESTS / "test_sonarr.py"),
+                              "--backend", args.backend],     None, 120),
         ("title match",      ["npm", "run", "test:unit"],     REPO / "backend",  60),
         # `vite build` does not type-check .svelte script blocks, so a reference
         # to a deleted identifier compiles and ships. This is the only check

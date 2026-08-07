@@ -74,6 +74,7 @@ import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
+import sonarrRouter from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
 import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
@@ -558,6 +559,11 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/auth', authLimiter, authRouter);
   app.use('/api/list', listRouter);
   app.use('/api/public-list', publicListRouter);
+  // Mounted here, after compression() and the global generalLimiter, on
+  // purpose: Sonarr polls the Custom List every 6 hours, so 120 req/min is
+  // several orders of magnitude more headroom than it needs and a dedicated
+  // limiter would be a knob nobody ever turns.
+  app.use('/api/sonarr', sonarrRouter);
   app.use('/api/users', usersRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
