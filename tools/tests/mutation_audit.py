@@ -1510,6 +1510,23 @@ WATCHER_GRACE_S = 2.0
 #: Consecutive healthy polls required before calling it settled.
 STABLE_POLLS = 3
 
+#: How many consecutive timeouts mean the backend is DEAD rather than slow.
+#:
+#: Each row waits twice - once after apply, once after revert - so a single
+#: genuinely slow row produces two. Three means the next row is failing too,
+#: which is no longer transient. Measured on the run that motivated this: the
+#: backend died at row 34 and every backend row after it reported
+#: `WRONG REASON: backend unreachable`, so the run spent ~20 more minutes
+#: manufacturing ~50 coverage holes that did not exist. At 3 it stops two rows
+#: in.
+MAX_CONSECUTIVE_WEDGES = 3
+_consecutive_wedges = 0
+#: Set once the abort has been decided. `restore()` waits for the backend too,
+#: and it runs from a `finally`, so without this the abort raises a SECOND time
+#: from inside that finally - which replaces the original exception with a copy
+#: of itself and waits another 90s on a server already known to be gone.
+_aborting = False
+
 
 def wait_for_backend(timeout: float = 90.0) -> None:
     """Block until ts-node-dev has finished reloading and is serving again.
@@ -1532,18 +1549,44 @@ def wait_for_backend(timeout: float = 90.0) -> None:
     it we sample the *old* process, get a 200 immediately, and conclude all is
     well before the restart has even begun.
     """
+    global _consecutive_wedges, _aborting
+    # The abort is already in flight; cleanup still needs its `git checkout --`,
+    # but not another 90s wait on a server we know is gone.
+    if _aborting:
+        return
     time.sleep(WATCHER_GRACE_S)
     deadline = time.time() + timeout
     healthy_in_a_row = 0
     while time.time() < deadline:
         healthy_in_a_row = healthy_in_a_row + 1 if _healthy() else 0
         if healthy_in_a_row >= STABLE_POLLS:
+            _consecutive_wedges = 0
             return
         time.sleep(0.5)
-    # Don't abort: a backend that never came back is itself a finding, and the
-    # test about to run reports it far more usefully than a crash here would.
+
+    # One timeout does NOT abort: a backend that came back slowly is a finding
+    # the row's own test reports far more usefully than a crash here would.
+    _consecutive_wedges += 1
     print(f"      (warning: backend did not come back within {timeout:.0f}s "
           f"- the next result may be unreliable)", flush=True)
+
+    # Several in a row is a different thing entirely - the server is gone, not
+    # slow, and every remaining row would be graded against nothing. That run
+    # does not produce weak evidence, it produces CONFIDENT WRONG evidence: a
+    # wall of `WRONG REASON: backend unreachable` that reads like a coverage
+    # catastrophe. Stopping is the honest outcome, and `finally` still restores
+    # every mutated file on the way out.
+    if _consecutive_wedges >= MAX_CONSECUTIVE_WEDGES:
+        _aborting = True
+        raise SystemExit(
+            f"\nABORTING: the backend has not answered for "
+            f"{_consecutive_wedges} consecutive waits (~"
+            f"{_consecutive_wedges * timeout / 60:.0f} min).\n"
+            f"It is down, not slow, so every remaining row would report "
+            f"WRONG REASON against a dead server.\n"
+            f"Mutated files are restored. Fix the backend "
+            f"(`npm run dev` in backend/, check for a wedged ts-node-dev pair) "
+            f"and re-run.")
 
 
 #: Tests that read the mutated file off disk and compile it themselves, never

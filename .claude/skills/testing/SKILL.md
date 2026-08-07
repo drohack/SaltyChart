@@ -185,8 +185,21 @@ so the first real `ts-node-dev` restart - seconds after the player test's four
 transcodes. `wait_for_backend` gave up at 90 s, and every backend row after it
 reported `WRONG REASON: backend unreachable` while the offline rows kept
 passing. The supervisor process survived; the server child it manages did not
-respawn. Re-running on a quiet box gave 0 wedges. If it happens: kill the
-`ts-node-dev` pair, restart `npm run dev`, and re-run.
+respawn. Re-running on a quiet box gave 0 wedges.
+
+That run is why `wait_for_backend` no longer just warns. One timeout still only
+warns - a slow restart is a finding the row's own test reports better than a
+crash would - but **three consecutive timeouts abort the run**
+(`MAX_CONSECUTIVE_WEDGES`). Each row waits twice, on apply and on revert, so
+three means the *next* row is failing too and the server is gone rather than
+slow. The alternative is what happened here: ~20 further minutes manufacturing
+~50 coverage holes that did not exist, which is not weak evidence but
+confident wrong evidence. `finally` still restores every mutated file, and an
+`_aborting` flag stops `restore()`'s own wait from re-raising the abort from
+inside that `finally`. Proven by pointing `_healthy()` at a dead port: 3
+warnings, one abort, one row graded of two selected, tree clean.
+
+If it happens: kill the `ts-node-dev` pair, restart `npm run dev`, and re-run.
 Where those 28 minutes went, all of it measured rather than estimated:
 
 | change | saved |
