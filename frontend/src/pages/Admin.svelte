@@ -80,7 +80,108 @@
     }
   }
 
-  onMount(loadConfig);
+  // -- Sonarr config ---------------------------------------------------
+  // Read-only credentials: SaltyChart publishes a Custom List and Sonarr pulls
+  // it. Nothing here can add or delete a series, by construction - the backend
+  // client exports no write verbs at all.
+  let snUrl = '';
+  let snKey = '';
+  let snKeySet = false;
+  let snTag = 'saltychart';
+  let snSaving = false;
+  let snTesting = false;
+  let snSaveMsg = '';
+  let snSaveErr = '';
+  let snTestResult: { ok: boolean; version?: string; error?: string } | null = null;
+  let snLoadError = '';
+
+  /** Sonarr's default port, and where it answers on this deployment. */
+  const DEFAULT_SONARR_URL = 'http://192.168.1.2:8989';
+
+  async function loadSonarrConfig() {
+    if (!$authToken) return;
+    try {
+      const data = await apiJson<any>('/api/sonarr/config',
+                                      { headers: { Authorization: `Bearer ${$authToken}` } },
+                                      { label: 'sonarr/config', timeoutMs: QUICK });
+      // Prefill the example when the read SUCCEEDED and told us nothing is
+      // stored, so first-time setup is one click instead of retyping a URL that
+      // is right nearly always. The box then holds a real, editable value rather
+      // than a ghost that only becomes real on Save.
+      //
+      // Deliberately here and not in the save path. The Jellyfin block above
+      // once defaulted at Save time, so a form left blank by a FAILED config
+      // read overwrote a working address with the placeholder. On that path we
+      // land in the catch below, never assign, and Save is disabled anyway -
+      // "we don't know what's stored" and "nothing is stored" stay distinct.
+      snUrl = data.url || DEFAULT_SONARR_URL;
+      snKeySet = !!data.apiKeySet;
+      snTag = data.tag ?? 'saltychart';
+      snLoadError = '';
+    } catch {
+      // Same trap as the Jellyfin block: blank fields after a failed read look
+      // exactly like "nothing is configured".
+      snLoadError = "Couldn't load the saved Sonarr configuration - the fields below may be blank for that reason, not because nothing is saved.";
+    }
+  }
+
+  onMount(() => {
+    void loadConfig();
+    void loadSonarrConfig();
+  });
+
+  async function snTestConnection() {
+    snTesting = true;
+    snTestResult = null;
+    try {
+      // Hits Sonarr's authenticated /system/status, so green proves the key is
+      // accepted rather than merely that something answered on the port.
+      snTestResult = await apiJson<NonNullable<typeof snTestResult>>(
+        '/api/sonarr/config/test',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+          body: JSON.stringify({ url: snUrl, apiKey: snKey || undefined }),
+        },
+        { label: 'sonarr/config-test', timeoutMs: 30_000 }
+      );
+    } catch {
+      snTestResult = { ok: false, error: "Couldn't reach the backend to run the test." };
+    } finally {
+      snTesting = false;
+    }
+  }
+
+  async function snSave() {
+    snSaving = true;
+    snSaveMsg = '';
+    snSaveErr = '';
+    try {
+      const res = await apiFetch('/api/sonarr/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        // Blank URL / key mean "keep the stored one", enforced server-side.
+        body: JSON.stringify({ url: snUrl.trim(), apiKey: snKey || undefined, tag: snTag.trim() }),
+      }, { label: 'sonarr/config-save', timeoutMs: QUICK });
+      const data = await res.json();
+      if (res.ok) {
+        snSaveMsg = 'Saved.';
+        if (snKey.trim()) {
+          snKeySet = true;
+          snKey = '';
+        }
+        await loadSonarrConfig();
+      } else {
+        snSaveErr = data?.error ?? 'Save failed.';
+      }
+    } catch (e) {
+      snSaveErr = (e as ApiError)?.unreachable
+        ? "Couldn't reach the backend - nothing was saved."
+        : 'Save failed.';
+    } finally {
+      snSaving = false;
+    }
+  }
 
   async function jfTestConnection() {
     jfTesting = true;
@@ -169,11 +270,15 @@
     <section class="card bg-base-100 shadow">
       <div class="card-body gap-4">
         <h2 class="card-title">Jellyfin</h2>
+        <!-- Kept to one line on purpose. This is a form, not documentation:
+             the two cards here were ~630px each for three inputs apiece, and
+             almost all of it was prose. The full reasoning (why a playback
+             account is needed at all, what burn-in costs) is in
+             backend/CLAUDE.md, which is where someone changing this behaviour
+             will actually be. Resist re-expanding it. -->
         <p class="text-sm opacity-70">
-          Where SaltyChart streams episodes from, and where it looks up
-          whether a show is in your library. It also burns the episode's
-          subtitles into the video, so they arrive already rendered. The API key
-          is stored server-side and never sent to browsers.
+          Streaming and library lookups. The API key is stored server-side and never
+          sent to browsers.
         </p>
 
         {#if jfLoadError}
@@ -185,9 +290,9 @@
           </div>
         {/if}
 
-        <div class="form-control">
-          <label class="label" for="jf-url">
-            <span class="label-text">Server URL</span>
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="jf-url">
+            <span>Server URL</span>
           </label>
           <!-- Password managers treat any text/password pair as a login form and
                offer to fill it. These are server settings, not credentials for a
@@ -205,9 +310,9 @@
           />
         </div>
 
-        <div class="form-control">
-          <label class="label" for="jf-key">
-            <span class="label-text">API key</span>
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="jf-key">
+            <span>API key</span>
           </label>
           <input
             id="jf-key"
@@ -220,16 +325,16 @@
             data-lpignore="true"
             bind:value={jfKey}
           />
-          <div class="label">
+          <div class="col-start-2">
             <span class="label-text-alt opacity-60">
               Jellyfin &rarr; Dashboard &rarr; API Keys &rarr; “+” to create one.
             </span>
           </div>
         </div>
 
-        <div class="form-control">
-          <label class="label" for="jf-user">
-            <span class="label-text">Playback account</span>
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="jf-user">
+            <span>Playback account</span>
           </label>
           <select id="jf-user" class="select select-bordered w-full" bind:value={jfUserId}>
             <option value="">Any administrator (default)</option>
@@ -237,14 +342,11 @@
               <option value={u.id}>{u.name}{u.isAdministrator ? ' - administrator' : ''}</option>
             {/each}
           </select>
-          <div class="label">
+          <div class="col-start-2">
             <span class="label-text-alt opacity-60">
-              Jellyfin applies its policy per account, so streaming needs one.
-              A dedicated account keeps playback off a real person's profile and
-              stops a later policy change quietly degrading it for everyone. It
-              needs library access and no bitrate or rating limit; it does not
-              need to be an administrator. Nothing is written to its watch
-              history either way - SaltyChart never reports progress.
+              Needs library access and no bitrate or rating limits; it does not
+              need to be an administrator. A dedicated account keeps playback off
+              a real person's profile.
             </span>
           </div>
         </div>
@@ -289,6 +391,112 @@
             <div class="alert alert-error">
               <span>{jfTestResult.error}</span>
             </div>
+          {/if}
+        {/if}
+      </div>
+    </section>
+
+    <section class="card bg-base-100 shadow">
+      <div class="card-body gap-4">
+        <h2 class="card-title">Sonarr</h2>
+        <p class="text-sm opacity-70">
+          Read-only. Sonarr pulls our Custom List; nothing here can add or delete a series. The
+          API key is stored server-side and never sent to browsers.
+        </p>
+
+        {#if snLoadError}
+          <div class="alert alert-warning text-sm mb-3" data-sonarr-config-load-error>
+            <span>{snLoadError}</span>
+            <button type="button" class="btn btn-xs btn-outline normal-case" on:click={loadSonarrConfig}>Retry</button>
+          </div>
+        {/if}
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-url">
+            <span>Server URL</span>
+          </label>
+          <!-- Same opt-out as the Jellyfin pair: password managers treat any
+               text/password pair as a login form. These are server settings. -->
+          <input
+            id="sn-url"
+            type="text"
+            class="input input-bordered w-full"
+            placeholder={DEFAULT_SONARR_URL}
+            autocomplete="off"
+            data-bwignore="true"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            bind:value={snUrl}
+          />
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-key">
+            <span>API key</span>
+          </label>
+          <input
+            id="sn-key"
+            type="password"
+            class="input input-bordered w-full"
+            placeholder={snKeySet ? '(saved - leave blank to keep)' : 'Paste a Sonarr API key'}
+            autocomplete="new-password"
+            data-bwignore="true"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            bind:value={snKey}
+          />
+          <div class="col-start-2">
+            <span class="label-text-alt opacity-60">
+              Sonarr &rarr; Settings &rarr; General &rarr; Security &rarr; API Key.
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-tag">
+            <span>Import list tag</span>
+          </label>
+          <input
+            id="sn-tag"
+            type="text"
+            class="input input-bordered w-full"
+            placeholder="saltychart"
+            autocomplete="off"
+            bind:value={snTag}
+          />
+          <div class="col-start-2">
+            <span class="label-text-alt opacity-60">
+              Must match the tag on Sonarr's import list. A mismatch is silent - the
+              <a class="link" href="/admin/sonarr">Sonarr page</a> shows how many carry it.
+            </span>
+          </div>
+        </div>
+
+        <div class="card-actions items-center gap-2">
+          <button class="btn btn-outline btn-sm" on:click={snTestConnection} disabled={snTesting}>
+            {#if snTesting}<span class="loading loading-spinner loading-xs"></span>{/if}
+            Test Connection
+          </button>
+          <button class="btn btn-primary btn-sm" on:click={snSave} disabled={snSaving || !!snLoadError}>
+            {#if snSaving}<span class="loading loading-spinner loading-xs"></span>{/if}
+            Save
+          </button>
+          {#if snSaveMsg}<span class="text-success text-sm">{snSaveMsg}</span>{/if}
+          {#if snSaveErr}<span class="text-error text-sm">{snSaveErr}</span>{/if}
+        </div>
+
+        {#if snTestResult}
+          {#if snTestResult.ok}
+            <div class="alert alert-success">
+              <!-- The version span carries its own leading nbsp: Svelte trims
+                   the whitespace between the text and the tag, which rendered
+                   as "Connected to Sonarr- version 4.0.19". -->
+              <span>
+                Connected to Sonarr{#if snTestResult.version}<span class="opacity-70">&nbsp;- version {snTestResult.version}</span>{/if}
+              </span>
+            </div>
+          {:else}
+            <div class="alert alert-error"><span>{snTestResult.error}</span></div>
           {/if}
         {/if}
       </div>

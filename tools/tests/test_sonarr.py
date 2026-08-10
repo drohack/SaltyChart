@@ -31,6 +31,22 @@ Coverage, and the trap each step exists for:
 - Query-param validation: a lone `?season=` is a 400 rather than a silent
   fallback to the calendar default, which would make a failing assertion
   elsewhere look like a filter bug.
+- **Exactly one route here is public.** Every admin route is checked
+  unauthenticated; a public router that grows admin data is the trap this file
+  guards, and `/report` carries what Sonarr holds.
+- **/report degrades instead of failing.** Without a successful snapshot it must
+  still return the whole proposal side with `sonarr.observed: false` - never a
+  500, never a blank payload. The page is useless in an outage otherwise, which
+  is exactly when someone opens it.
+- **Every row carries a match `grade`**, and **POST /include refuses an
+  unverified identity with 409** unless the caller acknowledges it. That guard
+  did not exist at first: the force-include path skipped `usableTvdbId`
+  entirely, so `tvdbId && !pending && !rejected` - the rule that keeps an
+  unverified guess from becoming a season of the wrong series - did not apply to
+  overrides. 22 candidates carried a pending identity when it was measured.
+- **`published` is always present.** It is the master switch (default OFF), and
+  a missing value would render as "paused" on a page whose list was in fact
+  live - the most dangerous direction for that particular lie.
 
 **Not covered here, deliberately:** the `identityReady()` 503. Proving it needs
 the process restarted and raced, which this test cannot do - the map loads from
@@ -48,15 +64,40 @@ Usage:
 Exits 0 if all steps pass (or the cache-dependent steps were skipped), 1 on any
 failure. Each progress line is self-contained per the global CLAUDE.md
 convention:
-  [k/6 Sonarr] step name - detail
+  [k/9 Sonarr] step name - detail
 """
 import argparse
+import subprocess
 import sys
 from datetime import date
+from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 6
+REPO = Path(__file__).resolve().parents[2]
+
+
+def admin_token() -> str:
+    """A JWT for ADMIN_USER_ID, signed with the backend's own secret.
+
+    Same helper as test_jellyfin/test_ui_interactions - signed through node so
+    the suite gains no dependency and signs exactly the way the app does.
+    Returns '' when it cannot, and the admin steps skip rather than fail: a
+    missing .env is an environment problem, not a regression.
+    """
+    script = ("require('dotenv').config();"
+              "const jwt=require('jsonwebtoken');"
+              "const id=parseInt(process.env.ADMIN_USER_ID||'1',10);"
+              "console.log(jwt.sign({id}, process.env.JWT_SECRET||'dev-secret',"
+              "{expiresIn:'10m'}));")
+    try:
+        r = subprocess.run(["node", "-e", script], cwd=REPO / "backend",
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+TOTAL_STEPS = 9
 
 
 def step(n: int, msg: str) -> None:
@@ -87,7 +128,7 @@ def main():
     backend = args.backend.rstrip("/")
     url = f"{backend}/api/sonarr/list"
 
-    # --------- 1/6  The bare-array contract ---------
+    # --------- 1/8  The bare-array contract ---------
     step(1, "GET /api/sonarr/list returns a bare array")
     r = requests.get(url, timeout=60)
     if r.status_code == 503 and (r.json() or {}).get("code") == "UPSTREAM_ERROR":
@@ -107,7 +148,20 @@ def main():
                 f"{type(items).__name__} - an object parses as zero series")
     step(1, f"PASS - bare array, {len(items)} item(s)")
 
-    # --------- 2/6  Item shape ---------
+    # The master switch makes /list empty on purpose. Every check below that is
+    # about the SELECTION therefore reads ?explain=1, which ignores the pause -
+    # otherwise pausing would silently hollow out this file: four steps would go
+    # on passing against an empty list while proving nothing at all.
+    ex = requests.get(url, params={"explain": "1"}, timeout=120)
+    if ex.status_code != 200:
+        fail(1, f"?explain=1: expected 200, got {ex.status_code} {ex.text[:200]}")
+    selected = ex.json().get("proposed") or []
+    paused = len(items) == 0 and len(selected) > 0
+    if paused:
+        step(1, f"NOTE - publishing is paused, so /list is empty by design; "
+                f"the selection ({len(selected)}) is checked via ?explain=1")
+
+    # --------- 2/8  Item shape ---------
     step(2, "every item is {title, tvdbId} with a positive integer id")
     for it in items:
         if not isinstance(it, dict):
@@ -125,16 +179,16 @@ def main():
             fail(2, f"empty title on tvdbId {tid}")
     step(2, f"PASS - {len(items)} item(s), all well-formed")
 
-    # --------- 3/6  No duplicate tvdbIds ---------
+    # --------- 3/8  No duplicate tvdbIds ---------
     step(3, "no duplicate tvdbIds")
-    ids = [it["tvdbId"] for it in items]
+    ids = [it["tvdbId"] for it in selected]
     dupes = {i for i in ids if ids.count(i) > 1}
     if dupes:
         fail(3, f"duplicate tvdbIds {sorted(dupes)} - several AniList ids map to "
                 f"one TVDB id and resolveIdentity does not dedupe")
-    step(3, f"PASS - {len(set(ids))} unique id(s)")
+    step(3, f"PASS - {len(set(ids))} unique id(s) across the selection")
 
-    # --------- 4/6  Query-param validation ---------
+    # --------- 4/8  Query-param validation ---------
     step(4, "query params validate rather than silently falling back")
     season, year = current_season_year()
     checks = [
@@ -150,7 +204,7 @@ def main():
                     f"{rr.status_code} {rr.text[:160]}")
     step(4, "PASS - all four malformed queries rejected")
 
-    # --------- 5/6  The filter, against live season data ---------
+    # --------- 5/8  The filter, against live season data ---------
     step(5, f"cross-check the filter against /api/anime {season} {year}")
     a = requests.get(f"{backend}/api/anime",
                      params={"season": season, "year": year}, timeout=200)
@@ -167,7 +221,9 @@ def main():
     pinned = requests.get(url, params={"season": season, "year": year}, timeout=60)
     if pinned.status_code != 200:
         fail(5, f"pinned season: {pinned.status_code} {pinned.text[:160]}")
-    pinned_ids = {it["tvdbId"] for it in pinned.json()}
+    pinned_sel = requests.get(url, params={"season": season, "year": year, "explain": "1"},
+                              timeout=120).json().get("proposed") or []
+    pinned_ids = {it["tvdbId"] for it in pinned_sel}
 
     by_title = {}
     for e in entries:
@@ -178,7 +234,7 @@ def main():
     # Match on title because the response deliberately carries no AniList id -
     # Sonarr has no use for one. The titles come from the same preference chain.
     leaked = []
-    for it in pinned.json():
+    for it in pinned_sel:
         e = by_title.get(it["title"])
         if e is None:
             continue          # a title we can't line up proves nothing either way
@@ -196,13 +252,14 @@ def main():
     step(5, f"PASS - {len(pinned_ids)} proposed from {len(entries)} cached "
             f"entries, none adult / MOVIE / sequel")
 
-    # --------- 6/6  The air window, not the identity gate, bounds the list ---------
+    # --------- 6/8  The air window, not the identity gate, bounds the list ---------
     step(6, "a season beyond the air window is empty even though it has ids")
     nseason, nyear = next_season_year(season, year)
     nr = requests.get(url, params={"season": nseason, "year": nyear}, timeout=60)
     if nr.status_code != 200:
         fail(6, f"{nseason} {nyear}: {nr.status_code} {nr.text[:160]}")
-    nxt = nr.json()
+    nxt = requests.get(url, params={"season": nseason, "year": nyear, "explain": "1"},
+                       timeout=120).json().get("proposed") or []
     na = requests.get(f"{backend}/api/anime",
                       params={"season": nseason, "year": nyear}, timeout=200)
     n_cached = len(na.json()) if na.status_code == 200 else 0
@@ -224,6 +281,98 @@ def main():
     else:
         step(6, f"PASS - {nseason} {nyear} has {n_cached} cached entries and "
                 f"contributes 0, so the air window is doing the filtering")
+
+    # --------- 7/8  Exactly one route here is public ---------
+    step(7, "every admin route refuses an unauthenticated caller")
+    admin_routes = [
+        ("GET", "/api/sonarr/report", None),
+        ("POST", "/api/sonarr/snapshot", None),
+        ("POST", "/api/sonarr/include", {"anilistId": 1}),
+        ("DELETE", "/api/sonarr/include/1", None),
+        ("GET", "/api/sonarr/config", None),
+        ("PUT", "/api/sonarr/config", {}),
+        ("POST", "/api/sonarr/config/test", {}),
+    ]
+    for method, path, payload in admin_routes:
+        rr = requests.request(method, f"{backend}{path}", json=payload, timeout=30)
+        if rr.status_code != 401:
+            fail(7, f"{method} {path}: expected 401 unauthenticated, got "
+                    f"{rr.status_code} {rr.text[:160]} - this router serves ONE "
+                    f"public route and every other must be admin-gated")
+    step(7, f"PASS - all {len(admin_routes)} admin routes gated")
+
+    # --------- 8/8  /report degrades rather than failing ---------
+    step(8, "/report returns the proposal side even without Sonarr")
+    tok = admin_token()
+    if not tok:
+        step(8, "SKIP - could not mint an admin token (node/.env unavailable)")
+        print(f"Sonarr: {TOTAL_STEPS - 1}/{TOTAL_STEPS} passed, 1 skipped - OK", flush=True)
+        return
+    rr = requests.get(f"{backend}/api/sonarr/report",
+                      headers={"Authorization": f"Bearer {tok}"}, timeout=120)
+    if rr.status_code != 200:
+        fail(8, f"expected 200, got {rr.status_code} {rr.text[:200]} - the report "
+                f"must degrade, not fail, when Sonarr is down")
+    rep = rr.json()
+    for key in ("config", "sonarr", "seasons", "proposed", "rejected",
+                "suppressed", "orphans", "counts"):
+        if key not in rep:
+            fail(8, f"report is missing {key!r} - the page reads all of these")
+    if not isinstance(rep["sonarr"].get("observed"), bool):
+        fail(8, "sonarr.observed must always be present as a bool: the page "
+                "branches on it to avoid reporting 'couldn't ask' as 'nothing to do'")
+    if not isinstance(rep.get("published"), bool):
+        fail(8, "report.published must be a bool - it is the master switch, and a "
+                "missing value would render as 'paused' while the list was live")
+    # Published and paused are BOTH checked, because each has its own way of
+    # being wrong: live means the page and Sonarr must agree exactly, paused
+    # means Sonarr must be getting nothing while the page still shows everything.
+    if rep["published"]:
+        if len(rep["proposed"]) != len(items):
+            fail(8, f"/report proposes {len(rep['proposed'])} but /list serves "
+                    f"{len(items)} - while publishing, the page and Sonarr must "
+                    f"see the same list")
+    else:
+        if items:
+            fail(8, f"publishing is off but /list served {len(items)} item(s) - "
+                    f"the master switch is not switching anything")
+        if not rep["proposed"]:
+            fail(8, "paused, and /report shows nothing either - the pause is "
+                    "supposed to leave the review intact, not blind it")
+    step(8, f"PASS - {len(rep['proposed'])} proposed, published="
+            f"{rep['published']}, observed={rep['sonarr']['observed']}, shape intact")
+
+    # --------- 9/9  Match grades, and the override guard ---------
+    step(9, "every row is graded, and an unverified include is refused")
+    known = {"confirmed", "adminOverride", "map", "dateVerified",
+             "viewerPick", "weak", "none"}
+    for row in rep["proposed"] + rep["rejected"]:
+        if row.get("grade") not in known:
+            fail(9, f"row {row.get('title')!r} has grade {row.get('grade')!r}, "
+                    f"not one of {sorted(known)} - the page branches on this")
+    # The automatic list must never ship a weak match. If this trips, the
+    # identity FILTER has regressed, which matters more than anything on screen.
+    weak = [p for p in rep["proposed"] if p["grade"] in ("weak", "viewerPick")]
+    if weak:
+        fail(9, f"{len(weak)} proposed entries are unverified "
+                f"({[p['title'] for p in weak][:3]}) - the pending exclusion has "
+                f"stopped working on the automatic path")
+
+    target = next((r for r in rep["rejected"]
+                   if r.get("unverified") and r.get("anilistId") and r.get("tvdbId")), None)
+    if target is None:
+        step(9, f"PASS - {len(rep['proposed'])} graded, 0 weak; no unverified "
+                f"candidate to test the override guard against")
+    else:
+        rr = requests.post(f"{backend}/api/sonarr/include",
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={"anilistId": target["anilistId"]}, timeout=30)
+        if rr.status_code != 409 or (rr.json() or {}).get("code") != "UNVERIFIED_MATCH":
+            fail(9, f"including an unverified identity returned {rr.status_code} "
+                    f"{rr.text[:160]} - expected 409 UNVERIFIED_MATCH. An override "
+                    f"may outrank the filter, but not without being asked.")
+        step(9, f"PASS - {len(rep['proposed'])} graded, 0 weak on the list, and "
+                f"an unverified include was refused")
 
     print(f"Sonarr: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
 

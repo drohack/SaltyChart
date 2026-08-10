@@ -8,6 +8,7 @@
   let Compare: any;
   let Admin: any;
   let AdminMatching: any;
+  let AdminSonarr: any;
 
 import { authToken, userName } from './stores/auth';
 import { isAdmin } from './stores/jellyfin';
@@ -80,6 +81,9 @@ $: {
       case '/admin/matching':
         AdminMatching = AdminMatching || (await import('./pages/AdminMatching.svelte')).default;
         return AdminMatching;
+      case '/admin/sonarr':
+        AdminSonarr = AdminSonarr || (await import('./pages/AdminSonarr.svelte')).default;
+        return AdminSonarr;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;

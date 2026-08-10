@@ -236,12 +236,35 @@ excluded, why relations decide scope but never identity - is the docstring of
 `backend/src/routes/sonarr.ts`, and that is its one home. What matters here is
 the contract.
 
+**Exactly one route in `routes/sonarr.ts` is public** (`GET /list`); every other
+carries `requireAuth` + `requireAdmin`, and a mutation row proves it. A public
+router that quietly grows admin data is the trap, and `/report` carries what
+Sonarr holds.
+
+**Sonarr re-reads the list every few minutes, not every 6 hours.** Import List
+Sync is a hardcoded ~5-minute task and is not configurable the way Radarr's List
+Update Interval is (Sonarr#5927). An earlier version of these docs said 6 hours;
+it was wrong in eight places and it mattered twice - it understated the rate-limit
+headroom, and it implied our snapshot could notice a deletion before Sonarr
+re-added it. **It cannot.** Confirm the figure for the installed version in
+Sonarr -> System -> Tasks before quoting one.
+
 - `GET /list` - **unauthenticated**, `generalLimiter` only. Returns a **bare
   `[{title, tvdbId}]` array**, which is the only shape Sonarr's Custom List
   import accepts; wrapping it in an object parses as zero series and reads as a
   list that silently adds nothing. Optional `?season=&year=` (both or neither,
   else 400) pins a season for the test and the dry run; the default is the
   calendar season plus the next.
+- `GET /report` - **admin**; everything `/admin/sonarr` renders, in one payload:
+  proposals with a `state` (`willBeAdded` / `addedByUs` / `heldAlready` /
+  `excludedInSonarr` / `unknown`), the per-gate rejection breakdown, suppressions
+  and orphans. **It degrades rather than failing** - with Sonarr unreachable it
+  still returns the whole proposal side with `sonarr.reachable: false`, because
+  an outage is exactly when someone opens the page. The UI must not collapse
+  `unknown` into zero: "couldn't ask" is not "nothing to do" (the headline did
+  exactly that once and was caught in a browser, not by any test).
+- `POST /snapshot` - admin; runs the snapshot now. `GET/PUT /config`,
+  `POST /config/test`, `POST`/`DELETE /include` - admin.
 - `GET /list?explain=1` - the same computation with `proposed`, `rejected` (each
   carrying the **gate that stopped it**) and `counts`. An **object**, so it can
   never be mistaken for the list. It exists so `tools/sonarr_dryrun.py` doesn't
@@ -273,6 +296,95 @@ Measured 2026-08-06 on the live cache: 39 proposed from SUMMER 2026's 111 cached
 entries; 157 excluded across both seasons (66 not TV/TV_SHORT, 50 with a
 PREQUEL/PARENT edge, 37 outside the 14-day air window, 4 with no usable id), and
 **zero duplicate TVDB ids** in any season or across the pair.
+
+### How well do we know each match - `matchGrade`
+
+`lib/seriesIdentity.ts` owns the ladder, and it is the **only** definition:
+`matchGrade()` returns `confirmed` / `adminOverride` / `map` / `dateVerified` /
+`viewerPick` / `weak` / `none`, and `isIdConfident()` derives the boolean the
+Watch pop-up's correction picker uses. `routes/jellyfin.ts` computed that inline
+until `/admin/sonarr` needed the same answer; a correctness rule with two copies
+is one that can disagree with itself.
+
+The distinctions each came from a real mistake: a map id is unconfirmed by
+construction and still the best thing we have; an **admin** override is settled
+but a **viewer pick** is not (counting it as settled once hid the picker, and
+the undo inside it, the instant anyone used it); and a resolver id is only as
+good as its rung - a **date** vouching for it is as settled as a map id, while
+`weak` means title text or a +/-1 year, the class that offered *Echo* a namesake
+**1,012 days** from its premiere.
+
+**The override needed its own guard.** `selectForSonarrDetailed`'s force-include
+branch skipped `usableTvdbId` entirely, so `tvdbId && !pending && !rejected`
+never applied to overrides - **22 candidates carried a pending identity** when
+this was measured. `POST /include` now answers **409 `UNVERIFIED_MATCH`** (with
+the grade and what it matched against) unless the caller sends
+`acknowledgeUnverified`, and `SonarrInclude.acknowledgedUnverified` records that
+someone was told. An override may outrank the filter; it may not do so blindly.
+Two mutation rows guard it - the pure check and the 409 - because the UI asking
+is a courtesy and the endpoint is the actual guard.
+
+Measured 2026-08-10: the **automatic** list is already clean - 30 `map` +
+9 `dateVerified`, **zero weak**. This work is about the override, not the filter.
+If a proposed row ever grades `weak`, the filter has regressed, and
+`test_sonarr.py` step 9 fails on exactly that.
+
+### Closing the re-add loop
+
+Delete a series from Sonarr without an Import List Exclusion and our list
+proposes it again - so Sonarr re-grabs it, every few minutes, forever.
+
+`lib/sonarrSeen.ts` observes it: *we proposed it, Sonarr held it, it is gone.*
+Nobody deletes by accident, so that is enough to stop proposing it, with no
+human step and no dependence on anyone remembering the checkbox. `SonarrSeen`
+(`goneAt != null` **is** the suppression) and `SonarrInclude` (the force-include
+overlay, the only override direction - "never add this" is Sonarr's exclusion,
+which is global and beats us) are both created by the raw SQL in `index.ts`.
+
+- **This cannot beat the poll.** By the time an hourly snapshot notices, Sonarr
+  has re-added. Its honest value is bounding an *unbounded* loop to *one extra
+  grab*, which is why **Maintainerr's `listExclusions` is mandatory, not
+  advisory** - Sonarr's own exclusion is the primary defence.
+- **A failed or empty read of `/api/v3/series` must never suppress anything.**
+  "Could not ask" is not "everything was deleted", and one bad read would
+  otherwise retire the whole list permanently while looking exactly like success.
+  Both have their own mutation row; the guards were driven end to end against a
+  stand-in Sonarr (39 items -> 38 on a real deletion, still 38 on an empty read).
+- **Suppression keys on having been held, not on the tag.** Otherwise deleting a
+  hand-added show lets us re-acquire it: we propose it, Sonarr adds it, and only
+  then tags it.
+- **Orphans need a human.** Correct an identity after Sonarr already added the
+  wrong series and it keeps the wrong one while grabbing the right one. We only
+  ever read from Sonarr, so `/admin/sonarr` names the deletion to make by hand.
+
+### What has to be set in Sonarr, not here
+
+**The payload is only `[{title, tvdbId}]`.** Everything about *how* a series is
+added lives on the import list in Sonarr, and none of it can be sent from this
+side. When the list is first pointed at Sonarr, set:
+
+| setting | value |
+|---|---|
+| Quality Profile | the 720p-preferring profile |
+| Series Type | Anime |
+| Monitor | All Episodes |
+| Monitor New Seasons | None |
+| Root Folder | the anime folder |
+| Tags | `saltychart` (must match `sonarrTag`) |
+| Automatic add / Search on add | **OFF** for the first run |
+
+**A quality profile invalidates the size estimate.** The 0.38 GB median comes
+from the current mixed-quality library, so under a 720p-only profile the page
+reads high. The page says so; re-measure rather than quietly trusting it.
+
+**Tags come from the import list's configuration, not our payload**, so one list
+means one tag set. Set `saltychart` on the import list and Maintainerr can scope
+cleanup to what we added. A per-season tag would need one import list per season,
+and a pinned `?season=` list **never expires** (`isWithinAirWindow` treats
+`FINISHED` as aired forever) - that is the re-add loop by construction. Age
+(`Plex.addDate`) gives the same granularity. `/report` counts how many held
+series carry the tag, because a typo there fails silently by scoping Maintainerr
+to nothing.
 
 Graded against the held library over WINTER + SPRING + SUMMER 2026: **119
 proposals, zero wrong exclusions.** Every held entry the list declines is either

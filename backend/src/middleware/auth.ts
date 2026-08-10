@@ -41,3 +41,26 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   req.userId = payload.id;
   return next();
 }
+
+/**
+ * Which account is the admin. Single-admin app; the id is the whole policy.
+ *
+ * Lives here rather than in a route file because more than one router gates on
+ * it, and a security constant with several copies is a security constant that
+ * can disagree with itself. (`routes/translate.ts` still parses its own copy
+ * inline in two places - worth folding in, but changing a working auth gate is
+ * not something to do as a side effect of unrelated work.)
+ */
+export const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);
+
+/**
+ * Require the admin account. Always used *after* `requireAuth`, which is what
+ * populates `req.userId` - on its own this would let an anonymous request
+ * through whenever ADMIN_USER_ID happened to be undefined.
+ */
+export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
+  if (req.userId !== ADMIN_USER_ID) {
+    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
+  }
+  return next();
+}

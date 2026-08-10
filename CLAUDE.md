@@ -325,16 +325,19 @@ is the docstring of `backend/src/routes/sonarr.ts`. Two rules stay here, because
 both bind from outside `backend/`:
 
 - **The response must stay a bare `[{title, tvdbId}]` array**, and the endpoint
-  must **never trigger a cold AniList fetch**. Sonarr consumes it unattended
-  every 6 hours and cannot tell a truncated list from a complete one.
+  must **never trigger a cold AniList fetch**. Sonarr consumes it unattended on a
+  short hardcoded interval - **minutes, not hours** - and cannot tell a truncated
+  list from a complete one.
 - **The scope filter uses relations; the matcher must not.** `lib/sonarrList.ts`
   drops entries with a `PREQUEL`/`PARENT` edge to decide *what we auto-add* -
   this is not licence to reintroduce a relation heuristic into *identity*, where
   it was measured, found wrong, and removed (see *Measure before claiming*).
 
-Before pointing Sonarr at it, run `tools/sonarr_dryrun.py` - read-only, and it
-reports which gate excluded each entry plus a diff against what Sonarr already
-holds.
+Before pointing Sonarr at it, run `tools/sonarr_dryrun.py` (read-only, no
+credentials) or open **`/admin/sonarr`**, which adds what Sonarr actually holds.
+Config lives in `AppConfig` (`sonarrUrl`, `sonarrApiKey`, `sonarrTag`) and the
+client (`lib/sonarrApi.ts`) exports **no write verbs at all** - we never delete;
+Maintainerr owns cleanup.
 
 ### Matching AniList entries to the library
 
@@ -439,9 +442,12 @@ carries its own limiters: 120 req/min for the JSON endpoints and a separate
 **600 req/min** for `/api/jellyfin/stream/*`, `/subtitles` and `/attachments`
 (HLS playback is a playlist refresh + a segment every few seconds plus seek
 bursts - it must not eat the general budget). `/api/sonarr` deliberately adds
-**no** limiter of its own and inherits `generalLimiter`: Sonarr polls a Custom
-List once every 6 hours, so 120 req/min is headroom by four orders of magnitude
-and a dedicated limiter would be a knob nobody ever turns.
+**no** limiter of its own and inherits `generalLimiter`: Sonarr's Import List
+Sync is a hardcoded ~5-minute task (Sonarr#5927 - **not** the 6 hours an earlier
+version of this file claimed), so ~12 req/hour against 120 req/min is still
+headroom by three orders of magnitude and a dedicated limiter would be a knob
+nobody ever turns. The decision survived the correction; the *reason* did not,
+which is why the number is now sourced rather than asserted.
 
 ### Error response shape
 

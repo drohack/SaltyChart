@@ -41,7 +41,7 @@ export interface SonarrIdentity {
  *
  * All optional: the cache holds parsed upstream JSON, so any field can be
  * missing or the wrong shape on some row, and a throw here would 500 a route
- * Sonarr polls every six hours.
+ * Sonarr re-reads every few minutes.
  */
 export interface SonarrCandidate {
   id?: number;
@@ -185,8 +185,8 @@ export function isFirstSeason(entry: SonarrCandidate): boolean {
  * answer. This asks "will it air soon", which it cannot - so a
  * `NOT_YET_RELEASED` entry still has to be judged on its date. An entry with
  * neither an aired status nor a usable date is excluded: an undated future
- * series has nothing for Sonarr to monitor, and the six-hourly re-poll picks it
- * up as soon as it gains a date.
+ * series has nothing for Sonarr to monitor, and Sonarr's re-poll (minutes, not
+ * hours) picks it up as soon as it gains a date.
  *
  * There is **no lower bound**, deliberately. The season scoping is the past-side
  * bound. Evicting a show once it is N days into its run would drop exactly the
@@ -250,6 +250,8 @@ export type RejectReason =
   | 'outsideAirWindow'
   | 'noAnilistId'
   | 'noUsableTvdbId'
+  | 'unverifiedNotAcknowledged'
+  | 'deletedAfterAdd'
   | 'duplicateTvdbId'
   | 'noTitle';
 
@@ -259,9 +261,39 @@ export interface SonarrSelection {
   rejected: Array<{ entry: SonarrCandidate; reason: RejectReason }>;
 }
 
+/**
+ * One force-include row.
+ *
+ *  exists because an override can outrank the identity
+ * filter, and the only safe version of that is a human who was shown what they
+ * were overriding. Absent it, a pending or rejected identity is refused.
+ */
+export interface ForcedInclude {
+  tvdbId: number;
+  acknowledgedUnverified: boolean;
+}
+
 export interface SelectOptions {
   /** Defaults to `DEFAULT_WITHIN_DAYS`. */
   withinDays?: number;
+  /**
+   * tvdbIds we must stop proposing because something we added was deleted.
+   *
+   * Computed by `lib/sonarrSeen.ts` and passed in, exactly as the resolver is,
+   * so this module stays pure and every rule here remains testable without a
+   * database.
+   */
+  suppressed?: Set<number>;
+  /**
+   * anilistId -> tvdbId. **Bypasses every gate**, including suppression - it is
+   * how a suppression is undone and how a deliberately-excluded entry (a
+   * full-length ONA, say) gets onto the list anyway.
+   *
+   * It lifts a gate; it cannot conjure an entry. The anilistId still has to be
+   * in one of the seasons being served, because the list is season-scoped and
+   * this reads from that same cache.
+   */
+  forceInclude?: Map<number, ForcedInclude>;
 }
 
 /**
@@ -303,6 +335,40 @@ export function selectForSonarrDetailed(
       drop('malformed');
       continue;
     }
+
+    // A force-include is a human decision and outranks every rule below,
+    // suppression included. Checked first so the gates cannot consume it: the
+    // entry is on the list *because someone said so*, and reporting it as
+    // rejected-then-restored would be a lie about what happened.
+    //
+    // **With one exception, and it was a real hole.** This branch used to skip
+    // `usableTvdbId` entirely, so `tvdbId && !pending && !rejected` - the rule
+    // that keeps an unverified guess from becoming a season of the wrong series
+    // - did not apply to overrides at all. 22 candidates carried a pending
+    // identity when this was measured, among them *Echo*, whose resolver
+    // suggestion was a namesake 1,012 days from the entry's premiere. One click
+    // grabbed it, silently. An override may still win, but only when whoever
+    // clicked it was told what they were overriding.
+    const forced = typeof entry.id === 'number' ? opts?.forceInclude?.get(entry.id) : undefined;
+    if (forced !== undefined) {
+      const forcedTitle = pickTitle(entry);
+      const identity = typeof entry.id === 'number' ? resolve(entry.id) : null;
+      const unverified = !!identity && (identity.pending || identity.rejected);
+      if (!forcedTitle) {
+        drop('noTitle');
+      } else if (!Number.isInteger(forced.tvdbId) || forced.tvdbId <= 0) {
+        drop('noUsableTvdbId');
+      } else if (unverified && !forced.acknowledgedUnverified) {
+        drop('unverifiedNotAcknowledged');
+      } else if (seen.has(forced.tvdbId)) {
+        drop('duplicateTvdbId');
+      } else {
+        seen.add(forced.tvdbId);
+        items.push({ title: forcedTitle, tvdbId: forced.tvdbId });
+      }
+      continue;
+    }
+
     if (!isWantedFormat(entry)) {
       drop('format');
       continue;
@@ -333,6 +399,14 @@ export function selectForSonarrDetailed(
     const tvdbId = usableTvdbId(resolve(anilistId));
     if (tvdbId === null) {
       drop('noUsableTvdbId');
+      continue;
+    }
+    // We proposed this, Sonarr held it, and it is gone - so it was deliberately
+    // deleted and must not be proposed back into existence. Reported as a gate
+    // like any other rather than silently subtracted, so the dry run and the
+    // admin page can both show what happened and offer to undo it.
+    if (opts?.suppressed?.has(tvdbId)) {
+      drop('deletedAfterAdd');
       continue;
     }
     if (seen.has(tvdbId)) {

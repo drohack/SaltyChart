@@ -6,6 +6,8 @@ import {
   needsRemoteLookup,
   needsRegrade,
   isDateVerified,
+  matchGrade,
+  isIdConfident,
   RESOLVER_VERSION,
   mergeIdentityPatch,
   type Identity,
@@ -194,4 +196,82 @@ test('isDateVerified: only a DATE vouches for a resolver id', () => {
   assert.equal(isDateVerified('remote: no match'), false);
   assert.equal(isDateVerified(null), false);
   assert.equal(isDateVerified(''), false);
+});
+
+/**
+ * The grade ladder, one case per rung.
+ *
+ * These messages are the `expect` substrings a mutation row matches, and the
+ * distinctions are not cosmetic: this one function now decides both whether the
+ * viewer's correction picker appears and whether the Sonarr page will let an
+ * override through without asking.
+ */
+function ident(over: Partial<Identity>): Identity {
+  return {
+    tvdbId: '123',
+    tmdbId: null,
+    tmdbKind: null,
+    source: 'map',
+    confirmed: false,
+    rejected: false,
+    pending: false,
+    matchedTitle: null,
+    candidates: null,
+    note: null,
+    year: null,
+    resolverVersion: null,
+    ...over,
+  };
+}
+
+test('a community-map id is confident even though it is unconfirmed', () => {
+  // Map rows are unconfirmed by construction. Requiring confirmation would
+  // throw away the ~94% of TV the map answers.
+  const g = ident({ source: 'map' });
+  assert.equal(matchGrade(g), 'map', 'a community-map row grades as map');
+  assert.equal(isIdConfident(g), true, 'an unconfirmed map id is still something we know');
+});
+
+test('an admin override is confident but a viewer pick is NOT', () => {
+  // Counting a viewer pick as settled hid the correction picker - and the undo
+  // living inside it - the instant anyone used it.
+  const admin = ident({ source: 'manual', note: 'set by hand' });
+  const viewer = ident({ source: 'manual', note: 'viewer: picked by bob' });
+  assert.equal(matchGrade(admin), 'adminOverride', 'a hand-written override is an admin decision');
+  assert.equal(isIdConfident(admin), true, 'an admin decision is settled');
+  assert.equal(matchGrade(viewer), 'viewerPick', 'a viewer pick grades as its own thing');
+  assert.equal(
+    isIdConfident(viewer),
+    false,
+    'a viewer pick is unconfirmed by construction and must never count as settled'
+  );
+});
+
+test('a resolver id is confident only when a DATE vouched for it', () => {
+  // Correct results land 0-31 days from the AniList premiere and wrong ones
+  // 62-21,929, with nothing in between. Title text and a +/-1 year are the
+  // Echo class - an exact title 1,012 days away.
+  const dated = ident({ source: 'remote', note: 'remote: air date 3d' });
+  const weak = ident({ source: 'remote', note: 'remote: exact title' });
+  assert.equal(matchGrade(dated), 'dateVerified', 'a date rung grades as verified');
+  assert.equal(isIdConfident(dated), true, 'a date-verified resolver id is as settled as a map id');
+  assert.equal(matchGrade(weak), 'weak', 'an exact-title accept is a weak rung');
+  assert.equal(
+    isIdConfident(weak),
+    false,
+    'a resolver id accepted on title or year alone is not something we know'
+  );
+});
+
+test('a human confirmation outranks everything, and a rejection counts as knowledge', () => {
+  assert.equal(matchGrade(ident({ confirmed: true, source: 'remote' })), 'confirmed',
+    'confirmed wins over the source it came from');
+  // "Definitively not in the library" is knowledge too, and it must suppress
+  // the title fallback rather than invite a correction.
+  assert.equal(isIdConfident(ident({ rejected: true, source: 'none', tvdbId: null })), true,
+    'a rejection is a real answer, not an absence of one');
+  assert.equal(matchGrade(ident({ source: 'none', tvdbId: null })), 'none',
+    'no id at all grades as none');
+  assert.equal(isIdConfident(ident({ source: 'none', tvdbId: null })), false,
+    'knowing nothing is not confidence');
 });

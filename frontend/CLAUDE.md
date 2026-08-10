@@ -175,6 +175,62 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
 
+**`/admin/sonarr`** - what the Sonarr Custom List is about to do. A separate
+page from `/admin/matching` on purpose: that one asks **identity** (which real
+series is this - permanent), this one asks **scope** (do we auto-add it, and what
+is about to be grabbed - constantly changing). The backend keeps the two apart
+for the same reason. What lives nowhere else:
+
+- **The headline must never collapse "couldn't ask" into zero.** With Sonarr
+  unreachable it says *"Can't tell what would be added"*, not "0 will be added" -
+  the latter reads as "nothing is about to happen", which is the worst available
+  misreading. The first version did exactly that and was caught in a browser,
+  with the build and svelte-check both green. Same discipline as `unknown` on the
+  Jellyfin availability path.
+- **The excluded list is grouped by the gate that dropped each entry**, because a
+  count is not reviewable: "39 proposed" says nothing, "50 dropped on a
+  prequel/parent edge" says whether the filter is sane. Each row has an *Include
+  anyway* button (the force-include overlay, the only override direction).
+- **`noUsableTvdbId` rows link to `/admin/matching?season=&year=`** - the one
+  real seam between the two pages, since an unresolved id is a matching problem.
+  That page reads the query params **once at mount**, falling back to the calendar
+  season on anything unrecognised, so a stale link cannot fight a reviewer
+  mid-review.
+- The size estimate is a **median** (0.38 GB/episode, measured 2026-08-04 over a
+  random 500-episode sample) with a p90 alongside it, and entries with no episode
+  count are labelled as assumed rather than folded silently into the total. It
+  also states that it assumes today's mixed-quality library - a 720p-only Sonarr
+  profile makes it an over-estimate.
+- **Grouped by season, alphabetical inside.** A season with nothing on the list
+  says why *and when that changes* ("0 on the list, 38 waiting to air - the
+  earliest joins around 16 Sept"), which turns the most alarming number on the
+  page into a schedule. Posters come from `coverImage.medium`, already in
+  `SeasonCache`, so they cost no extra fetch.
+- **Air-date outliers are marked.** Measured across WINTER/SPRING/SUMMER 2026,
+  **116 of 119 proposals sit within 14 days of their season's median premiere**,
+  so a row outside that is genuinely unusual - it is the one that gets grabbed
+  alone weeks early, or waits long after its season is in. **That 14 is NOT
+  `DEFAULT_WITHIN_DAYS`**: the air window measures distance from *today* and
+  decides membership, this measures distance from the *season median* and only
+  decorates. Do not unify them.
+- **Entries dropped as sequels say whether you hold the previous one** (25 of 50
+  did, measured 2026-08-09). Display only - the first-seasons-only rule is
+  unchanged, and auto-including on that signal is a separate decision.
+- **Every row carries a Match badge** from `matchGrade` (`lib/seriesIdentity.ts`)
+  - the same ladder the Watch pop-up's correction picker uses, so the two
+  surfaces cannot drift on what "certain" means. `weak` and `viewerPick` are
+  warning-coloured because those are the ones that can be wrong.
+- **An unverified row's button reads "Include anyway" and opens a confirm** that
+  names the grade and what the id matched against - a generic "are you sure" is
+  noise, whereas *"matched against Unanswered//butterfly"* is judgeable. The
+  backend 409s regardless (`UNVERIFIED_MATCH`); the dialog exists so the click is
+  informed, not so it is possible. A UI that forgot to ask would still be safe.
+- The season picker is a **what-if**: it previews any season while Sonarr is
+  still served the current one and the next, and the banner says so. Its
+  `on:change` handler splits the value **inside `load()`**, not in a `$:`
+  statement - reactive declarations have not flushed when the handler runs, which
+  produced `?season=&year=NaN` and a 400.
+
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
 contract (filter modes, provenance rules, the changed-vs-untouched Confirm
 discriminator) is the header comment in `pages/AdminMatching.svelte`; the

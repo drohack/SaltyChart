@@ -399,6 +399,62 @@ export function isDateVerified(note: string | null | undefined): boolean {
 }
 
 /**
+ * How well do we actually know this identity?
+ *
+ * Ordered strongest first. The distinctions are not cosmetic - each one was
+ * learned from a real mistake, and they are recorded here so both the viewer's
+ * correction picker and the Sonarr admin page read the same vocabulary:
+ *
+ *  - `confirmed` / `adminOverride` - a human decided. Permanent.
+ *  - `map`        - a community-map pair. Unconfirmed by construction, and
+ *                   still the most reliable thing we have (94% of TV).
+ *  - `dateVerified` - a resolver id a DATE vouched for. As settled as a map id:
+ *                   correct results land 0-31 days from the AniList premiere
+ *                   and wrong ones 62-21,929, with nothing in between.
+ *  - `viewerPick` - a viewer's correction. Deliberately NOT confident: it is
+ *                   unconfirmed by construction and queued for review. Treating
+ *                   it as settled once hid the picker - and the undo inside it -
+ *                   the instant anyone used it.
+ *  - `weak`       - a resolver id accepted on title text or a +/-1 release year.
+ *                   The Echo class: an exact title 1,012 days from the premiere.
+ *  - `none`       - no id at all.
+ */
+export type MatchGrade =
+  | 'confirmed'
+  | 'adminOverride'
+  | 'map'
+  | 'dateVerified'
+  | 'viewerPick'
+  | 'weak'
+  | 'none';
+
+export function matchGrade(identity: Identity): MatchGrade {
+  if (identity.confirmed) return 'confirmed';
+  if (identity.source === 'manual') {
+    return (identity.note ?? '').startsWith('viewer:') ? 'viewerPick' : 'adminOverride';
+  }
+  if (identity.source === 'map') return 'map';
+  if (identity.source === 'remote') {
+    return isDateVerified(identity.note) ? 'dateVerified' : 'weak';
+  }
+  return 'none';
+}
+
+/**
+ * Do we actually KNOW which show this is?
+ *
+ * The single definition, so the Watch pop-up's correction picker and the Sonarr
+ * page cannot drift apart on what "certain" means. A rejection counts: "this is
+ * definitively not in the library" is knowledge too, and it must suppress the
+ * title fallback rather than invite a correction.
+ */
+export function isIdConfident(identity: Identity): boolean {
+  if (identity.rejected) return true;
+  const grade = matchGrade(identity);
+  return grade === 'confirmed' || grade === 'adminOverride' || grade === 'map' || grade === 'dateVerified';
+}
+
+/**
  * Is this stored row from an older resolver, and safe to re-decide?
  *
  * Only rows the machine decided and that carry an id: a human decision is

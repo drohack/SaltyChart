@@ -114,6 +114,8 @@ BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
 BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
 BACKEND_SONARR = "backend/src/lib/sonarrList.ts"
+BACKEND_SONARR_SEEN = "backend/src/lib/sonarrSeen.ts"
+BACKEND_SONARR_ROUTE = "backend/src/routes/sonarr.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 
@@ -138,6 +140,7 @@ T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
 # Runs in about a second against no servers, so the doc rows below are the
 # cheapest in the table.
 T_ANCHORS = PY + [str(TESTS / "test_audit_anchors.py")]
+T_SONARR = PY + [str(TESTS / "test_sonarr.py")]
 
 MUTATIONS: list[Mutation] = [
     Mutation(
@@ -253,6 +256,116 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="a tvdbId must appear at most once in the list",
         guards="Sonarr is handed the same series twice in one list",
+    ),
+    Mutation(
+        name="an empty Sonarr library is trusted as mass deletion",
+        path=BACKEND_SONARR_SEEN,
+        # The single most dangerous line in the feature. One bad read of
+        # /api/v3/series - a restart mid-request, a proxy hiccup, a permissions
+        # change - would suppress the ENTIRE list permanently, and the result
+        # looks exactly like "the list correctly has nothing to add". Driven
+        # end-to-end against a stand-in Sonarr before this row was written.
+        find="""  if (snapshot.series.length === 0) {
+    return {
+      upserts: [],
+      suppressed: [],
+      orphans: [],
+      skipped: 'snapshot returned an empty library - treated as "could not ask", never as mass deletion',
+    };
+  }""",
+        replace="  /* mutation: an empty library is taken at face value */",
+        test=T_UNIT,
+        expect="an empty library must never suppress anything",
+        guards="one failed read of Sonarr's library silently retires every series "
+               "on the list, and the outcome is indistinguishable from working",
+    ),
+    Mutation(
+        name="a failed Sonarr read is treated as truth",
+        path=BACKEND_SONARR_SEEN,
+        # "Could not ask" is not "everything was deleted". Without this the
+        # first time Sonarr restarts under a snapshot, the list starts retiring
+        # whatever the failed response happened not to mention.
+        find="""  if (!snapshot.ok) {
+    return { upserts: [], suppressed: [], orphans: [], skipped: `snapshot failed: ${snapshot.error ?? 'unknown'}` };
+  }""",
+        replace="  /* mutation: a failed snapshot is trusted */",
+        test=T_UNIT,
+        expect="a failed snapshot must never suppress anything, even a partial one",
+        guards="an unreachable or erroring Sonarr is read as a deletion event",
+    ),
+    Mutation(
+        name="the Sonarr list stops honouring suppression",
+        path=BACKEND_SONARR,
+        # Removing the backstop restores the re-add loop: a series deleted
+        # without an Import List Exclusion gets proposed again, and Sonarr
+        # re-grabs it every sync - which is minutes, not hours.
+        find="""    if (opts?.suppressed?.has(tvdbId)) {
+      drop('deletedAfterAdd');
+      continue;
+    }""",
+        replace="    /* mutation: suppression ignored */",
+        test=T_UNIT,
+        expect="a deleted series must not be proposed back into existence",
+        guards="a show deleted from Sonarr is re-added and re-downloaded every "
+               "few minutes, forever",
+    ),
+    Mutation(
+        name="a force-include stops checking whether the identity is verified",
+        path=BACKEND_SONARR,
+        # This is the hole as it actually existed: the forced branch skipped
+        # usableTvdbId entirely, so `tvdbId && !pending && !rejected` never
+        # applied to overrides. 22 candidates carried a pending identity when it
+        # was measured, among them Echo - offered a namesake 1,012 days from the
+        # entry's premiere. Row 39 guards the automatic path and passes; this
+        # guards the override, which is where the gap was.
+        find="""      } else if (unverified && !forced.acknowledgedUnverified) {
+        drop('unverifiedNotAcknowledged');""",
+        replace="""      } else if (false) { /* mutation: unverified overrides wave through */
+        drop('unverifiedNotAcknowledged');""",
+        test=T_UNIT,
+        expect="an unverified identity must not be force-included blindly",
+        guards="one click on Include downloads a whole season of a series we only "
+               "guessed at, with nothing on screen saying it was a guess",
+    ),
+    Mutation(
+        name="the include endpoint stops refusing an unverified match",
+        path=BACKEND_SONARR_ROUTE,
+        # The server-side half. The UI asking is a courtesy; this 409 is the
+        # guard, and it has to hold for a curl or a stale page too.
+        find="  if (unverified && !acknowledge) {",
+        replace="  if (false) { /* mutation: never ask */",
+        test=T_SONARR,
+        expect="expected 409 UNVERIFIED_MATCH",
+        guards="any caller can pin an unverified identity onto the list without "
+               "ever being told it was unverified",
+    ),
+    Mutation(
+        name="the Sonarr list publishes without being switched on",
+        path=BACKEND_SONARR_ROUTE,
+        # The master switch fails closed on purpose: a fresh deploy, a restored
+        # backup or a wiped AppConfig must all serve an empty list rather than
+        # hand Sonarr forty series to grab. Defaulting the other way is the one
+        # regression here that costs disk immediately and silently.
+        find="  return row?.value === 'true';",
+        replace="  return row?.value !== 'false'; /* mutation: default ON */",
+        test=T_SONARR,
+        expect="the master switch is not switching anything",
+        guards="a deployment that was never switched on starts downloading a "
+               "season's worth of series on its own",
+    ),
+    Mutation(
+        name="the admin gate comes off the Sonarr report",
+        path=BACKEND_SONARR_ROUTE,
+        # This router serves exactly ONE public route. /report carries what
+        # Sonarr holds and excludes, which is not a viewer's business - and a
+        # public router that grows admin data is precisely the trap the file's
+        # docstring warns about.
+        find="router.get('/report', requireAuth, requireAdmin, async (req, res) => {",
+        replace="router.get('/report', async (req, res) => { /* mutation */",
+        test=T_SONARR,
+        expect="expected 401 unauthenticated",
+        guards="the whole Sonarr library and exclusion list are served to anyone "
+               "who asks",
     ),
     Mutation(
         name="the Sonarr list's next season stops rolling into the next year",

@@ -146,6 +146,48 @@ model SeriesIdentity {
   updatedAt DateTime @default(now())
 }
 
+/// Force-include overlay for the Sonarr Custom List: "propose this even though
+/// a filter dropped it". The ONLY direction of override this feature has -
+/// "never add this" is Sonarr's own Import List Exclusion, which is global and
+/// authoritative, so duplicating it here would be two records of one intent.
+/// Small by construction, like SeriesIdentity. Created by the raw SQL in
+/// `index.ts`; production never runs `prisma migrate`.
+model SonarrInclude {
+  anilistId Int      @id
+  /// Denormalised so the list still emits the row if identity resolution is
+  /// briefly unavailable - a force-include is a human decision and should not
+  /// evaporate because a map has not loaded.
+  tvdbId    Int
+  /// Someone was shown that this entry's identity is unverified and included it
+  /// anyway. Required before the list will emit a pending or rejected identity:
+  /// an override may outrank the filter, but only as an informed decision. See
+  /// the force-include branch in `lib/sonarrList.ts` for the hole this closed.
+  acknowledgedUnverified Boolean @default(false)
+  note      String?
+  addedBy   String?
+  createdAt DateTime @default(now())
+}
+
+/// What Sonarr held, over time - the backstop against the re-add loop.
+///
+/// `goneAt != null` IS the suppression: something we proposed was seen held and
+/// is now absent, which can only mean a deliberate deletion. Written by the
+/// hourly snapshot job; the state machine is `lib/sonarrSeen.ts`. Created by the
+/// raw SQL in `index.ts`.
+model SonarrSeen {
+  tvdbId      Int       @id
+  /// The AniList entry this was added *for*. Makes an orphan visible when that
+  /// entry is later re-identified to a different tvdbId.
+  anilistId   Int?
+  title       String    @default("")
+  firstHeldAt DateTime?
+  lastHeldAt  DateTime?
+  goneAt      DateTime?
+  /// Does the held series carry our import-list tag? Display, and the signal
+  /// that Maintainerr's scoping tag is actually being applied.
+  taggedByUs  Boolean   @default(false)
+}
+
 /// Per-YouTube-video subtitle cache: check results, translated segments, and
 /// user subtitle preferences. Created & maintained by the raw SQL in
 /// ensureDatabaseSchema() (index.ts); mirrored here (same reason as SeasonCache).

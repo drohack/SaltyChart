@@ -61,8 +61,34 @@
 
   const SEASONS = ['WINTER', 'SPRING', 'SUMMER', 'FALL'] as const;
   const now = new Date();
-  let season: string = SEASONS[Math.floor(now.getMonth() / 3)];
-  let year = now.getFullYear();
+
+  /**
+   * `?season=&year=` opens this page on a specific season, so `/admin/sonarr`
+   * can link straight to the entries it could not resolve - the one place the
+   * two admin pages genuinely overlap. Read once, at mount: after that the
+   * `<select>` below is the only thing that changes the season, so a stale URL
+   * cannot fight a reviewer mid-review.
+   *
+   * Anything unrecognised falls back to today's season rather than erroring - a
+   * bad link should land somewhere sensible, not on a broken page.
+   */
+  function initialSeason(): { season: string; year: number } {
+    const fallback = { season: SEASONS[Math.floor(now.getMonth() / 3)] as string, year: now.getFullYear() };
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const s = (q.get('season') ?? '').toUpperCase();
+      const y = Number(q.get('year'));
+      if (!SEASONS.includes(s as (typeof SEASONS)[number])) return fallback;
+      if (!Number.isInteger(y) || y < 1970 || y > 2100) return fallback;
+      return { season: s, year: y };
+    } catch {
+      return fallback;
+    }
+  }
+
+  const _initial = initialSeason();
+  let season: string = _initial.season;
+  let year = _initial.year;
 
   type Row = {
     mediaId: number;

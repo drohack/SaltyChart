@@ -74,7 +74,7 @@ import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
-import sonarrRouter from './routes/sonarr';
+import sonarrRouter, { runSonarrSnapshot } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
 import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
@@ -436,6 +436,56 @@ async function ensureDatabaseSchema() {
     } catch (err) {
       console.warn('[DB] Failed to create SeriesIdentity table', err);
     }
+    // The Sonarr Custom List's two tables. Mirrored in schema.prisma, but this
+    // is the path production actually runs.
+    //
+    // `SonarrInclude` is the force-include overlay - the only direction of
+    // override the feature has, because "never add this" is Sonarr's own
+    // Import List Exclusion and duplicating it here would be two records of
+    // one intent.
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SonarrInclude" (
+          "anilistId" INTEGER NOT NULL PRIMARY KEY,
+          "tvdbId"    INTEGER NOT NULL,
+          "acknowledgedUnverified" BOOLEAN NOT NULL DEFAULT false,
+          "note"      TEXT,
+          "addedBy"   TEXT,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    } catch (err) {
+      console.warn('[DB] Failed to create SonarrInclude table', err);
+    }
+    // CREATE TABLE IF NOT EXISTS does nothing to a table that already exists,
+    // so a column added later needs its own ALTER. Throws harmlessly once the
+    // column is there, which is why it has its own swallowed try.
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "SonarrInclude" ADD COLUMN "acknowledgedUnverified" BOOLEAN NOT NULL DEFAULT false`
+      );
+    } catch {
+      /* already present */
+    }
+    // `SonarrSeen.goneAt != null` IS the suppression that closes the re-add
+    // loop: something we proposed was seen held and is now absent, which can
+    // only be a deliberate deletion. See lib/sonarrSeen.ts for why an empty or
+    // failed snapshot must never write to this table.
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SonarrSeen" (
+          "tvdbId"      INTEGER NOT NULL PRIMARY KEY,
+          "anilistId"   INTEGER,
+          "title"       TEXT NOT NULL DEFAULT '',
+          "firstHeldAt" DATETIME,
+          "lastHeldAt"  DATETIME,
+          "goneAt"      DATETIME,
+          "taggedByUs"  BOOLEAN NOT NULL DEFAULT false
+        );
+      `);
+    } catch (err) {
+      console.warn('[DB] Failed to create SonarrSeen table', err);
+    }
     // `rejected` must be its own column, not inferred from "confirmed with no
     // ids": confirming a good title match also leaves the id boxes empty, so the
     // two states are indistinguishable without it - and guessing wrong means the
@@ -560,9 +610,10 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/list', listRouter);
   app.use('/api/public-list', publicListRouter);
   // Mounted here, after compression() and the global generalLimiter, on
-  // purpose: Sonarr polls the Custom List every 6 hours, so 120 req/min is
-  // several orders of magnitude more headroom than it needs and a dedicated
-  // limiter would be a knob nobody ever turns.
+  // purpose: Sonarr's Import List Sync is a hardcoded ~5-minute task, so ~12
+  // req/hour against 120 req/min is still several orders of magnitude more
+  // headroom than it needs and a dedicated limiter would be a knob nobody ever
+  // turns.
   app.use('/api/sonarr', sonarrRouter);
   app.use('/api/users', usersRouter);
   // User-specific UI preferences
@@ -626,6 +677,31 @@ ensureDatabaseSchema().then(() => {
     };
     setTimeout(() => void sweep(), 90_000).unref();
     setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
+
+    // Watch what Sonarr does with our Custom List, so a series that was added
+    // and then deleted stops being proposed back into existence.
+    //
+    // HOURLY, not daily: Sonarr's Import List Sync is a hardcoded ~5 minute
+    // task, so we cannot beat it to a re-add and should not pretend to. What
+    // this bounds is the *repeat* - an unbounded loop becomes one extra grab.
+    // Sonarr's own Import List Exclusion remains the primary defence, which is
+    // why Maintainerr's `listExclusions` is mandatory rather than advisory.
+    //
+    // Delayed at boot for the same reason as the identity sweep: it must never
+    // compete with the first page load. Skipped entirely when Sonarr is not
+    // configured - `runSonarrSnapshot` reports that rather than throwing.
+    const sonarrSnapshot = async () => {
+      try {
+        const status = await runSonarrSnapshot();
+        if (!status.ok && status.error !== 'Sonarr is not configured') {
+          console.warn(`[sonarr] snapshot did not complete: ${status.error ?? status.skipped}`);
+        }
+      } catch (err: any) {
+        console.warn('[sonarr] snapshot could not run:', err?.message ?? err);
+      }
+    };
+    setTimeout(() => void sonarrSnapshot(), 120_000).unref();
+    setInterval(() => void sonarrSnapshot(), 60 * 60 * 1000).unref();
   });
 
   // ----------------------------------------------------------------------------

@@ -34,6 +34,15 @@ shipping filter itself. Reimplementing the predicates in Python would be a secon
 copy that drifts, and would eventually describe a program we don't ship - the
 mistake `check_match_corpus.py` was built to avoid.
 
+**`/admin/sonarr` is the richer view** and is where you should normally look: it
+adds what Sonarr actually holds and excludes, the suppression list, and orphan
+detection. This script survives because it needs no browser, no login and no
+Sonarr credentials - useful from a terminal, and the only view that still works
+when you have not configured Sonarr at all. Both read the *same* `assemble()` in
+`routes/sonarr.ts`, so the proposal side cannot drift between them; only the
+comparison differs (this diffs against the cached Jellyfin library, the page
+against Sonarr itself).
+
 **Credentials** are read from the command line or the environment
 (`SONARR_URL`, `SONARR_API_KEY`) and are never written anywhere. Do not put a key
 in a file in this repo: it is public.

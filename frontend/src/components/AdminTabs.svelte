@@ -6,11 +6,16 @@
    * that is what `App.svelte`'s router listens to - a plain `<a href>` would
    * full-page reload and drop the lazily-loaded chunk cache.
    */
-  export let current: 'connection' | 'matching';
+  export let current: 'connection' | 'matching' | 'sonarr';
 
-  const TABS: { key: 'connection' | 'matching'; label: string; path: string }[] = [
+  const TABS: { key: 'connection' | 'matching' | 'sonarr'; label: string; path: string }[] = [
     { key: 'connection', label: 'Connection', path: '/admin' },
     { key: 'matching', label: 'Matching', path: '/admin/matching' },
+    // Matching answers "which series is this" (identity, permanent); Sonarr
+    // answers "do we auto-add it, and what is about to be grabbed" (scope,
+    // constantly changing). Separate tabs because they are separate questions -
+    // the backend keeps them apart for the same reason.
+    { key: 'sonarr', label: 'Sonarr', path: '/admin/sonarr' },
   ];
 
   function go(path: string) {

@@ -6,7 +6,7 @@ import https from 'https';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import prisma from '../db';
-import { requireAuth, AuthRequest } from '../middleware/auth';
+import { requireAuth, requireAdmin, ADMIN_USER_ID, AuthRequest } from '../middleware/auth';
 import {
   classifyMatch,
   detectSeasonNumber,
@@ -36,6 +36,7 @@ import {
 import {
   resolveIdentity,
   isDateVerified,
+  isIdConfident,
   rawIdentityOverride,
   identityReady,
   setIdentityOverride,
@@ -81,7 +82,6 @@ const router = Router();
 router.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);
 const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 
 const jellyfinLimiter = rateLimit({
@@ -103,13 +103,6 @@ const streamLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => _isDev,
 });
-
-function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
-  if (req.userId !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
-  }
-  return next();
-}
 
 // undefined = not loaded yet; null = not configured
 let _configCache: JellyfinConfig | null | undefined;
@@ -1350,19 +1343,16 @@ async function resolveAvailability(
     // viewer's "Not the right show?" picker keys off THIS, not availability:
     // there is no reason to offer a correction for an entry we are certain
     // about, even when the library doesn't hold it.
-    const idConfident =
-      identity.rejected || identity.confirmed ||
-      identity.source === 'map' ||
-      // A manual row an ADMIN wrote is settled; a viewer pick is not - it is
-      // unconfirmed by construction and /admin/matching queues it for review.
-      // Counting it as confident hid the picker the instant someone used it,
-      // taking the undo (which lives inside the picker) with it.
-      (identity.source === 'manual' && !(identity.note ?? '').startsWith('viewer:')) ||
-      // A resolver id a DATE vouched for is as settled as a map id - see
-      // isDateVerified. Gating on provenance alone offered the picker on 105
-      // of 166 uncertain-looking 2026 rows that had matched on the exact
-      // premiere day, which is noise on a control meant for real doubt.
-      (identity.source === 'remote' && isDateVerified(identity.note));
+    // One definition, in lib/seriesIdentity.ts, because /admin/sonarr grades the
+    // same identities and a second copy of this rule could disagree with itself.
+    // What it encodes, each clause learned from a real mistake: a map id and a
+    // human decision are settled; an ADMIN override is but a VIEWER pick is not
+    // (counting it as confident hid the picker, and the undo inside it, the
+    // instant anyone used it); and a resolver id a DATE vouched for is as
+    // settled as a map id - gating on provenance alone offered the picker on
+    // 105 of 166 uncertain-looking 2026 rows that had matched on the exact
+    // premiere day, which is noise on a control meant for real doubt.
+    const idConfident = isIdConfident(identity);
     // An admin has said outright that this entry is not in the library. That has
     // to short-circuit *before* matching, because a rejection carries no ids and
     // would otherwise fall straight through to the title tier - which is exactly

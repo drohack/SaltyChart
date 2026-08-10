@@ -31,6 +31,11 @@ function entry(over: Partial<SonarrCandidate> & { id: number }): SonarrCandidate
 }
 
 /** A resolver backed by a plain id map: a bare string is a clean map row. */
+/** A force-include on an entry whose identity is not in doubt. */
+function ok(tvdbId: number) {
+  return { tvdbId, acknowledgedUnverified: false };
+}
+
 function mapResolver(ids: Record<number, string | Partial<SonarrIdentity>>) {
   const none: SonarrIdentity = { tvdbId: null, pending: false, rejected: false };
   return (anilistId: number): SonarrIdentity => {
@@ -238,7 +243,8 @@ test('the title falls back english -> romaji -> native, and an untitled entry is
 
 test('malformed cache rows are skipped rather than thrown on', () => {
   // `shows` is parsed SeasonCache.data - upstream JSON, so any field can be the
-  // wrong shape. A throw here would 500 a route Sonarr polls every six hours.
+  // wrong shape. A throw here would 500 a route Sonarr re-reads every few
+  // minutes.
   const out = selectForSonarr(
     [null, 'nonsense', 42, {}, { id: 'not-a-number', format: 'TV' }, entry({ id: 7 })],
     mapResolver({ 7: '700' }),
@@ -275,6 +281,71 @@ test('every dropped entry reports the gate that stopped it', () => {
     rejected.map((r) => r.reason),
     ['format', 'adult', 'notFirstSeason', 'outsideAirWindow', 'noUsableTvdbId', 'duplicateTvdbId', 'noTitle'],
     'each gate must name itself, in the order the gates run'
+  );
+});
+
+test('a suppressed tvdbId is dropped, and says why', () => {
+  // Something we proposed was held by Sonarr and then deleted. Proposing it
+  // again re-grabs it on the next sync, forever - so it stops being proposed,
+  // and the reason is reported rather than being a silent subtraction.
+  const shows = [entry({ id: 1 }), entry({ id: 2 })];
+  const { items, rejected } = selectForSonarrDetailed(
+    shows,
+    mapResolver({ 1: '100', 2: '200' }),
+    NOW,
+    { suppressed: new Set([100]) }
+  );
+  assert.deepEqual(items.map((i) => i.tvdbId), [200], 'a deleted series must not be proposed back into existence');
+  assert.deepEqual(
+    rejected.map((r) => r.reason),
+    ['deletedAfterAdd'],
+    'the suppression names itself as a gate, so the dry run can show it'
+  );
+});
+
+test('a force-include beats every gate, suppression included', () => {
+  // This is the only override direction the feature has, and it is how a
+  // suppression is undone. If a gate could consume it, the button would appear
+  // to work and change nothing.
+  const shows = [
+    entry({ id: 1, format: 'ONA' }),                                            // dropped on format
+    entry({ id: 2, relations: { edges: [{ relationType: 'PREQUEL' }] } }),      // dropped as a sequel
+    entry({ id: 3 }),                                                           // suppressed
+  ];
+  const out = selectForSonarr(
+    shows,
+    mapResolver({ 1: '100', 2: '200', 3: '300' }),
+    NOW,
+    {
+      suppressed: new Set([300]),
+      forceInclude: new Map([[1, ok(100)], [2, ok(200)], [3, ok(300)]]),
+    }
+  );
+  assert.deepEqual(
+    out.map((i) => i.tvdbId),
+    [100, 200, 300],
+    'a force-include must lift the format gate, the sequel gate and a suppression alike'
+  );
+});
+
+test('a force-include still cannot emit a duplicate or an unusable id', () => {
+  const shows = [entry({ id: 1 }), entry({ id: 2, format: 'ONA' })];
+  const { items, rejected } = selectForSonarrDetailed(
+    shows,
+    mapResolver({ 1: '100' }),
+    NOW,
+    { forceInclude: new Map([[2, ok(100)]]) }   // same tvdbId as entry 1
+  );
+  assert.equal(items.length, 1, 'a force-include is still deduped by tvdbId');
+  assert.deepEqual(rejected.map((r) => r.reason), ['duplicateTvdbId'], 'and says so');
+
+  const bad = selectForSonarrDetailed(shows, mapResolver({}), NOW, {
+    forceInclude: new Map([[2, ok(0)]]),
+  });
+  assert.deepEqual(
+    bad.rejected.map((r) => r.reason),
+    ['noUsableTvdbId', 'noUsableTvdbId'],
+    'a force-include carrying a non-positive id is refused like any other'
   );
 });
 
@@ -316,5 +387,63 @@ test('DEFAULT_WITHIN_DAYS is not coupled to the site look-ahead', () => {
     DEFAULT_WITHIN_DAYS,
     14,
     'the air window is its own constant, deliberately not the display look-ahead'
+  );
+});
+
+test('a force-include on an UNVERIFIED identity is refused unless acknowledged', () => {
+  // The hole this closed: the forced branch never called usableTvdbId, so
+  // `tvdbId && !pending && !rejected` did not apply to overrides at all. 22
+  // candidates carried a pending identity when this was measured - among them
+  // Echo, whose resolver suggestion was a namesake 1,012 days from the entry's
+  // premiere. One click grabbed it, silently.
+  const shows = [entry({ id: 1, format: 'ONA' })];
+  const resolver = mapResolver({ 1: { tvdbId: '100', pending: true } });
+
+  const blind = selectForSonarrDetailed(shows, resolver, NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: false }]]),
+  });
+  assert.deepEqual(blind.items, [], 'an unverified identity must not be force-included blindly');
+  assert.deepEqual(
+    blind.rejected.map((r) => r.reason),
+    ['unverifiedNotAcknowledged'],
+    'and the refusal names itself, so the page can ask instead of failing silently'
+  );
+
+  const informed = selectForSonarrDetailed(shows, resolver, NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: true }]]),
+  });
+  assert.deepEqual(
+    informed.items.map((i) => i.tvdbId),
+    [100],
+    'an override still wins once someone has been shown what they are overriding'
+  );
+});
+
+test('a rejected identity is refused the same way as a pending one', () => {
+  // `rejected` means an admin said "this is definitively not in the library".
+  // Force-including it without acknowledgement would silently undo that.
+  const shows = [entry({ id: 1 })];
+  const out = selectForSonarrDetailed(shows, mapResolver({ 1: { tvdbId: '100', rejected: true } }), NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: false }]]),
+  });
+  assert.deepEqual(
+    out.rejected.map((r) => r.reason),
+    ['unverifiedNotAcknowledged'],
+    'a rejection is a human decision and must not be overridden without acknowledgement'
+  );
+});
+
+test('a confident identity needs no acknowledgement', () => {
+  // The guard must not become friction on the ordinary case: a community-map id
+  // is the most reliable thing we have, and 30 of the 39 current proposals are
+  // exactly that.
+  const shows = [entry({ id: 1, format: 'ONA' })];
+  const out = selectForSonarr(shows, mapResolver({ 1: '100' }), NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: false }]]),
+  });
+  assert.deepEqual(
+    out.map((i) => i.tvdbId),
+    [100],
+    'a settled identity is force-included without ceremony'
   );
 });
