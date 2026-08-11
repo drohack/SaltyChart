@@ -321,7 +321,9 @@ MUTATIONS: list[Mutation] = [
         # "nothing needs review" for a third of it. Same shape: a truncated plan
         # that reads as a complete one, so "all done" and "10 still waiting"
         # become indistinguishable.
-        find="""    }""",
+        find="""    } else {
+      plan.deferred.push(candidate);
+    }""",
         replace="    }",
         test=T_UNIT,
         expect="the rest are deferred, not discarded",

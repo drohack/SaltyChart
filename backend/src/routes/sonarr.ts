@@ -172,8 +172,10 @@ interface SnapshotStatus {
   heldIds?: number[];
   /** tvdbIds on Sonarr's Import List Exclusions. */
   excludedIds?: number[];
-  /** Held tvdbIds carrying our tag - i.e. ones we added. */
+  /** Held tvdbIds carrying the MARKER tag - i.e. ones that are ours. */
   taggedIds?: number[];
+  /** How many carry ANY applied tag. Only ever a comparison, never ownership. */
+  taggedAnyCount?: number;
   orphans?: Orphan[];
 }
 
@@ -403,6 +405,11 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
   // and sits on 692 series here, so counting any of our tags reported shows the
   // owner had for years as ours - measured on the live instance 2026-08-10.
   const markerId = resolveTagIds([cfg.markerTag], tags).ids[0] ?? null;
+  // Every applied tag, counted separately. It is not used to decide ownership -
+  // that is the marker's job - but having both numbers is what makes "the
+  // marker is a strict subset of our tags" checkable instead of assumed, and it
+  // is the difference the page shows: 692 carry `anime`, 4 carry `saltychart`.
+  const allTagIds = resolveTagIds(cfg.tags, tags).ids;
 
   // A read that returned nothing is "could not ask", not "the library is empty".
   // The precedent is real: an analysis script written during this feature's
@@ -436,6 +443,9 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
             markerId === null
               ? []
               : snapshot.series.filter((s) => s.tags.includes(markerId)).map((s) => s.tvdbId),
+          taggedAnyCount: allTagIds.length
+            ? snapshot.series.filter((s) => s.tags.some((t) => allTagIds.includes(t))).length
+            : 0,
           ...(exclusions ? { excludedIds: exclusions.map((e) => e.tvdbId) } : {}),
           orphans,
         }
@@ -914,6 +924,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         url: cfg?.url ?? '',
         tags: cfg?.tags ?? TAGS_DEFAULT,
         markerTag: cfg?.markerTag ?? MARKER_TAG_DEFAULT,
+        taggedAnyCount: status?.taggedAnyCount ?? 0,
         // "Of the series we have a RECORD of adding, how many carry the marker?"
         // Anything less than all of them means the tag is not being applied, and
         // Maintainerr's scoping will silently cover less than you think - the

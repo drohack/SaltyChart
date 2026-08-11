@@ -410,9 +410,18 @@ def main():
     if h["ours"] < max(h["pushed"], h["tagged"]):
         fail(8, f"history.ours={h['ours']} is smaller than pushed={h['pushed']} or "
                 f"tagged={h['tagged']} - it is the union of both records")
-    if rep["sonarr"]["observed"] and h["tagged"] > rep["sonarr"]["held"]:
-        fail(8, f"history.tagged={h['tagged']} exceeds the {rep['sonarr']['held']} series "
-                f"Sonarr holds - only the marker tag may count, never a shared one")
+    # The assertion that actually bites. An earlier version compared `tagged`
+    # against the whole library, which a regression to "carries ANY of our tags"
+    # sails straight through - `anime` is on 692 series, comfortably under 2,327.
+    # Comparing against the shared-tag count is the real invariant: the marker is
+    # a DEDICATED tag, so it must be a strict subset whenever more than one tag
+    # is applied.
+    cfg = rep["config"]
+    if rep["sonarr"]["observed"] and len(cfg["tags"]) > 1 and cfg["taggedAnyCount"]:
+        if h["tagged"] >= cfg["taggedAnyCount"]:
+            fail(8, f"history.tagged={h['tagged']} is not fewer than the "
+                    f"{cfg['taggedAnyCount']} series carrying any of {cfg['tags']} - "
+                    f"only the marker tag may count, never a shared one")
     if rep["config"]["taggedOfOurs"] > h["pushed"]:
         fail(8, f"config.taggedOfOurs={rep['config']['taggedOfOurs']} exceeds the "
                 f"{h['pushed']} we have a record of adding - it counts our own rows "
