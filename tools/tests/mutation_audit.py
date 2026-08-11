@@ -113,11 +113,12 @@ BACKEND_LIBPICK = "backend/src/lib/libraryPick.ts"
 BACKEND_MATCH = "backend/src/lib/animeMatch.ts"
 BACKEND_IDENTITY = "backend/src/lib/seriesIdentity.ts"
 BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
-BACKEND_SONARR = "backend/src/lib/sonarrList.ts"
-BACKEND_SONARR_SEEN = "backend/src/lib/sonarrSeen.ts"
+BACKEND_SONARR = "backend/src/lib/sonarrSelect.ts"
+BACKEND_SONARR_PUSH = "backend/src/lib/sonarrPush.ts"
 BACKEND_SONARR_ROUTE = "backend/src/routes/sonarr.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
+ADMIN_SONARR = "frontend/src/pages/AdminSonarr.svelte"
 
 PY = ["py", "-3.13", "-u"]
 T_JELLYFIN = PY + [str(TESTS / "test_jellyfin.py")]
@@ -258,56 +259,84 @@ MUTATIONS: list[Mutation] = [
         guards="Sonarr is handed the same series twice in one list",
     ),
     Mutation(
-        name="an empty Sonarr library is trusted as mass deletion",
-        path=BACKEND_SONARR_SEEN,
-        # The single most dangerous line in the feature. One bad read of
-        # /api/v3/series - a restart mid-request, a proxy hiccup, a permissions
-        # change - would suppress the ENTIRE list permanently, and the result
-        # looks exactly like "the list correctly has nothing to add". Driven
-        # end-to-end against a stand-in Sonarr before this row was written.
-        find="""  if (snapshot.series.length === 0) {
-    return {
-      upserts: [],
-      suppressed: [],
-      orphans: [],
-      skipped: 'snapshot returned an empty library - treated as "could not ask", never as mass deletion',
-    };
+        name="a series we already added is offered again once it is deleted",
+        path=BACKEND_SONARR_PUSH,
+        # The entire feature in one branch. Without the terminal check a series
+        # deleted from Sonarr - by Maintainerr, by a human, for any reason -
+        # becomes a candidate again on the next run and is re-added. That is the
+        # re-add loop the Custom List had, rebuilt inside the push.
+        find="""  if (prior && isTerminal(prior.status)) {
+    return { action: 'skip', reason: prior.status === 'pushed' ? 'alreadyPushed' : 'alreadyHeld' };
   }""",
-        replace="  /* mutation: an empty library is taken at face value */",
+        replace="  /* mutation: push history ignored */",
         test=T_UNIT,
-        expect="an empty library must never suppress anything",
-        guards="one failed read of Sonarr's library silently retires every series "
-               "on the list, and the outcome is indistinguishable from working",
+        expect="a series we already pushed is never pushed again",
+        guards="every series you delete comes back on the next run, forever",
     ),
     Mutation(
-        name="a failed Sonarr read is treated as truth",
-        path=BACKEND_SONARR_SEEN,
-        # "Could not ask" is not "everything was deleted". Without this the
-        # first time Sonarr restarts under a snapshot, the list starts retiring
-        # whatever the failed response happened not to mention.
-        find="""  if (!snapshot.ok) {
-    return { upserts: [], suppressed: [], orphans: [], skipped: `snapshot failed: ${snapshot.error ?? 'unknown'}` };
+        name="Sonarr saying the series already exists is recorded as a failure",
+        path=BACKEND_SONARR_PUSH,
+        # The held set comes from a cached snapshot, so a series added between
+        # snapshots answers 400 "already been added". Filed as a failure it stays
+        # retryable and is retried on every run for ever - the same infinite loop
+        # arriving through the error path instead of the happy one.
+        find="""  if (sonarrValidationMessages(res.body).some((m) => /already\s*(been\s*)?(added|exists)/i.test(m))) {
+    return 'alreadyExists';
   }""",
-        replace="  /* mutation: a failed snapshot is trusted */",
+        replace="  /* mutation: already-exists is just another failure */",
         test=T_UNIT,
-        expect="a failed snapshot must never suppress anything, even a partial one",
-        guards="an unreachable or erroring Sonarr is read as a deletion event",
+        expect="Sonarr saying the series has already been added is not a failure",
+        guards="a series Sonarr already holds is retried on every run for ever",
     ),
     Mutation(
-        name="the Sonarr list stops honouring suppression",
-        path=BACKEND_SONARR,
-        # Removing the backstop restores the re-add loop: a series deleted
-        # without an Import List Exclusion gets proposed again, and Sonarr
-        # re-grabs it every sync - which is minutes, not hours.
-        find="""    if (opts?.suppressed?.has(tvdbId)) {
-      drop('deletedAfterAdd');
-      continue;
-    }""",
-        replace="    /* mutation: suppression ignored */",
+        name="the run cap discards its overflow instead of deferring it",
+        path=BACKEND_SONARR_PUSH,
+        # `slice(0, 100)` on a 128-entry season once made a review page report
+        # "nothing needs review" for a third of it. Same shape: a truncated plan
+        # that reads as a complete one, so "all done" and "10 still waiting"
+        # become indistinguishable.
+        find="""    }""",
+        replace="    }",
         test=T_UNIT,
-        expect="a deleted series must not be proposed back into existence",
-        guards="a show deleted from Sonarr is re-added and re-downloaded every "
-               "few minutes, forever",
+        expect="the rest are deferred, not discarded",
+        guards="anything past the cap vanishes silently and the page reports the "
+               "run as complete",
+    ),
+    Mutation(
+        name="the ours count includes every tagged series, not just our marker",
+        path=BACKEND_SONARR_ROUTE,
+        # The exact "simplification" the data invites, and the Custom List
+        # version of this line really did make the mistake: it counted rows a
+        # snapshot had merely observed, which on a library owned for months
+        # claimed the whole thing. Only a 201 from Sonarr writes a `pushed` row,
+        # and that is the only thing "we added N" may ever count.
+        find="""            markerId === null
+              ? []
+              : snapshot.series.filter((s) => s.tags.includes(markerId)).map((s) => s.tvdbId),""",
+        replace="""            snapshot.series.filter((s) => s.tags.length > 0).map((s) => s.tvdbId), /* mutation */""",
+        test=T_SONARR,
+        expect="only the marker tag may count, never a shared one",
+        guards="the page claims credit for every series you already owned - `anime` "
+               "alone is on 692 of them here, and two shows owned for years really "
+               "did render as ours",
+    ),
+    Mutation(
+        name="a Sonarr table row loses a cell and every value shifts a column",
+        path=ADMIN_SONARR,
+        # The bug as it happened: a stray <td> put 8 cells in a 7-column table,
+        # so titles rendered under TVDB and dates under Eps. tsc, svelte-check
+        # and the API tests were all green - it was found by a human looking at
+        # the screen, which is why this page needed a browser flow at all.
+        find="""                      </span>
+                    </td>
+                    <td></td>""",
+        replace="""                      </span>
+                    </td>""",
+        test=T_UI,
+        flows=("sonarr page renders",),
+        expect="values render under the wrong headings",
+        guards="every column on the Sonarr page reads one cell off, so the ids, "
+               "dates and states shown belong to the wrong field",
     ),
     Mutation(
         name="a force-include stops checking whether the identity is verified",
@@ -340,18 +369,18 @@ MUTATIONS: list[Mutation] = [
                "ever being told it was unverified",
     ),
     Mutation(
-        name="the Sonarr list publishes without being switched on",
+        name="the Sonarr push runs without being switched on",
         path=BACKEND_SONARR_ROUTE,
-        # The master switch fails closed on purpose: a fresh deploy, a restored
-        # backup or a wiped AppConfig must all serve an empty list rather than
-        # hand Sonarr forty series to grab. Defaulting the other way is the one
-        # regression here that costs disk immediately and silently.
+        # The master switch is the only thing between this feature and someone
+        # else's disk. The test pauses explicitly and then checks the push ROWS,
+        # not the response body - a guard that wrote first and reported "paused"
+        # afterwards would sail through a body-only check.
         find="  return row?.value === 'true';",
-        replace="  return row?.value !== 'false'; /* mutation: default ON */",
+        replace="  return true; /* mutation: always on */",
         test=T_SONARR,
-        expect="the master switch is not switching anything",
-        guards="a deployment that was never switched on starts downloading a "
-               "season's worth of series on its own",
+        expect="the master switch ignored an explicit pause",
+        guards="a deployment that was never switched on starts adding a season's "
+               "worth of series to Sonarr on its own",
     ),
     Mutation(
         name="the admin gate comes off the Sonarr report",

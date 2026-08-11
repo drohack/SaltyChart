@@ -154,38 +154,43 @@ model SeriesIdentity {
 /// `index.ts`; production never runs `prisma migrate`.
 model SonarrInclude {
   anilistId Int      @id
-  /// Denormalised so the list still emits the row if identity resolution is
+  /// Denormalised so the entry is still a candidate if identity resolution is
   /// briefly unavailable - a force-include is a human decision and should not
   /// evaporate because a map has not loaded.
   tvdbId    Int
   /// Someone was shown that this entry's identity is unverified and included it
-  /// anyway. Required before the list will emit a pending or rejected identity:
+  /// anyway. Required before a pending or rejected identity becomes a candidate:
   /// an override may outrank the filter, but only as an informed decision. See
-  /// the force-include branch in `lib/sonarrList.ts` for the hole this closed.
+  /// the force-include branch in `lib/sonarrSelect.ts` for the hole this closed.
   acknowledgedUnverified Boolean @default(false)
   note      String?
   addedBy   String?
   createdAt DateTime @default(now())
 }
 
-/// What Sonarr held, over time - the backstop against the re-add loop.
+/// What we have added to Sonarr - and the record that stops us adding it twice.
 ///
-/// `goneAt != null` IS the suppression: something we proposed was seen held and
-/// is now absent, which can only mean a deliberate deletion. Written by the
-/// hourly snapshot job; the state machine is `lib/sonarrSeen.ts`. Created by the
-/// raw SQL in `index.ts`.
-model SonarrSeen {
-  tvdbId      Int       @id
+/// A row with status `pushed` or `alreadyHeld` is **terminal**: that tvdbId is
+/// never considered again, so a series deleted afterwards stays deleted.
+/// `lookupFailed` and `failed` are retryable, because in both cases nothing was
+/// added. State machine in `lib/sonarrPush.ts`; created by the raw SQL in
+/// `index.ts`.
+model SonarrPush {
+  /// The identity, and the reason a corrected match pushes fresh: a different
+  /// series gets a different id, so it has no terminal row of its own.
+  tvdbId         Int       @id
   /// The AniList entry this was added *for*. Makes an orphan visible when that
   /// entry is later re-identified to a different tvdbId.
-  anilistId   Int?
-  title       String    @default("")
-  firstHeldAt DateTime?
-  lastHeldAt  DateTime?
-  goneAt      DateTime?
-  /// Does the held series carry our import-list tag? Display, and the signal
-  /// that Maintainerr's scoping tag is actually being applied.
-  taggedByUs  Boolean   @default(false)
+  anilistId      Int?
+  title          String    @default("")
+  /// 'pushed' | 'alreadyHeld' | 'lookupFailed' | 'failed'
+  status         String
+  /// Sonarr's own series id, so a human can find the row it created.
+  sonarrSeriesId Int?
+  pushedAt       DateTime?
+  attempts       Int       @default(0)
+  lastAttemptAt  DateTime?
+  lastError      String?
 }
 
 /// Per-YouTube-video subtitle cache: check results, translated segments, and

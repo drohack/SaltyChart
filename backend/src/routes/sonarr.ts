@@ -3,54 +3,70 @@ import prisma from '../db';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
 import { resolveIdentity, identityReady, matchGrade } from '../lib/seriesIdentity';
 import {
-  selectForSonarr,
   selectForSonarrDetailed,
   seasonsForSonarr,
   DEFAULT_WITHIN_DAYS,
   type SeasonRef,
   type SonarrCandidate,
-  type SonarrListItem,
+  type SonarrPushItem,
   type ForcedInclude,
-} from '../lib/sonarrList';
+} from '../lib/sonarrSelect';
 import {
   getSonarrConfig,
   clearSonarrConfigCache,
   fetchSnapshot,
   sonarrExclusions,
   sonarrTags,
+  sonarrRootFolders,
+  sonarrQualityProfiles,
+  sonarrLookup,
+  addSeries,
   testSonarr,
   sonarrErrorInfo,
-  TAG_DEFAULT,
+  pushConfigProblems,
+  parseTagList,
+  TAGS_DEFAULT,
+  MARKER_TAG_DEFAULT,
+  withMarker,
   type SonarrConfig,
   type SonarrSnapshot,
 } from '../lib/sonarrApi';
-import { reconcileSeen, suppressedTvdbIds, type SeenRow } from '../lib/sonarrSeen';
+import {
+  planPushRun,
+  newlyHeldToRecord,
+  classifyAddError,
+  findOrphans,
+  sonarrValidationMessages,
+  type PushRow,
+  type PushStatus,
+  type PushCandidate,
+  type SkipReason,
+  type Orphan,
+} from '../lib/sonarrPush';
 import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
 
 /**
- * The Sonarr Custom List: which new seasonal series should be grabbed.
+ * Sonarr auto-add: which new seasonal series should be grabbed, added once each.
  *
- *   GET /api/sonarr/list  ->  [{ "title": "...", "tvdbId": 123456 }, ...]
+ *   POST /api/sonarr/push          -> add the pending candidates, at most `cap`
+ *   GET  /api/sonarr/push/preview  -> the same plan, nothing written
  *
- * **Exactly one route in this file is public: `GET /list`.** Every other route
- * carries `requireAuth` + `requireAdmin`. A public router that quietly grows
- * admin data is a real trap, so if you add a route here, say which of the two it
- * is before you write the handler.
+ * **Every route in this file requires `requireAuth` + `requireAdmin`.** There is
+ * no public route here at all - the one that existed, `GET /list`, was the
+ * Custom List Sonarr polled, and it went away with the list. If you add a route,
+ * it is admin-only unless you can argue otherwise in writing.
  *
- * The list is unauthenticated and a **bare array**, because that is the only
- * shape Sonarr's Custom List import accepts. It carries its own Monitor, Series
- * Type, root folder, quality profile and tags on the *Sonarr* side - so no
- * Sonarr **write** credentials exist anywhere in this codebase. Sonarr pulls
- * from us; we never push to it. The read-only client is `lib/sonarrApi.ts`.
+ * **We push; Sonarr does not pull.** The earlier design served a Custom List and
+ * let Sonarr's Import List Sync (~5 min, hardcoded - Sonarr#5927) reconcile
+ * against it. That is a *declarative set*, so anything deleted from Sonarr came
+ * straight back on the next poll, for as long as its season stayed in scope. The
+ * full argument, including why retiring entries from the list would have been
+ * worse rather than better, is in `lib/sonarrPush.ts`.
  *
- * **Sonarr re-reads this on a short, hardcoded interval - minutes, not hours.**
- * Import List Sync is a scheduled task (~5 min) and is NOT configurable the way
- * Radarr's List Update Interval is (Sonarr#5927, Sonarr#5011). An earlier
- * version of this comment said "every 6 hours", which was wrong and load-bearing
- * in two places: it made the rate-limit headroom look tighter than it is, and it
- * implied our own snapshot could notice a deletion before Sonarr re-added it.
- * It cannot - see `lib/sonarrSeen.ts`. Confirm the exact figure for the
- * installed version in Sonarr -> System -> Tasks before quoting one.
+ * **One add per series, ever.** A terminal `SonarrPush` row means we never look
+ * at that tvdbId again, so a deletion - by Maintainerr, by a human, for any
+ * reason - is permanent without us having to observe it. The only second attempt
+ * is a *different* tvdbId arriving from a corrected identity.
  *
  * The rationale, kept here because this is the one place it is all true at once:
  *
@@ -71,26 +87,27 @@ import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
  * construction, and requiring confirmation would discard the ~94% of TV the map
  * answers.
  *
- * **Why relations decide scope but never identity.** `lib/sonarrList.ts` drops an
- * entry with a `PREQUEL` or `PARENT` edge. `lib/remoteIdentity.ts` records that
+ * **Why relations decide scope but never identity.** `lib/sonarrSelect.ts` drops
+ * an entry with a `PREQUEL` or `PARENT` edge. `lib/remoteIdentity.ts` records that
  * an `isRelation` guard was tried for *matching* and was wrong, because mapping a
  * sequel onto its parent is correct there. Both are right: that one asks "is this
  * the same series", this one asks "do we choose to auto-add it". A false skip
  * here costs nothing - anyone can still request the show in Seerr.
  *
- * **Why deletions suppress.** If a series is deleted from Sonarr without an
- * Import List Exclusion, this list re-proposes it and Sonarr re-grabs it - every
- * few minutes, forever. `lib/sonarrSeen.ts` observes "we proposed it, Sonarr
- * held it, it is gone" and stops proposing. That cannot beat the poll, so
- * Sonarr's own exclusion stays the primary defence (Maintainerr's
- * `listExclusions` is mandatory); this bounds an unbounded loop to one extra
- * grab.
+ * **Why we do not delete, and never will from here.** Cleanup is Maintainerr's,
+ * decided from Tautulli watch data we do not have. Two systems that can both
+ * delete, neither knowing why the other did, is a bad place to end up. Our
+ * contribution is simply never re-adding what it removed, which the terminal row
+ * gives us for free. Maintainerr writing a Sonarr Import List Exclusion is now
+ * belt-and-braces rather than mandatory - it was mandatory only because the list
+ * would otherwise have re-added things.
  *
  * **This route must never trigger a cold AniList fetch.** It reads `SeasonCache`
  * and nothing else, and it serves a stale row happily. AniList's ~30/min budget
- * is shared with every viewer and the whole house's IP, and Sonarr re-reads this
- * every few minutes - a poll that could miss-and-fetch is how that budget gets
- * burned. The identity sweep follows the same rule.
+ * is shared with every viewer and the whole house's IP. Less pressing than when
+ * Sonarr polled this every few minutes, but the rule is unchanged: the identity
+ * sweep follows it too, and a scheduled job that can miss-and-fetch is exactly
+ * how that budget gets burned unattended.
  */
 
 const router = Router();
@@ -98,29 +115,37 @@ const router = Router();
 /** Where the last snapshot's outcome is persisted, for the admin status line. */
 const SNAPSHOT_KEY = 'sonarrSnapshotStatus';
 
-/** Master switch: is the list actually served to Sonarr? */
-const PUBLISH_KEY = 'sonarrListEnabled';
+/** Master switch: may we actually add series to Sonarr? */
+const PUSH_KEY = 'sonarrPushEnabled';
+
+/**
+ * How many series one run may add. A blast radius, not a rate limit.
+ *
+ * Nothing searches on add, so a large run costs indexers nothing; what the cap
+ * bounds is a misconfiguration. The overflow is *deferred and reported*, never
+ * dropped - `planPushRun` returns it and both the preview and the run response
+ * carry the count.
+ */
+const DEFAULT_CAP = 10;
 
 /**
  * **Off unless explicitly turned on**, and the default is the point.
  *
  * Everything else here is reviewable before it acts; this is the one thing that
- * causes downloads, so it fails closed. A fresh deployment, a restored backup
- * and a wiped `AppConfig` all serve an empty list rather than quietly handing
- * Sonarr forty series to grab.
+ * writes to Sonarr, so it fails closed. A fresh deployment, a restored backup
+ * and a wiped `AppConfig` all add nothing.
  *
- * Paused means the list is **empty**, not erroring: an empty Custom List adds
- * nothing and Sonarr logs nothing, whereas a 503 every few minutes is noise
- * that trains you to ignore the log. It is inert only because Clean Library
- * Level stays Disabled - if that is ever changed, an empty list starts
- * unmonitoring things, and this decision has to be revisited.
+ * Deliberately a NEW key rather than a rename of the Custom List era's
+ * `sonarrListEnabled`: reusing it would have inherited an existing `true` and
+ * turned a list that merely *offered* series into a job that *adds* them, on the
+ * first restart after deploy, with nobody having chosen that.
  *
- * `?explain=1` and `/report` deliberately ignore this and keep showing the full
- * proposal, because reviewing what *would* be served while nothing is being
- * served is exactly what the pause is for.
+ * `/push/preview` and `/report` ignore this and keep showing the full plan,
+ * because reviewing what *would* happen while nothing happens is what the pause
+ * is for.
  */
-async function listEnabled(): Promise<boolean> {
-  const row = await prisma.appConfig.findUnique({ where: { key: PUBLISH_KEY } });
+async function pushEnabled(): Promise<boolean> {
+  const row = await prisma.appConfig.findUnique({ where: { key: PUSH_KEY } });
   return row?.value === 'true';
 }
 
@@ -147,9 +172,9 @@ interface SnapshotStatus {
   heldIds?: number[];
   /** tvdbIds on Sonarr's Import List Exclusions. */
   excludedIds?: number[];
-  /** Held tvdbIds carrying our import-list tag. */
+  /** Held tvdbIds carrying our tag - i.e. ones we added. */
   taggedIds?: number[];
-  orphans?: ReturnType<typeof reconcileSeen>['orphans'];
+  orphans?: Orphan[];
 }
 
 /**
@@ -201,36 +226,81 @@ async function loadIncludes(): Promise<Map<number, ForcedInclude>> {
   );
 }
 
-async function loadSeen(): Promise<SeenRow[]> {
-  const rows = await prisma.sonarrSeen.findMany();
+async function loadPushRows(): Promise<PushRow[]> {
+  const rows = await prisma.sonarrPush.findMany();
   return rows.map((r) => ({
     tvdbId: r.tvdbId,
     anilistId: r.anilistId ?? null,
     title: r.title ?? '',
-    firstHeldAt: r.firstHeldAt ?? null,
-    lastHeldAt: r.lastHeldAt ?? null,
-    goneAt: r.goneAt ?? null,
-    taggedByUs: !!r.taggedByUs,
+    status: r.status as PushStatus,
+    sonarrSeriesId: r.sonarrSeriesId ?? null,
+    pushedAt: r.pushedAt ?? null,
+    attempts: r.attempts ?? 0,
+    lastAttemptAt: r.lastAttemptAt ?? null,
+    lastError: r.lastError ?? null,
   }));
+}
+
+async function recordPush(row: PushRow): Promise<void> {
+  const data = {
+    anilistId: row.anilistId,
+    title: row.title,
+    status: row.status,
+    sonarrSeriesId: row.sonarrSeriesId,
+    pushedAt: row.pushedAt,
+    attempts: row.attempts,
+    lastAttemptAt: row.lastAttemptAt,
+    lastError: row.lastError,
+  };
+  await prisma.sonarrPush.upsert({
+    where: { tvdbId: row.tvdbId },
+    update: data,
+    create: { tvdbId: row.tvdbId, ...data },
+  });
+}
+
+/**
+ * Our configured tag labels, resolved to Sonarr's numeric ids.
+ *
+ * Sonarr's add endpoint takes tag *ids*; creating a missing tag would be a
+ * second write verb, so labels have to exist there already. A label that does
+ * not resolve is reported as `missing` and **blocks the push** rather than being
+ * quietly dropped: an untagged series is invisible to Maintainerr's scoping, so
+ * the failure would be silent and only discovered by a cleanup that never ran.
+ */
+function resolveTagIds(
+  labels: string[],
+  tags: { id: number; label: string }[] | null
+): { ids: number[]; missing: string[] } {
+  if (!tags) return { ids: [], missing: [] };   // could not ask; not "all missing"
+  const byLabel = new Map(tags.map((t) => [t.label.toLowerCase(), t.id]));
+  const ids: number[] = [];
+  const missing: string[] = [];
+  for (const label of labels) {
+    const id = byLabel.get(label.toLowerCase());
+    if (id === undefined) missing.push(label);
+    else ids.push(id);
+  }
+  return { ids, missing };
 }
 
 interface Assembled {
   refs: SeasonRef[];
   perSeason: Array<{ season: string; year: number; cached: number }>;
   entries: unknown[];
-  items: SonarrListItem[];
+  items: SonarrPushItem[];
   rejected: ReturnType<typeof selectForSonarrDetailed>['rejected'];
-  /** tvdbId -> anilistId for everything proposed, for the snapshot to key on. */
+  /** tvdbId -> anilistId for every candidate, so a push records what it was for. */
   proposedBy: Map<number, number>;
-  seen: SeenRow[];
+  pushes: PushRow[];
 }
 
 /**
- * Everything both `/list` and `/report` need, computed once.
+ * Everything `/push`, `/push/preview` and `/report` need, computed once.
  *
- * Sharing this is the point: two assemblies of "what would we propose" would
- * eventually disagree, and the one the page showed would not be the one Sonarr
- * fetched.
+ * Sharing this is the point: two assemblies of "what would we add" would
+ * eventually disagree, and the one the page showed would not be the one that
+ * ran.
  */
 async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
   const entries: unknown[] = [];
@@ -241,17 +311,12 @@ async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
     entries.push(...rows);
   }
 
-  const [forceInclude, seen] = await Promise.all([loadIncludes(), loadSeen()]);
-  const suppressed = suppressedTvdbIds(
-    seen,
-    new Set([...forceInclude.values()].map((f) => f.tvdbId))
-  );
+  const [forceInclude, pushes] = await Promise.all([loadIncludes(), loadPushRows()]);
   const { items, rejected } = selectForSonarrDetailed(entries, resolveIdentity, now, {
-    suppressed,
     forceInclude,
   });
 
-  // Which AniList entry produced each proposed tvdbId. The snapshot stores it so
+  // Which AniList entry produced each candidate tvdbId. Stored with the push so
   // an identity corrected later is visible as an orphan rather than as a second
   // series nobody can explain.
   const proposedBy = new Map<number, number>();
@@ -266,7 +331,7 @@ async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
     if (aid !== undefined) proposedBy.set(it.tvdbId, aid);
   }
 
-  return { refs, perSeason, entries, items, rejected, proposedBy, seen };
+  return { refs, perSeason, entries, items, rejected, proposedBy, pushes };
 }
 
 /** anilistId -> the tvdbId it resolves to *now*, for orphan detection. */
@@ -282,6 +347,17 @@ function currentIdentityMap(entries: unknown[]): Map<number, number> {
   return out;
 }
 
+/** Oldest / newest of a nullable date list, as ISO, or null when there are none. */
+function earliest(dates: (Date | null)[]): string | null {
+  const t = dates.filter((d): d is Date => !!d).map((d) => d.getTime());
+  return t.length ? new Date(Math.min(...t)).toISOString() : null;
+}
+
+function latest(dates: (Date | null)[]): string | null {
+  const t = dates.filter((d): d is Date => !!d).map((d) => d.getTime());
+  return t.length ? new Date(Math.max(...t)).toISOString() : null;
+}
+
 async function readSnapshotStatus(): Promise<SnapshotStatus | null> {
   const row = await prisma.appConfig.findUnique({ where: { key: SNAPSHOT_KEY } });
   if (!row?.value) return null;
@@ -293,15 +369,23 @@ async function readSnapshotStatus(): Promise<SnapshotStatus | null> {
 }
 
 /**
- * Read Sonarr once and fold the result into `SonarrSeen`.
+ * Read Sonarr once and cache what it holds.
  *
  * Exported because two callers need it: the hourly timer in `index.ts` and the
  * admin's *Run snapshot now* button - the same shape as the identity sweep's
  * `triggerSweep`.
  *
- * Everything that decides whether a row changes lives in `reconcileSeen`, which
- * is pure and unit-tested. In particular this function does NOT decide that an
- * empty library means everything was deleted; it just hands over what it got.
+ * **This no longer decides anything.** Under the Custom List it drove the
+ * suppression that was supposed to stop deleted series being re-added; that
+ * mechanism is gone, because a terminal `SonarrPush` row does the job without
+ * needing to catch a deletion at all. What is left is a cache and a display: the
+ * held set that keeps `/push` from re-adding what Sonarr already has, the
+ * exclusions, and the tag counts.
+ *
+ * **An empty or failed read is still never treated as "everything was deleted".**
+ * It records nothing rather than overwriting a good held set with an empty one -
+ * which would make `/report` show the whole library as "will be added" and let
+ * one bad read turn into a burst of duplicate adds.
  */
 export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
   const now = new Date();
@@ -315,53 +399,45 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
     assemble(seasonsForSonarr(now), now),
     snapshot.ok ? sonarrTags(cfg) : Promise.resolve(null),
   ]);
-  const tagId = tags?.find((t) => t.label.toLowerCase() === cfg.tag.toLowerCase())?.id ?? null;
+  // **The marker tag only**, never the whole applied set. `anime` is applied too
+  // and sits on 692 series here, so counting any of our tags reported shows the
+  // owner had for years as ours - measured on the live instance 2026-08-10.
+  const markerId = resolveTagIds([cfg.markerTag], tags).ids[0] ?? null;
 
-  const result = reconcileSeen({
-    prior: assembled.seen,
-    snapshot,
-    proposed: assembled.proposedBy,
-    currentIdentity: currentIdentityMap(assembled.entries),
-    tagId,
-    now,
-  });
+  // A read that returned nothing is "could not ask", not "the library is empty".
+  // The precedent is real: an analysis script written during this feature's
+  // design read the wrong key, got an empty set, and confidently reported all 39
+  // candidates as new. Same bug, and here it would cause 39 duplicate adds.
+  const skipped =
+    snapshot.ok && snapshot.series.length === 0
+      ? 'snapshot returned an empty library - treated as "could not ask", never as mass deletion'
+      : undefined;
+  const trusted = snapshot.ok && !skipped;
 
-  for (const row of result.upserts) {
-    await prisma.sonarrSeen.upsert({
-      where: { tvdbId: row.tvdbId },
-      update: { ...row },
-      create: { ...row },
-    });
-  }
-
-  if (result.suppressed.length) {
-    console.log(
-      `[sonarr] ${result.suppressed.length} series deleted from Sonarr - no longer proposing: ` +
-        result.suppressed.join(', ')
-    );
-  }
+  const heldIds = new Set(snapshot.series.map((s) => s.tvdbId));
+  const orphans = trusted
+    ? findOrphans(assembled.pushes, currentIdentityMap(assembled.entries), heldIds)
+    : [];
 
   // Exclusions are read here rather than in `/report` for the same reason the
   // ids are cached: the report must not make a page load wait on Sonarr.
-  const exclusions = snapshot.ok ? await sonarrExclusions(cfg) : null;
+  const exclusions = trusted ? await sonarrExclusions(cfg) : null;
 
   const status: SnapshotStatus = {
     at: now.toISOString(),
-    ok: snapshot.ok && !result.skipped,
+    ok: trusted,
     seriesCount: snapshot.series.length,
     ...(snapshot.error ? { error: snapshot.error } : {}),
-    ...(result.skipped ? { skipped: result.skipped } : {}),
-    // Only recorded on a run we trust. A failed or empty read must not
-    // overwrite a good set with an empty one - the report would then show
-    // everything as "will be added", which is the same class of lie the
-    // suppression guards exist to prevent.
-    ...(snapshot.ok && !result.skipped
+    ...(skipped ? { skipped } : {}),
+    ...(trusted
       ? {
-          heldIds: snapshot.series.map((s) => s.tvdbId),
+          heldIds: [...heldIds],
           taggedIds:
-            tagId === null ? [] : snapshot.series.filter((s) => s.tags.includes(tagId)).map((s) => s.tvdbId),
+            markerId === null
+              ? []
+              : snapshot.series.filter((s) => s.tags.includes(markerId)).map((s) => s.tvdbId),
           ...(exclusions ? { excludedIds: exclusions.map((e) => e.tvdbId) } : {}),
-          orphans: result.orphans,
+          orphans,
         }
       : {}),
   };
@@ -373,7 +449,7 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
   return status;
 }
 
-/** Both or neither, and both valid. Shared by `/list` and `/report`. */
+/** Both or neither, and both valid. Shared by `/push`, `/push/preview` and `/report`. */
 function seasonOverride(
   season: string | undefined,
   year: string | undefined
@@ -388,65 +464,8 @@ function seasonOverride(
   return { refs: null };
 }
 
-// ---------------------------------------------------------------------------
-// PUBLIC - the only one. Sonarr reads this unattended.
-// ---------------------------------------------------------------------------
-router.get('/list', async (req, res) => {
-  const { season, year } = req.query as { season?: string; year?: string };
-  const override = seasonOverride(season, year);
-  if ('error' in override) {
-    return res.status(400).json({ error: override.error, code: 'BAD_REQUEST' });
-  }
-
-  // Before the community map has loaded, every identity lookup returns "no id"
-  // for the wrong reason - not "unmapped" but "not read yet" - so a poll in the
-  // seconds after a restart would hand Sonarr a truncated list it has no way to
-  // recognise as truncated. 503 makes a failed poll visible in Sonarr's log
-  // instead of looking authoritative. Same shape as `routes/anime.ts` uses when
-  // AniList is unavailable.
-  if (!identityReady()) {
-    res.setHeader('Retry-After', '60');
-    return res.status(503).json({
-      error: 'Identity data is still loading; try again shortly',
-      code: 'UPSTREAM_ERROR',
-    });
-  }
-
-  try {
-    const now = new Date();
-
-    // Paused: answer the empty list immediately, without even assembling one.
-    // `explain` still falls through, so the admin page can review a paused list.
-    if (!req.query.explain && !(await listEnabled())) {
-      return res.json([]);
-    }
-
-    const a = await assemble(override.refs ?? seasonsForSonarr(now), now);
-
-    // `?explain=1` is the filter breakdown with no Sonarr data in it, kept
-    // public because it describes only our own decision. The admin `/report`
-    // below is the same computation plus what Sonarr actually did.
-    if (req.query.explain) {
-      const counts: Record<string, number> = {};
-      for (const r of a.rejected) counts[r.reason] = (counts[r.reason] ?? 0) + 1;
-      return res.json({
-        seasons: a.perSeason,
-        withinDays: DEFAULT_WITHIN_DAYS,
-        proposed: a.items.map((i) => describeProposed(i, a.entries)),
-        rejected: a.rejected.map((r) => ({ ...describe(r.entry), reason: r.reason })),
-        counts: { proposed: a.items.length, rejected: counts },
-      });
-    }
-
-    return res.json(a.items);
-  } catch (err) {
-    console.error('[sonarr] list failed', err);
-    return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
-  }
-});
-
 /**
- * Fields the admin page reads that `sonarrList.ts` does not filter on, so they
+ * Fields the admin page reads that `sonarrSelect.ts` does not filter on, so they
  * are not in `SonarrCandidate`: the episode count sizes the download estimate,
  * the cover and season label the rows, and the relation nodes answer "do I
  * already own the previous season of this".
@@ -512,7 +531,7 @@ function describeParent(e: CacheEntry, held: Set<number>) {
   return null;
 }
 
-function describeProposed(item: SonarrListItem, entries: unknown[]) {
+function describeProposed(item: SonarrPushItem, entries: unknown[]) {
   const e = entries.find((raw) => {
     const c = raw as CacheEntry;
     const t = c?.title?.english || c?.title?.romaji || c?.title?.native;
@@ -521,14 +540,298 @@ function describeProposed(item: SonarrListItem, entries: unknown[]) {
   return {
     ...item,
     ...(e ? describe(e) : {}),
+    // **After the spread, both of them.** `describe()` re-resolves identity and
+    // returns null when it has no id - which is exactly the case for a
+    // force-included entry, whose whole point is carrying an id the resolver
+    // does not have. Letting that overwrite the real one blanked the id in the
+    // table and would now hand `null` to the push.
+    tvdbId: item.tvdbId,
     title: item.title,
     episodes: e?.episodes ?? null,
   };
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN - everything below requires the admin account.
+// ADMIN - every route below requires the admin account. There are no others.
 // ---------------------------------------------------------------------------
+
+interface PushPlan {
+  enabled: boolean;
+  cap: number;
+  /** Reasons a push cannot run at all. Empty means it can. */
+  problems: string[];
+  toPush: Array<ReturnType<typeof describeProposed>>;
+  deferred: Array<ReturnType<typeof describeProposed>>;
+  skipped: Array<ReturnType<typeof describeProposed> & { reason: string }>;
+  /**
+   * The same `toPush`, unadorned. The loop iterates this rather than the
+   * described rows so that what gets added is the plan's own decision, not
+   * whatever survived being reshaped for display.
+   */
+  raw: PushCandidate[];
+  /** The skips, unadorned, so `alreadyHeld` can be recorded as terminal. */
+  skippedRaw: Array<{ candidate: PushCandidate; reason: SkipReason }>;
+  /** tvdbIds that already have a stored row, so recording never rewrites one. */
+  priorIds: number[];
+}
+
+/**
+ * What a push would do, computed without touching Sonarr.
+ *
+ * Shared by `/push/preview` and `/push` so the dry run and the run cannot
+ * disagree - the same mistake as having two assemblies of the candidate set,
+ * one shown and one executed.
+ */
+async function buildPushPlan(refs: SeasonRef[], now: Date, cap: number): Promise<PushPlan> {
+  const cfg = await getSonarrConfig();
+  const [a, status, enabled] = await Promise.all([
+    assemble(refs, now),
+    readSnapshotStatus(),
+    pushEnabled(),
+  ]);
+
+  const observed = !!status?.ok && Array.isArray(status?.heldIds);
+  const held = new Set(status?.heldIds ?? []);
+  const excluded = new Set(status?.excludedIds ?? []);
+  const priors = new Map(a.pushes.map((p) => [p.tvdbId, p]));
+
+  const candidates = a.items.map((i) => ({
+    tvdbId: i.tvdbId,
+    anilistId: a.proposedBy.get(i.tvdbId) ?? null,
+    title: i.title,
+  }));
+  const plan = planPushRun(candidates, priors, held, excluded, cap);
+
+  const problems = pushConfigProblems(cfg);
+  // **Refuse to add when we cannot tell what Sonarr already holds.** Without the
+  // held set every series in the library looks like a new candidate. Sonarr
+  // would answer 400 "already added" and we would record that correctly, so this
+  // is a noise-and-writes guard rather than a correctness one - but "unknown is
+  // not the same as absent" is the rule everywhere else in this codebase, and a
+  // snapshot is one button away.
+  //
+  // Caveat worth knowing: a genuinely empty Sonarr reads as "could not ask" (see
+  // `runSonarrSnapshot`), so a brand new install would need that guard revisited
+  // before the first push could run.
+  if (!observed) problems.push('no trusted Sonarr snapshot yet - run a snapshot first');
+  if (!identityReady()) problems.push('identity data is still loading');
+
+  const describeOne = (c: PushCandidate) => describeProposed({ tvdbId: c.tvdbId, title: c.title }, a.entries);
+  return {
+    enabled,
+    cap,
+    problems,
+    toPush: plan.toPush.map(describeOne),
+    deferred: plan.deferred.map(describeOne),
+    skipped: plan.skipped.map((s) => ({ ...describeOne(s.candidate), reason: s.reason })),
+    raw: plan.toPush,
+    skippedRaw: plan.skipped,
+    priorIds: [...priors.keys()],
+  };
+}
+
+function capFrom(raw: unknown): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 && n <= 200 ? n : DEFAULT_CAP;
+}
+
+/**
+ * The dry run. **Writes nothing, to us or to Sonarr.**
+ *
+ * Deliberately does not perform the TVDB lookup either, even though that is a
+ * read: the lookup is one round trip per candidate and this is a page load. A
+ * bad id therefore shows up as a `lookupFailed` row after a real push rather
+ * than here - which is why that status is retryable and visible on the page.
+ */
+router.get('/push/preview', requireAuth, requireAdmin, async (req, res) => {
+  const { season, year } = req.query as { season?: string; year?: string };
+  const override = seasonOverride(season, year);
+  if ('error' in override) {
+    return res.status(400).json({ error: override.error, code: 'BAD_REQUEST' });
+  }
+  try {
+    const now = new Date();
+    const plan = await buildPushPlan(override.refs ?? seasonsForSonarr(now), now, capFrom(req.query.cap));
+    // The three internal fields are the run loop's input, not the page's.
+    const { raw, skippedRaw, priorIds, ...shown } = plan;
+    void raw; void skippedRaw; void priorIds;
+    return res.json(shown);
+  } catch (err) {
+    console.error('[sonarr] push preview failed', err);
+    return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Add the pending candidates to Sonarr. **The only thing here that writes.**
+ *
+ * Gated three ways, and the order matters: the master switch, then the config
+ * completeness check, then the tag resolution. Each refuses before a single
+ * `POST /api/v3/series` goes out, so a misconfiguration cannot half-run.
+ *
+ * One series per iteration, sequentially. Nothing here needs to be fast - it is
+ * a scheduled job and an admin button - and a loop that fails on row 4 has
+ * already committed rows 1 to 3, which the per-row record makes recoverable.
+ */
+export interface PushRunResult {
+  ran: boolean;
+  reason?: string;
+  pushed: number;
+  failed: number;
+  deferred: number;
+  results: Array<{ tvdbId: number; title: string; status: PushStatus; detail?: string }>;
+  plan: Omit<PushPlan, 'raw' | 'skippedRaw' | 'priorIds'>;
+}
+
+/**
+ * Do the adds. Exported because two callers need it: the daily timer in
+ * `index.ts` and the admin's *Push now* button - the same shape as
+ * `runSonarrSnapshot`.
+ *
+ * **Reads the master switch itself.** The caller must not pre-check it, because
+ * then there would be two places that decide whether this writes and only one of
+ * them would be tested.
+ */
+export async function runScheduledPush(cap: number = DEFAULT_CAP): Promise<PushRunResult> {
+  const now = new Date();
+  const cfg = await getSonarrConfig();
+  const plan = await buildPushPlan(seasonsForSonarr(now), now, cap);
+  const { raw, skippedRaw, priorIds, ...shown } = plan;
+  const refuse = (reason: string): PushRunResult => ({
+    ran: false,
+    reason,
+    pushed: 0,
+    failed: 0,
+    deferred: plan.deferred.length,
+    results: [],
+    plan: shown,
+  });
+
+  // Paused is a normal answer, not an error: the page shows it as a state.
+  if (!plan.enabled) return refuse('paused');
+  if (plan.problems.length) return refuse(plan.problems.join('; '));
+
+  const tags = await sonarrTags(cfg!);
+  if (!tags) return refuse('could not read tags from Sonarr');
+  const { ids: tagIds, missing } = resolveTagIds(cfg!.tags, tags);
+  // Refusing outright rather than adding untagged: an untagged series is
+  // invisible to Maintainerr's scoping, so the mistake would surface months
+  // later as a cleanup that quietly did nothing.
+  if (missing.length) return refuse(`create these tags in Sonarr first: ${missing.join(', ')}`);
+
+  const results: PushRunResult['results'] = [];
+  let pushed = 0;
+  let failed = 0;
+
+  // **Record the ones Sonarr already holds, before adding anything.**
+  //
+  // Without this they are re-decided from the live library on every run, so
+  // deleting a series you owned before this feature existed would turn it into
+  // a fresh candidate and we would add it back - the exact loop the terminal row
+  // exists to prevent, surviving in the one place it was easy to overlook.
+  // Caught by running a real push twice against the live instance, not by any
+  // test: with 36 held series and 3 candidates, nothing on screen looked wrong.
+  //
+  // Deliberately after the gates above, so a paused or misconfigured run still
+  // writes absolutely nothing.
+  for (const c of newlyHeldToRecord(plan.skippedRaw, new Set(plan.priorIds))) {
+    await recordPush({
+      tvdbId: c.tvdbId,
+      anilistId: c.anilistId,
+      title: c.title,
+      status: 'alreadyHeld',
+      sonarrSeriesId: null,
+      pushedAt: null,
+      attempts: 0,
+      lastAttemptAt: now,
+      lastError: null,
+    });
+  }
+
+  for (const { tvdbId, title, anilistId } of plan.raw) {
+      const base = {
+        tvdbId,
+        anilistId,
+        title,
+        sonarrSeriesId: null as number | null,
+        pushedAt: null as Date | null,
+        attempts: 1,
+        lastAttemptAt: now,
+        lastError: null as string | null,
+      };
+
+      let lookup: unknown | null = null;
+      try {
+        lookup = await sonarrLookup(cfg!, tvdbId);
+      } catch (err) {
+        // A transport failure is not "Sonarr does not know this id" - recording
+        // it as `lookupFailed` would be a lie about the id. Both are retryable,
+        // but only one of them means someone should look at the match.
+        await recordPush({ ...base, status: 'failed', lastError: `lookup: ${sonarrErrorInfo(err)}` });
+        results.push({ tvdbId, title, status: 'failed', detail: 'lookup failed' });
+        failed++;
+        continue;
+      }
+
+      if (!lookup) {
+        await recordPush({
+          ...base,
+          status: 'lookupFailed',
+          lastError: 'Sonarr does not know this TVDB id',
+        });
+        results.push({ tvdbId, title, status: 'lookupFailed', detail: 'Sonarr does not know this TVDB id' });
+        failed++;
+        continue;
+      }
+
+      const add = await addSeries(cfg!, lookup, tagIds);
+      if (add.ok) {
+        await recordPush({ ...base, status: 'pushed', sonarrSeriesId: add.seriesId ?? null, pushedAt: now });
+        results.push({ tvdbId, title, status: 'pushed' });
+        pushed++;
+        continue;
+      }
+
+      const kind = classifyAddError(add);
+      const detail = sonarrValidationMessages(add.body)[0] ?? add.error ?? 'unknown error';
+      if (kind === 'alreadyExists') {
+        // Terminal, NOT a failure. Our held set comes from a cached snapshot, so
+        // a series added between snapshots lands here; recording it as failed
+        // would leave it retryable and it would be retried on every run forever.
+        await recordPush({ ...base, status: 'alreadyHeld', lastError: detail });
+        results.push({ tvdbId, title, status: 'alreadyHeld', detail });
+        continue;
+      }
+      await recordPush({ ...base, status: 'failed', lastError: detail });
+      results.push({ tvdbId, title, status: 'failed', detail });
+      failed++;
+    }
+
+  if (pushed || failed) {
+    console.log(
+      `[sonarr] push: ${pushed} added, ${failed} failed, ${plan.deferred.length} deferred by the cap of ${cap}`
+    );
+  }
+  return {
+    ran: true,
+    pushed,
+    failed,
+    // Never silently truncated: whatever the cap held back is reported here so
+    // "nothing left" and "10 left, come back tomorrow" cannot look the same.
+    deferred: plan.deferred.length,
+    results,
+    plan: shown,
+  };
+}
+
+router.post('/push', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    return res.json(await runScheduledPush(capFrom(req.body?.cap)));
+  } catch (err) {
+    console.error('[sonarr] push failed', err);
+    return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+  }
+});
 
 /**
  * Everything the admin page needs, in one payload.
@@ -551,7 +854,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
     const cfg = await getSonarrConfig();
     const a = await assemble(override.refs ?? seasonsForSonarr(now), now);
     const status = await readSnapshotStatus();
-    const published = await listEnabled();
+    const published = await pushEnabled();
 
     // Read what the last snapshot observed - this path makes NO Sonarr calls.
     // It used to fetch `/api/v3/series` on every page load, which on this
@@ -570,9 +873,34 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
     const counts: Record<string, number> = {};
     for (const r of a.rejected) counts[r.reason] = (counts[r.reason] ?? 0) + 1;
 
+    // Our own record beats the library, and it has to: a series we pushed and
+    // that has since been deleted is `pushedAlready`, not `willBeAdded`. Reading
+    // the library alone would show it as pending forever, which is precisely the
+    // confusion the terminal row exists to remove.
+    //
+    // **"We added this" has two sources, and it needs both.**
+    //
+    // `SonarrPush` is the precise one - a row exists only because Sonarr
+    // answered 201. But it lives in one database, and a database does not follow
+    // you from dev to production or survive a restore from an old backup. The
+    // marker tag lives in Sonarr beside the series, so it answers the same
+    // question when the row is gone.
+    //
+    // It must be the MARKER tag alone. Asking "does it carry any of our tags"
+    // was wrong for a measured reason: we also apply `anime`, and `anime` is on
+    // **692 series** here, so two shows the owner had for years rendered as
+    // added by us - the page claiming credit for someone else's library.
+    const pushedBy = new Map(a.pushes.map((p) => [p.tvdbId, p]));
     const state = (tvdbId: number) => {
+      const prior = pushedBy.get(tvdbId);
+      if (prior?.status === 'pushed') return 'pushedAlready';
+      if (prior?.status === 'lookupFailed') return 'lookupFailed';
+      if (prior?.status === 'failed') return 'failed';
       if (!observed) return 'unknown';
-      if (heldIds.has(tvdbId)) return taggedIds.has(tvdbId) ? 'addedByUs' : 'heldAlready';
+      // Marker-tagged wins over "already held": both are held, but one of them
+      // we (or a deliberate hand-tag) put there.
+      if (taggedIds.has(tvdbId)) return 'addedByUs';
+      if (heldIds.has(tvdbId) || prior?.status === 'alreadyHeld') return 'heldAlready';
       if (excludedIds.has(tvdbId)) return 'excludedInSonarr';
       return 'willBeAdded';
     };
@@ -584,8 +912,21 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       config: {
         configured: !!cfg,
         url: cfg?.url ?? '',
-        tag: cfg?.tag ?? TAG_DEFAULT,
-        tagHeldCount: taggedIds.size,
+        tags: cfg?.tags ?? TAGS_DEFAULT,
+        markerTag: cfg?.markerTag ?? MARKER_TAG_DEFAULT,
+        // "Of the series we have a RECORD of adding, how many carry the marker?"
+        // Anything less than all of them means the tag is not being applied, and
+        // Maintainerr's scoping will silently cover less than you think - the
+        // one failure that only shows up months later as a cleanup that did
+        // nothing. Deliberately not "how many tagged series exist": that is 692
+        // for `anime` and says nothing about us.
+        taggedOfOurs: a.pushes.filter((p) => p.status === 'pushed' && taggedIds.has(p.tvdbId)).length,
+        rootFolderPath: cfg?.rootFolderPath ?? '',
+        qualityProfileId: cfg?.qualityProfileId ?? 0,
+        seriesType: cfg?.seriesType ?? 'standard',
+        // What stops a push before it starts. Shown as setup steps rather than
+        // discovered by pressing the button and reading an error.
+        problems: pushConfigProblems(cfg),
       },
       snapshot: status,
       sonarr: { observed, held: heldIds.size, excluded: excludedIds.size, at: status?.at ?? null },
@@ -599,14 +940,51 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         // the page renders nothing rather than an empty label.
         parent: r.reason === 'notFirstSeason' ? describeParent(r.entry, heldIds) : null,
       })),
-      suppressed: a.seen
-        .filter((s) => s.goneAt !== null)
-        .map((s) => ({
-          tvdbId: s.tvdbId,
-          anilistId: s.anilistId,
-          title: s.title,
-          lastHeldAt: s.lastHeldAt,
-          goneAt: s.goneAt,
+      // What has actually happened, from the rows already loaded above.
+      //
+      // **`pushedAt` means we added it, and nothing else does.** The Custom List
+      // era reported `firstHeldAt`, which was "when a snapshot first saw it" -
+      // on this deployment all 36 rows shared one instant, the moment the first
+      // snapshot ran, for series that had been in the library for months.
+      // Presenting that as "added" was a confident, plausible lie about
+      // someone's own library, and a `pushed` row cannot make it: it exists only
+      // because `POST /api/v3/series` returned 201 to us.
+      history: {
+        // Series Sonarr says are ours, whoever recorded it. The union is the
+        // honest headline precisely because neither source is complete: the
+        // record misses anything added before this database existed, and the tag
+        // misses anything since deleted (a series that is gone carries no tag).
+        ours: new Set([
+          ...a.pushes.filter((p) => p.status === 'pushed').map((p) => p.tvdbId),
+          ...taggedIds,
+        ]).size,
+        /** Marker-tagged and still held. Survives losing the database. */
+        tagged: taggedIds.size,
+        pushed: a.pushes.filter((p) => p.status === 'pushed').length,
+        // Distinct from `pushed`: these were in Sonarr before we got there. The
+        // two are separated on purpose so "we added 36 series" can never be
+        // rendered from a library we did not build.
+        alreadyHeld: a.pushes.filter((p) => p.status === 'alreadyHeld').length,
+        needsAttention: a.pushes.filter((p) => p.status === 'lookupFailed' || p.status === 'failed').length,
+        firstPushAt: earliest(a.pushes.map((p) => p.pushedAt)),
+        lastPushAt: latest(a.pushes.map((p) => p.pushedAt)),
+      },
+      // Everything we tried, newest attempt first. `lookupFailed` and `failed`
+      // are the actionable ones - both mean nothing was added and both will be
+      // retried, so a row that persists here is a matching problem to fix.
+      pushes: a.pushes
+        .slice()
+        .sort((x, y) => (y.lastAttemptAt?.getTime() ?? 0) - (x.lastAttemptAt?.getTime() ?? 0))
+        .map((p) => ({
+          tvdbId: p.tvdbId,
+          anilistId: p.anilistId,
+          title: p.title,
+          status: p.status,
+          sonarrSeriesId: p.sonarrSeriesId,
+          pushedAt: p.pushedAt,
+          attempts: p.attempts,
+          lastAttemptAt: p.lastAttemptAt,
+          lastError: p.lastError,
         })),
       orphans,
       counts: { proposed: a.items.length, rejected: counts },
@@ -620,21 +998,22 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
 /**
  * The master switch. `{ enabled: boolean }`.
  *
- * Turning it on is the moment this feature starts costing disk, so it is its
- * own explicit action rather than a side effect of saving credentials.
+ * Turning it on is the moment this feature starts writing to Sonarr and costing
+ * disk, so it is its own explicit action rather than a side effect of saving
+ * credentials.
  */
-router.put('/publish', requireAuth, requireAdmin, async (req, res) => {
+router.put('/enabled', requireAuth, requireAdmin, async (req, res) => {
   const enabled = req.body?.enabled;
   if (typeof enabled !== 'boolean') {
     return res.status(400).json({ error: 'enabled must be a boolean', code: 'BAD_REQUEST' });
   }
   const value = enabled ? 'true' : 'false';
   await prisma.appConfig.upsert({
-    where: { key: PUBLISH_KEY },
+    where: { key: PUSH_KEY },
     update: { value },
-    create: { key: PUBLISH_KEY, value },
+    create: { key: PUSH_KEY, value },
   });
-  console.log(`[sonarr] list publishing ${enabled ? 'ENABLED' : 'paused'}`);
+  console.log(`[sonarr] pushing ${enabled ? 'ENABLED' : 'paused'}`);
   return res.json({ enabled });
 });
 
@@ -719,30 +1098,86 @@ router.delete('/include/:anilistId', requireAuth, requireAdmin, async (req, res)
   return res.json({ ok: true });
 });
 
-/** Admin: read config - the URL and tag only; the key is never sent back. */
+/** Admin: read config. The key itself is never sent back, only whether it is set. */
 router.get('/config', requireAuth, requireAdmin, async (_req, res) => {
-  const rows = await prisma.appConfig.findMany({
-    where: { key: { in: ['sonarrUrl', 'sonarrApiKey', 'sonarrTag'] } },
-  });
+  const cfg = await getSonarrConfig();
+  const keyRow = await prisma.appConfig.findUnique({ where: { key: 'sonarrApiKey' } });
   res.json({
-    url: rows.find((r) => r.key === 'sonarrUrl')?.value ?? '',
-    apiKeySet: !!rows.find((r) => r.key === 'sonarrApiKey')?.value,
-    tag: rows.find((r) => r.key === 'sonarrTag')?.value || TAG_DEFAULT,
+    url: cfg?.url ?? '',
+    apiKeySet: !!keyRow?.value,
+    tags: cfg?.tags ?? TAGS_DEFAULT,
+    markerTag: cfg?.markerTag ?? MARKER_TAG_DEFAULT,
+    rootFolderPath: cfg?.rootFolderPath ?? '',
+    qualityProfileId: cfg?.qualityProfileId ?? 0,
+    seriesType: cfg?.seriesType ?? 'standard',
+    seasonFolder: cfg?.seasonFolder ?? true,
+    problems: pushConfigProblems(cfg),
+  });
+});
+
+/**
+ * The root folders and quality profiles Sonarr offers, for the setup dropdowns.
+ *
+ * Dropdowns rather than text fields because `rootFolderPath` has to match one of
+ * Sonarr's own paths *exactly* - a stored `/media/Anime/` against Sonarr's
+ * `/media/Anime` is rejected at add time, which is a long way from where the
+ * typo was made.
+ */
+router.get('/config/options', requireAuth, requireAdmin, async (_req, res) => {
+  const cfg = await getSonarrConfig();
+  if (!cfg) return res.json({ ok: false, error: 'Sonarr is not configured' });
+  const [folders, profiles, tags] = await Promise.all([
+    sonarrRootFolders(cfg),
+    sonarrQualityProfiles(cfg),
+    sonarrTags(cfg),
+  ]);
+  if (!folders || !profiles) {
+    return res.json({ ok: false, error: 'Could not read root folders or quality profiles' });
+  }
+  return res.json({
+    ok: true,
+    rootFolders: folders,
+    qualityProfiles: profiles,
+    tags: (tags ?? []).map((t) => t.label).sort(),
+    // Which of the configured labels Sonarr does not have. Surfaced here so the
+    // setup form can say so, instead of the push refusing later for a reason
+    // that lives on a different page.
+    missingTags: resolveTagIds(cfg.tags, tags).missing,
   });
 });
 
 router.put('/config', requireAuth, requireAdmin, async (req, res) => {
-  const { url, apiKey, tag } = req.body ?? {};
+  const { url, apiKey, tags, markerTag, rootFolderPath, qualityProfileId, seriesType, seasonFolder } =
+    req.body ?? {};
   const write = async (key: string, value: string) => {
     await prisma.appConfig.upsert({ where: { key }, update: { value }, create: { key, value } });
   };
   // An empty key or URL means "keep what is stored": Save on a blank form once
   // replaced a working Jellyfin address with a placeholder, and this is the same
-  // form. An empty tag is different - it falls back to the default rather than
-  // being a meaningful choice - so it is only written when non-empty.
+  // form. The same reasoning covers the rest - a field the form did not send is
+  // not a field the admin cleared.
   if (typeof url === 'string' && url.trim()) await write('sonarrUrl', url.trim().replace(/\/+$/, ''));
   if (typeof apiKey === 'string' && apiKey.trim()) await write('sonarrApiKey', apiKey.trim());
-  if (typeof tag === 'string' && tag.trim()) await write('sonarrTag', tag.trim());
+  if (typeof markerTag === 'string' && markerTag.trim()) {
+    await write('sonarrMarkerTag', markerTag.trim());
+  }
+  // The marker is forced in on save as well as on read, so a hand-edited config
+  // cannot leave us adding series that carry no record of being ours.
+  const marker = (typeof markerTag === 'string' && markerTag.trim()) || (await getSonarrConfig())?.markerTag || MARKER_TAG_DEFAULT;
+  if (typeof tags === 'string' && tags.trim()) {
+    await write('sonarrTags', withMarker(parseTagList(tags), marker).join(','));
+  } else if (Array.isArray(tags) && tags.length) {
+    const list = tags.map(String).map((t) => t.trim()).filter(Boolean);
+    await write('sonarrTags', withMarker(list, marker).join(','));
+  }
+  if (typeof rootFolderPath === 'string' && rootFolderPath.trim()) {
+    await write('sonarrRootFolder', rootFolderPath.trim().replace(/\/+$/, ''));
+  }
+  if (Number.isInteger(qualityProfileId) && qualityProfileId > 0) {
+    await write('sonarrQualityProfileId', String(qualityProfileId));
+  }
+  if (seriesType === 'standard' || seriesType === 'anime') await write('sonarrSeriesType', seriesType);
+  if (typeof seasonFolder === 'boolean') await write('sonarrSeasonFolder', String(seasonFolder));
   clearSonarrConfigCache();
   return res.json({ ok: true });
 });
@@ -758,7 +1193,18 @@ router.post('/config/test', requireAuth, requireAdmin, async (req, res) => {
   const stored = await getSonarrConfig();
   const cfg: SonarrConfig | null =
     typeof url === 'string' && url.trim() && typeof apiKey === 'string' && apiKey.trim()
-      ? { url: url.trim().replace(/\/+$/, ''), apiKey: apiKey.trim(), tag: stored?.tag ?? TAG_DEFAULT }
+      ? {
+          ...(stored ?? {
+            tags: TAGS_DEFAULT,
+            markerTag: MARKER_TAG_DEFAULT,
+            rootFolderPath: '',
+            qualityProfileId: 0,
+            seriesType: 'standard',
+            seasonFolder: true,
+          }),
+          url: url.trim().replace(/\/+$/, ''),
+          apiKey: apiKey.trim(),
+        }
       : stored;
   if (!cfg) {
     return res.json({ ok: false, error: 'Sonarr is not configured' });

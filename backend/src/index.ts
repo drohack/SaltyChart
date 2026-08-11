@@ -74,7 +74,7 @@ import usersRouter from './routes/users';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
-import sonarrRouter, { runSonarrSnapshot } from './routes/sonarr';
+import sonarrRouter, { runSonarrSnapshot, runScheduledPush } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
 import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
@@ -436,8 +436,8 @@ async function ensureDatabaseSchema() {
     } catch (err) {
       console.warn('[DB] Failed to create SeriesIdentity table', err);
     }
-    // The Sonarr Custom List's two tables. Mirrored in schema.prisma, but this
-    // is the path production actually runs.
+    // The Sonarr auto-add's two tables. Mirrored in schema.prisma, but this is
+    // the path production actually runs.
     //
     // `SonarrInclude` is the force-include overlay - the only direction of
     // override the feature has, because "never add this" is Sonarr's own
@@ -467,24 +467,37 @@ async function ensureDatabaseSchema() {
     } catch {
       /* already present */
     }
-    // `SonarrSeen.goneAt != null` IS the suppression that closes the re-add
-    // loop: something we proposed was seen held and is now absent, which can
-    // only be a deliberate deletion. See lib/sonarrSeen.ts for why an empty or
-    // failed snapshot must never write to this table.
+    // `SonarrPush` IS the one-and-done guarantee: a row with status 'pushed' or
+    // 'alreadyHeld' means we never consider that tvdbId again, so a series
+    // deleted later - by Maintainerr, by a human, for any reason - stays gone.
+    // `lib/sonarrPush.ts` explains why that record replaced the Custom List it
+    // used to poll. Keyed on tvdbId, so a corrected identity is a different id
+    // and pushes fresh; that is the only intended second attempt.
     try {
       await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "SonarrSeen" (
-          "tvdbId"      INTEGER NOT NULL PRIMARY KEY,
-          "anilistId"   INTEGER,
-          "title"       TEXT NOT NULL DEFAULT '',
-          "firstHeldAt" DATETIME,
-          "lastHeldAt"  DATETIME,
-          "goneAt"      DATETIME,
-          "taggedByUs"  BOOLEAN NOT NULL DEFAULT false
+        CREATE TABLE IF NOT EXISTS "SonarrPush" (
+          "tvdbId"         INTEGER NOT NULL PRIMARY KEY,
+          "anilistId"      INTEGER,
+          "title"          TEXT NOT NULL DEFAULT '',
+          "status"         TEXT NOT NULL,
+          "sonarrSeriesId" INTEGER,
+          "pushedAt"       DATETIME,
+          "attempts"       INTEGER NOT NULL DEFAULT 0,
+          "lastAttemptAt"  DATETIME,
+          "lastError"      TEXT
         );
       `);
     } catch (err) {
-      console.warn('[DB] Failed to create SonarrSeen table', err);
+      console.warn('[DB] Failed to create SonarrPush table', err);
+    }
+    // The Custom List era's table. Dropped rather than left behind: its only
+    // column that mattered (`goneAt`) encoded a suppression that no longer
+    // exists, and a stale table with plausible-looking rows is exactly what a
+    // later reader would try to use.
+    try {
+      await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "SonarrSeen"`);
+    } catch (err) {
+      console.warn('[DB] Failed to drop legacy SonarrSeen table', err);
     }
     // `rejected` must be its own column, not inferred from "confirmed with no
     // ids": confirming a good title match also leaves the id boxes empty, so the
@@ -678,14 +691,14 @@ ensureDatabaseSchema().then(() => {
     setTimeout(() => void sweep(), 90_000).unref();
     setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
 
-    // Watch what Sonarr does with our Custom List, so a series that was added
-    // and then deleted stops being proposed back into existence.
+    // Cache what Sonarr holds, so the push knows what not to add again and the
+    // admin page can render without waiting on a 2,324-series, ~15 s read.
     //
-    // HOURLY, not daily: Sonarr's Import List Sync is a hardcoded ~5 minute
-    // task, so we cannot beat it to a re-add and should not pretend to. What
-    // this bounds is the *repeat* - an unbounded loop becomes one extra grab.
-    // Sonarr's own Import List Exclusion remains the primary defence, which is
-    // why Maintainerr's `listExclusions` is mandatory rather than advisory.
+    // HOURLY is plenty now. Under the Custom List this job was load-bearing and
+    // hopeless - it was meant to catch deletions before Sonarr's ~5 minute
+    // Import List Sync re-added them, which it could never do. Nothing depends
+    // on its timeliness any more: a series is added once and a terminal
+    // `SonarrPush` row keeps it that way whether or not this ever runs again.
     //
     // Delayed at boot for the same reason as the identity sweep: it must never
     // compete with the first page load. Skipped entirely when Sonarr is not
@@ -702,6 +715,39 @@ ensureDatabaseSchema().then(() => {
     };
     setTimeout(() => void sonarrSnapshot(), 120_000).unref();
     setInterval(() => void sonarrSnapshot(), 60 * 60 * 1000).unref();
+
+    // Add whatever is pending. **Does nothing at all unless `sonarrPushEnabled`
+    // is true**, which is checked inside `runScheduledPush` rather than here, so
+    // the switch is read fresh on every run and flipping it takes effect without
+    // a restart.
+    //
+    // DAILY, not hourly. Adding is idempotent by construction and a series that
+    // waits a day loses nothing - the air window is 14 days wide. A slower job
+    // is also a smaller blast radius for anything that turns out to be wrong,
+    // which is the right trade for the one thing here that writes.
+    //
+    // Runs 10 minutes after the first snapshot so it has a held set to work
+    // from; without one it refuses, which would make every boot's first run a
+    // no-op that looks like a failure.
+    // **Always logs exactly one line, including when it does nothing.** A daily
+    // job that is silent unless it acts is indistinguishable from a job that
+    // never ran - which made the timer itself unverifiable. One line a day is
+    // not noise, and "paused" or "nothing to add" is the answer you want when
+    // you are wondering why nothing appeared in Sonarr.
+    const sonarrPush = async () => {
+      try {
+        const result = await runScheduledPush();
+        const outcome = !result.ran
+          ? (result.reason ?? 'did not run')
+          : `${result.pushed} added, ${result.failed} failed` +
+            (result.deferred ? `, ${result.deferred} left for the next run` : '');
+        console.log(`[sonarr] scheduled push: ${outcome}`);
+      } catch (err: any) {
+        console.warn('[sonarr] scheduled push could not run:', err?.message ?? err);
+      }
+    };
+    setTimeout(() => void sonarrPush(), 720_000).unref();
+    setInterval(() => void sonarrPush(), 24 * 60 * 60 * 1000).unref();
   });
 
   // ----------------------------------------------------------------------------

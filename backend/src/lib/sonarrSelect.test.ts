@@ -10,7 +10,7 @@ import {
   DEFAULT_WITHIN_DAYS,
   type SonarrCandidate,
   type SonarrIdentity,
-} from './sonarrList';
+} from './sonarrSelect';
 
 // The assertion messages here are written as stories on purpose: they become
 // the `expect` substrings mutation_audit.py matches on, so a vague one makes
@@ -284,47 +284,28 @@ test('every dropped entry reports the gate that stopped it', () => {
   );
 });
 
-test('a suppressed tvdbId is dropped, and says why', () => {
-  // Something we proposed was held by Sonarr and then deleted. Proposing it
-  // again re-grabs it on the next sync, forever - so it stops being proposed,
-  // and the reason is reported rather than being a silent subtraction.
-  const shows = [entry({ id: 1 }), entry({ id: 2 })];
-  const { items, rejected } = selectForSonarrDetailed(
-    shows,
-    mapResolver({ 1: '100', 2: '200' }),
-    NOW,
-    { suppressed: new Set([100]) }
-  );
-  assert.deepEqual(items.map((i) => i.tvdbId), [200], 'a deleted series must not be proposed back into existence');
-  assert.deepEqual(
-    rejected.map((r) => r.reason),
-    ['deletedAfterAdd'],
-    'the suppression names itself as a gate, so the dry run can show it'
-  );
-});
-
-test('a force-include beats every gate, suppression included', () => {
-  // This is the only override direction the feature has, and it is how a
-  // suppression is undone. If a gate could consume it, the button would appear
-  // to work and change nothing.
+test('a force-include beats every scope gate', () => {
+  // This is the only override direction the feature has. If a gate could consume
+  // it, the button would appear to work and change nothing.
+  //
+  // It lifts SCOPE gates only. It cannot re-add something already pushed - that
+  // record lives in `sonarrPush.ts` and is deliberately out of reach from here,
+  // because "add it once" has to survive an admin clicking Include again.
   const shows = [
     entry({ id: 1, format: 'ONA' }),                                            // dropped on format
     entry({ id: 2, relations: { edges: [{ relationType: 'PREQUEL' }] } }),      // dropped as a sequel
-    entry({ id: 3 }),                                                           // suppressed
+    entry({ id: 3, isAdult: true }),                                            // dropped as adult
   ];
   const out = selectForSonarr(
     shows,
     mapResolver({ 1: '100', 2: '200', 3: '300' }),
     NOW,
-    {
-      suppressed: new Set([300]),
-      forceInclude: new Map([[1, ok(100)], [2, ok(200)], [3, ok(300)]]),
-    }
+    { forceInclude: new Map([[1, ok(100)], [2, ok(200)], [3, ok(300)]]) }
   );
   assert.deepEqual(
     out.map((i) => i.tvdbId),
     [100, 200, 300],
-    'a force-include must lift the format gate, the sequel gate and a suppression alike'
+    'a force-include must lift the format gate, the sequel gate and the adult gate alike'
   );
 });
 

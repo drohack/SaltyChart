@@ -2,20 +2,22 @@ import axios, { AxiosInstance } from 'axios';
 import prisma from '../db';
 
 // ---------------------------------------------------------------------------
-// Read-only Sonarr client.
+// Sonarr client: every read we need, and exactly one write.
 //
-// SaltyChart publishes a Custom List and Sonarr pulls it; we never push. This
-// module exists so the admin page can answer "what did Sonarr actually do with
-// it" - what it holds, what it excludes, which series carry our tag.
+// SaltyChart adds a new seasonal series to Sonarr once, with
+// `POST /api/v3/series`, and then never speaks about it again. An earlier design
+// served a Custom List for Sonarr to poll; that was replaced because a Custom
+// List is a *declarative set* ("everything here should exist") and re-added
+// anything deleted from it within ~5 minutes, forever. `lib/sonarrPush.ts` has
+// the argument in full.
 //
-// **There are deliberately no write verbs here.** No addSeries, no
-// deleteSeries, no addExclusion. Read-only is enforced by absence rather than
-// by discipline: a later contributor cannot casually reach for a delete that
-// was already sitting in the module. Cleanup belongs to Maintainerr, which
-// reads Tautulli watch data we do not have; two systems that can both delete,
-// neither knowing why the other did, is a bad place to end up. If a future pass
-// genuinely needs to write, that should be its own decision with its own
-// review.
+// **`addSeries` is the only write verb, and the list below is a boundary, not a
+// backlog.** There is no deleteSeries, no updateSeries, no addExclusion, no tag
+// creation. Adding is what this feature is *for*; removing is Maintainerr's job,
+// and it decides using Tautulli watch data we do not have. Two systems that can
+// both delete, neither knowing why the other did, is a bad place to end up. A
+// second write verb should be its own decision with its own review, not
+// something appended because the module already writes.
 //
 // **The API key never reaches a browser.** Same rule as the Jellyfin key, and
 // the same trap: an axios error carries its request `config`, so logging the
@@ -26,21 +28,56 @@ import prisma from '../db';
 export interface SonarrConfig {
   url: string;
   apiKey: string;
-  /** The tag Sonarr applies to series added from our list. See `TAG_DEFAULT`. */
-  tag: string;
+  /** Labels applied to every series we add. See `TAGS_DEFAULT`. */
+  tags: string[];
+  /**
+   * The one label that means **we added this**. Always present in `tags`.
+   *
+   * Separate from the rest because the rest are shared: `anime` is a library
+   * convention and sits on 692 series here, so "is it tagged?" answered yes for
+   * shows the owner had for years. Only this one is ours.
+   */
+  markerTag: string;
+  /** Where added series live, e.g. `/media/Anime`. Must match a Sonarr root folder exactly. */
+  rootFolderPath: string;
+  qualityProfileId: number;
+  /** `standard` or `anime` - this changes how releases are matched to episodes. */
+  seriesType: string;
+  seasonFolder: boolean;
 }
 
 /**
- * The tag an admin is expected to set on the import list in Sonarr.
+ * The label that marks a series as ours.
  *
- * It is what lets Maintainerr scope its cleanup to series *we* auto-added
- * rather than the whole library. Tags are a property of the import list's
- * configuration, not of the payload we serve, so this string has to be typed
- * into Sonarr by hand and can be typo'd - which fails silently by scoping
- * Maintainerr to nothing. `/report` counts how many held series actually carry
- * it so the typo is visible.
+ * **This is a second, independent record of what we added**, and that is the
+ * point of it: `SonarrPush` lives in one database, and a database does not
+ * follow you from dev to production or survive being restored from an old
+ * backup. The tag lives in Sonarr, beside the series it describes, so "did we
+ * add this?" stays answerable when the row is gone.
  */
-export const TAG_DEFAULT = 'saltychart';
+export const MARKER_TAG_DEFAULT = 'saltychart';
+
+/**
+ * Labels applied to every series we add.
+ *
+ * `anime` matches the surrounding library's own convention; the marker above is
+ * what Maintainerr scopes cleanup on. **All of them must already exist in
+ * Sonarr** - we resolve labels to ids with `sonarrTags()` and refuse to push if
+ * any is missing, because creating them would mean a second write verb and an
+ * untagged add is invisible to Maintainerr's scoping, which fails silently.
+ */
+export const TAGS_DEFAULT = ['anime', MARKER_TAG_DEFAULT];
+
+/**
+ * What Sonarr should monitor on a newly added series.
+ *
+ * `firstSeason` is the whole point: Seerr refuses a request for a
+ * `PARTIALLY_AVAILABLE` season, so grabbing only the pilot would break the way
+ * people ask for the rest. Under a Custom List this was Sonarr's `shouldMonitor`
+ * setting, typed in by hand and unverifiable from here; sending it ourselves is
+ * one of the reasons the push replaced the list.
+ */
+export const ADD_MONITOR = 'firstSeason';
 
 /** One series as Sonarr reports it. Only the fields we actually read. */
 export interface SonarrSeries {
@@ -66,10 +103,11 @@ export interface SonarrTag {
  * The result of one attempt to read Sonarr's library.
  *
  * `ok: false` means "we could not ask", which is a different thing from "the
- * library is empty" and must never be collapsed into it - see `reconcileSeen`
- * in `lib/sonarrSeen.ts`, where treating one as the other would suppress the
- * entire list permanently. Never throws, so a caller cannot forget to handle
- * the failure.
+ * library is empty" and must never be collapsed into it - see
+ * `runSonarrSnapshot`, where taking an empty read at face value would make every
+ * series Sonarr already holds look like a new candidate, and the next push would
+ * try to add all of them. Never throws, so a caller cannot forget to handle the
+ * failure.
  */
 export interface SonarrSnapshot {
   ok: boolean;
@@ -80,16 +118,78 @@ export interface SonarrSnapshot {
 // undefined = not loaded yet; null = not configured. Mirrors getJellyfinConfig.
 let _configCache: SonarrConfig | null | undefined;
 
+export const SONARR_CONFIG_KEYS = [
+  'sonarrUrl',
+  'sonarrApiKey',
+  'sonarrTags',
+  'sonarrMarkerTag',
+  'sonarrTag', // legacy single-label key, read as a fallback only
+  'sonarrRootFolder',
+  'sonarrQualityProfileId',
+  'sonarrSeriesType',
+  'sonarrSeasonFolder',
+];
+
+/** `"anime, saltychart"` -> `['anime', 'saltychart']`, blanks dropped. */
+export function parseTagList(raw: string | null | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/** The applied set, with the marker guaranteed present (case-insensitively). */
+export function withMarker(tags: string[], marker: string): string[] {
+  return tags.some((t) => t.toLowerCase() === marker.toLowerCase()) ? tags : [...tags, marker];
+}
+
 export async function getSonarrConfig(): Promise<SonarrConfig | null> {
   if (_configCache !== undefined) return _configCache;
-  const rows = await prisma.appConfig.findMany({
-    where: { key: { in: ['sonarrUrl', 'sonarrApiKey', 'sonarrTag'] } },
-  });
-  const url = (rows.find((r) => r.key === 'sonarrUrl')?.value ?? '').replace(/\/+$/, '');
-  const apiKey = rows.find((r) => r.key === 'sonarrApiKey')?.value ?? '';
-  const tag = rows.find((r) => r.key === 'sonarrTag')?.value || TAG_DEFAULT;
-  _configCache = url && apiKey ? { url, apiKey, tag } : null;
+  const rows = await prisma.appConfig.findMany({ where: { key: { in: SONARR_CONFIG_KEYS } } });
+  const val = (k: string) => rows.find((r) => r.key === k)?.value ?? '';
+  const url = val('sonarrUrl').replace(/\/+$/, '');
+  const apiKey = val('sonarrApiKey');
+  // `sonarrTag` predates multi-tag support; honour it so an upgrade does not
+  // silently drop the label someone already configured.
+  const tags = parseTagList(val('sonarrTags') || val('sonarrTag'));
+  const markerTag = val('sonarrMarkerTag') || MARKER_TAG_DEFAULT;
+  const qualityProfileId = Number(val('sonarrQualityProfileId'));
+  _configCache =
+    url && apiKey
+      ? {
+          url,
+          apiKey,
+          // The marker is forced into the applied set. Everything we add must
+          // carry it, or the tag stops being a record of what we added - and it
+          // is the only record that survives losing the database.
+          tags: withMarker(tags.length ? tags : TAGS_DEFAULT, markerTag),
+          markerTag,
+          // Trailing slashes are stripped: Sonarr reports `/media/Anime`, and a
+          // stored `/media/Anime/` would not match any root folder it offers.
+          rootFolderPath: val('sonarrRootFolder').replace(/\/+$/, ''),
+          qualityProfileId: Number.isInteger(qualityProfileId) ? qualityProfileId : 0,
+          seriesType: val('sonarrSeriesType') || 'standard',
+          seasonFolder: val('sonarrSeasonFolder') !== 'false',
+        }
+      : null;
   return _configCache;
+}
+
+/**
+ * Is there enough configuration to actually add a series?
+ *
+ * Separate from `getSonarrConfig() !== null`, which only means "we can talk to
+ * Sonarr". Reading works with just a URL and key; adding additionally needs a
+ * destination and a quality profile, and a missing one is a setup mistake we
+ * should name rather than a push that lands somewhere unintended.
+ */
+export function pushConfigProblems(cfg: SonarrConfig | null): string[] {
+  if (!cfg) return ['Sonarr is not configured'];
+  const out: string[] = [];
+  if (!cfg.rootFolderPath) out.push('no root folder chosen');
+  if (!cfg.qualityProfileId) out.push('no quality profile chosen');
+  if (!cfg.tags.length) out.push('no tags set');
+  return out;
 }
 
 /** Call after any write to the sonarr* AppConfig keys, or the cache goes stale. */
@@ -157,9 +257,10 @@ export async function fetchSnapshot(cfg: SonarrConfig): Promise<SonarrSnapshot> 
 /**
  * The Import List Exclusions Sonarr itself enforces.
  *
- * This is the authoritative "never add this" - it is global across every import
- * list and it beats anything we do. Our own suppression is a backstop for the
- * case where a deletion did not set one.
+ * Sonarr's own "never add this", global across every import list. It does not
+ * bind `POST /api/v3/series` - an explicit add succeeds regardless - so we treat
+ * it as a human's stated intent and skip anything on it. Displayed on
+ * `/admin/sonarr` so a skip is explicable rather than mysterious.
  */
 export async function sonarrExclusions(cfg: SonarrConfig): Promise<SonarrExclusion[] | null> {
   try {
@@ -202,5 +303,134 @@ export async function testSonarr(
     return { ok: true, version: typeof data?.version === 'string' ? data.version : undefined };
   } catch (err) {
     return { ok: false, error: sonarrErrorInfo(err) };
+  }
+}
+
+// --- setup dropdowns -------------------------------------------------------
+
+export interface SonarrRootFolder {
+  path: string;
+  freeSpace?: number;
+}
+
+export interface SonarrQualityProfile {
+  id: number;
+  name: string;
+}
+
+/**
+ * Root folders Sonarr will accept.
+ *
+ * Offered as a dropdown rather than a text field on purpose: `rootFolderPath`
+ * has to match one of these *exactly* or the add is rejected, and a typo in a
+ * free-text path is a setup error nobody would find by reading it back.
+ */
+export async function sonarrRootFolders(cfg: SonarrConfig): Promise<SonarrRootFolder[] | null> {
+  try {
+    const { data } = await sonarrAxios(cfg).get('/api/v3/rootfolder');
+    if (!Array.isArray(data)) return null;
+    return data
+      .map((r: any) => ({ path: String(r?.path ?? ''), freeSpace: Number(r?.freeSpace) || undefined }))
+      .filter((r) => r.path);
+  } catch (err) {
+    console.warn('[sonarr] could not read root folders:', sonarrErrorInfo(err));
+    return null;
+  }
+}
+
+export async function sonarrQualityProfiles(
+  cfg: SonarrConfig
+): Promise<SonarrQualityProfile[] | null> {
+  try {
+    const { data } = await sonarrAxios(cfg).get('/api/v3/qualityprofile');
+    if (!Array.isArray(data)) return null;
+    return data
+      .map((p: any) => ({ id: Number(p?.id), name: String(p?.name ?? '') }))
+      .filter((p) => Number.isInteger(p.id));
+  } catch (err) {
+    console.warn('[sonarr] could not read quality profiles:', sonarrErrorInfo(err));
+    return null;
+  }
+}
+
+// --- the add path ----------------------------------------------------------
+
+/**
+ * Sonarr's own record for a TVDB id, or null if it does not know the id.
+ *
+ * **This is the validity check, and it is a read.** A null here means the TVDB
+ * id we resolved is wrong or retired, which is a matching problem to surface on
+ * `/admin/matching` - not something to push and let fail.
+ *
+ * It also supplies the object we post. Sonarr's add endpoint wants the series
+ * shape it produced (title, titleSlug, images, seasons, year), and hand-building
+ * that means guessing at required fields that change between versions; every
+ * established client does lookup-then-post for the same reason. `null` is "not
+ * found"; a thrown error is a transport failure and must not be confused with it,
+ * so failures reject rather than returning null.
+ */
+export async function sonarrLookup(cfg: SonarrConfig, tvdbId: number): Promise<any | null> {
+  const { data } = await sonarrAxios(cfg).get('/api/v3/series/lookup', {
+    params: { term: `tvdb:${tvdbId}` },
+  });
+  if (!Array.isArray(data) || data.length === 0) return null;
+  // Sonarr can answer a tvdb: term with near matches; only an exact id is us.
+  return data.find((s: any) => Number(s?.tvdbId) === tvdbId) ?? null;
+}
+
+export interface AddSeriesResult {
+  ok: boolean;
+  /** Sonarr's own series id, on success. Stored so a human can find the row. */
+  seriesId?: number;
+  status?: number;
+  error?: string;
+  /** Sonarr's validation messages, which carry the "already exists" case. */
+  body?: unknown;
+}
+
+/**
+ * **The only write in this codebase's Sonarr integration.**
+ *
+ * Adds one series, monitoring season 1, and by default searching for nothing -
+ * `searchForMissingEpisodes` is off, so episodes arrive via RSS as they air.
+ * That suits upcoming seasons, where there is nothing to search for yet; an
+ * already-finished series added this way sits there until someone hits Search,
+ * which `/admin/sonarr` says out loud rather than leaving to be discovered.
+ *
+ * Never throws: the caller has to record the outcome either way, and an
+ * exception is easy to forget in a loop that must not stop on one bad row.
+ */
+export async function addSeries(
+  cfg: SonarrConfig,
+  lookup: any,
+  tagIds: number[],
+  opts?: { searchForMissingEpisodes?: boolean }
+): Promise<AddSeriesResult> {
+  const payload = {
+    ...lookup,
+    rootFolderPath: cfg.rootFolderPath,
+    qualityProfileId: cfg.qualityProfileId,
+    seriesType: cfg.seriesType,
+    seasonFolder: cfg.seasonFolder,
+    monitored: true,
+    tags: tagIds,
+    addOptions: {
+      monitor: ADD_MONITOR,
+      searchForMissingEpisodes: opts?.searchForMissingEpisodes ?? false,
+      searchForCutoffUnmetEpisodes: false,
+      ignoreEpisodesWithFiles: false,
+      ignoreEpisodesWithoutFiles: false,
+    },
+  };
+  try {
+    const { data } = await sonarrAxios(cfg).post('/api/v3/series', payload);
+    return { ok: true, seriesId: Number(data?.id) || undefined };
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: err?.response?.status,
+      error: sonarrErrorInfo(err),
+      body: err?.response?.data,
+    };
   }
 }

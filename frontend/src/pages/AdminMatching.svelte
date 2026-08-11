@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { authToken } from '../stores/auth';
-  import { isAdmin } from '../stores/jellyfin';
   import { apiJson, QUICK, SEASON, ApiError } from '../lib/remote';
-  import AdminTabs from '../components/AdminTabs.svelte';
+  import AdminShell from '../components/AdminShell.svelte';
 
   /**
    * Review and correct how AniList entries resolve to the library.
@@ -746,16 +745,7 @@
   onMount(load);
 </script>
 
-<main class="max-w-[100rem] mx-auto px-4 flex flex-col gap-4">
-  <h1 class="text-2xl font-bold">Admin</h1>
-  <!-- Admins only - see the same guard in Admin.svelte. -->
-  {#if $authToken && $isAdmin !== false}
-    <AdminTabs current="matching" />
-  {/if}
-
-  {#if !$authToken || $isAdmin === false}
-    <div class="alert alert-warning"><span>This page is only available to the site admin.</span></div>
-  {:else}
+<AdminShell current="matching">
     <p class="text-sm opacity-70">
       Review how this season matched the library - Confirm or correct a match to
       record it permanently.
@@ -1135,5 +1125,4 @@
         </li>
       {/each}
     </ul>
-  {/if}
-</main>
+</AdminShell>

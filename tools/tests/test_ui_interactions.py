@@ -109,7 +109,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 27
+TOTAL = 28
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -2007,7 +2007,99 @@ SELECTABLE_FLOWS = {
     "phone sidebar collapsed",
     "wheel image quota",
     "theme survives signup",
+    "sonarr page renders",
 }
+
+
+
+def test_sonarr_page_renders(page, frontend: str):
+    """/admin/sonarr renders honestly - structure, not just HTTP 200.
+
+    This page had no browser coverage at all, and every defect in it was found
+    by a human looking at the screen while the build, svelte-check and the API
+    tests were all green:
+
+      * a stray <td> put 8 cells in a 7-column table, shifting every value one
+        column right;
+      * a badge wrapped inside its own pill and stopped looking like a badge;
+      * the Include button overlapped a clipped status badge;
+      * and the headline read "0 will be added" when Sonarr could not be
+        reached, which is the worst available misreading of "couldn't ask".
+
+    None of those is a type error, so nothing else here can catch them. The
+    assertions below are the shapes of those four bugs.
+    """
+    step(28, "step 1/4: loading /admin/sonarr as the admin user")
+    tok = admin_token()
+    if not tok:
+        step(28, "SKIP - could not sign an admin token (node or backend/.env missing)")
+        return
+    page.goto(frontend)
+    page.evaluate("t => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', 'admin_probe'); }", tok)
+    page.goto(f"{frontend}/admin/sonarr")
+    page.wait_for_selector("[data-sonarr-stats]", timeout=30_000)
+    # Expand every accordion: the tables that broke were all inside one.
+    page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
+
+    step(28, "step 2/4: every row table matches its own colgroup")
+    bad = page.evaluate("""() => {
+        const out = [];
+        document.querySelectorAll('table').forEach((t, ti) => {
+            const cols = t.querySelectorAll('colgroup col').length;
+            if (!cols) return;                       // the summary strip has none
+            t.querySelectorAll('tbody tr').forEach((r, ri) => {
+                if (r.children.length !== cols)
+                    out.push(`table ${ti} row ${ri}: ${r.children.length} cells vs ${cols} columns`);
+            });
+            const head = t.querySelector('thead tr');
+            if (head && head.children.length !== cols)
+                out.push(`table ${ti} header: ${head.children.length} cells vs ${cols} columns`);
+        });
+        return out;
+    }""")
+    assert not bad, f"row/column mismatch - values render under the wrong headings: {bad[:3]}"
+
+    step(28, "step 3/4: tables line up with each other, and nothing is clipped")
+    sigs = page.evaluate("""() => {
+        const t = [...document.querySelectorAll('table')].filter(x => x.querySelector('colgroup'));
+        return [...new Set(t.map(x => [...(x.querySelector('tbody tr')?.children ?? [])]
+            .map(c => Math.round(c.getBoundingClientRect().width)).join(',')).filter(Boolean))];
+    }""")
+    assert len(sigs) <= 1,         f"row tables have {len(sigs)} different column layouts, so they do not line up: {sigs}"
+    clipped = page.evaluate("""() => {
+        const out = [];
+        document.querySelectorAll('tbody td').forEach(td => {
+            // `truncate` overflows on purpose - that is how the ellipsis works.
+            if (td.classList.contains('truncate')) return;
+            if (td.scrollWidth > td.clientWidth + 1)
+                out.push(td.textContent.trim().slice(0, 30));
+        });
+        return out;
+    }""")
+    assert not clipped, f"content clipped or overlapping in {len(clipped)} cell(s): {clipped[:3]}"
+    tall = page.evaluate("""() => [...document.querySelectorAll('.badge')]
+        .filter(b => b.getBoundingClientRect().height > 26)
+        .map(b => b.textContent.trim())""")
+    assert not tall, f"badge(s) wrapped onto a second line and stopped reading as badges: {tall[:3]}"
+
+    step(28, "step 4/4: the headline never reports 'couldn't ask' as zero")
+    text = page.evaluate("document.body.innerText")
+    observed = page.evaluate("""() => fetch('/api/sonarr/report', {
+        headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
+    }).then(r => r.json()).then(d => d.sonarr.observed)""")
+    # Asserted BOTH ways so this step is never vacuous. On this deployment
+    # `observed` is usually true, so a one-sided check would sit here passing
+    # without ever running - the shape of a test that guards nothing.
+    if observed:
+        assert "cannot tell what sonarr would add" not in text.lower(),             ("Sonarr has been read successfully, yet the page says it cannot tell - "
+             "the headline is not following the observation")
+    else:
+        assert "would add 0" not in text.lower(),             ("the page reported 0 additions while Sonarr had never been read - "
+             "'couldn't ask' must never render as 'nothing to do'")
+    rows = page.evaluate("document.querySelectorAll('tbody tr').length")
+    step(28, f"PASS - {rows} rows, one column layout, no clipping or wrapped badges, "
+             f"headline honest (observed={observed})")
 
 
 def main():
@@ -2070,6 +2162,7 @@ def main():
                 ("guest options + compare warning", lambda: test_guest_options_and_compare_warning(page, frontend)),
                 ("wheel image quota", lambda: test_wheel_image_quota(page, frontend, token_a)),
                 ("theme survives signup", lambda: test_theme_survives_signup_and_reload(page, args.backend, frontend)),
+                ("sonarr page renders", lambda: test_sonarr_page_renders(page, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

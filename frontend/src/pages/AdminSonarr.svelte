@@ -2,14 +2,14 @@
   import { onMount } from 'svelte';
   import { authToken } from '../stores/auth';
   import { apiJson, QUICK, ApiError } from '../lib/remote';
-  import AdminTabs from '../components/AdminTabs.svelte';
+  import AdminShell from '../components/AdminShell.svelte';
 
   /**
-   * What is the Sonarr Custom List about to do?
+   * What is about to be added to Sonarr, and what already was?
    *
-   * This page exists because the list is otherwise unobservable: Sonarr re-reads
-   * it every few minutes and acts on it unattended, and before this the only way
-   * to see what it proposed was a terminal command.
+   * This page exists because the job is otherwise unobservable: it runs daily,
+   * unattended, and it writes to someone else's library. Before this the only
+   * way to see what it would do was a terminal command.
    *
    * It answers a different question from `/admin/matching`, which is why it is a
    * different page. That one asks **identity** - which real series is this,
@@ -35,7 +35,6 @@
     outsideAirWindow: 'outside the air window',
     noAnilistId: 'no usable AniList id',
     noUsableTvdbId: 'no usable TVDB id',
-    deletedAfterAdd: 'deleted from Sonarr, so no longer proposed',
     duplicateTvdbId: 'duplicate TVDB id',
     noTitle: 'no usable title',
   };
@@ -50,9 +49,23 @@
    */
   const STATE: Record<string, { label: string; cls: string }> = {
     willBeAdded: { label: 'will be added', cls: 'badge-warning' },
+    // Two states, one meaning, and both are needed. `pushedAlready` is our own
+    // record - precise, and the only one that survives a deletion, so a series
+    // we added and you removed keeps saying "added". `addedByUs` is the marker
+    // tag in Sonarr - it survives losing the database, which our record does not.
+    //
+    // It must be the MARKER tag, not any of our tags: we apply `anime` too, and
+    // `anime` is on 692 series here, so "any tag" claimed shows the owner had
+    // for years.
+    pushedAlready: { label: 'added by us', cls: 'badge-success' },
     addedByUs: { label: 'added by us', cls: 'badge-success' },
     heldAlready: { label: 'already held', cls: 'badge-outline opacity-70' },
     excludedInSonarr: { label: 'excluded in Sonarr', cls: 'badge-outline opacity-50' },
+    // Both mean nothing was added and both retry, so they are warnings rather
+    // than errors - but `lookupFailed` is actionable on /admin/matching, and
+    // saying so is the difference between a fixable row and a mystery.
+    lookupFailed: { label: 'bad TVDB id', cls: 'badge-error badge-outline' },
+    failed: { label: 'add failed', cls: 'badge-error badge-outline' },
     unknown: { label: 'not checked', cls: 'badge-outline opacity-40' },
   };
 
@@ -114,18 +127,62 @@
     matchedTitle: string | null;
     gradeNote: string | null;
   };
+  type Push = {
+    tvdbId: number;
+    anilistId: number | null;
+    title: string;
+    status: 'pushed' | 'alreadyHeld' | 'lookupFailed' | 'failed';
+    sonarrSeriesId: number | null;
+    pushedAt: string | null;
+    attempts: number;
+    lastAttemptAt: string | null;
+    lastError: string | null;
+  };
   type Report = {
     published: boolean;
-    config: { configured: boolean; url: string; tag: string; tagHeldCount: number };
+    config: {
+      configured: boolean;
+      url: string;
+      tags: string[];
+      markerTag: string;
+      taggedOfOurs: number;
+      rootFolderPath: string;
+      qualityProfileId: number;
+      seriesType: string;
+      /** Setup steps still outstanding. Non-empty means a push cannot run. */
+      problems: string[];
+    };
     snapshot: { at: string; ok: boolean; seriesCount: number; error?: string; skipped?: string } | null;
     sonarr: { observed: boolean; held: number; excluded: number; at: string | null };
+    history: {
+      /** Ours by either record - a push row, or the marker tag in Sonarr. */
+      ours: number;
+      /** Marker-tagged and still held. Survives losing the database. */
+      tagged: number;
+      /** We have a record of adding these. Only a 201 from Sonarr produces one. */
+      pushed: number;
+      /** These were already in the library when we got here - NOT our doing. */
+      alreadyHeld: number;
+      needsAttention: number;
+      firstPushAt: string | null;
+      lastPushAt: string | null;
+    };
     seasons: { season: string; year: number; cached: number }[];
     withinDays: number;
     proposed: Proposed[];
     rejected: Rejected[];
-    suppressed: { tvdbId: number; anilistId: number | null; title: string; lastHeldAt: string | null; goneAt: string | null }[];
+    pushes: Push[];
     orphans: { tvdbId: number; title: string; anilistId: number; nowTvdbId: number }[];
     counts: { proposed: number; rejected: Record<string, number> };
+  };
+
+  /** What a `POST /push` came back with. Rendered as a notice, not stored. */
+  type PushResult = {
+    ran: boolean;
+    reason?: string;
+    pushed: number;
+    failed: number;
+    deferred: number;
   };
 
   let report: Report | null = null;
@@ -147,6 +204,22 @@
    */
   let preview = '';
   const SEASONS = ['WINTER', 'SPRING', 'SUMMER', 'FALL'];
+
+  /**
+   * The seasons offered for preview, derived rather than listed.
+   *
+   * Anchored on the years the server says it is serving, so it follows the
+   * calendar on its own. A hardcoded `[2025, 2026, 2027]` sat here first and
+   * would have stopped offering the current year in 2028 - the kind of literal
+   * that works right up until it silently doesn't.
+   */
+  $: previewOptions = (() => {
+    const years = (report?.seasons ?? []).map((s) => s.year);
+    const anchor = years.length ? Math.min(...years) : new Date().getUTCFullYear();
+    const out: string[] = [];
+    for (let y = anchor - 1; y <= anchor + 1; y++) for (const s of SEASONS) out.push(`${s} ${y}`);
+    return out;
+  })();
 
   async function load() {
     if (!$authToken) return;
@@ -210,6 +283,43 @@
       await load();
     } catch {
       notice = 'The snapshot could not run.';
+    } finally {
+      busy = '';
+    }
+  }
+
+  /**
+   * Add the pending series now, rather than waiting for the daily job.
+   *
+   * The reply is reported in full, including the two "nothing happened"
+   * answers - paused, and a setup problem. A button that silently does nothing
+   * when the switch is off is how someone concludes the feature is broken.
+   */
+  async function pushNow() {
+    busy = 'push';
+    notice = '';
+    try {
+      const r = await apiJson<PushResult>(
+        '/api/sonarr/push',
+        { method: 'POST', headers: auth },
+        { timeoutMs: 120_000, label: 'sonarr-push' }
+      );
+      if (!r.ran) {
+        notice =
+          r.reason === 'paused'
+            ? 'Nothing was added - pushing is paused.'
+            : `Nothing was added: ${r.reason}`;
+      } else {
+        const bits = [`${r.pushed} added`];
+        if (r.failed) bits.push(`${r.failed} failed`);
+        // Stated even when zero would have been the friendlier number: "10 left
+        // for tomorrow" and "all done" must never look the same.
+        if (r.deferred) bits.push(`${r.deferred} left for the next run`);
+        notice = bits.join(', ') + '.';
+      }
+      await load();
+    } catch {
+      notice = 'The push could not run.';
     } finally {
       busy = '';
     }
@@ -288,8 +398,31 @@
       acc[p.state] = (acc[p.state] ?? 0) + 1;
       return acc;
     },
-    { willBeAdded: 0, addedByUs: 0, heldAlready: 0, excludedInSonarr: 0, unknown: 0 }
+    {
+      willBeAdded: 0,
+      pushedAlready: 0,
+      addedByUs: 0,
+      heldAlready: 0,
+      excludedInSonarr: 0,
+      lookupFailed: 0,
+      failed: 0,
+      unknown: 0,
+    }
   );
+
+  /**
+   * The push log, actionable rows first.
+   *
+   * `lookupFailed` and `failed` mean nothing was added and both retry, so they
+   * are the only rows worth a decision - burying them under a hundred
+   * successful adds is how a persistent bad id goes unnoticed for a season.
+   */
+  const ATTENTION = new Set(['lookupFailed', 'failed']);
+  $: needsAttention = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status));
+  $: pushesSorted = [
+    ...needsAttention,
+    ...(report?.pushes ?? []).filter((p) => !ATTENTION.has(p.status)),
+  ];
 
   /** Premiere as a day number, for sorting and distance maths. Null when undated. */
   function airDay(d: Dated): number | null {
@@ -379,8 +512,7 @@
     up the page. Fixed widths are the only thing that makes separate tables line
     up.
 -->
-<div class="flex flex-col gap-4 px-2 sm:px-4 w-full sm:w-3/4 mx-auto">
-  <AdminTabs current="sonarr" />
+<AdminShell current="sonarr">
 
   {#if loading && !report}
     <span class="loading loading-spinner" aria-label="Loading" />
@@ -404,27 +536,41 @@
     >
       <div>
         <div class="font-semibold">
-          {report.published ? 'Serving the list to Sonarr' : 'Paused - Sonarr gets an empty list'}
+          {report.published ? 'Adding to Sonarr' : 'Paused - nothing is added'}
         </div>
         <p class="text-sm opacity-70 mt-0.5">
           {#if report.published}
-            Sonarr re-reads the list on its own schedule (every ~5 minutes) and adds anything new
-            without being asked.
+            Runs daily. Each series is added <b>once</b> - if you or Maintainerr delete it later, it
+            stays deleted.
           {:else}
             Nothing is added while paused. Everything below still shows what <em>would</em> be.
-            Press Start serving and Sonarr picks it up within ~5 minutes.
           {/if}
         </p>
+        {#if report.config.problems.length}
+          <p class="text-sm text-warning mt-1">
+            Setup needed before anything can be added: {report.config.problems.join(', ')}.
+          </p>
+        {/if}
       </div>
-      <button
-        class="btn btn-sm"
-        class:btn-primary={!report.published}
-        class:btn-outline={report.published}
-        disabled={busy === '/api/sonarr/publish'}
-        on:click={() => post('/api/sonarr/publish', { enabled: !report?.published }, { method: 'PUT' })}
-      >
-        {report.published ? 'Pause' : 'Start serving'}
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          class="btn btn-sm btn-outline"
+          disabled={busy === 'push' || !report.published || report.config.problems.length > 0}
+          title="Add the pending series now instead of waiting for the daily run"
+          on:click={pushNow}
+        >
+          {busy === 'push' ? 'Adding...' : 'Add now'}
+        </button>
+        <button
+          class="btn btn-sm"
+          class:btn-primary={!report.published}
+          class:btn-outline={report.published}
+          disabled={busy === '/api/sonarr/enabled'}
+          on:click={() => post('/api/sonarr/enabled', { enabled: !report?.published }, { method: 'PUT' })}
+        >
+          {report.published ? 'Pause' : 'Start adding'}
+        </button>
+      </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -443,26 +589,40 @@
       </p>
       <select class="select select-bordered select-sm ml-auto" bind:value={preview} on:change={load}>
         <option value="">Both served seasons</option>
-        {#each SEASONS as s}
-          {#each [2025, 2026, 2027] as y}
-            <option value={`${s} ${y}`}>{s} {y}</option>
-          {/each}
+        {#each previewOptions as o (o)}
+          <option value={o}>{o}</option>
         {/each}
       </select>
     </div>
 
+    <!-- A responsive GRID, not `flex flex-wrap`. The counts table is 575px even
+         with wrapped headers, and the page caps at 3/4 viewport - so below
+         ~1280px the two blocks cannot share a row no matter how short the text
+         beside them is. Flex-wrap made that look accidental: the right-hand
+         block dropped underneath still right-aligned, reading as an orphaned
+         paragraph. Stacked deliberately and left-aligned, it reads as its own
+         row; side by side above xl, it reads as a pair. -->
     <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3
-                flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
+                grid grid-cols-1 xl:grid-cols-[auto_auto] xl:justify-between
+                items-start gap-x-8 gap-y-3">
       <div class="overflow-x-auto -my-1" data-sonarr-stats>
         <table class="table table-xs w-auto [&_td]:py-1 [&_th]:py-1">
           <thead>
-            <tr class="text-[10px] uppercase tracking-wider opacity-40">
-              <th class="font-normal text-right">on the list</th>
-              <th class="font-normal text-right border-l border-base-300">Sonarr would add</th>
+            <!-- `whitespace-normal` + a narrow max-width so these wrap to two
+                 short lines instead of forcing the table wider than its column.
+                 Measured at 1024px: the eight nowrap headers made this table
+                 779px inside a 725px container, which pushed the block beside it
+                 onto its own row and read as an unrelated paragraph. Wrapping
+                 the words beats abbreviating them - this page has already been
+                 through a round of "what does that label mean". -->
+            <tr class="text-[10px] uppercase tracking-wider opacity-40
+                       [&_th]:whitespace-normal [&_th]:max-w-[4.5rem] [&_th]:leading-tight">
+              <th class="font-normal text-right">candidates</th>
+              <th class="font-normal text-right border-l border-base-300">still to add</th>
               <th class="font-normal text-right border-l border-base-300">we added</th>
               <th class="font-normal text-right border-l border-base-300">you already had</th>
               <th class="font-normal text-right border-l border-base-300">Sonarr excludes</th>
-              <th class="font-normal text-right border-l border-base-300">stopped proposing</th>
+              <th class="font-normal text-right border-l border-base-300">needs attention</th>
               <th class="font-normal text-right border-l border-base-300">waiting on air date</th>
               <th class="font-normal text-right border-l border-base-300">filtered out</th>
             </tr>
@@ -471,17 +631,17 @@
             <tr>
               <td class="font-semibold">{report.counts.proposed}</td>
               <td class="font-semibold border-l border-base-300">{byState.willBeAdded}</td>
-              <td class="border-l border-base-300">{byState.addedByUs}</td>
+              <td class="border-l border-base-300">{byState.pushedAlready + byState.addedByUs}</td>
               <td class="border-l border-base-300">{byState.heldAlready}</td>
               <td class="border-l border-base-300">{byState.excludedInSonarr}</td>
-              <td class="border-l border-base-300">{report.suppressed.length}</td>
+              <td class="border-l border-base-300">{byState.lookupFailed + byState.failed}</td>
               <td class="border-l border-base-300">{waitingCount}</td>
               <td class="border-l border-base-300">{notOnListCount}</td>
             </tr>
           </tbody>
         </table>
         <p class="text-[11px] opacity-40 mt-1">
-          on the list = Sonarr would add + we added + you already had + Sonarr excludes
+          candidates = still to add + we added + you already had + Sonarr excludes + needs attention
         </p>
       </div>
 
@@ -492,46 +652,93 @@
            next row, and floated a help paragraph with nothing obviously
            attached to it - while making this block 141px against the 71px one
            beside it, which is where the dead space came from. -->
-      <div class="text-sm opacity-70 text-right ml-auto">
-        <div>
+      <div class="text-sm opacity-70 xl:text-right xl:ml-auto">
+        <!-- Kept SHORT on purpose. This block and the counts table share one
+             flex row, so a long sentence here stops both fitting and drops this
+             onto its own line below the numbers - which reads as an unrelated
+             paragraph. The old wording ("Your whole Sonarr library (not this
+             page): ... N tagged anime + saltychart") did exactly that. The
+             label that made it long is now the tooltip. -->
+        <div title="Your whole Sonarr library, not just what this page proposes">
           {#if !report.config.configured}
             Sonarr is not configured -
             <a class="link" href="/admin">set it up on Connection</a>
           {:else if !report.sonarr.observed}
             Never successfully read {report.config.url}
           {:else}
-            <span class="opacity-60">Your whole Sonarr library (not this list):</span>
-            {report.sonarr.held.toLocaleString()} series, {report.sonarr.excluded} excluded,
-            <span class:text-warning={report.config.tagHeldCount === 0}
-            >{report.config.tagHeldCount} tagged <code>{report.config.tag}</code></span>
+            <span class="opacity-60">Library:</span>
+            {report.sonarr.held.toLocaleString()} series, {report.sonarr.excluded} excluded
           {/if}
         </div>
-        <div class="mt-1 flex items-center justify-end gap-2">
+        {#if report.sonarr.observed && report.history.pushed}
+          <!-- Only once we have added something: "0 of 0 tagged" is noise, and
+               the number only means anything against series we added. -->
+          <div
+            class:text-warning={report.config.taggedOfOurs < report.history.pushed}
+            title="Series we added that carry the tags Maintainerr scopes on. Anything less than all of them means its cleanup will miss some."
+          >
+            <span class="opacity-60">Tagged <code>{report.config.markerTag}</code>:</span>
+            {report.config.taggedOfOurs} of our {report.history.pushed}
+          </div>
+        {/if}
+        <div class="mt-1 flex items-center xl:justify-end gap-2">
           <span class="opacity-60">
             {#if report.snapshot}
-              Last read {new Date(report.snapshot.at).toLocaleString()}
+              Last read {new Date(report.snapshot.at).toLocaleDateString()}
             {:else}
               Never read
             {/if}
           </span>
           <button
             class="btn btn-sm btn-outline normal-case"
-            title="Re-reads Sonarr's library and exclusion list so this page knows what is already there. It is also what notices a series you deleted."
+            title="Re-reads Sonarr's library and exclusion list so this page knows what is already there, and so a series is never added twice."
             on:click={snapshotNow}
             disabled={busy === 'snapshot'}
           >
             {busy === 'snapshot' ? 'Reading...' : 'Re-read Sonarr'}
           </button>
         </div>
+
+        <!-- What has already happened.
+             "We added N" is now sayable because only a 201 from Sonarr writes a
+             `pushed` row. The Custom List version of this line had to say
+             "tracking since", because all it knew was when a snapshot first
+             looked - on a pre-existing library that was one instant shared by
+             every row, and calling it an add date would have misdescribed
+             someone's whole library. `alreadyHeld` stays counted separately for
+             exactly that reason. -->
+        <div class="mt-1 text-xs opacity-50">
+          {#if report.history.ours === 0 && report.history.alreadyHeld === 0}
+            Nothing added yet.
+          {:else}
+            {#if report.history.ours}
+              <b>{report.history.ours}</b> ours
+              <span title="Counted from BOTH the marker tag in Sonarr and our own push record. Neither alone is complete: the record does not follow a new database, and a series since deleted carries no tag.">
+                (tag or record)
+              </span>
+              {#if report.history.lastPushAt}
+                <span title="When we last added a series to Sonarr.">
+                  - last added {new Date(report.history.lastPushAt).toLocaleDateString()}
+                </span>
+              {/if}
+            {:else}
+              None added by us yet
+            {/if}{#if report.history.alreadyHeld},
+              <b>{report.history.alreadyHeld}</b> you already had
+            {/if}{#if report.history.needsAttention},
+              <span class="text-warning"><b>{report.history.needsAttention}</b> need attention</span>
+            {/if}
+          {/if}
+        </div>
       </div>
     </div>
 
     <div>
       {#if !report.sonarr.observed}
-        <span class="font-semibold">Cannot tell what Sonarr would add</span>
-        <span class="text-sm opacity-60">- it has never been read successfully</span>
+        <span class="font-semibold">Cannot tell what would be added</span>
+        <span class="text-sm opacity-60">- Sonarr has never been read successfully</span>
       {:else}
-        <span class="font-semibold">Sonarr would add {byState.willBeAdded}</span>
+        <span class="font-semibold">{byState.willBeAdded} still to add</span>
         {#if byState.willBeAdded}
           <span class="text-sm opacity-60">
             roughly {(incomingEpisodes * GB_MEDIAN).toFixed(0)} GB
@@ -781,30 +988,51 @@
       {/each}
     </div>
 
-    {#if report.suppressed.length}
+    {#if report.pushes.length}
       <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3">
-        <h2 class="font-semibold">Stopped proposing ({report.suppressed.length})</h2>
-        <p class="text-[11px] opacity-40 mb-2">
-          These were added and later deleted from Sonarr. Proposing them again would only make
-          Sonarr re-download them.
-        </p>
-        <ul class="text-sm">
-          {#each report.suppressed as s (s.tvdbId)}
-            <li class="flex items-center gap-2 py-0.5">
-              <span class="flex-1 truncate">{s.title || `tvdb ${s.tvdbId}`}</span>
-              <span class="opacity-50 text-xs">
-                deleted {s.goneAt ? new Date(s.goneAt).toLocaleDateString() : '?'}
+        <details>
+          <summary class="cursor-pointer">
+            <h2 class="font-semibold inline">Everything we have tried ({report.pushes.length})</h2>
+            {#if needsAttention.length}
+              <span class="badge badge-sm badge-error badge-outline ml-2">
+                {needsAttention.length} need attention
               </span>
-              {#if s.anilistId}
-                <button
-                  class="btn btn-xs btn-outline normal-case"
-                  disabled={busy === '/api/sonarr/include'}
-                  on:click={() => post('/api/sonarr/include', { anilistId: s.anilistId, tvdbId: s.tvdbId })}
-                >Propose again</button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+            {/if}
+          </summary>
+          <!-- The two failing statuses are listed first and coloured, because
+               they are the only rows anyone can act on: both mean nothing was
+               added, and both will be retried on the next run. A `bad TVDB id`
+               row is a matching problem, hence the link across. -->
+          <p class="text-[11px] opacity-40 mt-1 mb-2">
+            A series is added once. `added` and `already had` are permanent - deleting the series in
+            Sonarr later does not bring it back here.
+          </p>
+          <ul class="text-sm">
+            {#each pushesSorted as p (p.tvdbId)}
+              <li class="flex items-center gap-2 py-0.5">
+                <span
+                  class="badge badge-sm whitespace-nowrap {STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.cls ?? 'badge-outline'}"
+                >{STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.label ?? p.status}</span>
+                <span class="flex-1 truncate" title={p.title}>{p.title || `tvdb ${p.tvdbId}`}</span>
+                {#if p.lastError && (p.status === 'lookupFailed' || p.status === 'failed')}
+                  <span class="opacity-50 text-xs truncate max-w-[18rem]" title={p.lastError}>
+                    {p.lastError}
+                  </span>
+                {/if}
+                <span class="opacity-50 text-xs whitespace-nowrap">
+                  {p.pushedAt
+                    ? new Date(p.pushedAt).toLocaleDateString()
+                    : p.lastAttemptAt
+                      ? new Date(p.lastAttemptAt).toLocaleDateString()
+                      : ''}
+                </span>
+                {#if p.status === 'lookupFailed'}
+                  <a class="link text-xs whitespace-nowrap" href="/admin/matching">Fix the match</a>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </details>
       </div>
     {/if}
   {/if}
@@ -837,4 +1065,4 @@
       </div>
     </div>
   {/if}
-</div>
+</AdminShell>

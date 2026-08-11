@@ -7,8 +7,13 @@ import { VALID_SEASONS, type Season } from './validateSeason';
 // Pure and I/O-free on purpose: the resolver is injected, so every rule below
 // is unit-testable without a database, a network, or a warm cache. The route
 // (routes/sonarr.ts) holds no judgement at all - it reads SeasonCache, calls
-// this, and serialises. The route's header docstring is where the *why* of the
-// whole feature lives; this file explains only its own predicates.
+// this, and hands the result to the push. The route's header docstring is where
+// the *why* of the whole feature lives; this file explains only its predicates.
+//
+// **Scope only.** This module answers "should we add this?" It does not answer
+// "have we added it already?" - that is `lib/sonarrPush.ts`, which owns the
+// one-and-done record and every reason to skip. Keeping the two apart is what
+// lets a candidate stay a candidate while its push history changes underneath.
 //
 // The question here is SCOPE - which shows do we choose to auto-add - and it is
 // deliberately not the question lib/animeMatch.ts and lib/remoteIdentity.ts
@@ -17,8 +22,8 @@ import { VALID_SEASONS, type Season } from './validateSeason';
 // commented at the predicate.
 // ---------------------------------------------------------------------------
 
-/** One row of the array Sonarr's Custom List consumes. Nothing else is read. */
-export interface SonarrListItem {
+/** One series we intend to add. The tvdbId is the identity; the title is for humans. */
+export interface SonarrPushItem {
   title: string;
   tvdbId: number;
 }
@@ -190,8 +195,9 @@ export function isFirstSeason(entry: SonarrCandidate): boolean {
  *
  * There is **no lower bound**, deliberately. The season scoping is the past-side
  * bound. Evicting a show once it is N days into its run would drop exactly the
- * entries whose TVDB id only appears *after* they premiere - the coverage curve
- * that makes this a list re-polled forever rather than a one-shot sync.
+ * entries whose TVDB id only appears *after* they premiere - id coverage climbs
+ * from ~40% to 94% of TV once a season is airing, which is why the candidate set
+ * is recomputed each run even though each entry is only ever added once.
  */
 export function isWithinAirWindow(
   entry: SonarrCandidate,
@@ -232,8 +238,9 @@ export function usableTvdbId(identity: SonarrIdentity | null | undefined): numbe
 /**
  * English, then romaji, then native.
  *
- * Display only - Sonarr matches on the id and uses this for the list preview,
- * so the goal is simply the name a human will recognise in that preview.
+ * Display only - the add is keyed on the tvdbId and Sonarr uses its own title
+ * from the lookup, so the goal is simply the name a human will recognise on the
+ * admin page and in the push history.
  */
 export function pickTitle(entry: SonarrCandidate): string | null {
   const t = entry.title ?? {};
@@ -251,12 +258,11 @@ export type RejectReason =
   | 'noAnilistId'
   | 'noUsableTvdbId'
   | 'unverifiedNotAcknowledged'
-  | 'deletedAfterAdd'
   | 'duplicateTvdbId'
   | 'noTitle';
 
 export interface SonarrSelection {
-  items: SonarrListItem[];
+  items: SonarrPushItem[];
   /** Every entry that did not make it, with the gate that stopped it. */
   rejected: Array<{ entry: SonarrCandidate; reason: RejectReason }>;
 }
@@ -264,7 +270,7 @@ export interface SonarrSelection {
 /**
  * One force-include row.
  *
- *  exists because an override can outrank the identity
+ * `acknowledgedUnverified` exists because an override can outrank the identity
  * filter, and the only safe version of that is a human who was shown what they
  * were overriding. Absent it, a pending or rejected identity is refused.
  */
@@ -277,21 +283,14 @@ export interface SelectOptions {
   /** Defaults to `DEFAULT_WITHIN_DAYS`. */
   withinDays?: number;
   /**
-   * tvdbIds we must stop proposing because something we added was deleted.
+   * anilistId -> tvdbId. **Bypasses every gate here**, which is how a
+   * deliberately-excluded entry (a full-length ONA, say) becomes a candidate
+   * anyway.
    *
-   * Computed by `lib/sonarrSeen.ts` and passed in, exactly as the resolver is,
-   * so this module stays pure and every rule here remains testable without a
-   * database.
-   */
-  suppressed?: Set<number>;
-  /**
-   * anilistId -> tvdbId. **Bypasses every gate**, including suppression - it is
-   * how a suppression is undone and how a deliberately-excluded entry (a
-   * full-length ONA, say) gets onto the list anyway.
-   *
-   * It lifts a gate; it cannot conjure an entry. The anilistId still has to be
-   * in one of the seasons being served, because the list is season-scoped and
-   * this reads from that same cache.
+   * It lifts a *scope* gate; it cannot conjure an entry, and it does not
+   * override push history - a series already added stays added, and
+   * `lib/sonarrPush.ts` still skips it. The anilistId also has to be in one of
+   * the seasons being considered, because this reads from that same cache.
    */
   forceInclude?: Map<number, ForcedInclude>;
 }
@@ -318,7 +317,7 @@ export function selectForSonarrDetailed(
   opts?: SelectOptions
 ): SonarrSelection {
   const withinDays = opts?.withinDays ?? DEFAULT_WITHIN_DAYS;
-  const items: SonarrListItem[] = [];
+  const items: SonarrPushItem[] = [];
   const rejected: SonarrSelection['rejected'] = [];
   // Several AniList ids legitimately map to one TVDB id - seasons and split
   // cours of one series - and `resolveIdentity` does not dedupe. Measured over
@@ -401,14 +400,6 @@ export function selectForSonarrDetailed(
       drop('noUsableTvdbId');
       continue;
     }
-    // We proposed this, Sonarr held it, and it is gone - so it was deliberately
-    // deleted and must not be proposed back into existence. Reported as a gate
-    // like any other rather than silently subtracted, so the dry run and the
-    // admin page can both show what happened and offer to undo it.
-    if (opts?.suppressed?.has(tvdbId)) {
-      drop('deletedAfterAdd');
-      continue;
-    }
     if (seen.has(tvdbId)) {
       drop('duplicateTvdbId');
       continue;
@@ -427,12 +418,12 @@ export function selectForSonarrDetailed(
   return { items, rejected };
 }
 
-/** Just the list. What the route serves; see `selectForSonarrDetailed`. */
+/** Just the candidates. See `selectForSonarrDetailed` for the rejections too. */
 export function selectForSonarr(
   shows: unknown[],
   resolve: (anilistId: number) => SonarrIdentity,
   now: Date,
   opts?: SelectOptions
-): SonarrListItem[] {
+): SonarrPushItem[] {
   return selectForSonarrDetailed(shows, resolve, now, opts).items;
 }

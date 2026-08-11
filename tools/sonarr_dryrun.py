@@ -1,22 +1,26 @@
 """
-What would the Sonarr Custom List actually do, if we turned it on?
+What would the Sonarr auto-add actually do, if we turned it on?
 
 Read-only. This script never writes to Sonarr, never adds a series, and never
-asks the backend to fetch anything from AniList. It exists so the list can be
-reviewed and argued with *before* Sonarr is ever pointed at the URL - the Sonarr
-docs are blunt about the alternative ("If lists are done improperly they will
-absolutely wreck your library").
+asks the backend to fetch anything from AniList. It exists so the selection can
+be reviewed and argued with *before* anything is added - the Sonarr docs are
+blunt about the alternative ("If lists are done improperly they will absolutely
+wreck your library").
+
+It needs an admin token, minted locally from `backend/.env`. That is new: the
+Custom List had to be readable by Sonarr unauthenticated, and this script rode
+on that route. No Sonarr credentials are needed for either view below.
 
 Two views, because they answer different questions:
 
-  1. "As if we had nothing"  (no credentials needed)
-     Every series the list currently proposes, and - the part that makes it
-     reviewable - **which gate each excluded entry died at**. "39 proposed" tells
-     you nothing; "66 dropped on format, 50 on a PREQUEL/PARENT edge, 37 outside
-     the air window" tells you whether the filter is doing what you think.
+  1. "As if we had nothing"
+     Every series currently a candidate, and - the part that makes it
+     reviewable - **which gate each excluded entry died at**. "39 candidates"
+     tells you nothing; "66 dropped on format, 50 on a PREQUEL/PARENT edge, 37
+     outside the air window" tells you whether the filter is doing what you think.
 
-  2. "Against what we already hold"  (no credentials, and the default)
-     The same list diffed by tvdbId against the **library the backend has
+  2. "Against what we already hold"  (no Sonarr credentials, and the default)
+     The same candidates diffed by tvdbId against the **library the backend has
      already cached** (`AppConfig.jellyfinLibrary`), into: already held - Sonarr
      would say "Rejected, series exists in database" and do nothing - and would
      be added, which is the real blast radius of turning the list on.
@@ -29,14 +33,14 @@ Two views, because they answer different questions:
      Pass --sonarr-url and --api-key to ask Sonarr itself instead, when the
      difference matters.
 
-The reject breakdown comes from `GET /api/sonarr/list?explain=1`, i.e. from the
+The reject breakdown comes from `GET /api/sonarr/report`, i.e. from the
 shipping filter itself. Reimplementing the predicates in Python would be a second
 copy that drifts, and would eventually describe a program we don't ship - the
 mistake `check_match_corpus.py` was built to avoid.
 
 **`/admin/sonarr` is the richer view** and is where you should normally look: it
-adds what Sonarr actually holds and excludes, the suppression list, and orphan
-detection. This script survives because it needs no browser, no login and no
+adds what Sonarr actually holds and excludes, the push history, and orphan
+detection. This script survives because it needs no browser and no
 Sonarr credentials - useful from a terminal, and the only view that still works
 when you have not configured Sonarr at all. Both read the *same* `assemble()` in
 `routes/sonarr.ts`, so the proposal side cannot drift between them; only the
@@ -105,15 +109,48 @@ def size_estimate(proposed: list[dict]) -> tuple[float, float, int]:
     return total_eps * GB_PER_EPISODE_MEDIAN, total_eps * GB_PER_EPISODE_P90, assumed
 
 
-def fetch_explain(backend: str, season: str | None, year: int | None) -> dict:
-    params: dict = {"explain": "1"}
+def admin_token() -> str:
+    """A JWT for ADMIN_USER_ID, signed with the backend's own secret.
+
+    Needed because there is no public Sonarr route any more. The Custom List's
+    `GET /list` was public - Sonarr had to be able to read it unauthenticated -
+    and this script rode on that. Nothing here is public now, which is a better
+    default for a feature that writes to a media server, so the token is minted
+    the same way the test suite does it.
+    """
+    import subprocess
+    script = ("require('dotenv').config();"
+              "const jwt=require('jsonwebtoken');"
+              "const id=parseInt(process.env.ADMIN_USER_ID||'1',10);"
+              "console.log(jwt.sign({id}, process.env.JWT_SECRET||'dev-secret',"
+              "{expiresIn:'10m'}));")
+    repo = Path(__file__).resolve().parents[1]
+    try:
+        r = subprocess.run(["node", "-e", script], cwd=repo / "backend",
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def fetch_report(backend: str, season: str | None, year: int | None) -> dict:
+    """The admin report - the superset of what this script needs.
+
+    Deliberately `/report` and not `/push/preview`: the reject breakdown is the
+    reviewable half of this tool, and the preview carries only the push plan.
+    Both are built from the same `assemble()` in `routes/sonarr.ts`, so nothing
+    here can drift from what actually runs.
+    """
+    tok = admin_token()
+    if not tok:
+        say("Could not mint an admin token - is node available and backend/.env present?")
+        say("Every Sonarr route is admin-only now; there is no unauthenticated view.")
+        sys.exit(1)
+    params: dict = {}
     if season and year:
         params.update(season=season, year=year)
-    r = requests.get(f"{backend}/api/sonarr/list", params=params, timeout=120)
-    if r.status_code == 503:
-        say("The backend is refusing: identity data has not loaded yet (503).")
-        say("That is the endpoint behaving correctly - wait a few seconds and retry.")
-        sys.exit(1)
+    r = requests.get(f"{backend}/api/sonarr/report", params=params,
+                     headers={"Authorization": f"Bearer {tok}"}, timeout=200)
     if r.status_code != 200:
         say(f"Backend returned {r.status_code}: {r.text[:300]}")
         sys.exit(1)
@@ -201,7 +238,7 @@ def main() -> int:
     steps = 4
 
     say(f"[1/{steps}] asking {args.backend} what the list proposes")
-    data = fetch_explain(args.backend.rstrip("/"), args.season, args.year)
+    data = fetch_report(args.backend.rstrip("/"), args.season, args.year)
     proposed = data.get("proposed") or []
     rejected = data.get("rejected") or []
     seasons = data.get("seasons") or []

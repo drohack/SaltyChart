@@ -294,10 +294,10 @@ that don't:
   season blocks on AniList.
 - `/api/jellyfin` - availability, playback, streaming; contracts in
   `backend/CLAUDE.md`.
-- `/api/sonarr` - the Sonarr Custom List. **Unauthenticated**, `generalLimiter`
-  only, and it is consumed by Sonarr rather than by a browser: it must stay a
-  bare `[{title, tvdbId}]` array and must **never trigger a cold AniList
-  fetch**. Contract in `backend/CLAUDE.md`; the argument for every predicate is
+- `/api/sonarr` - the Sonarr auto-add. **Admin-only throughout** (there is no
+  public route; the Custom List that needed one is gone), and the **only place
+  in this codebase that writes to Sonarr**. It must never trigger a cold AniList
+  fetch. Contract in `backend/CLAUDE.md`; the argument for every predicate is
   the docstring of `backend/src/routes/sonarr.ts`.
 
 Routes inside existing routers:
@@ -318,26 +318,42 @@ Every route contract, the SDK's two packaging traps, the availability cache and
 what "direct stream" really costs are in **`backend/CLAUDE.md`**, which loads
 when you work under `backend/`.
 
-### Sonarr Custom List (`/api/sonarr`)
+### Sonarr auto-add (`/api/sonarr`)
 
 The contract is in **`backend/CLAUDE.md`**; the argument behind every predicate
-is the docstring of `backend/src/routes/sonarr.ts`. Two rules stay here, because
+is the docstring of `backend/src/routes/sonarr.ts`. Three rules stay here, because
 both bind from outside `backend/`:
 
-- **The response must stay a bare `[{title, tvdbId}]` array**, and the endpoint
-  must **never trigger a cold AniList fetch**. Sonarr consumes it unattended on a
-  short hardcoded interval - **minutes, not hours** - and cannot tell a truncated
-  list from a complete one.
-- **The scope filter uses relations; the matcher must not.** `lib/sonarrList.ts`
-  drops entries with a `PREQUEL`/`PARENT` edge to decide *what we auto-add* -
-  this is not licence to reintroduce a relation heuristic into *identity*, where
-  it was measured, found wrong, and removed (see *Measure before claiming*).
+- **One add per series, ever.** A terminal `SonarrPush` row (`pushed` or
+  `alreadyHeld`) means that tvdbId is never considered again, so a deletion by
+  Maintainerr or by hand is permanent *without us having to observe it*. The
+  only intended second attempt is a **different** tvdbId arriving from a
+  corrected identity. Do not add a "re-add if missing" path; that is the loop
+  this design exists to remove.
+- **The scope filter uses relations; the matcher must not.**
+  `lib/sonarrSelect.ts` drops entries with a `PREQUEL`/`PARENT` edge to decide
+  *what we auto-add* - this is not licence to reintroduce a relation heuristic
+  into *identity*, where it was measured, found wrong, and removed (see *Measure
+  before claiming*).
+- **It must never trigger a cold AniList fetch.** It reads `SeasonCache` and
+  serves a stale row happily; AniList's ~30/min budget is shared with every
+  viewer.
 
-Before pointing Sonarr at it, run `tools/sonarr_dryrun.py` (read-only, no
-credentials) or open **`/admin/sonarr`**, which adds what Sonarr actually holds.
-Config lives in `AppConfig` (`sonarrUrl`, `sonarrApiKey`, `sonarrTag`) and the
-client (`lib/sonarrApi.ts`) exports **no write verbs at all** - we never delete;
-Maintainerr owns cleanup.
+Before turning it on, run `tools/sonarr_dryrun.py` (read-only, needs a local
+admin token, no Sonarr credentials) or open **`/admin/sonarr`**, which adds what
+Sonarr actually holds. Config lives in `AppConfig` (`sonarrUrl`, `sonarrApiKey`,
+`sonarrTags`, `sonarrMarkerTag`, `sonarrRootFolder`, `sonarrQualityProfileId`,
+`sonarrSeriesType`, `sonarrSeasonFolder`, `sonarrPushEnabled`). The client (`lib/sonarrApi.ts`)
+exports exactly **one write verb, `addSeries`** - no delete, no update, no
+exclusion write. We never remove anything; Maintainerr owns cleanup.
+
+**Why this is a push and not the Custom List it used to be.** A Custom List is a
+declarative set that Sonarr reconciles every ~5 minutes, so anything deleted
+from Sonarr came straight back for as long as its season stayed in scope, and no
+achievable snapshot interval could catch it. Retiring entries from the list
+instead would have been worse: Sonarr's global `listSyncLevel` unmonitors
+library series that fall off every import list, so correctness would have hinged
+on a setting we do not own. The full argument is `lib/sonarrPush.ts`.
 
 ### Matching AniList entries to the library
 
@@ -442,12 +458,11 @@ carries its own limiters: 120 req/min for the JSON endpoints and a separate
 **600 req/min** for `/api/jellyfin/stream/*`, `/subtitles` and `/attachments`
 (HLS playback is a playlist refresh + a segment every few seconds plus seek
 bursts - it must not eat the general budget). `/api/sonarr` deliberately adds
-**no** limiter of its own and inherits `generalLimiter`: Sonarr's Import List
-Sync is a hardcoded ~5-minute task (Sonarr#5927 - **not** the 6 hours an earlier
-version of this file claimed), so ~12 req/hour against 120 req/min is still
-headroom by three orders of magnitude and a dedicated limiter would be a knob
-nobody ever turns. The decision survived the correction; the *reason* did not,
-which is why the number is now sourced rather than asserted.
+**no** limiter of its own and inherits `generalLimiter`, which is now trivially
+sufficient: nothing polls it. It was sized against Sonarr's hardcoded ~5-minute
+Import List Sync (Sonarr#5927 - **not** the 6 hours an even earlier version
+claimed); with the list replaced by a daily push and an admin page, the traffic
+is a handful of requests a day.
 
 ### Error response shape
 
@@ -487,12 +502,17 @@ Every table and column, and why each cached row is persisted, is in
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (static assets), Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword,
-  Randomize, Compare, Admin, AdminMatching (`/admin/matching`). The two admin
-  pages share `components/AdminTabs.svelte`, gated to the admin user via the
-  `isAdmin` flag on `/api/jellyfin/status` (`stores/jellyfin.ts`).
-  **`/admin/matching`** is the human end of the matching pipeline; what it
-  shows and why is in `frontend/CLAUDE.md`, and the resolution rules it fronts
-  are in *Matching AniList entries to the library* above.
+  Randomize, Compare, and **three admin pages** - Admin (`/admin`, Connection),
+  AdminMatching (`/admin/matching`), AdminSonarr (`/admin/sonarr`).
+  **All three render inside `components/AdminShell.svelte`**, which owns the
+  `<main>`, the `Admin` heading, the tab strip and the admin gate (the `isAdmin`
+  flag on `/api/jellyfin/status`, `stores/jellyfin.ts`). Put page-specific
+  chrome in the page and shared chrome in the shell: the three had drifted into
+  three different widths and one of them had no heading or gate at all, which
+  read as three separate areas of the app.
+  **`/admin/matching`** is the human end of the matching pipeline;
+  **`/admin/sonarr`** is the human end of the Sonarr auto-add. What each shows
+  and why is in `frontend/CLAUDE.md`.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
 #### Reading from the API - `src/lib/remote.ts`

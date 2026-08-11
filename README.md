@@ -147,6 +147,34 @@ chronological order; all features listed are live.
   pop-up - so pressing **Watch** only has to start the stream. Skipped entirely
   on metered or 2G connections.
 
+**Sonarr auto-add (optional)**
+- SaltyChart can add each season's **new** anime to Sonarr by itself: TV and
+  TV Short only, first seasons only (nothing with a prequel or parent), from
+  14 days before each show's own premiere.
+- **Each series is added once, and only once.** If you or Maintainerr delete it
+  later, it stays deleted - there is no list for Sonarr to re-read and no way
+  for it to come back. The only thing that gets a second attempt is a series
+  whose TVDB id was wrong and has since been corrected.
+- **Off by default.** Nothing is added until an admin turns it on, and the
+  admin page shows the exact plan first - what would be added, what you already
+  have, what was filtered out and why, and a size estimate.
+- Series land in your chosen root folder and quality profile with season 1
+  monitored and **no search triggered**, so episodes arrive over RSS as they
+  air rather than as a burst of downloads.
+- Everything it adds is tagged (`anime` + `saltychart` by default) so
+  **Maintainerr** can scope its cleanup to exactly these shows. SaltyChart
+  itself can add but never delete or modify - cleanup stays Maintainerr's job.
+- Set up on **/admin** (Connection): Sonarr URL + API key, then root folder and
+  quality profile picked from what your Sonarr actually offers.
+
+**The admin area (site admin only)**
+- **/admin** - Connection: Jellyfin and Sonarr credentials, tested with one
+  click, keys stored server-side and never sent back to a browser.
+- **/admin/matching** - review and correct how AniList entries were matched to
+  your library. A correction is remembered permanently.
+- **/admin/sonarr** - what the auto-add is about to do and what it has already
+  done, with a *Add now* button and a pause switch.
+
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
   version (the `YYYYMMDD-<sha>` image tag) in a tooltip on hover - `dev`

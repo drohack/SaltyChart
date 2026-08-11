@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authToken } from '../stores/auth';
-  import { isAdmin } from '../stores/jellyfin';
   import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
-  import AdminTabs from '../components/AdminTabs.svelte';
+  import AdminShell from '../components/AdminShell.svelte';
 
   // -- Jellyfin config -------------------------------------------------
   // The API key is stored server-side and never sent back to a browser;
@@ -81,13 +80,33 @@
   }
 
   // -- Sonarr config ---------------------------------------------------
-  // Read-only credentials: SaltyChart publishes a Custom List and Sonarr pulls
-  // it. Nothing here can add or delete a series, by construction - the backend
-  // client exports no write verbs at all.
+  // These credentials can now ADD a series - that is the feature. What they
+  // still cannot do is remove or change one: `lib/sonarrApi.ts` exports exactly
+  // one write verb, `addSeries`, and no delete, update or exclusion write.
+  // Cleanup is Maintainerr's. Adding is gated again on /admin/sonarr by a master
+  // switch that defaults off, so saving credentials here never starts anything.
   let snUrl = '';
   let snKey = '';
   let snKeySet = false;
-  let snTag = 'saltychart';
+  let snTags = 'anime, saltychart';
+  let snMarkerTag = 'saltychart';
+  let snRootFolder = '';
+  let snQualityProfileId = 0;
+  let snSeriesType = 'standard';
+  /**
+   * What Sonarr offers, for the two dropdowns. Null until read.
+   *
+   * Dropdowns and not text boxes because `rootFolderPath` has to match one of
+   * Sonarr's own paths exactly - `/media/Anime/` against its `/media/Anime` is
+   * rejected at add time, a long way from where the trailing slash was typed.
+   */
+  let snOptions: {
+    ok: boolean;
+    error?: string;
+    rootFolders?: { path: string }[];
+    qualityProfiles?: { id: number; name: string }[];
+    missingTags?: string[];
+  } | null = null;
   let snSaving = false;
   let snTesting = false;
   let snSaveMsg = '';
@@ -116,12 +135,37 @@
       // "we don't know what's stored" and "nothing is stored" stay distinct.
       snUrl = data.url || DEFAULT_SONARR_URL;
       snKeySet = !!data.apiKeySet;
-      snTag = data.tag ?? 'saltychart';
+      snTags = (data.tags ?? ['anime', 'saltychart']).join(', ');
+      snMarkerTag = data.markerTag ?? 'saltychart';
+      snRootFolder = data.rootFolderPath ?? '';
+      snQualityProfileId = data.qualityProfileId ?? 0;
+      snSeriesType = data.seriesType ?? 'standard';
       snLoadError = '';
+      void loadSonarrOptions();
     } catch {
       // Same trap as the Jellyfin block: blank fields after a failed read look
       // exactly like "nothing is configured".
       snLoadError = "Couldn't load the saved Sonarr configuration - the fields below may be blank for that reason, not because nothing is saved.";
+    }
+  }
+
+  /**
+   * Ask Sonarr what root folders, quality profiles and tags it has.
+   *
+   * Separate from `loadSonarrConfig` and deliberately non-fatal: it talks to
+   * Sonarr, so it fails whenever Sonarr is down, and that must not blank the
+   * credentials form. A failure leaves the dropdowns showing the stored value
+   * with a note, rather than an empty select that reads as "you chose nothing".
+   */
+  async function loadSonarrOptions() {
+    try {
+      snOptions = await apiJson<NonNullable<typeof snOptions>>(
+        '/api/sonarr/config/options',
+        { headers: { Authorization: `Bearer ${$authToken}` } },
+        { label: 'sonarr/config-options', timeoutMs: 30_000 }
+      );
+    } catch {
+      snOptions = { ok: false, error: "Couldn't ask Sonarr for its folders and profiles." };
     }
   }
 
@@ -161,7 +205,15 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
         // Blank URL / key mean "keep the stored one", enforced server-side.
-        body: JSON.stringify({ url: snUrl.trim(), apiKey: snKey || undefined, tag: snTag.trim() }),
+        body: JSON.stringify({
+          url: snUrl.trim(),
+          apiKey: snKey || undefined,
+          tags: snTags.trim(),
+          markerTag: snMarkerTag.trim(),
+          rootFolderPath: snRootFolder,
+          qualityProfileId: snQualityProfileId,
+          seriesType: snSeriesType,
+        }),
       }, { label: 'sonarr/config-save', timeoutMs: QUICK });
       const data = await res.json();
       if (res.ok) {
@@ -252,21 +304,12 @@
 
 </script>
 
-<main class="max-w-2xl mx-auto px-4 flex flex-col gap-6">
-  <h1 class="text-2xl font-bold">Admin</h1>
-  <!-- Only an admin gets the tab strip. A logged-out stranger was shown the
-       "only available to the site admin" notice with working Connection /
-        Matching tabs above it, which is a confusing half-gate - the tabs made no
-        API calls and leaked nothing, but they navigated. -->
-  {#if $authToken && $isAdmin !== false}
-    <AdminTabs current="connection" />
-  {/if}
-
-  {#if !$authToken || $isAdmin === false}
-    <div class="alert alert-warning">
-      <span>This page is only available to the site admin.</span>
-    </div>
-  {:else}
+<AdminShell current="connection">
+  <!-- The frame matches the other admin tabs; only the FORM is narrow, because a
+       credentials form at 1600px is unreadable. Constraining the content rather
+       than the shell is what keeps the heading and tabs in the same place on
+       every tab. -->
+  <div class="flex flex-col gap-6 w-full max-w-2xl">
     <section class="card bg-base-100 shadow">
       <div class="card-body gap-4">
         <h2 class="card-title">Jellyfin</h2>
@@ -453,21 +496,125 @@
         </div>
 
         <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
-          <label class="text-sm opacity-80" for="sn-tag">
-            <span>Import list tag</span>
+          <label class="text-sm opacity-80" for="sn-root">
+            <span>Root folder</span>
+          </label>
+          {#if snOptions?.ok && snOptions.rootFolders?.length}
+            <select id="sn-root" class="select select-bordered w-full" bind:value={snRootFolder}>
+              <option value="">Choose a folder</option>
+              {#each snOptions.rootFolders as f (f.path)}
+                <option value={f.path}>{f.path}</option>
+              {/each}
+            </select>
+          {:else}
+            <input
+              id="sn-root"
+              type="text"
+              class="input input-bordered w-full"
+              placeholder="/media/Anime"
+              autocomplete="off"
+              bind:value={snRootFolder}
+            />
+          {/if}
+          <div class="col-start-2">
+            <span class="label-text-alt opacity-60">
+              Where added series are stored. Must match one of Sonarr's own root folders exactly.
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-profile">
+            <span>Quality profile</span>
+          </label>
+          {#if snOptions?.ok && snOptions.qualityProfiles?.length}
+            <select id="sn-profile" class="select select-bordered w-full" bind:value={snQualityProfileId}>
+              <option value={0}>Choose a profile</option>
+              {#each snOptions.qualityProfiles as p (p.id)}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+          {:else}
+            <input
+              id="sn-profile"
+              type="number"
+              class="input input-bordered w-full"
+              placeholder="Sonarr quality profile id"
+              bind:value={snQualityProfileId}
+            />
+          {/if}
+          <div class="col-start-2">
+            <span class="label-text-alt opacity-60">
+              {#if snOptions && !snOptions.ok}
+                {snOptions.error} Type the id by hand, or fix the connection above and reload.
+              {:else}
+                Applied to every series we add. Changing it later does not touch what is already
+                there.
+              {/if}
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-type">
+            <span>Series type</span>
+          </label>
+          <select id="sn-type" class="select select-bordered w-full" bind:value={snSeriesType}>
+            <option value="standard">Standard</option>
+            <option value="anime">Anime</option>
+          </select>
+          <div class="col-start-2">
+            <span class="label-text-alt opacity-60">
+              How Sonarr matches releases to episodes. <b>Anime</b> enables absolute numbering; get
+              this wrong and episodes download but never import.
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-tags">
+            <span>Tags</span>
           </label>
           <input
-            id="sn-tag"
+            id="sn-tags"
+            type="text"
+            class="input input-bordered w-full"
+            placeholder="anime, saltychart"
+            autocomplete="off"
+            bind:value={snTags}
+          />
+          <div class="col-start-2">
+            <span class="label-text-alt" class:text-warning={snOptions?.missingTags?.length}
+                  class:opacity-60={!snOptions?.missingTags?.length}>
+              {#if snOptions?.missingTags?.length}
+                Sonarr has no tag called {snOptions.missingTags.join(' or ')} - create it there
+                first, or nothing will be added.
+              {:else}
+                Applied to every series we add. Each must already exist in Sonarr; we never create
+                tags.
+              {/if}
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-[7rem,1fr] items-center gap-x-3">
+          <label class="text-sm opacity-80" for="sn-marker">
+            <span>Marker tag</span>
+          </label>
+          <input
+            id="sn-marker"
             type="text"
             class="input input-bordered w-full"
             placeholder="saltychart"
             autocomplete="off"
-            bind:value={snTag}
+            bind:value={snMarkerTag}
           />
           <div class="col-start-2">
             <span class="label-text-alt opacity-60">
-              Must match the tag on Sonarr's import list. A mismatch is silent - the
-              <a class="link" href="/admin/sonarr">Sonarr page</a> shows how many carry it.
+              The one tag that means <em>we</em> added it - what Maintainerr scopes on, and a record
+              that survives losing the database. Always applied, whether or not it is listed above.
+              Keep it dedicated: a shared tag like <code>anime</code> would mark most of your
+              library as ours.
             </span>
           </div>
         </div>
@@ -501,5 +648,5 @@
         {/if}
       </div>
     </section>
-  {/if}
-</main>
+  </div>
+</AdminShell>

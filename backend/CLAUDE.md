@@ -227,55 +227,60 @@ Routes (contracts here; each guard's story is commented at its code):
   still named via the identify-by-ProviderIds search. Never on a viewer's
   path; reads only cached data.
 
-## Sonarr Custom List (`/api/sonarr`)
+## Sonarr auto-add (`/api/sonarr`)
 
-Sonarr pulls seasonal anime from us; we never push to it, and **no Sonarr
-credentials exist anywhere in the service**. The full argument for every
-predicate - why whole first seasons rather than pilots, why `pending` is
-excluded, why relations decide scope but never identity - is the docstring of
-`backend/src/routes/sonarr.ts`, and that is its one home. What matters here is
-the contract.
+We add seasonal anime to Sonarr with `POST /api/v3/series`, **once per series,
+ever**. The full argument for every predicate - why whole first seasons rather
+than pilots, why `pending` is excluded, why relations decide scope but never
+identity - is the docstring of `backend/src/routes/sonarr.ts`, and that is its
+one home. What matters here is the contract.
 
-**Exactly one route in `routes/sonarr.ts` is public** (`GET /list`); every other
-carries `requireAuth` + `requireAdmin`, and a mutation row proves it. A public
-router that quietly grows admin data is the trap, and `/report` carries what
-Sonarr holds.
+**Every route carries `requireAuth` + `requireAdmin`**, and a mutation row proves
+it. There is no public route: the one that existed, `GET /list`, was the Custom
+List Sonarr polled and it went away with the list.
 
-**Sonarr re-reads the list every few minutes, not every 6 hours.** Import List
-Sync is a hardcoded ~5-minute task and is not configurable the way Radarr's List
-Update Interval is (Sonarr#5927). An earlier version of these docs said 6 hours;
-it was wrong in eight places and it mattered twice - it understated the rate-limit
-headroom, and it implied our snapshot could notice a deletion before Sonarr
-re-added it. **It cannot.** Confirm the figure for the installed version in
-Sonarr -> System -> Tasks before quoting one.
+**This replaced a Custom List, and the reasoning is not re-litigable without new
+measurement.** A Custom List is a declarative set that Sonarr reconciles on a
+hardcoded ~5-minute Import List Sync (Sonarr#5927), so a series deleted from
+Sonarr was re-added on the next poll for as long as its season stayed in scope -
+3 to 6 months, since `isWithinAirWindow` stays true once a show has aired.
+Watching for the deletion could never fix it: the snapshot is hourly against a
+5-minute poll, so a still-listed series is only ever seen *held*. Retiring
+entries from the list instead would have been worse - Sonarr's
+`config/importlist.listSyncLevel` is **global** (shared with every other import
+list) and unmonitors library series that fall off all of them, with an open bug
+where dropping one unmonitors all (Sonarr#7555). Measured on the live instance
+2026-08-10 it is `disabled`, but correctness would have depended on a setting we
+do not own. `lib/sonarrPush.ts` holds this argument at the code.
 
-- `GET /list` - **unauthenticated**, `generalLimiter` only. Returns a **bare
-  `[{title, tvdbId}]` array**, which is the only shape Sonarr's Custom List
-  import accepts; wrapping it in an object parses as zero series and reads as a
-  list that silently adds nothing. Optional `?season=&year=` (both or neither,
-  else 400) pins a season for the test and the dry run; the default is the
-  calendar season plus the next.
+- `GET /push/preview` - admin; what a push would do, **writing nothing**:
+  `toPush`, `deferred` (held back by the cap), `skipped` (each with its reason),
+  `problems` (setup still outstanding), `enabled`, `cap`. It does *not* perform
+  the TVDB lookup - that is one round trip per candidate and this is a page load
+  - so a bad id surfaces as a `lookupFailed` row after a real push instead.
+- `POST /push` - admin, and **the only thing in this codebase that writes to
+  Sonarr**. Gated in order: the master switch, then config completeness, then tag
+  resolution; each refuses before a single `POST /api/v3/series` goes out.
+  Per series it does `GET /api/v3/series/lookup?term=tvdb:<id>` (the validity
+  check, and the source of the object we post - hand-building it means guessing
+  at fields that change between versions) then the add.
 - `GET /report` - **admin**; everything `/admin/sonarr` renders, in one payload:
-  proposals with a `state` (`willBeAdded` / `addedByUs` / `heldAlready` /
-  `excludedInSonarr` / `unknown`), the per-gate rejection breakdown, suppressions
-  and orphans. **It degrades rather than failing** - with Sonarr unreachable it
-  still returns the whole proposal side with `sonarr.reachable: false`, because
-  an outage is exactly when someone opens the page. The UI must not collapse
-  `unknown` into zero: "couldn't ask" is not "nothing to do" (the headline did
-  exactly that once and was caught in a browser, not by any test).
-- `POST /snapshot` - admin; runs the snapshot now. `GET/PUT /config`,
-  `POST /config/test`, `POST`/`DELETE /include` - admin.
-- `GET /list?explain=1` - the same computation with `proposed`, `rejected` (each
-  carrying the **gate that stopped it**) and `counts`. An **object**, so it can
-  never be mistaken for the list. It exists so `tools/sonarr_dryrun.py` doesn't
-  reimplement the filter in Python - a second copy would drift and start
-  describing a program we don't ship.
-- **503 `UPSTREAM_ERROR` + `Retry-After` when `identityReady()` is false**, never
-  an empty array. Before the community map loads every lookup returns "no id"
-  for the wrong reason, and Sonarr has no way to tell a truncated list from a
-  complete one - a 503 at least lands in its log. The window is too narrow to
-  race from a test (the map comes from `AppConfig`), so it is verified by hand:
-  force `identityReady()` false, confirm the 503, revert.
+  candidates with a `state` (`willBeAdded` / `addedByUs` / `pushedAlready` /
+  `heldAlready` / `excludedInSonarr` / `lookupFailed` / `failed` / `unknown`),
+  the per-gate rejection breakdown, the push log and orphans. **It degrades
+  rather than failing** - with Sonarr unreachable it still returns the whole
+  candidate side with `sonarr.observed: false`, because an outage is exactly when
+  someone opens the page. The UI must not collapse `unknown` into zero:
+  "couldn't ask" is not "nothing to do" (the headline did exactly that once and
+  was caught in a browser, not by any test).
+- `PUT /enabled` - admin; the master switch, **`sonarrPushEnabled`, default
+  off**. Deliberately a new key rather than a rename of the list era's
+  `sonarrListEnabled`: reusing it would have inherited an existing `true` and
+  turned a list that merely *offered* series into a job that *adds* them, on the
+  first restart after deploy, with nobody having chosen that.
+- `POST /snapshot` - admin; caches what Sonarr holds. `GET/PUT /config`,
+  `GET /config/options` (root folders, quality profiles and tags for the setup
+  dropdowns), `POST /config/test`, `POST`/`DELETE /include` - admin.
 - **Reads `SeasonCache` only, and never calls `startColdFetch()`.** It serves a
   stale row happily; freshness is irrelevant here, which is also why there is no
   second copy of `SEASON_TTL_SECONDS` to drift. A never-fetched season simply
@@ -283,7 +288,41 @@ Sonarr -> System -> Tasks before quoting one.
   means "asked, nothing yet" rather than "not cached". It reads the `''` format
   key - the `'TV'` row would silently drop every TV_SHORT.
 
-The selection itself is `lib/sonarrList.ts`: pure, I/O-free, resolver injected,
+**What Sonarr decides vs what we send.** Under the Custom List, Monitor, Series
+Type, root folder, quality profile and tags were all the import list's settings,
+typed in by hand and unverifiable from here. We send them now, which is the other
+reason the push is better: `addOptions.monitor: 'firstSeason'` is the locked
+"whole first season" decision expressed directly, rather than depending on
+someone setting `shouldMonitor` correctly. `searchForMissingEpisodes` is **off** -
+for an upcoming season there is nothing to search for and RSS picks episodes up
+as they air; an already-`FINISHED` entry therefore sits in Sonarr until someone
+hits Search, which `/admin/sonarr` says out loud.
+
+**Tags must already exist in Sonarr.** Labels are resolved to ids with
+`sonarrTags()` and a missing one **blocks the push** rather than adding untagged.
+Creating them would mean a second write verb, and an untagged series is invisible
+to Maintainerr's scoping - a failure that would only surface as a cleanup that
+quietly did nothing.
+
+**One of those tags is the marker, and only it means "we added this".**
+`sonarrMarkerTag` (default `saltychart`) is forced into the applied set on both
+read and save, so nothing we add can lack it. The others are shared library
+conventions and must never be read as ownership: `anime` is applied too and sits
+on **692 series** here, so a version that asked "does it carry any of our tags"
+reported two shows the owner had for years as ours. Measured on the live instance
+2026-08-10, and it has its own mutation row.
+
+**The marker is a second, independent record of what we added, and it exists
+because `SonarrPush` is not enough.** A database does not follow you from dev to
+production and does not survive a restore from an old backup; the tag lives in
+Sonarr beside the series. Neither source is complete on its own - the record
+misses anything added before that database existed, the tag misses anything since
+deleted (a series that is gone carries no tag) - so `history.ours` is their
+**union**, and `history.pushed` / `history.tagged` are reported separately so a
+reader can see which one is talking. Hand-tagging a series is therefore a
+legitimate way to say "this one is ours".
+
+The selection itself is `lib/sonarrSelect.ts`: pure, I/O-free, resolver injected,
 so every predicate is unit-tested without a DB. The identity filter is
 **`tvdbId && !pending && !rejected`** - deliberately not `confirmed`, since a
 community-map row is unconfirmed by construction and requiring confirmation
@@ -329,49 +368,91 @@ Measured 2026-08-10: the **automatic** list is already clean - 30 `map` +
 If a proposed row ever grades `weak`, the filter has regressed, and
 `test_sonarr.py` step 9 fails on exactly that.
 
-### Closing the re-add loop
+### What the history line can honestly say
 
-Delete a series from Sonarr without an Import List Exclusion and our list
-proposes it again - so Sonarr re-grabs it, every few minutes, forever.
+`SonarrPush` is the record of what has already happened, and **only a 201 from
+Sonarr writes a `pushed` row**. That, plus the marker tag described above, is
+what makes "we added N" sayable at all.
 
-`lib/sonarrSeen.ts` observes it: *we proposed it, Sonarr held it, it is gone.*
-Nobody deletes by accident, so that is enough to stop proposing it, with no
-human step and no dependence on anyone remembering the checkbox. `SonarrSeen`
-(`goneAt != null` **is** the suppression) and `SonarrInclude` (the force-include
-overlay, the only override direction - "never add this" is Sonarr's exclusion,
-which is global and beats us) are both created by the raw SQL in `index.ts`.
+The Custom List era could not say it. Its record was `SonarrSeen.firstHeldAt`,
+which meant "when a snapshot first *observed* this held" - measured on this
+deployment, all 36 rows shared a single `firstHeldAt`, the instant the first
+snapshot ran, for a library owned for months. Rendering that as an add date
+would have been a confident, plausible lie about someone's own library, and the
+header had to say "tracking since" instead.
 
-- **This cannot beat the poll.** By the time an hourly snapshot notices, Sonarr
-  has re-added. Its honest value is bounding an *unbounded* loop to *one extra
-  grab*, which is why **Maintainerr's `listExclusions` is mandatory, not
-  advisory** - Sonarr's own exclusion is the primary defence.
-- **A failed or empty read of `/api/v3/series` must never suppress anything.**
-  "Could not ask" is not "everything was deleted", and one bad read would
-  otherwise retire the whole list permanently while looking exactly like success.
-  Both have their own mutation row; the guards were driven end to end against a
-  stand-in Sonarr (39 items -> 38 on a real deletion, still 38 on an empty read).
-- **Suppression keys on having been held, not on the tag.** Otherwise deleting a
-  hand-added show lets us re-acquire it: we propose it, Sonarr adds it, and only
-  then tags it.
-- **Orphans need a human.** Correct an identity after Sonarr already added the
-  wrong series and it keeps the wrong one while grabbing the right one. We only
-  ever read from Sonarr, so `/admin/sonarr` names the deletion to make by hand.
+`history.alreadyHeld` stays a **separate** count for the same reason: those
+series were in Sonarr before we got there. A mutation row guards the tempting
+simplification - count every *tagged* series rather than only marker-tagged ones -
+which would claim credit for the entire library.
 
-### What has to be set in Sonarr, not here
+`lookupFailed` and `failed` are the actionable statuses. Both mean nothing was
+added and both are retried, so a row that persists is a real problem: a
+`lookupFailed` is a wrong TVDB id, which is a `/admin/matching` job.
 
-**The payload is only `[{title, tvdbId}]`.** Everything about *how* a series is
-added lives on the import list in Sonarr, and none of it can be sent from this
-side. When the list is first pointed at Sonarr, set:
+### One add per series, and what that replaced
 
-| setting | value |
-|---|---|
-| Quality Profile | the 720p-preferring profile |
-| Series Type | Anime |
-| Monitor | All Episodes |
-| Monitor New Seasons | None |
-| Root Folder | the anime folder |
-| Tags | `saltychart` (must match `sonarrTag`) |
-| Automatic add / Search on add | **OFF** for the first run |
+A terminal row (`pushed` or `alreadyHeld`) means we never consider that tvdbId
+again. Deletion by Maintainerr, by hand, for any reason - it stays gone, and
+crucially **we do not have to observe the deletion for that to hold**. The old
+design did, and could not: it needed to catch a delete before Sonarr's ~5-minute
+poll re-added it, from an hourly snapshot.
+
+- **Retries exist only where nothing was added.** `lookupFailed` (Sonarr does not
+  know the id) and `failed` (Sonarr unreachable, or refused) stay retryable,
+  because both are fixable and neither left anything behind. A corrected identity
+  produces a *different* tvdbId, which has no terminal row and pushes fresh -
+  that is the only intended second attempt, and it falls out of keying on tvdbId.
+- **`alreadyExists` from Sonarr is terminal, not a failure.** The held set comes
+  from a cached snapshot, so a series added between snapshots answers 400 "already
+  been added". Recording that as failed would leave it retryable and it would be
+  retried on every run for ever - the same infinite loop arriving through the
+  error path. `classifyAddError` is pure and unit-tested for exactly this.
+- **A failed or empty read of `/api/v3/series` must never be trusted.** "Could
+  not ask" is not "the library is empty", and taking an empty read at face value
+  would make every held series look like a new candidate - a burst of duplicate
+  adds. The push refuses outright without a trusted snapshot. (Consequence worth
+  knowing: a genuinely empty Sonarr also reads as "could not ask", so a brand new
+  install needs that guard revisited before its first push.)
+- **Sonarr's Import List Exclusion is honoured but not required.** It does not
+  bind `POST /api/v3/series` - an explicit add succeeds regardless - so we skip
+  anything on it as a human's stated intent. Maintainerr writing one on reap is
+  now belt-and-braces; it was mandatory only because the list would otherwise
+  have re-added things.
+- **Orphans need a human.** Correct an identity after we already added the wrong
+  series and Sonarr keeps the wrong one while we add the right one. We have no
+  delete verb, so `/admin/sonarr` names the deletion to make by hand.
+
+### How Sonarr gets this, and what we decide for it
+
+One connection, one direction:
+
+```
+  SaltyChart  --(GET /api/v3/series/lookup, POST /api/v3/series)-->  Sonarr
+```
+
+Configuring Sonarr's URL + API key on `/admin` is now the whole wiring. **No
+Import List is created in Sonarr**, and any left over from the Custom List era
+should be deleted - it would keep re-adding whatever it last read.
+
+**Setting it up**, all on `/admin` -> Connection:
+
+| field | value | why |
+|---|---|---|
+| URL + API key | Sonarr -> Settings -> General -> API Key | the same key does the lookup and the add |
+| Root folder | the anime share | must match one of Sonarr's own paths exactly; a dropdown for that reason |
+| Quality profile | the anime profile | applied to every series we add |
+| Series type | Standard | how releases are matched to episodes; Anime enables absolute numbering |
+| Tags | `anime, saltychart` | **must already exist in Sonarr**; all are applied to every add |
+| Marker tag | `saltychart` | the one that means *we* added it, and what Maintainerr scopes on; always applied |
+
+Measured on the live instance 2026-08-10: root folders `/media/TV Shows` and
+`/media/Anime`; tags `anime` (5, on 692 series) and `saltychart` (37) both
+present.
+
+**Monitoring and search are ours to send**, and are not configurable per
+deployment on purpose: `addOptions.monitor: 'firstSeason'` (the Seerr
+`PARTIALLY_AVAILABLE` rule above) and `searchForMissingEpisodes: false`.
 
 **A quality profile invalidates the size estimate.** The 0.38 GB median comes
 from the current mixed-quality library, so under a 720p-only profile the page

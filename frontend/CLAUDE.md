@@ -175,14 +175,24 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
 
-**`/admin/sonarr`** - what the Sonarr Custom List is about to do. A separate
-page from `/admin/matching` on purpose: that one asks **identity** (which real
+**The three admin pages share `components/AdminShell.svelte`** - one `<main>`,
+one `Admin` heading, one tab strip, one admin gate. They previously had three
+different widths (`max-w-2xl`, `max-w-[100rem]`, `w-full sm:w-3/4`), and the
+Sonarr one used a bare `<div>` with no heading and **no gate**, so a non-admin
+got a load error where the others say plainly that the page is admin-only.
+Tabbing resized the content and dropped the title. **The frame is one width for
+all three**; a page wanting narrow content constrains its own children (the
+Connection form caps its cards at `max-w-2xl`) - making width a shell prop just
+moved the inconsistency up a level.
+
+**`/admin/sonarr`** - what is about to be added to Sonarr, and what already was.
+A separate page from `/admin/matching` on purpose: that one asks **identity** (which real
 series is this - permanent), this one asks **scope** (do we auto-add it, and what
 is about to be grabbed - constantly changing). The backend keeps the two apart
 for the same reason. What lives nowhere else:
 
 - **The headline must never collapse "couldn't ask" into zero.** With Sonarr
-  unreachable it says *"Can't tell what would be added"*, not "0 will be added" -
+  unreachable it says *"Cannot tell what would be added"*, not "0 still to add" -
   the latter reads as "nothing is about to happen", which is the worst available
   misreading. The first version did exactly that and was caught in a browser,
   with the build and svelte-check both green. Same discipline as `unknown` on the
@@ -220,13 +230,34 @@ for the same reason. What lives nowhere else:
   - the same ladder the Watch pop-up's correction picker uses, so the two
   surfaces cannot drift on what "certain" means. `weak` and `viewerPick` are
   warning-coloured because those are the ones that can be wrong.
+- **"Ours" is counted from BOTH the marker tag and our own push record**, and the
+  line says so, because neither is complete: the record does not follow a new
+  database, and a series since deleted carries no tag. It must be the *marker*
+  tag (`saltychart`) and never any of our applied tags - we apply `anime` too,
+  and `anime` is on 692 series here, so "any tag" rendered two shows the owner
+  had for years as ours. Hand-tagging a series is a legitimate way to claim it.
+- **The history line may say "added by us" only because a `pushed` row needs a
+  201 from Sonarr.** The Custom List version could not: its date was when the
+  page first *read* your library, which on a pre-existing library every row
+  shared, so "added" would have misdescribed the whole collection. "You already
+  had" stays a separate count for the same reason, and the line reads "None added
+  by us yet" rather than a bare 0, because 0 there means the job has never run.
+- **A series added once never reappears as pending.** `pushedAlready` is read
+  from our own record, not the live library, so a series you later delete keeps
+  saying "added by us" instead of drifting back to "will be added". If it ever
+  does drift back, the one-and-done guarantee has broken.
+- **"Everything we have tried" lists the failures first.** `bad TVDB id` and
+  `add failed` both mean nothing was added and both retry, so they are the only
+  rows anyone can act on - burying them under a hundred successful adds is how a
+  persistent bad id goes unnoticed for a season. A `bad TVDB id` row links to
+  `/admin/matching`, because that is where it gets fixed.
 - **An unverified row's button reads "Include anyway" and opens a confirm** that
   names the grade and what the id matched against - a generic "are you sure" is
   noise, whereas *"matched against Unanswered//butterfly"* is judgeable. The
   backend 409s regardless (`UNVERIFIED_MATCH`); the dialog exists so the click is
   informed, not so it is possible. A UI that forgot to ask would still be safe.
-- The season picker is a **what-if**: it previews any season while Sonarr is
-  still served the current one and the next, and the banner says so. Its
+- The season picker is a **what-if**: it previews any season while the job still
+  works from the current one and the next, and the banner says so. Its
   `on:change` handler splits the value **inside `load()`**, not in a `$:`
   statement - reactive declarations have not flushed when the handler runs, which
   produced `?season=&year=NaN` and a 400.
