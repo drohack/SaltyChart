@@ -107,6 +107,7 @@
     qualityProfiles?: { id: number; name: string }[];
     missingTags?: string[];
   } | null = null;
+  let snOptionsLoading = false;
   let snSaving = false;
   let snTesting = false;
   let snSaveMsg = '';
@@ -158,6 +159,7 @@
    * with a note, rather than an empty select that reads as "you chose nothing".
    */
   async function loadSonarrOptions() {
+    snOptionsLoading = true;
     try {
       snOptions = await apiJson<NonNullable<typeof snOptions>>(
         '/api/sonarr/config/options',
@@ -166,8 +168,21 @@
       );
     } catch {
       snOptions = { ok: false, error: "Couldn't ask Sonarr for its folders and profiles." };
+    } finally {
+      snOptionsLoading = false;
     }
   }
+
+  /**
+   * The two pickers are only usable once Sonarr has told us what it offers.
+   *
+   * Both values must match Sonarr exactly - a root folder it does not have is
+   * rejected at add time, which is a long way from where the typo was made - so
+   * "choose from what exists" is the only safe input. Until then they are
+   * disabled rather than free text.
+   */
+  $: snFoldersReady = !!snOptions?.ok && !!snOptions.rootFolders?.length;
+  $: snProfilesReady = !!snOptions?.ok && !!snOptions.qualityProfiles?.length;
 
   onMount(() => {
     void loadConfig();
@@ -189,6 +204,12 @@
         },
         { label: 'sonarr/config-test', timeoutMs: 30_000 }
       );
+      // A green test means these credentials work, so the folder and profile
+      // lists can be fetched with them right now. Doing it here is what stops
+      // the pickers staying greyed out until someone thinks to reload the page.
+      // Save first if the URL or key changed: /config/options reads the STORED
+      // config, not what is typed in the boxes.
+      if (snTestResult?.ok) await loadSonarrOptions();
     } catch {
       snTestResult = { ok: false, error: "Couldn't reach the backend to run the test." };
     } finally {
@@ -499,23 +520,34 @@
           <label class="text-sm opacity-80" for="sn-root">
             <span>Root folder</span>
           </label>
-          {#if snOptions?.ok && snOptions.rootFolders?.length}
-            <select id="sn-root" class="select select-bordered w-full" bind:value={snRootFolder}>
-              <option value="">Choose a folder</option>
-              {#each snOptions.rootFolders as f (f.path)}
+          <!-- Always a <select>, never a free-text fallback. The value has to
+               match one of Sonarr's own paths exactly, so a box you can type
+               anything into only produces a setting that fails at add time,
+               a long way from where it was typed. Disabled until we have the
+               real list. -->
+          <div class="flex items-center gap-2">
+            <select
+              id="sn-root"
+              class="select select-bordered w-full"
+              disabled={!snFoldersReady}
+              bind:value={snRootFolder}
+            >
+              {#if snRootFolder && !snFoldersReady}
+                <!-- Keep the stored value visible while disabled: blanking it
+                     would read as "nothing is configured", which is the same
+                     lie the failed-config-read guard above exists to prevent. -->
+                <option value={snRootFolder}>{snRootFolder}</option>
+              {:else}
+                <option value="">{snOptionsLoading ? 'Loading...' : 'Choose a folder'}</option>
+              {/if}
+              {#each snOptions?.rootFolders ?? [] as f (f.path)}
                 <option value={f.path}>{f.path}</option>
               {/each}
             </select>
-          {:else}
-            <input
-              id="sn-root"
-              type="text"
-              class="input input-bordered w-full"
-              placeholder="/media/Anime"
-              autocomplete="off"
-              bind:value={snRootFolder}
-            />
-          {/if}
+            {#if snOptionsLoading}
+              <span class="loading loading-spinner loading-sm" aria-label="Loading folders"></span>
+            {/if}
+          </div>
           <div class="col-start-2">
             <span class="label-text-alt opacity-60">
               Where added series are stored. Must match one of Sonarr's own root folders exactly.
@@ -527,26 +559,29 @@
           <label class="text-sm opacity-80" for="sn-profile">
             <span>Quality profile</span>
           </label>
-          {#if snOptions?.ok && snOptions.qualityProfiles?.length}
-            <select id="sn-profile" class="select select-bordered w-full" bind:value={snQualityProfileId}>
-              <option value={0}>Choose a profile</option>
-              {#each snOptions.qualityProfiles as p (p.id)}
+          <div class="flex items-center gap-2">
+            <select
+              id="sn-profile"
+              class="select select-bordered w-full"
+              disabled={!snProfilesReady}
+              bind:value={snQualityProfileId}
+            >
+              <option value={0}>{snOptionsLoading ? 'Loading...' : 'Choose a profile'}</option>
+              {#each snOptions?.qualityProfiles ?? [] as p (p.id)}
                 <option value={p.id}>{p.name}</option>
               {/each}
             </select>
-          {:else}
-            <input
-              id="sn-profile"
-              type="number"
-              class="input input-bordered w-full"
-              placeholder="Sonarr quality profile id"
-              bind:value={snQualityProfileId}
-            />
-          {/if}
+            {#if snOptionsLoading}
+              <span class="loading loading-spinner loading-sm" aria-label="Loading profiles"></span>
+            {/if}
+          </div>
           <div class="col-start-2">
             <span class="label-text-alt opacity-60">
-              {#if snOptions && !snOptions.ok}
-                {snOptions.error} Type the id by hand, or fix the connection above and reload.
+              {#if snOptionsLoading}
+                Asking Sonarr what it offers...
+              {:else if snOptions && !snOptions.ok}
+                {snOptions.error} Press <b>Test Connection</b> once the URL and key are right - the
+                folder and profile lists fill in from Sonarr itself.
               {:else}
                 Applied to every series we add. Changing it later does not touch what is already
                 there.
