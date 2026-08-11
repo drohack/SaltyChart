@@ -289,6 +289,32 @@ MUTATIONS: list[Mutation] = [
         guards="a series Sonarr already holds is retried on every run for ever",
     ),
     Mutation(
+        name="every skip is recorded, not just the ones Sonarr already holds",
+        path=BACKEND_SONARR_PUSH,
+        # Recording an EXCLUSION as terminal would outlive the decision behind
+        # it: a Sonarr Import List Exclusion can be lifted there, and a row here
+        # would keep refusing the series long after someone changed their mind.
+        find="    if (s.reason !== 'alreadyHeld') continue;",
+        replace="    /* mutation: every skip recorded */",
+        test=T_UNIT,
+        expect="a terminal row would outlive the human decision behind it",
+        guards="lifting an exclusion in Sonarr silently does nothing, because we "
+               "pinned our own permanent refusal the first time we saw it",
+    ),
+    Mutation(
+        name="a series Sonarr no longer holds is still reported as an orphan",
+        path=BACKEND_SONARR_PUSH,
+        # An orphan is a deletion to make BY HAND - we have no delete verb. One
+        # named for a series that is already gone asks someone to act on nothing,
+        # which is how a real orphan later gets ignored.
+        find="    if (!held.has(row.tvdbId)) continue;",
+        replace="    /* mutation: gone series still count */",
+        test=T_UNIT,
+        expect="only a series still held can need deleting",
+        guards="the page tells you to delete series that are not there, and the "
+               "real ones stop being believed",
+    ),
+    Mutation(
         name="the run cap discards its overflow instead of deferring it",
         path=BACKEND_SONARR_PUSH,
         # `slice(0, 100)` on a 128-entry season once made a review page report
