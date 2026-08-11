@@ -359,6 +359,19 @@ def main():
 
     # --------- 8/9  /report degrades rather than failing ---------
     step(8, "/report returns the candidate side even without Sonarr")
+    # Refresh the snapshot FIRST, so the tag numbers asserted below are computed
+    # by the code under test rather than read from a cache written before it.
+    # Without this the marker-tag assertion is unauditable: its mutation lives in
+    # `runSonarrSnapshot`, which a report-only test never executes, so the row
+    # reported SURVIVED while the assertion itself was perfectly good.
+    #
+    # It costs one real read of Sonarr's library (~15 s here) and is the only
+    # coverage the snapshot path has. Tolerated failure: an unreachable Sonarr
+    # leaves the cached values in place and the tag assertions below skip.
+    try:
+        requests.post(f"{backend}/api/sonarr/snapshot", headers=auth, timeout=120)
+    except requests.RequestException:
+        pass
     rr = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=120)
     if rr.status_code != 200:
         fail(8, f"expected 200, got {rr.status_code} {rr.text[:200]} - the report "

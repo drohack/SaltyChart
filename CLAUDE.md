@@ -240,8 +240,19 @@ whether or not that skill is loaded:
   also serves Plex and Jellyfin.
 - **`mutation_audit.py` is NOT a gate.** It edits tracked source, restarts the
   backend twice per row and starts real transcodes. Run it when you changed a
-  test or the code a row points at - `--only N` makes checking one cheap. Last
-  measured: **86 rows in 21 min** (2026-08-06), a full run of the whole table.
+  test or the code a row points at - `--only 3,7,12` (one comma-separated list;
+  repeating the flag silently keeps only the last) makes checking a few cheap.
+  Last measured: **86 rows in 21 min** (2026-08-06), a full run of the whole
+  table.
+- **Restart the dev backend before an audit run, and again after one.** Its
+  `git checkout --` restore replaces the file, and ts-node-dev's watcher on
+  Windows loses track of it - the process then serves whatever it last compiled
+  no matter what is on disk. This cost two false results in one session: a row
+  reported `SURVIVED` while the backend had never run the mutation at all (read
+  as a security hole in the admin gate; it was caught in 3 s after a restart),
+  and a later test failed on a *clean* tree because the process was still
+  running the previous row's mutation. **A `SURVIVED` on a backend row is not a
+  finding until you have re-run it against a freshly started backend.**
 - **A test run must never provoke a live AniList 429.** The 429/backoff logic is
   unit-tested off the network. Warm the cache first; both runners do it
   automatically and refuse to start if a season key can't be fetched, because a
