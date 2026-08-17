@@ -21,6 +21,21 @@ model User {
   password  String   // hashed with bcrypt
   createdAt DateTime @default(now())
 
+  /// Recovery address. Deliberately NOT unique - a household may share one, and
+  /// nothing ever looks a user up by it (reset is keyed on username).
+  email           String?
+  /// Non-null is the entire protection rule: an account with a *verified*
+  /// address can only be reset through an emailed code. An unverified address
+  /// must never count, or a typo makes the account permanently unresettable.
+  emailVerifiedAt DateTime?
+  /// Replaces the `ADMIN_USER_ID` env comparison. Admins are symmetric peers;
+  /// the only invariant is that demote/delete never leave zero of them.
+  isAdmin         Boolean   @default(false)
+  /// Bumped on every password change so live JWTs stop working. A token with no
+  /// `v` claim reads as 0 - this default - which is what keeps the hand-minted
+  /// admin tokens in `tools/` valid.
+  tokenVersion    Int       @default(0)
+
   lists     WatchList[]
   /// Optional one-to-one link to user settings
   settings  Settings?
@@ -81,6 +96,31 @@ model Settings {
   // /api/users filters by hideFromCompare on every request; index turns a
   // table scan into an index lookup.
   @@index([hideFromCompare])
+}
+
+/// Short-lived one-time codes for password reset and email verification.
+///
+/// **Deliberately carries no Prisma relation to User.** A relation would invite
+/// a cascade, and SQLite cannot alter a foreign key in place - adding one later
+/// means rebuilding a live table. Deleting a user clears these rows explicitly
+/// instead, in the same transaction as the lists and settings.
+model AuthCode {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  /// 'reset' | 'verifyEmail'
+  purpose    String
+  /// bcrypt, NOT a fast digest. Six digits is only a million values, so a fast
+  /// hash would make a leaked database equivalent to a leaked code.
+  codeHash   String
+  expiresAt  DateTime
+  /// Wrong guesses. At the cap the code is consumed, so guessing costs a fresh
+  /// request per N attempts rather than a fresh guess.
+  attempts   Int       @default(0)
+  /// Non-null once used, superseded, or killed by the attempt cap.
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, purpose])
 }
 
 /// AniList season-listing cache. Created & maintained by the raw SQL in

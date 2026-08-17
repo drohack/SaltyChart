@@ -71,12 +71,21 @@ import authRouter from './routes/auth';
 import listRouter from './routes/list';
 import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
+import adminUsersRouter from './routes/adminUsers';
 import optionsRouter from './routes/options';
 import translateRouter, { startBatch, batchStatus } from './routes/translate';
 import jellyfinRouter from './routes/jellyfin';
 import sonarrRouter, { runSonarrSnapshot, runScheduledPush } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
+import {
+  getNextSeasonInfo,
+  BATCH_DAY_OF_WEEK,
+  BATCH_SCHEDULER_HOUR_START,
+  BATCH_SCHEDULER_HOUR_END,
+} from './lib/batchSchedule';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
+import { ADMIN_USER_ID } from './middleware/auth';
+import { ensureSetupCode } from './lib/setupCode';
 import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
 import { getFilmIndex } from './lib/jellyfinFilmIndex';
 import { jellyfinApi } from './lib/jellyfinApi';
@@ -86,10 +95,26 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 const app = express();
 
-// Trust only loopback proxies (our internal Nginx). This prevents forged
-// X-Forwarded-For headers from external requests while still allowing the
-// rate-limit middleware to see the real client IP.
-app.set('trust proxy', 'loopback');
+// How many proxy hops sit in front of us, so `req.ip` is the real client and
+// every rate limiter counts per visitor.
+//
+// **This number tracks the deployment.** The chain is
+// `internet -> Nginx Proxy Manager -> the frontend nginx container -> here`,
+// hence 2: trust both and take the leftmost X-Forwarded-For entry. Adding
+// Cloudflare in front, or removing the frontend nginx, changes it.
+//
+// It was `'loopback'`, which was wrong and silently so: the frontend nginx is a
+// separate container on the salty-net bridge, so our peer is 172.x.x.x and
+// never 127.0.0.1. Express therefore ignored the X-Forwarded-For header nginx
+// sets, and `req.ip` was the nginx container's address for every request from
+// every visitor on earth - making generalLimiter, authLimiter and
+// publicListLimiter single GLOBAL buckets. Any stranger could lock everyone out
+// of login with 20 requests a minute, and a per-IP brute-force guard on reset
+// codes would really have been a global one anybody could exhaust.
+//
+// Trusting hops is only safe because the backend is `expose`d, not published:
+// nothing outside the Docker network can reach :3000 to forge the header.
+app.set('trust proxy', 2);
 
 app.use(cors());
 app.use(helmet());
@@ -174,6 +199,64 @@ async function ensureDatabaseSchema() {
         );
       `);
       console.log('[DB] User table created ✅');
+    }
+
+    // ---- Account security columns -----------------------------------------
+    // Additive only. `AuthCode` below deliberately carries no foreign key:
+    // SQLite cannot add one to an existing table without rebuilding it, and a
+    // user delete clears these rows explicitly instead.
+    const userColumns: Array<{ name: string }> = await prisma.$queryRaw`PRAGMA table_info('User');`;
+    const addUserColumn = async (name: string, ddl: string) => {
+      if (userColumns.some((c) => c.name === name)) return;
+      console.log(`[DB] Adding User.${name} column`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN ${ddl}`);
+    };
+    await addUserColumn('email', `"email" TEXT`);
+    await addUserColumn('emailVerifiedAt', `"emailVerifiedAt" DATETIME`);
+    await addUserColumn('isAdmin', `"isAdmin" BOOLEAN NOT NULL DEFAULT 0`);
+    await addUserColumn('tokenVersion', `"tokenVersion" INTEGER NOT NULL DEFAULT 0`);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "AuthCode" (
+        "id"         INTEGER PRIMARY KEY AUTOINCREMENT,
+        "userId"     INTEGER  NOT NULL,
+        "purpose"    TEXT     NOT NULL,
+        "codeHash"   TEXT     NOT NULL,
+        "expiresAt"  DATETIME NOT NULL,
+        "attempts"   INTEGER  NOT NULL DEFAULT 0,
+        "consumedAt" DATETIME,
+        "createdAt"  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "AuthCode_userId_purpose_idx" ON "AuthCode" ("userId", "purpose")`
+    );
+
+    // Bootstrap admin-ness onto the column.
+    //
+    // Guarded on "no admin exists at all", so it runs once on an existing
+    // database and never again. That guard is the whole point: without it,
+    // every restart would silently re-promote ADMIN_USER_ID, and demoting that
+    // account from /admin/users would undo itself on the next deploy.
+    const adminRows: Array<{ n: number | bigint }> =
+      await prisma.$queryRaw`SELECT COUNT(*) AS n FROM "User" WHERE "isAdmin" = 1;`;
+    if (Number(adminRows[0]?.n ?? 0) === 0) {
+      const promoted = await prisma.$executeRawUnsafe(
+        `UPDATE "User" SET "isAdmin" = 1 WHERE "id" = ${ADMIN_USER_ID}`
+      );
+      if (promoted > 0) {
+        console.log(`[DB] Bootstrapped admin onto user id ${ADMIN_USER_ID}`);
+      } else {
+        // Nobody to promote - a genuinely fresh database. Print a claim code so
+        // the first admin is whoever can read this log, rather than whoever
+        // signs up first. On a public domain that difference is the whole
+        // point; see lib/setupCode.ts.
+        console.log(
+          `[SETUP] No admin account exists yet. Open /admin, sign in, and enter ` +
+            `this code to claim admin: ${ensureSetupCode()}`
+        );
+        console.log('[SETUP] The code changes every restart and is never stored.');
+      }
     }
 
     const rows: Array<{ name: string }> = await prisma.$queryRaw`SELECT name FROM sqlite_master WHERE type='table' AND name='WatchList' LIMIT 1;`;
@@ -337,7 +420,7 @@ async function ensureDatabaseSchema() {
     //   re-checked after 7 days via lastEnCheckAt (added below)
     // - segments: JSON array of {start, end, text} objects (null = not translated)
     // - modelName: Whisper model that produced the segments - drives the
-    //   rank-based upgrade in routes/translate.ts (uploads only ever upgrade)
+    //   rank-based upgrade in lib/subtitleReport.ts (uploads only ever upgrade)
     // - subtitlesDisabled: true if a user dismissed our subtitles
     // - hasBurnedInSubs: OCR-detected burned-in subs (added below); frontend
     //   defaults the overlay off for those
@@ -629,6 +712,10 @@ ensureDatabaseSchema().then(() => {
   // turns.
   app.use('/api/sonarr', sonarrRouter);
   app.use('/api/users', usersRouter);
+  // Account administration - promote, demote, reset, delete. Admin-gated
+  // throughout, and deliberately separate from the public /api/users, which is
+  // an unauthenticated username autocomplete.
+  app.use('/api/admin/users', adminUsersRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
   // Note: /api/translate and /api/jellyfin are registered before compression()
@@ -758,33 +845,9 @@ ensureDatabaseSchema().then(() => {
   // hasn't cached yet. 50 days gives medium a chance to catch up on anything
   // the local script missed without starting too aggressively early.
   // ----------------------------------------------------------------------------
-  const BATCH_SCHEDULER_HOUR_START = 2;  // Start window (2am)
-  const BATCH_SCHEDULER_HOUR_END = 4;    // End window (4am) - only starts new batches in this range
-  const BATCH_DAYS_BEFORE_SEASON = 50;   // How many days before season start to begin batching
-  const BATCH_DAY_OF_WEEK = 3;           // Wednesday (0=Sun, 3=Wed)
-
-  const SEASON_STARTS: Array<{ season: string; month: number; day: number }> = [
-    { season: 'WINTER', month: 0, day: 1 },   // Jan 1
-    { season: 'SPRING', month: 3, day: 1 },   // Apr 1
-    { season: 'SUMMER', month: 6, day: 1 },   // Jul 1
-    { season: 'FALL',   month: 9, day: 1 },   // Oct 1
-  ];
-
-  function getNextSeasonInfo(): { season: string; year: number; daysUntil: number } | null {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    for (let yearOffset = 0; yearOffset <= 1; yearOffset++) {
-      for (const { season, month, day } of SEASON_STARTS) {
-        const start = new Date(now.getFullYear() + yearOffset, month, day);
-        const daysUntil = Math.ceil((start.getTime() - today.getTime()) / 86_400_000);
-        if (daysUntil > 0 && daysUntil <= BATCH_DAYS_BEFORE_SEASON) {
-          return { season, year: start.getFullYear(), daysUntil };
-        }
-      }
-    }
-    return null;
-  }
+  // The window, the threshold and the season arithmetic all live in
+  // `lib/batchSchedule.ts`, because `/admin/subtitles` describes this schedule
+  // and a second copy would eventually name a night the job does not run.
 
   let lastBatchDate = '';
 
@@ -811,7 +874,7 @@ ensureDatabaseSchema().then(() => {
     }
 
     // Is the next season within range?
-    const next = getNextSeasonInfo();
+    const next = getNextSeasonInfo(now);
     if (!next) return;
 
     // Start the batch via the shared helper so batchStatus is set (keeps the

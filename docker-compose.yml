@@ -30,6 +30,14 @@ services:
     environment:
       JWT_SECRET: ${JWT_SECRET}
       DATABASE_URL: file:/app/prisma/data.db
+      # Outgoing mail for password-reset / email-verification codes. Optional:
+      # unset, the app runs normally and only the coded reset paths refuse.
+      # Defaulted to empty so compose doesn't warn when they're absent from .env.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 5s

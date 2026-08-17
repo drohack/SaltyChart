@@ -611,8 +611,8 @@ router.get('/stream', async (req: Request, res: Response) => {
 // comparison against ADMIN_USER_ID: an id comparison is wrong in both
 // directions once accounts can be promoted and demoted - a promoted admin gets
 // 403 and a demoted one still passes. `/admin/subtitles`' delete button calls
-// this. The other inline checks in this file (`/upload`, `/batch`,
-// `/batch/status`) still compare ids and want the same treatment.
+// this. Every admin route in this file now goes through the same middleware;
+// there are no inline id comparisons left.
 router.delete('/cache', requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
@@ -668,11 +668,7 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
 // (scripts/batch_translate.py, tools/local_translate.py) still need syncing by
 // hand; the reasoning is at the constant.
 
-router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: AuthRequest, res: Response) => {
-  if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
-    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
-  }
-
+router.post('/upload', express.json({ limit: '5mb' }), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   const { videoId, mediaId, modelName, segments, hasBurnedInSubs, force } = req.body || {};
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
@@ -726,7 +722,6 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: 
 // Batch pre-translation (admin only)
 // ---------------------------------------------------------------------------
 
-const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);
 // Exported so the scheduler in index.ts can check if a batch is already running
 export let batchProcess: ChildProcess | null = null;
 export let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[] } = {
@@ -743,11 +738,7 @@ function getBatchScriptPath(): string {
  * Trigger batch pre-translation for a season. Admin only (user ID 1 by default).
  * Body: { season?: string, year?: number, dryRun?: boolean }
  */
-router.post('/batch', express.json(), requireAuth, async (req: AuthRequest, res: Response) => {
-  if (req.userId !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
-  }
-
+router.post('/batch', express.json(), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   if (batchProcess && batchStatus.running) {
     return res.status(409).json({ error: 'Batch already running', code: 'BATCH_RUNNING', status: batchStatus });
   }
@@ -873,11 +864,7 @@ async function readPersistedBatchRun(): Promise<PersistedBatchRun | null> {
  * GET /batch/status
  * Check the status of the current/last batch run. Admin only.
  */
-router.get('/batch/status', requireAuth, async (req: AuthRequest, res: Response) => {
-  if (req.userId !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
-  }
-
+router.get('/batch/status', requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   return res.json(batchStatus);
 });
 

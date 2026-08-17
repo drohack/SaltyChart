@@ -321,7 +321,39 @@ Routes inside existing routers:
 - `GET   /api/list/user-ratings?username=&season=&year=` - mediaIds a user has in a season (**rate-limited**)
 - `GET   /api/list/nicknames?mediaId=` - nicknames & ranks for a given series (**rate-limited**)
 - `PUT   /api/list` - replace entire list for a season/year in one shot
-- `POST  /api/auth/reset-password` - reset a user's password by username; no auth required (intentionally low-security - no email, small friend-group app)
+- `POST  /api/auth/reset-password` - **no longer unconditional.** Still the
+  username-only reset for accounts that never set an email, because normal
+  accounts are meant to stay frictionless. It now refuses an account with a
+  verified address (`CODE_REQUIRED`) and **any admin account**
+  (`ADMIN_RESET_BLOCKED`). The coded path is `/reset-request` + `/reset-verify`.
+
+### Accounts and admin access (`/api/auth`, `/api/admin/users`)
+
+Route contracts, the code rules and the SMTP env vars are in
+**`backend/CLAUDE.md`** under *Accounts and admin access*; the reasoning is
+`docs/superpowers/specs/2026-08-16-admin-account-security-design.md`. Four
+rules stay here, because each binds from outside `backend/`:
+
+- **Admin-ness is `User.isAdmin`, not `ADMIN_USER_ID`.** That env var is only a
+  *bootstrap* (promoted once, when no admin exists) and the id the five scripts
+  in `tools/` sign tokens for. **Never gate on it inline** - an id comparison is
+  wrong in both directions once accounts can be promoted: a promoted admin gets
+  403, a demoted one still passes. `translate.ts` carried four such checks and
+  they are gone; use `requireAdmin`.
+- **What protects an account is a VERIFIED email, never the admin flag.**
+  `resetPathFor` (`lib/authCodes.ts`) is the only definition. Keying on the role
+  would turn the reset page into a directory of who the admins are, and let a
+  promotion leave someone on the open path. An *unverified* address must never
+  count: a typo would make the account permanently unresettable.
+- **The site can never run out of admins.** Demote and delete count inside the
+  transaction and refuse at one. There is no root account - admins are peers -
+  so this floor is all that stands between a mis-click and an admin panel nobody
+  can open.
+- `app.set('trust proxy', 2)` **tracks the deployment**
+  (`internet -> Nginx Proxy Manager -> frontend nginx -> backend`). It was
+  `'loopback'`, which never matched - nginx is a separate container - so
+  `req.ip` was one shared address and every limiter a single global bucket.
+  Cloudflare in front, or dropping the frontend nginx, changes the number.
 
 ### Jellyfin integration routes (`/api/jellyfin`)
 
@@ -514,10 +546,10 @@ Every table and column, and why each cached row is persisted, is in
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (static assets), Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword,
-  Randomize, Compare, and **four admin pages** - Admin (`/admin`, Connection),
+  Randomize, Compare, and **five admin pages** - Admin (`/admin`, Connection),
   AdminMatching (`/admin/matching`), AdminSonarr (`/admin/sonarr`),
-  AdminSubtitles (`/admin/subtitles`).
-  **All four render inside `components/AdminShell.svelte`**, which owns the
+  AdminSubtitles (`/admin/subtitles`), AdminUsers (`/admin/users`).
+  **All five render inside `components/AdminShell.svelte`**, which owns the
   `<main>`, the `Admin` heading, the tab strip and the admin gate (the `isAdmin`
   flag on `/api/jellyfin/status`, `stores/jellyfin.ts`). Put page-specific
   chrome in the page and shared chrome in the shell: the three had drifted into
@@ -526,7 +558,8 @@ Every table and column, and why each cached row is persisted, is in
   **`/admin/matching`** is the human end of the matching pipeline;
   **`/admin/sonarr`** is the human end of the Sonarr auto-add;
   **`/admin/subtitles`** reports the trailer subtitle pipeline (trailers only -
-  Jellyfin episode subtitles are not covered). What each shows and why is in
+  Jellyfin episode subtitles are not covered); **`/admin/users`** is account
+  access - promote, demote, reset, delete. What each shows and why is in
   `frontend/CLAUDE.md`.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 

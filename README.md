@@ -59,6 +59,47 @@ If port 3000 is already in use: `netstat -ano | grep ':3000'` then `taskkill /PI
 
 ---
 
+## Environment variables
+
+Set in `backend/.env` for local dev, and in the `environment:` block of
+`docker-compose.yml` for the server (which reads them from an untracked `.env`
+beside it). **A variable added to only one of those two places is the classic
+mistake** - the container simply never sees it.
+
+| variable | required | what it does |
+|---|---|---|
+| `DATABASE_URL` | **yes** | SQLite path. The server exits `[FATAL]` without it. |
+| `JWT_SECRET` | **yes in production** | Signs session tokens. Production refuses to boot if it is unset or left as the publicly-known `dev-secret`. |
+| `ADMIN_USER_ID` | no (default `1`) | **Bootstrap only.** Names the account that becomes admin on a database that has no admin yet. After that, admin-ness lives on the `User.isAdmin` column and is changed from *Admin -> Users*. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | no | Outgoing mail for password-reset and email-verification codes. Without them the app runs normally and only the coded reset paths refuse, saying so plainly. Setup notes and one important Gmail trap are in `backend/.env.example`. |
+
+## Who is the admin
+
+- **An existing database**: on first start after upgrading, whichever account
+  matches `ADMIN_USER_ID` is promoted once. That is the same account that was
+  admin before, so nothing changes hands - and the promotion is guarded on "no
+  admin exists at all", so it never runs again and cannot silently undo a later
+  demotion.
+- **A fresh or emptied database**: nobody is promoted. The backend prints a
+  one-time code to its log under `[SETUP]`, and `/admin` shows a claim form
+  instead of the usual tabs. Sign in, paste the code, and that account becomes
+  the first admin.
+
+  ```bash
+  docker logs saltychart-backend | grep SETUP
+  ```
+
+  The code lives in memory only and changes on every restart, so it cannot leak
+  from a database backup. This exists because the first person to sign up used
+  to become admin by default, which on a public domain is a land-grab - and it
+  doubles as recovery if every admin account is ever lost.
+
+Afterwards, promoting and demoting is done on **Admin -> Users**. Promoting
+someone requires a verified email on their account, and the last admin can never
+be demoted or deleted, so the site cannot end up with no way in.
+
+---
+
 ## Feature highlights
 
 SaltyChart is under active development. The list below summarises key
@@ -263,8 +304,23 @@ Stored per-user in the Settings table.
 **Auth improvements**
 - Login page links directly to Sign Up and Password Reset.
 - Sign Up page links back to Login.
-- Password reset (`POST /api/auth/reset-password`) - username-only, no email
-  required. Three-step page: enter username -> confirm -> set new password.
+- **Password reset takes one of two paths, decided by whether the account has a
+  verified email.** No email set: the original username-only reset, unchanged -
+  enter username, confirm, set a new password. Email set: a 6-digit code is
+  emailed and entered on the same page. Adding an address in
+  *Options -> Account* is how you opt in; it only counts once you confirm a code
+  sent to it.
+- **Admin accounts can only be reset by code**, never through the username-only
+  form, because the admin pages hold the Jellyfin and Sonarr credentials. An
+  admin with no verified address has no self-service reset at all - another
+  admin removes their admin access first.
+- **Admin -> Users** manages accounts: promote, demote, reset a non-admin's
+  password, delete. Admins are peers, except that the last one cannot be removed
+  and promoting someone requires a verified email on their account.
+- Changing your password (also in *Options -> Account*) signs out every other
+  device.
+- Sending mail needs SMTP configured - see *Environment variables* below.
+  Without it the coded paths refuse rather than failing silently.
 
 **Season default look-ahead**
 - On first load the app now defaults to the *upcoming* season if it starts
@@ -333,6 +389,18 @@ deploying**; there is no manual build/transfer step.
 A code change is typically live ~15 minutes after the push (CI ~5 min + poll
 interval). The SQLite DB is bind-mounted from
 `/mnt/user/appdata/saltychart/prisma`, which deploys never touch.
+
+**Schema changes need no manual step.** `ensureDatabaseSchema()` runs on every
+start and adds columns, tables and indexes idempotently - production never runs
+`prisma migrate`. The update script backs the DB up before applying any new
+image, so the rollback path is unchanged.
+
+**A new environment variable does need one**, because compose reads it from the
+untracked `.env` next to the server's `docker-compose.yml`. Add the value there,
+then `docker compose up -d`. The variables themselves are already declared in the
+compose file with empty defaults, so a missing one degrades rather than breaking
+the container: unset `SMTP_*` simply means the coded reset paths refuse and say
+why.
 
 ### The base image (why deploys are small)
 

@@ -870,6 +870,111 @@ run; without `startDate` the air-date tier is silently disabled and it
 reports false positives the real frontend never shows (20 vs 12 measured).
 
 
+## Accounts and admin access (`/api/auth`, `/api/admin/users`)
+
+The rules are in the root guide under *Who is an admin, and who can reset a
+password*; the argument for each is
+`docs/superpowers/specs/2026-08-16-admin-account-security-design.md`. This is
+the contract.
+
+**Why any of this exists.** `POST /reset-password` used to reset any account
+with no identity check - fine on a LAN, an internet-facing admin takeover once
+the site went public behind Nginx Proxy Manager. The chain was: reset the
+admin's password, log in, `PUT /api/jellyfin/config` with an attacker URL and an
+empty `apiKey` (which deliberately keeps the stored one), then
+`POST /config/test`, which sends the **stored** Jellyfin key to that URL. Two
+curl commands.
+
+**`lib/authCodes.ts` is pure and owns every decision**: `resetPathFor`,
+`mayResetOpenly`, code generation, hashing, expiry, the attempt cap, the issue
+cap. No clock reads, no Prisma - the route layer passes rows in. Guarantees:
+
+- Six digits from `crypto.randomInt`, **hashed with bcrypt**. Six digits is a
+  million values, so a fast digest would make a leaked DB equivalent to a leaked
+  code.
+- 10-minute expiry against the row's own `expiresAt` (never `createdAt` plus a
+  constant computed elsewhere, so changing the TTL cannot retroactively extend a
+  stored code), single use, **5 wrong guesses kill it**, at most **3 codes per
+  account per hour**, and issuing one consumes any earlier unconsumed code for
+  the same purpose. Those numbers are the arithmetic that makes a 6-digit code
+  defensible: guessing costs a fresh request per five attempts, and the hourly
+  cap bounds the requests.
+
+Auth routes:
+
+- `POST /reset-request` - `{ username }` -> **three** outcomes, all 200:
+  `{ codeRequired: false }` (open account), `{ codeRequired: true, hint }` (code
+  sent, address masked), or `{ codeRequired: true, noAddress: true, message }` -
+  an admin with no address, a deliberate dead end. The hourly cap is reported as
+  success on purpose: telling an unauthenticated caller "that account has had
+  three codes this hour" is a free oracle, and the real user's earlier code
+  still works.
+- `POST /reset-verify` - `{ username, code, newPassword }`. **Issues no token**;
+  both reset paths land on the existing "Log in here" screen.
+- `POST /reset-password` - the old route, now refusing as described in the root.
+- `GET /account` - drives the Options Account section, the admin nag banner, and
+  the first-run claim form (`setupNeeded`). A non-admin must be able to read it,
+  which is why `setupNeeded` rides here and not on an admin-gated route.
+- `POST /change-password`, `POST /email`, `POST /email/verify`,
+  `DELETE /email` - all require the current password. Without it a borrowed
+  unlocked laptop silently redirects the recovery channel, which is worth more
+  than the session. `DELETE /email` refuses for admins
+  (`EMAIL_REQUIRED_FOR_ADMIN`) - it would be one-click self-lockout.
+- `POST /claim-admin` - first run only; see below.
+
+`/api/admin/users` (all `requireAuth` + `requireAdmin`): `GET /` (adds
+`createdAt` and a list count - signup is open to the internet, so a stranger's
+account otherwise looks like a friend's), `PATCH /:id` (promote needs a verified
+email on the **target**, `EMAIL_NOT_VERIFIED`; demote respects the floor,
+`LAST_ADMIN`), `DELETE /:id` (refuses the last admin and refuses self; clears
+lists, settings and codes in one transaction - `WatchList` has no
+`onDelete: Cascade` and SQLite cannot add one without rebuilding the table),
+`POST /test-email` (mirrors the Jellyfin/Sonarr `config/test` pattern - green
+proves the App Password authenticates, not merely that env vars are non-empty).
+
+**Nothing here SETS a credential; the two recovery routes only clear one.**
+`POST /:id/clear-password` replaces the hash with one of a random secret nobody
+has seen (not a blank - every login path bcrypt-compares, and an empty hash is
+what ends up matching `''` after some later refactor) and bumps `tokenVersion`.
+`POST /:id/clear-email` drops the address and its outstanding codes.
+
+The distinction is the whole design. An admin who *set* a password would have to
+relay it and would know it afterwards, which is a takeover primitive; clearing
+gives the admin nothing, because the owner picks the next one. That is why an
+admin may clear **another admin's** password, and why only two refusals exist -
+the two that would leave an account with no route back in:
+`clear-password` on an admin with no verified email (`ADMIN_RESET_BLOCKED`), and
+`clear-email` on any admin at all (`EMAIL_REQUIRED_FOR_ADMIN`), since admins are
+blocked from the open reset.
+
+**These buttons are for the one lockout self-service cannot reach.** An ordinary
+account with no email already resets itself at `/reset-password` with nothing but
+a username, so an admin has no part to play there. The case that needs a human is
+an address whose inbox its owner has lost: they are pinned to a coded path they
+can never finish, and clearing the address hands them back the easy one.
+
+**First run.** On a database with no admin at all, `ensureDatabaseSchema()`
+prints a one-time code under `[SETUP]` and `/admin` shows a claim form
+(`lib/setupCode.ts`: in memory only, regenerated per boot, so it cannot leak
+from a backup). Before this, whoever signed up first became admin by the
+`ADMIN_USER_ID` default - a land-grab on a public domain, reachable for real if
+the DB is restored empty. It doubles as break-glass recovery.
+
+**Mail is `lib/mailer.ts`** - plain SMTP, transport injected so tests capture
+instead of send. Unset SMTP **does not fail startup** the way `JWT_SECRET` does;
+that would break local dev and any deploy predating the config. It fails at the
+point of use with `SMTP_NOT_CONFIGURED`. Env: `SMTP_HOST`, `SMTP_PORT`,
+`SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` - in the untracked `.env` **and** the
+compose `environment:` block, like `JWT_SECRET`; missing the compose half means
+the container never sees them. **Log `mailErrorInfo(err)`, never the error
+object** - a nodemailer error carries `auth.pass`, which is the same bug shape
+as the axios error that printed the Jellyfin `Token="..."` into the log.
+
+New error codes: `ADMIN_RESET_BLOCKED`, `CODE_REQUIRED`, `INVALID_CODE`,
+`CODE_EXPIRED`, `TOO_MANY_ATTEMPTS`, `EMAIL_NOT_VERIFIED`,
+`EMAIL_REQUIRED_FOR_ADMIN`, `LAST_ADMIN`, `SMTP_NOT_CONFIGURED`,
+`SETUP_CODE_INVALID`, `ALREADY_INITIALIZED`.
+
 ## Database schema
 
 Auto-created / updated at startup via raw SQL in `ensureDatabaseSchema()`.
@@ -879,6 +984,20 @@ in sync when adding columns/tables/indexes.
 
 Tables / columns:
 
+- `User` - plus four account-security columns: `email` (nullable, **not
+  unique** - a household may share one, and nothing looks a user up by it),
+  `emailVerifiedAt` (non-null is the entire protection rule), `isAdmin`
+  (default 0; the bootstrap in `ensureDatabaseSchema()` sets it on
+  `ADMIN_USER_ID` **only when no admin exists**, so demoting that account is
+  not silently undone on the next restart), and `tokenVersion` (default 0,
+  bumped on every password change; `requireAuth` rejects a mismatch, and a
+  **missing `v` claim reads as 0** so the hand-minted tokens in `tools/` keep
+  working).
+- `AuthCode` - `userId` (indexed with `purpose`), `purpose`
+  (`reset`|`verifyEmail`), `codeHash` (bcrypt), `expiresAt`, `attempts`,
+  `consumedAt`, `createdAt`. **Deliberately carries no foreign key**: SQLite
+  cannot add one to an existing table without rebuilding it, so a user delete
+  clears these rows explicitly instead.
 - `Settings` - per-user record storing theme, title language, autoplay,
   hide-from-compare, JSON columns `nicknameUserSel` and `subtitlePrefs`,
   and `addWatchedTo`.

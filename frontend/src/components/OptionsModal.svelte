@@ -3,7 +3,7 @@
   import type { Theme, TitleLanguage } from '../stores/options';
   import { authToken } from '../stores/auth';
   import { seasonYear, type Season } from '../stores/season';
-  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { createEventDispatcher, onDestroy, tick } from 'svelte';
 
   const SEASONS: Season[] = ['WINTER', 'SPRING', 'SUMMER', 'FALL'];
 
@@ -43,8 +43,15 @@
     }
   }
 
+  // Set by the Account link on /admin/users, which fires this just before
+  // App.svelte opens the modal. Listening here rather than on `svelte:window`
+  // because a custom event name is not in Svelte's window event types.
+  const onOpenAccount = () => (accountRequested = true);
+  window.addEventListener('sc:open-account', onOpenAccount);
+
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey);
+    window.removeEventListener('sc:open-account', onOpenAccount);
   });
 
   // -- Batch translation (admin only) ---------------------------------
@@ -81,6 +88,14 @@
     batchYear = $seasonYear.year;
     if ($authToken && batchIsAdmin === null) {
       checkBatchStatus();
+    }
+    if ($authToken) loadAccount();
+    // Arriving via the Account link on /admin/users - open straight to it, or
+    // the trip lands you on a preferences form with no sign of what you came
+    // for. Consumed on read so a later manual open is not forced open too.
+    if (accountRequested) {
+      accountOpen = true;
+      accountRequested = false;
     }
   }
   $: if (!open) {
@@ -147,6 +162,174 @@
         batchMessage = 'Done';
       }
     } catch {}
+  }
+
+  // -------------------------------------------------------------------------
+  // Account: the recovery address, and changing your password.
+  //
+  // The address is what decides how this account can be reset. Setting one is
+  // therefore opting IN to protection - and it only counts once a code sent to
+  // it comes back, because an unverified address would make a typo permanent:
+  // the account would be locked onto a coded path with no reachable inbox.
+  // -------------------------------------------------------------------------
+  let account: {
+    username: string;
+    email: string | null;
+    emailVerified: boolean;
+    isAdmin: boolean;
+    needsEmail: boolean;
+  } | null = null;
+
+  let emailInput = '';
+  let emailPassword = '';
+  let emailCode = '';
+  let emailHint = '';
+  let awaitingCode = false;
+  let accountBusy = false;
+  let accountMessage = '';
+  let accountError = '';
+  let codeInput: HTMLInputElement;
+  /**
+   * The section is collapsed by default - it is long, and most visits here are
+   * for theme or title language. It opens itself whenever there is something to
+   * DO: an admin with no address, or a code waiting to be entered. Hiding either
+   * behind a closed summary would bury the one thing the user came back for.
+   */
+  let accountOpen = false;
+  /** Set by the `sc:open-account` event before this modal is told to open. */
+  let accountRequested = false;
+
+  let currentPassword = '';
+  let nextPassword = '';
+  let passwordMessage = '';
+  let passwordError = '';
+
+  async function loadAccount() {
+    if (!$authToken) return;
+    try {
+      const res = await fetch('/api/auth/account', {
+        headers: { Authorization: `Bearer ${$authToken}` },
+      });
+      if (res.ok) {
+        account = await res.json();
+        emailInput = account?.email ?? '';
+        // A stored-but-unverified address means a code is already outstanding,
+        // so reopening the modal should land on the code box rather than
+        // silently forgetting a half-finished verification. This is exactly the
+        // state someone lands in after closing the modal mid-verify, which is
+        // easy to do and used to leave no trace that a step was outstanding.
+        awaitingCode = !!account?.email && !account?.emailVerified;
+        accountOpen = accountOpen || awaitingCode || !!account?.needsEmail;
+      }
+    } catch {
+      // Non-fatal: the rest of the modal is preferences and works offline.
+    }
+  }
+
+  async function saveEmail() {
+    accountError = '';
+    accountMessage = '';
+    if (!emailInput.trim() || !emailPassword) {
+      accountError = 'Enter your address and your current password.';
+      return;
+    }
+    accountBusy = true;
+    // Said BEFORE the request, not after. Sending goes through a real SMTP
+    // conversation and takes seconds; without this the fields simply grey out
+    // and the modal looks frozen or broken. Reported from actual use - someone
+    // closed the modal and reopened it because nothing indicated a step was
+    // in progress, or that a verification step existed at all.
+    accountMessage = `Sending a code to ${emailInput.trim()}...`;
+    try {
+      const res = await fetch('/api/auth/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        body: JSON.stringify({ email: emailInput.trim(), currentPassword: emailPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        accountMessage = '';
+        accountError = data.error || 'Could not save that address.';
+        return;
+      }
+      emailHint = data.hint || emailInput.trim();
+      emailPassword = '';
+      awaitingCode = true;
+      accountMessage = `Code sent to ${emailHint}. Enter it below to finish - the address does nothing until you do.`;
+      await loadAccount();
+      // Put the cursor where the next action is. The box appearing after a
+      // multi-second wait is easy to miss entirely.
+      await tick();
+      codeInput?.focus();
+    } catch {
+      accountMessage = '';
+      accountError = 'Could not reach the server.';
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  async function verifyEmail() {
+    accountError = '';
+    accountMessage = '';
+    if (!emailCode.trim()) {
+      accountError = 'Enter the code from your email.';
+      return;
+    }
+    accountBusy = true;
+    try {
+      const res = await fetch('/api/auth/email/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        body: JSON.stringify({ code: emailCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        accountError = data.error || 'That code did not work.';
+        return;
+      }
+      emailCode = '';
+      awaitingCode = false;
+      accountMessage = 'Address verified. Password resets now need a code.';
+      await loadAccount();
+    } catch {
+      accountError = 'Could not reach the server.';
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  async function changePassword() {
+    passwordError = '';
+    passwordMessage = '';
+    if (!currentPassword || !nextPassword) {
+      passwordError = 'Enter your current and new password.';
+      return;
+    }
+    accountBusy = true;
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        body: JSON.stringify({ currentPassword, newPassword: nextPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        passwordError = data.error || 'Could not change the password.';
+        return;
+      }
+      // The server rotates the token version, so every OTHER session is now
+      // dead. It hands back a fresh token so this one keeps working - which is
+      // the point of changing a password you think someone else knows.
+      if (data.token) authToken.set(data.token);
+      currentPassword = '';
+      nextPassword = '';
+      passwordMessage = 'Password changed. Other devices have been signed out.';
+    } catch {
+      passwordError = 'Could not reach the server.';
+    } finally {
+      accountBusy = false;
+    }
   }
 </script>
 
@@ -216,6 +399,143 @@
           <input type="checkbox" class="toggle" bind:checked={$options.hideFromCompare} />
         </label>
       </div>
+
+      <!-- Account: recovery address + password. Signed-in users only; there is
+           nothing here a guest could act on. -->
+      {#if $authToken && account}
+        <div class="divider"></div>
+        <details class="mb-4 rounded border border-base-300" bind:open={accountOpen}>
+          <summary class="cursor-pointer select-none px-3 py-2 flex items-center gap-2">
+            <span class="label-text font-semibold">Account</span>
+            {#if account.needsEmail}
+              <span class="badge badge-warning badge-sm">email needed</span>
+            {:else if awaitingCode}
+              <span class="badge badge-warning badge-sm">verify your email</span>
+            {:else if account.emailVerified}
+              <span class="badge badge-success badge-sm">protected</span>
+            {:else}
+              <span class="text-xs opacity-60">email, password</span>
+            {/if}
+          </summary>
+          <div class="form-control px-3 pb-3">
+
+          {#if account.needsEmail}
+            <div class="alert alert-warning text-sm mb-2">
+              <span>
+                You are an admin with no verified email. Admin passwords cannot be
+                reset from the login page, so without one there is no way back
+                into this account.
+              </span>
+            </div>
+          {/if}
+
+          <p class="text-sm text-base-content/60 mb-2">
+            {#if account.emailVerified}
+              Password resets for <strong>{account.username}</strong> need a code
+              emailed to <strong>{account.email}</strong>.
+            {:else}
+              Adding an email means a password reset needs a code sent to it.
+              Without one, anyone who knows your username can reset this account.
+            {/if}
+          </p>
+
+          <label class="label py-1" for="accountEmail">
+            <span class="label-text text-sm">Email address</span>
+          </label>
+          <input
+            id="accountEmail"
+            class="input input-bordered input-sm mb-2"
+            type="email"
+            placeholder="you@example.com"
+            bind:value={emailInput}
+            disabled={accountBusy}
+          />
+          <input
+            class="input input-bordered input-sm mb-2"
+            type="password"
+            placeholder="Current password"
+            bind:value={emailPassword}
+            disabled={accountBusy}
+          />
+          <button
+            class="btn btn-sm btn-outline mb-2"
+            on:click={saveEmail}
+            disabled={accountBusy || !emailInput.trim() || !emailPassword}
+          >
+            {#if accountBusy}
+              <span class="loading loading-spinner loading-xs"></span> Sending code...
+            {:else}
+              {account.email ? 'Update address' : 'Add address'}
+            {/if}
+          </button>
+
+          <!-- Status sits ABOVE the code box: it is set before the request goes
+               out, so it is the only thing on screen during the SMTP wait. -->
+          {#if accountMessage}
+            <div class="text-sm text-success mb-2">{accountMessage}</div>
+          {/if}
+          {#if accountError}
+            <div class="text-sm text-error mb-2">{accountError}</div>
+          {/if}
+
+          {#if awaitingCode}
+            <div class="rounded border border-warning/60 bg-warning/10 p-2 mb-2">
+              <p class="text-sm mb-2">
+                <strong>One more step.</strong> Enter the 6-digit code we sent{emailHint ? ` to ${emailHint}` : ''}.
+                It expires in 10 minutes, and until you enter it this address
+                protects nothing.
+              </p>
+              <div class="flex gap-2">
+                <input
+                  bind:this={codeInput}
+                  class="input input-bordered input-sm flex-1 tracking-widest text-center"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  maxlength="6"
+                  placeholder="000000"
+                  bind:value={emailCode}
+                  disabled={accountBusy}
+                />
+                <button class="btn btn-sm btn-primary" on:click={verifyEmail} disabled={accountBusy}>
+                  {accountBusy ? 'Checking...' : 'Verify'}
+                </button>
+              </div>
+            </div>
+          {/if}
+
+          <div class="label pt-2 pb-1">
+            <span class="label-text text-sm font-semibold">Change password</span>
+          </div>
+          <input
+            class="input input-bordered input-sm mb-2"
+            type="password"
+            placeholder="Current password"
+            bind:value={currentPassword}
+            disabled={accountBusy}
+          />
+          <input
+            class="input input-bordered input-sm mb-2"
+            type="password"
+            placeholder="New password"
+            bind:value={nextPassword}
+            disabled={accountBusy}
+          />
+          <button
+            class="btn btn-sm btn-outline"
+            on:click={changePassword}
+            disabled={accountBusy || !currentPassword || !nextPassword}
+          >
+            {accountBusy ? 'Changing...' : 'Change password'}
+          </button>
+          {#if passwordMessage}
+            <div class="text-sm text-success mt-2">{passwordMessage}</div>
+          {/if}
+          {#if passwordError}
+            <div class="text-sm text-error mt-2">{passwordError}</div>
+          {/if}
+          </div>
+        </details>
+      {/if}
 
       <!-- Batch translation (admin only) -->
       {#if $authToken && batchIsAdmin}

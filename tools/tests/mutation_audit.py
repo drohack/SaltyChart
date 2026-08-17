@@ -117,6 +117,10 @@ BACKEND_SONARR = "backend/src/lib/sonarrSelect.ts"
 BACKEND_SONARR_PUSH = "backend/src/lib/sonarrPush.ts"
 BACKEND_SONARR_ROUTE = "backend/src/routes/sonarr.ts"
 BACKEND_SUBS = "backend/src/lib/subtitleReport.ts"
+BACKEND_AUTHCODES = "backend/src/lib/authCodes.ts"
+BACKEND_AUTH_ROUTE = "backend/src/routes/auth.ts"
+BACKEND_ADMIN_USERS = "backend/src/routes/adminUsers.ts"
+BACKEND_MIDDLEWARE = "backend/src/middleware/auth.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 ADMIN_SONARR = "frontend/src/pages/AdminSonarr.svelte"
@@ -1688,6 +1692,131 @@ MUTATIONS: list[Mutation] = [
         guards="the page claims a trailer was checked for English captions when "
                "nothing ever checked it - and its own subs toggle is what "
                "manufactures those rows",
+    ),
+
+    # ---------------------------------------------------------------------
+    # Account security. These guard the chain that made a public deployment
+    # dangerous: reset the admin's password with one unauthenticated POST,
+    # log in, then read the stored Jellyfin key back out through
+    # PUT /api/jellyfin/config + POST /config/test. Every row below is a
+    # refusal, so a survivor means something is being ALLOWED.
+    # ---------------------------------------------------------------------
+    Mutation(
+        name="an admin with no email falls back to the open reset",
+        path=BACKEND_AUTHCODES,
+        # The branch that makes the deploy close the hole on its own. Without
+        # it, nothing changes until somebody remembers to configure an address -
+        # and if they never do, never.
+        find="  if (user.isAdmin) return 'adminNoAddress';",
+        replace="  /* mutation: admins fall through to the open reset */",
+        test=T_UNIT,
+        expect="fell back to the OPEN reset",
+        guards="anyone on the internet can reset the admin password, log in, and "
+               "exfiltrate the Jellyfin API key via /config/test",
+    ),
+    Mutation(
+        name="the unauthenticated reset stops refusing protected accounts",
+        path=BACKEND_AUTH_ROUTE,
+        # The pure predicate is tested above; this is the endpoint actually
+        # calling it. Both matter - a correct rule nobody consults is not a rule.
+        find="  if (!mayResetOpenly(user)) {",
+        replace="  if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="an anonymous request reset the ADMIN password",
+        guards="the takeover hole is reopened at the endpoint even though the "
+               "rule that forbids it is still correct",
+    ),
+    Mutation(
+        name="requireAdmin stops reading the isAdmin column",
+        path=BACKEND_MIDDLEWARE,
+        # Admin-ness moved from an env id to a column. If this check degrades to
+        # 'is authenticated', every admin route opens to every signed-up user -
+        # and signup is open to the internet.
+        find="  if (!req.user?.isAdmin) {",
+        replace="  if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="could read the user list",
+        guards="every admin route - Jellyfin config, Sonarr push, the user list - "
+               "is reachable by anyone who signs up",
+    ),
+    Mutation(
+        name="the last admin can be demoted",
+        path=BACKEND_ADMIN_USERS,
+        # There is no root account by design (admins are peers), so this floor
+        # is the only thing between a mis-click and an admin panel nobody can
+        # open. The comment above the count is what makes this find unique - the
+        # delete path below has a textually identical guard.
+        find="        // Counted here, inside the transaction, against the live table.\n"
+             "        const admins = await tx.user.count({ where: { isAdmin: true } });\n"
+             "        if (admins <= 1) {",
+        replace="        const admins = 99; /* mutation */\n        if (false) {",
+        test=T_NEGATIVE,
+        expect="the only admin was demoted",
+        guards="the site is left with no admin at all, and no way back in short "
+               "of editing the database by hand",
+    ),
+    Mutation(
+        name="promotion no longer requires a verified email",
+        path=BACKEND_ADMIN_USERS,
+        # This is what makes "every admin is email-protected" true by
+        # construction. Without it a promoted account can use neither the open
+        # reset (admins are refused) nor the coded one (no address).
+        find="        if (!target.emailVerifiedAt) {",
+        replace="        if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="was promoted to admin",
+        guards="an admin is created who cannot recover their own account by any "
+               "route, and only another admin can rescue them",
+    ),
+    Mutation(
+        name="clearing an admin's email strands the account",
+        path=BACKEND_ADMIN_USERS,
+        # Four spaces, not six: the delete handler has a textually similar guard
+        # one level deeper inside its transaction. Nothing here ever SETS a
+        # credential - both admin actions clear one - so the only refusals worth
+        # guarding are the two that would leave an account with no route back in.
+        find="    if (target.isAdmin) {",
+        replace="    if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="admin's email was cleared from the users page",
+        guards="an admin loses the address they recover through, and is blocked "
+               "from the open reset as well, so the account cannot be entered again",
+    ),
+    Mutation(
+        name="changing a password leaves other sessions alive",
+        path=BACKEND_MIDDLEWARE,
+        # Tokens live 7 days in localStorage and there is no revocation list, so
+        # this comparison IS the logout. A missing `v` claim reads as 0 on
+        # purpose - the five scripts in tools/ sign bare `{ id }` tokens.
+        find="  if ((payload.v ?? 0) !== user.tokenVersion) {",
+        replace="  if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="minted before the password change still works",
+        guards="resetting a compromised password does not evict the attacker - "
+               "their token keeps working for up to a week",
+    ),
+    Mutation(
+        name="reset codes never expire",
+        path=BACKEND_AUTHCODES,
+        find="  if (now.getTime() >= row.expiresAt.getTime()) return 'expired';",
+        replace="  /* mutation: codes live forever */",
+        test=T_UNIT,
+        expect="was still accepted",
+        guards="a code read over someone's shoulder, or left in an old email, "
+               "works for ever instead of ten minutes",
+    ),
+    Mutation(
+        name="wrong guesses are unlimited",
+        path=BACKEND_AUTHCODES,
+        # The number that makes six digits defensible at all: five attempts per
+        # issued code, and three codes an hour. Remove the cap and the whole
+        # million-value space is reachable against one code.
+        find="  if (row.attempts >= MAX_ATTEMPTS) return 'exhausted';",
+        replace="  /* mutation: guess as often as you like */",
+        test=T_UNIT,
+        expect="wrong-guess cap was still accepted",
+        guards="a six-digit reset code is brute-forced against a single issued "
+               "code instead of costing a fresh request every five guesses",
     ),
 ]
 

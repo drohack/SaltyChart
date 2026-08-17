@@ -178,7 +178,64 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
 
-**The four admin pages share `components/AdminShell.svelte`** - one `<main>`,
+**`/admin/users`** - who can sign in, and who can administer. A fourth question
+alongside identity, scope and production: *access*. What lives nowhere else:
+
+- **`createdAt` and the list count are columns, not decoration.** Signup is open
+  to the internet, so a stranger's account otherwise looks exactly like a
+  friend's, and an account with data in it is a different deletion decision from
+  an empty one.
+- **One column per action, and a live filter above the table.** Four buttons
+  shared an `Actions` cell at first; they wrapped onto three lines and squeezed
+  every other column to nothing. The filter matches username **or** email as you
+  type, and the count reads `3 of 47` while filtering - a bare list of three
+  otherwise looks like the whole site. Headers sort (names A-Z, counts and dates
+  largest-first on the first click), and accounts with no address sort last
+  rather than piling at the top on an empty string.
+- **Both recovery buttons CLEAR; neither sets.** Setting a password would have to
+  be relayed and would leave the admin knowing it. Clearing hands control back:
+  the owner sets the next one at the reset page, which for an ordinary account
+  needs only a username. The confirm dialogs say which of those two follow-ups
+  applies, because "done" alone leaves an account nobody can get into.
+- **Your own row links into Options instead of duplicating anything.** It fires
+  a `sc:open-account` window event that `App.svelte` and `OptionsModal` both
+  listen for; the modal opens with the Account section already expanded. A
+  one-way event, so neither component needs a handle on the other - and Options
+  asks for the current password, which the clear buttons deliberately do not.
+- **Every refusal renders as its own message.** `LAST_ADMIN` and
+  `ADMIN_RESET_BLOCKED` are deliberate policy, and a reader who cannot tell
+  "refused on purpose" from "broke" goes hunting a bug that is not there. The
+  buttons also pre-disable with a `title` explaining why, but **the backend is
+  the guard** - the UI asking is a courtesy, same discipline as
+  `/admin/sonarr`'s *Include anyway*.
+- **Mail status sits at the top**, because every recovery path on the page
+  depends on it and "why did nothing arrive" is the question it answers. *Send
+  test email* mirrors the Jellyfin/Sonarr connection tests.
+
+**`AdminShell` owns two account-level states**, deliberately, so they appear on
+whichever admin page you happen to open rather than only the one that caused
+them. The **nag** (you are an admin with no verified email, so there is no way
+back into your account) and the **first-run claim form**, which renders *ahead
+of the admin gate* - nobody is an admin yet, so the gate would refuse the very
+person meant to claim it. Both read `GET /api/auth/account`.
+
+**Options modal - Account section.** Email with its verification step, and
+change-password; both require the current password. Setting an address is
+opting *in* to protection, and it only counts once a code sent to it comes
+back - an unverified address must never protect anything, or a typo locks the
+account onto a coded path with no reachable inbox. Reopening the modal with a
+stored-but-unverified address lands on the code box rather than forgetting a
+half-finished verification. Changing a password rotates `tokenVersion`, so the
+server hands back a fresh token to keep *this* device signed in while ending
+every other session.
+
+**`ResetPassword.svelte` has two paths and never guesses which.**
+`/reset-request` decides: a code step, the old one-step form, or a `blocked`
+dead end for an admin with no address. That last step matters more than it
+looks - without it such an admin sits at a form refusing every submission,
+which reads as a broken page rather than a policy.
+
+**The five admin pages share `components/AdminShell.svelte`** - one `<main>`,
 one `Admin` heading, one tab strip, one admin gate. They previously had three
 different widths (`max-w-2xl`, `max-w-[100rem]`, `w-full sm:w-3/4`), and the
 Sonarr one used a bare `<div>` with no heading and **no gate**, so a non-admin

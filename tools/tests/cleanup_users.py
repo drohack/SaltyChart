@@ -48,6 +48,10 @@ def cleanup() -> int:
         qs = ",".join("?" * len(ids))
         con.execute(f"DELETE FROM WatchList WHERE userId IN ({qs})", ids)
         con.execute(f"DELETE FROM Settings WHERE userId IN ({qs})", ids)
+        # AuthCode has no foreign key (SQLite cannot add one to an existing
+        # table without rebuilding it), so nothing cascades - a fixture that
+        # requested a reset code would otherwise leave the row behind for ever.
+        con.execute(f"DELETE FROM AuthCode WHERE userId IN ({qs})", ids)
         con.execute(f"DELETE FROM User WHERE id IN ({qs})", ids)
         con.commit()
         print(f"cleanup_users: removed {len(ids)} test users and their list/settings rows",

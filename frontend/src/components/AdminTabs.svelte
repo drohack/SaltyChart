@@ -6,7 +6,7 @@
    * that is what `App.svelte`'s router listens to - a plain `<a href>` would
    * full-page reload and drop the lazily-loaded chunk cache.
    */
-  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles';
+  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles' | 'users';
 
   const TABS: { key: typeof current; label: string; path: string }[] = [
     { key: 'connection', label: 'Connection', path: '/admin' },
@@ -20,6 +20,9 @@
     // trailer translation pipeline has actually produced. Its data lives in a
     // different table (SubtitleCache) and is keyed by YouTube video, not series.
     { key: 'subtitles', label: 'Subtitles', path: '/admin/subtitles' },
+    // Users asks a fourth question: not identity, scope or production, but
+    // *access* - who can sign in, and who can administer.
+    { key: 'users', label: 'Users', path: '/admin/users' },
   ];
 
   function go(path: string) {

@@ -10,6 +10,7 @@
   let AdminMatching: any;
   let AdminSonarr: any;
   let AdminSubtitles: any;
+  let AdminUsers: any;
 
 import { authToken, userName } from './stores/auth';
 import { isAdmin } from './stores/jellyfin';
@@ -51,6 +52,11 @@ $: {
 
   onMount(() => {
     window.addEventListener('popstate', () => (route = window.location.pathname));
+    // `/admin/users` sends you here for your OWN account rather than
+    // duplicating the email and change-password forms on a second page. A
+    // window event keeps that one-way: the admin page needs no handle on this
+    // component, and this component needs no knowledge of the admin page.
+    window.addEventListener('sc:open-account', () => (showOptions = true));
   });
 
   function goto(path: string) {
@@ -88,6 +94,9 @@ $: {
       case '/admin/subtitles':
         AdminSubtitles = AdminSubtitles || (await import('./pages/AdminSubtitles.svelte')).default;
         return AdminSubtitles;
+      case '/admin/users':
+        AdminUsers = AdminUsers || (await import('./pages/AdminUsers.svelte')).default;
+        return AdminUsers;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;
