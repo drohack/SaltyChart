@@ -1794,7 +1794,7 @@ MUTATIONS: list[Mutation] = [
         # Tokens live 7 days in localStorage and there is no revocation list, so
         # this comparison IS the logout. A missing `v` claim reads as 0 on
         # purpose - the five scripts in tools/ sign bare `{ id }` tokens.
-        find="  if ((payload.v ?? 0) !== user.tokenVersion) {",
+        find="  if (payload.v !== undefined && payload.v !== user.tokenVersion) {",
         replace="  if (false) { /* mutation */",
         test=T_NEGATIVE,
         expect="minted before the password change still works",
