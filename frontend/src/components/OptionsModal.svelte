@@ -178,6 +178,7 @@
     emailVerified: boolean;
     isAdmin: boolean;
     needsEmail: boolean;
+    pendingEmail: string | null;
   } | null = null;
 
   let emailInput = '';
@@ -201,6 +202,7 @@
 
   let currentPassword = '';
   let nextPassword = '';
+  let confirmPassword = '';
   let passwordMessage = '';
   let passwordError = '';
 
@@ -213,12 +215,13 @@
       if (res.ok) {
         account = await res.json();
         emailInput = account?.email ?? '';
-        // A stored-but-unverified address means a code is already outstanding,
-        // so reopening the modal should land on the code box rather than
-        // silently forgetting a half-finished verification. This is exactly the
-        // state someone lands in after closing the modal mid-verify, which is
-        // easy to do and used to leave no trace that a step was outstanding.
-        awaitingCode = !!account?.email && !account?.emailVerified;
+        // The server reports an outstanding change (an unconsumed, unexpired
+        // verifyEmail code) so reopening the modal lands on the code box rather
+        // than silently forgetting a half-finished verification. That is exactly
+        // the state someone reaches by closing the modal mid-verify, which is
+        // easy to do and used to leave no trace a step was owed.
+        awaitingCode = !!account?.pendingEmail;
+        if (account?.pendingEmail) emailHint = account.pendingEmail;
         accountOpen = accountOpen || awaitingCode || !!account?.needsEmail;
       }
     } catch {
@@ -306,12 +309,23 @@
       passwordError = 'Enter your current and new password.';
       return;
     }
+    // A typo here signs you out of every other device and leaves a password you
+    // never meant to set - and an admin with no verified email has no way to
+    // undo that. The server checks it too.
+    if (nextPassword !== confirmPassword) {
+      passwordError = 'The two new passwords do not match.';
+      return;
+    }
     accountBusy = true;
     try {
       const res = await fetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
-        body: JSON.stringify({ currentPassword, newPassword: nextPassword }),
+        body: JSON.stringify({
+          currentPassword,
+          newPassword: nextPassword,
+          confirmPassword,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -324,6 +338,7 @@
       if (data.token) authToken.set(data.token);
       currentPassword = '';
       nextPassword = '';
+      confirmPassword = '';
       passwordMessage = 'Password changed. Other devices have been signed out.';
     } catch {
       passwordError = 'Could not reach the server.';
@@ -520,10 +535,18 @@
             bind:value={nextPassword}
             disabled={accountBusy}
           />
+          <input
+            class="input input-bordered input-sm mb-2"
+            class:input-error={!!confirmPassword && confirmPassword !== nextPassword}
+            type="password"
+            placeholder="Confirm new password"
+            bind:value={confirmPassword}
+            disabled={accountBusy}
+          />
           <button
             class="btn btn-sm btn-outline"
             on:click={changePassword}
-            disabled={accountBusy || !currentPassword || !nextPassword}
+            disabled={accountBusy || !currentPassword || !nextPassword || nextPassword !== confirmPassword}
           >
             {accountBusy ? 'Changing...' : 'Change password'}
           </button>

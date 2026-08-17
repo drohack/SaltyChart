@@ -137,6 +137,11 @@ def player(*steps: int) -> list[str]:
     return PY + [str(TESTS / "test_player.py"),
                  "--only-steps", ",".join(str(s) for s in steps)]
 T_NEGATIVE = PY + [str(TESTS / "test_api_negative.py")]
+# Boots its own backend on an EMPTY database, so its destructive admin
+# assertions cannot touch the dev account. Rows that break an admin guard
+# belong here: against the dev server the same assertions succeeded and left
+# the real admin's password reset and email cleared.
+T_ACCTSEC = PY + [str(TESTS / "test_account_security.py")]
 # Cheap (~15 s) and it `fail()`s at the guarded step, so a caught row pays only
 # as far as its own assertion - the right layer for a purely server-side rule.
 T_SMOKE = PY + [str(TESTS / "test_api_smoke.py")]
@@ -1721,8 +1726,8 @@ MUTATIONS: list[Mutation] = [
         # calling it. Both matter - a correct rule nobody consults is not a rule.
         find="  if (!mayResetOpenly(user)) {",
         replace="  if (false) { /* mutation */",
-        test=T_NEGATIVE,
-        expect="an anonymous request reset the ADMIN password",
+        test=T_ACCTSEC,
+        expect="anonymous request reset an ADMIN password",
         guards="the takeover hole is reopened at the endpoint even though the "
                "rule that forbids it is still correct",
     ),
@@ -1756,7 +1761,7 @@ MUTATIONS: list[Mutation] = [
              "        const admins = await tx.user.count({ where: { isAdmin: true } });\n"
              "        if (admins <= 1) {",
         replace="        const admins = 99; /* mutation */\n        if (false) {",
-        test=T_NEGATIVE,
+        test=T_ACCTSEC,
         expect="the only admin was demoted",
         guards="the site is left with no admin at all, and no way back in short "
                "of editing the database by hand",
@@ -1769,7 +1774,7 @@ MUTATIONS: list[Mutation] = [
         # reset (admins are refused) nor the coded one (no address).
         find="        if (!target.emailVerifiedAt) {",
         replace="        if (false) { /* mutation */",
-        test=T_NEGATIVE,
+        test=T_ACCTSEC,
         expect="was promoted to admin",
         guards="an admin is created who cannot recover their own account by any "
                "route, and only another admin can rescue them",
@@ -1783,8 +1788,8 @@ MUTATIONS: list[Mutation] = [
         # guarding are the two that would leave an account with no route back in.
         find="    if (target.isAdmin) {",
         replace="    if (false) { /* mutation */",
-        test=T_NEGATIVE,
-        expect="admin's email was cleared from the users page",
+        test=T_ACCTSEC,
+        expect="an admin's email was cleared",
         guards="an admin loses the address they recover through, and is blocked "
                "from the open reset as well, so the account cannot be entered again",
     ),
@@ -1796,10 +1801,26 @@ MUTATIONS: list[Mutation] = [
         # purpose - the five scripts in tools/ sign bare `{ id }` tokens.
         find="  if (payload.v !== undefined && payload.v !== user.tokenVersion) {",
         replace="  if (false) { /* mutation */",
-        test=T_NEGATIVE,
+        test=T_ACCTSEC,
         expect="minted before the password change still works",
         guards="resetting a compromised password does not evict the attacker - "
                "their token keeps working for up to a week",
+    ),
+    Mutation(
+        name="a verification code is not bound to the address it was sent to",
+        path=BACKEND_AUTH_ROUTE,
+        # The address rides on the code row, never on the request. Untie them and
+        # the code stops being evidence about any particular address: anyone could
+        # have one mailed to an inbox they own and submit it alongside a different
+        # address, stamping emailVerifiedAt on something nobody can read - the
+        # typo-lockout verification exists to prevent. It also erases the pending
+        # state, so closing the modal loses a half-finished change silently.
+        find="      sentTo: bindTo ?? null,",
+        replace="      sentTo: null, /* mutation */",
+        test=T_ACCTSEC,
+        expect="no pending address reported",
+        guards="an address can be marked verified without anyone proving they can "
+               "read it, which is how a typo becomes a permanent lockout",
     ),
     Mutation(
         name="reset codes never expire",

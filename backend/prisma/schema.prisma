@@ -21,8 +21,10 @@ model User {
   password  String   // hashed with bcrypt
   createdAt DateTime @default(now())
 
-  /// Recovery address. Deliberately NOT unique - a household may share one, and
-  /// nothing ever looks a user up by it (reset is keyed on username).
+  /// The LIVE, confirmed recovery address. Deliberately NOT unique - a household
+  /// may share one, and nothing ever looks a user up by it (reset is keyed on
+  /// username). Only ever written together with `emailVerifiedAt`; an address
+  /// still awaiting its code lives on `AuthCode.sentTo` until confirmed.
   email           String?
   /// Non-null is the entire protection rule: an account with a *verified*
   /// address can only be reset through an emailed code. An unverified address
@@ -112,6 +114,18 @@ model AuthCode {
   /// bcrypt, NOT a fast digest. Six digits is only a million values, so a fast
   /// hash would make a leaked database equivalent to a leaked code.
   codeHash   String
+  /// For `verifyEmail`, the address this code was actually sent to.
+  ///
+  /// The address must be remembered server-side, and this is its natural home:
+  /// the code and the address it went to are one fact, and it is discarded with
+  /// the code - so no column on `User` and no state to migrate. Letting the
+  /// browser supply the address at verification time would make the code prove
+  /// nothing about it: anyone could have a code mailed to an inbox they own and
+  /// submit it alongside a different address, stamping `emailVerifiedAt` on
+  /// something nobody can read. That is the typo-lockout verification exists to
+  /// prevent. Null for `reset` codes, which go to the confirmed address already
+  /// on the account.
+  sentTo     String?
   expiresAt  DateTime
   /// Wrong guesses. At the cap the code is consumed, so guessing costs a fresh
   /// request per N attempts rather than a fresh guess.

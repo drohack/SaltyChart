@@ -222,6 +222,7 @@ async function ensureDatabaseSchema() {
         "userId"     INTEGER  NOT NULL,
         "purpose"    TEXT     NOT NULL,
         "codeHash"   TEXT     NOT NULL,
+        "sentTo"     TEXT,
         "expiresAt"  DATETIME NOT NULL,
         "attempts"   INTEGER  NOT NULL DEFAULT 0,
         "consumedAt" DATETIME,
@@ -231,6 +232,13 @@ async function ensureDatabaseSchema() {
     await prisma.$executeRawUnsafe(
       `CREATE INDEX IF NOT EXISTS "AuthCode_userId_purpose_idx" ON "AuthCode" ("userId", "purpose")`
     );
+    // For databases that already have the table from before `sentTo` existed.
+    const codeColumns: Array<{ name: string }> =
+      await prisma.$queryRaw`PRAGMA table_info('AuthCode');`;
+    if (!codeColumns.some((c) => c.name === 'sentTo')) {
+      console.log('[DB] Adding AuthCode.sentTo column');
+      await prisma.$executeRawUnsafe(`ALTER TABLE "AuthCode" ADD COLUMN "sentTo" TEXT`);
+    }
 
     // Bootstrap admin-ness onto the column.
     //

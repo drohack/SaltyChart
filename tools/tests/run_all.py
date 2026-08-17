@@ -147,6 +147,12 @@ def main():
         # consulted by the rest of this suite. This one boots its own
         # production-mode backend on a spare port to prove they actually limit.
         ("rate limits",      ["py", "-3.13", "-u", str(TESTS / "test_rate_limits.py")], None, 180),
+        # Same trick, different reason: these assertions attempt destructive admin
+        # actions, which are refused while the guards hold but SUCCEED under a
+        # mutation run - and against the dev server that meant the real admin's
+        # password reset and email cleared, with nothing to put them back. An
+        # empty database is also the only place the first-run claim flow exists.
+        ("account security",  ["py", "-3.13", "-u", str(TESTS / "test_account_security.py")], None, 240),
         # A mutation-audit row that no longer matches its source SKIPs, which is
         # easy to lose in a ~90-minute run and means that invariant is quietly
         # unaudited. Catching it costs a second and no servers, so it belongs on

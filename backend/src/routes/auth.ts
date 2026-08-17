@@ -67,7 +67,9 @@ async function issueCode(
   userId: number,
   purpose: CodePurpose,
   to: string,
-  now = new Date()
+  now = new Date(),
+  /** Recorded on the row for `verifyEmail`, so the code is bound to the address. */
+  bindTo?: string
 ): Promise<boolean> {
   const recent = await prisma.authCode.findMany({
     where: { userId, purpose, createdAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },
@@ -81,7 +83,13 @@ async function issueCode(
 
   const code = generateCode();
   await prisma.authCode.create({
-    data: { userId, purpose, codeHash: await hashCode(code), expiresAt: expiryFrom(now) },
+    data: {
+      userId,
+      purpose,
+      codeHash: await hashCode(code),
+      expiresAt: expiryFrom(now),
+      sentTo: bindTo ?? null,
+    },
   });
 
   const mail =
@@ -104,7 +112,9 @@ async function consumeCode(
   purpose: CodePurpose,
   submitted: string,
   now = new Date()
-): Promise<{ ok: true } | { ok: false; status: number; error: string; code: string }> {
+): Promise<
+  { ok: true; sentTo: string | null } | { ok: false; status: number; error: string; code: string }
+> {
   const row = await prisma.authCode.findFirst({
     where: { userId, purpose },
     orderBy: { createdAt: 'desc' },
@@ -143,7 +153,7 @@ async function consumeCode(
   }
 
   await prisma.authCode.update({ where: { id: row.id }, data: { consumedAt: now } });
-  return { ok: true };
+  return { ok: true, sentTo: row.sentTo };
 }
 
 /** Shared reply for a send that could not go out. Never logs the error object. */
@@ -378,11 +388,20 @@ router.get('/account', requireAuth, async (req: AuthRequest, res) => {
   // has to be able to see that state, which is why it rides here rather than on
   // an admin-gated route nobody in that situation could call.
   const admins = await prisma.user.count({ where: { isAdmin: true } });
+  // An address entered but not yet confirmed lives on the code row, so the
+  // "enter your code" state survives closing the modal - which is exactly what
+  // someone does when nothing on screen says a step is outstanding.
+  const outstanding = await prisma.authCode.findFirst({
+    where: { userId: u.id, purpose: 'verifyEmail', consumedAt: null, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  });
   res.json({
     username: u.username,
     email: u.email,
     emailVerified: !!u.emailVerifiedAt,
     isAdmin: u.isAdmin,
+    /** Address awaiting a code, masked. Null when there is no change in flight. */
+    pendingEmail: outstanding?.sentTo ? maskEmail(outstanding.sentTo) : null,
     /** Drives the admin nag: an admin here has no way back into their account. */
     needsEmail: u.isAdmin && !u.emailVerifiedAt,
     /** No admin exists at all - offer the claim form. */
@@ -391,12 +410,21 @@ router.get('/account', requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
-  const { currentPassword, newPassword } = req.body as {
+  const { currentPassword, newPassword, confirmPassword } = req.body as {
     currentPassword?: string;
     newPassword?: string;
+    confirmPassword?: string;
   };
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Missing fields', code: 'BAD_REQUEST' });
+  }
+  // Checked server-side as well as in the form. A typo here signs you out of
+  // every other device and leaves you with a password you never meant to set -
+  // and for an admin with no verified email there is no way to undo it.
+  if (confirmPassword !== undefined && confirmPassword !== newPassword) {
+    return res
+      .status(400)
+      .json({ error: 'The two new passwords do not match.', code: 'BAD_REQUEST' });
   }
 
   const user = req.user!;
@@ -449,13 +477,12 @@ router.post('/email', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const clean = email.trim();
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { email: clean, emailVerifiedAt: null },
-  });
-
+  // The account is NOT touched here. The new address rides on the code row and
+  // only lands on the user once a code sent to it comes back - so a change that
+  // is started and abandoned leaves the current verified address, and its
+  // protection, exactly as they were.
   try {
-    await issueCode(user.id, 'verifyEmail', clean);
+    await issueCode(user.id, 'verifyEmail', clean, new Date(), clean);
   } catch (err) {
     return mailFailure(res, err, 'verify');
   }
@@ -467,19 +494,26 @@ router.post('/email/verify', requireAuth, async (req: AuthRequest, res) => {
   if (!code) return res.status(400).json({ error: 'Missing fields', code: 'BAD_REQUEST' });
 
   const user = req.user!;
-  if (!user.email) {
-    return res
-      .status(400)
-      .json({ error: 'No address is set on this account.', code: 'BAD_REQUEST' });
-  }
-
   const verdict = await consumeCode(user.id, 'verifyEmail', code);
   if (!verdict.ok) {
     return res.status(verdict.status).json({ error: verdict.error, code: verdict.code });
   }
+  if (!verdict.sentTo) {
+    // A code with no bound address predates this shape. Refusing is right: we
+    // cannot say which address it proved control of.
+    return res.status(400).json({
+      error: 'That code is no longer usable. Request a new one.',
+      code: 'INVALID_CODE',
+    });
+  }
 
-  await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
-  res.json({ verified: true });
+  // The address comes off the CODE ROW, never off the request. That is what
+  // makes the code evidence about this specific address.
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { email: verdict.sentTo, emailVerifiedAt: new Date() },
+  });
+  res.json({ verified: true, email: verdict.sentTo });
 });
 
 router.delete('/email', requireAuth, async (req: AuthRequest, res) => {
