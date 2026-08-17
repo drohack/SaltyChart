@@ -9,6 +9,8 @@ Usage:
   py -3.13 -u tools/tests/test_api_negative.py [--backend http://localhost:3000]
 """
 import argparse
+import atexit
+import json
 import subprocess
 import sys
 import time
@@ -290,6 +292,42 @@ def main():
             fail(12, "no admin account exists - the isAdmin bootstrap in "
                      "ensureDatabaseSchema() did not run, so every admin route is shut")
         admin_name = admins[0]["username"]
+        admin_id = admins[0]["id"]
+
+        # Snapshot the admin row, and put it back however this run ends.
+        #
+        # The assertions below deliberately attempt destructive admin actions.
+        # While the guards are INTACT they are refused and nothing changes -
+        # which is why this looked safe. Under `mutation_audit.py` the guard is
+        # removed on purpose, and then they SUCCEED against the real account: an
+        # audit run reset the dev admin's password to "taken_over", cleared its
+        # email, and left a fixture promoted to admin. The audit reverts source,
+        # never data, so nothing put it back.
+        #
+        # atexit rather than try/finally because `fail()` calls sys.exit, and
+        # this way the restore needs no re-indentation of the block below.
+        snap = db_exec(
+            f"const u=await p.user.findUnique({{where:{{id:{admin_id}}}}});"
+            f"console.log(JSON.stringify({{p:u.password,e:u.email,"
+            f"v:u.emailVerifiedAt,a:u.isAdmin,t:u.tokenVersion}}));"
+        )
+        if snap:
+            def _restore_admin(js: str = snap, uid: int = admin_id) -> None:
+                d = json.loads(js)
+                email = "null" if d["e"] is None else f"'{d['e']}'"
+                verified = "null" if d["v"] is None else f"new Date('{d['v']}')"
+                db_exec(
+                    f"await p.user.update({{where:{{id:{uid}}},data:{{"
+                    f"password:'{d['p']}',email:{email},emailVerifiedAt:{verified},"
+                    f"isAdmin:{str(bool(d['a'])).lower()},tokenVersion:{int(d['t'])}}}}});"
+                    # A mutated promotion guard can leave a fixture as admin.
+                    f"await p.user.updateMany({{where:{{OR:["
+                    f"{{username:{{startsWith:'nonadmin_test_'}}}},"
+                    f"{{username:{{startsWith:'prot_test_'}}}},"
+                    f"{{username:{{startsWith:'admintest_'}}}}]}},"
+                    f"data:{{isAdmin:false}}}});"
+                )
+            atexit.register(_restore_admin)
         r = requests.post(f"{backend}/api/auth/reset-password",
                           json={"username": admin_name, "newPassword": "taken_over"},
                           timeout=10)
@@ -384,7 +422,6 @@ def main():
 
         # --------- 16/16 the last admin, and admin passwords ----------------
         step(16, "the last admin cannot be demoted, and an admin cannot be stranded")
-        admin_id = admins[0]["id"]
         if len(admins) == 1:
             r = requests.patch(f"{backend}/api/admin/users/{admin_id}",
                                headers=ahdr, json={"isAdmin": False}, timeout=10)

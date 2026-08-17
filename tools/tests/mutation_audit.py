@@ -1735,9 +1735,15 @@ MUTATIONS: list[Mutation] = [
         find="  if (!req.user?.isAdmin) {",
         replace="  if (false) { /* mutation */",
         test=T_NEGATIVE,
-        expect="could read the user list",
-        guards="every admin route - Jellyfin config, Sonarr push, the user list - "
-               "is reachable by anyone who signs up",
+        # Anchored on step 10, not on the later /api/admin/users check, because
+        # step 10 fires FIRST and `fail()` exits - so the specific assertion
+        # never ran and this row graded WRONG REASON. Step 10 is the better
+        # anchor anyway: it sweeps the four `translate` routes converted from
+        # inline id comparisons to this middleware, which is the half of that
+        # change most likely to be wrong.
+        expect="as non-admin: expected 403",
+        guards="every admin route - Jellyfin config, Sonarr push, the user list, "
+               "the translate batch and cache - is reachable by anyone who signs up",
     ),
     Mutation(
         name="the last admin can be demoted",

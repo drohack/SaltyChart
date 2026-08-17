@@ -53,12 +53,20 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   // no revocation list, so without this a stolen session outlives the password
   // that was changed to stop it.
   //
-  // **A missing `v` claim reads as 0**, the column default. Five scripts in
-  // `tools/` mint admin tokens by signing `{ id }` directly (test_jellyfin.py,
-  // test_sonarr.py, test_ui_interactions.py, sonarr_dryrun.py,
-  // sonarr_tag_backlog.py); requiring the claim would break all of them for no
-  // security gain, since a forged token needs the secret either way.
-  if ((payload.v ?? 0) !== user.tokenVersion) {
+  // **A token with no `v` claim skips the check** - it is not treated as v0.
+  // Every token this server issues carries `v` (see `signToken`), so a stolen
+  // session is still invalidated, which is the whole threat here. A claimless
+  // token can therefore only come from something signing with JWT_SECRET
+  // directly: the five scripts in `tools/` that mint `{ id }` admin tokens
+  // (test_jellyfin, test_sonarr, test_ui_interactions, test_api_negative,
+  // sonarr_dryrun, sonarr_tag_backlog). Rejecting those buys nothing, because
+  // anything holding the secret can forge any `v` it likes.
+  //
+  // Defaulting to 0 instead - the first version of this - looked equivalent and
+  // was not: it worked only until the admin's password was changed once, and
+  // then locked every one of those scripts out. Found when a mutation-audit run
+  // bumped the dev admin to v1 and the whole suite started failing at step 12.
+  if (payload.v !== undefined && payload.v !== user.tokenVersion) {
     return res.status(401).json({ error: 'Session expired', code: 'INVALID_TOKEN' });
   }
 
