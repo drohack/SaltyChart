@@ -22,7 +22,7 @@
    * which put the heading and tabs in a different place on each tab - which is
    * the thing being complained about, just moved up a level.
    */
-  export let current: 'connection' | 'matching' | 'sonarr';
+  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles';
 
   /**
    * `$isAdmin !== false` and not `=== true`: the store is tri-state, and

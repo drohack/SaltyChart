@@ -4,7 +4,19 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import crypto from 'crypto';
 import prisma from '../db';
-import { requireAuth, AuthRequest } from '../middleware/auth';
+import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
+import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
+import { seasonsForSonarr, type SeasonRef } from '../lib/sonarrSelect';
+import { describeBatchSchedule } from '../lib/batchSchedule';
+import {
+  buildSubtitleReport,
+  isBelowChampion,
+  MODEL_RANK,
+  CHAMPION,
+  type SeasonEntry,
+  type SeasonInput,
+  type SubtitleRow,
+} from '../lib/subtitleReport';
 
 const router = Router();
 
@@ -595,10 +607,13 @@ router.get('/stream', async (req: Request, res: Response) => {
  * Remove a cached translation (e.g. if it's wrong or corrupt). Admin only.
  * The next play will re-translate on demand.
  */
-router.delete('/cache', requireAuth, async (req: AuthRequest, res: Response) => {
-  if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
-    return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
-  }
+// Gated by `requireAdmin` (the `User.isAdmin` column), not by an inline
+// comparison against ADMIN_USER_ID: an id comparison is wrong in both
+// directions once accounts can be promoted and demoted - a promoted admin gets
+// 403 and a demoted one still passes. `/admin/subtitles`' delete button calls
+// this. The other inline checks in this file (`/upload`, `/batch`,
+// `/batch/status`) still compare ids and want the same treatment.
+router.delete('/cache', requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   const videoId = req.query.videoId as string;
   if (!videoId || !VIDEO_ID_RE.test(videoId)) {
     return res.status(400).json({ error: 'Invalid videoId', code: 'BAD_REQUEST' });
@@ -648,10 +663,10 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
  * Admin only. Upserts into SubtitleCache - upgrades if new model is higher rank.
  * Body: { videoId, mediaId?, modelName, segments: [{start, end, text}, ...] }
  */
-// 'large-v3-split' (6) = local champion pipeline (Demucs vocals + large-v3
-// transcribe + qwen3.5 translate); outranks plain 'large-v3' so it auto-upgrades
-// existing entries. Keep in sync with MODEL_RANK in tools/local_translate.py.
-const MODEL_RANK: Record<string, number> = { tiny: 0, base: 1, small: 2, medium: 3, 'large-v2': 4, 'large-v3': 5, 'large-v3-split': 6 };
+// MODEL_RANK now lives in lib/subtitleReport.ts - the one TypeScript copy,
+// shared with the /report route below. The two Python copies
+// (scripts/batch_translate.py, tools/local_translate.py) still need syncing by
+// hand; the reasoning is at the constant.
 
 router.post('/upload', express.json({ limit: '5mb' }), requireAuth, async (req: AuthRequest, res: Response) => {
   if (req.userId !== (parseInt(process.env.ADMIN_USER_ID || '1', 10))) {
@@ -791,7 +806,67 @@ export function startBatch(args: string[], meta: { season?: string; year?: numbe
     console.log(`[translate/batch] Batch exited with code ${code}`);
     batchStatus.running = false;
     batchProcess = null;
+    void persistBatchRun(code);
   });
+}
+
+/** `AppConfig` key holding the last completed batch run. */
+const BATCH_RUN_KEY = 'subtitleBatchStatus';
+
+export interface PersistedBatchRun {
+  startedAt: string | null;
+  finishedAt: string;
+  exitCode: number | null;
+  season: string | null;
+  year: number | null;
+  /** Last few log lines. The full 2000-line log stays in memory only. */
+  tail: string[];
+}
+
+/**
+ * Record that a batch finished, so `/admin/subtitles` can still say so later.
+ *
+ * `batchStatus` is in-memory and a deploy is a restart, which is exactly when
+ * someone opens the page wondering whether the job ran - so without this the
+ * schedule panel would read "never run" essentially always. Same reason
+ * `remoteSweepStatus` is persisted.
+ *
+ * **Written at both exits, success and failure.** "Ran and failed" must stay
+ * distinguishable from "never ran"; recording only clean exits would make a
+ * crash-looping batch look like a batch that was never scheduled.
+ */
+async function persistBatchRun(code: number | null): Promise<void> {
+  const run: PersistedBatchRun = {
+    startedAt: batchStatus.startedAt ?? null,
+    finishedAt: new Date().toISOString(),
+    exitCode: code,
+    season: batchStatus.season ?? null,
+    year: batchStatus.year || null,
+    tail: batchStatus.log.slice(-20),
+  };
+  try {
+    await prisma.appConfig.upsert({
+      where: { key: BATCH_RUN_KEY },
+      update: { value: JSON.stringify(run) },
+      create: { key: BATCH_RUN_KEY, value: JSON.stringify(run) },
+    });
+  } catch (err) {
+    // Losing the record must never take the process down - the batch itself
+    // already succeeded or failed on its own terms.
+    console.error('[translate/batch] could not persist run status:', err);
+  }
+}
+
+/** The last completed run, or null. A corrupt row parses to null, never throws. */
+async function readPersistedBatchRun(): Promise<PersistedBatchRun | null> {
+  try {
+    const row = await prisma.appConfig.findUnique({ where: { key: BATCH_RUN_KEY } });
+    if (!row?.value) return null;
+    const parsed = JSON.parse(row.value);
+    return parsed && typeof parsed === 'object' ? (parsed as PersistedBatchRun) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -804,6 +879,199 @@ router.get('/batch/status', requireAuth, async (req: AuthRequest, res: Response)
   }
 
   return res.json(batchStatus);
+});
+
+// ---------------------------------------------------------------------------
+// GET /report - everything /admin/subtitles renders, in one payload
+// ---------------------------------------------------------------------------
+
+/** SQLite COUNT() comes back as BigInt through raw queries. */
+function num(v: unknown): number {
+  return typeof v === 'bigint' ? Number(v) : Number(v ?? 0);
+}
+
+/** null stays null - "we never checked" is not "we checked and it was false". */
+function bool(v: unknown): boolean | null {
+  return v === null || v === undefined ? null : Boolean(v);
+}
+
+function iso(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
+/**
+ * One cached season, and whether it was cached at all.
+ *
+ * **Reads the `''` format key**, the unfiltered season. The `'TV'` row would
+ * silently drop every TV_SHORT - the same trap `routes/sonarr.ts` documents.
+ *
+ * `cached: false` (no row) is deliberately distinct from a row holding `[]`.
+ * The second means "we asked and there is nothing yet"; only the first means we
+ * never asked, and the page must not render them the same way.
+ */
+async function readCachedSeasonEntries(
+  ref: SeasonRef
+): Promise<{ cached: boolean; entries: SeasonEntry[] }> {
+  const rows = (await prisma.$queryRawUnsafe(
+    `SELECT data
+       FROM   "SeasonCache"
+       WHERE  season = ?
+       AND    year   = ?
+       AND    format = ?
+       LIMIT  1`,
+    ref.season,
+    ref.year,
+    ''
+  )) as Array<{ data: string }>;
+
+  if (rows.length === 0) return { cached: false, entries: [] };
+  try {
+    const parsed = JSON.parse(rows[0].data);
+    return { cached: true, entries: Array.isArray(parsed) ? parsed : [] };
+  } catch {
+    console.warn(`[translate/report] unparseable SeasonCache row for ${ref.season} ${ref.year}`);
+    return { cached: true, entries: [] };
+  }
+}
+
+/** Both or neither, and both valid - the same contract as `/api/sonarr`'s. */
+function seasonOverride(
+  season: string | undefined,
+  year: string | undefined
+): { error: string } | { refs: SeasonRef[] | null } {
+  if ((season && !year) || (!season && year)) {
+    return { error: 'Provide both "season" and "year", or neither' };
+  }
+  if (season && year) {
+    if (!isValidSeason(season) || !isValidYear(year)) return { error: 'Invalid season or year' };
+    return { refs: [{ season: season.toUpperCase() as Season, year: Number(year) }] };
+  }
+  return { refs: null };
+}
+
+/**
+ * The state of the trailer subtitle pipeline: overall totals, the schedule, and
+ * this season plus the next broken down per trailer.
+ *
+ * **Reads `SeasonCache` only, and never triggers a cold AniList fetch** - the
+ * same rule as `/api/sonarr`. It serves a stale row happily; freshness is
+ * irrelevant to "what have we translated", and AniList's ~30/min budget is
+ * shared with every viewer.
+ *
+ * Everything the page shows about the *Sunday* local GPU run is inference from
+ * uploaded rows, never a claimed run: that job is a Windows Scheduled Task on
+ * someone's PC and this server has no record it fired.
+ */
+router.get('/report', requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const { season, year } = req.query as { season?: string; year?: string };
+  const override = seasonOverride(season, year);
+  if ('error' in override) {
+    return res.status(400).json({ error: override.error, code: 'BAD_REQUEST' });
+  }
+
+  try {
+    const now = new Date();
+    const refs = override.refs ?? seasonsForSonarr(now);
+
+    // The whole cache is a few hundred rows (423 on this deployment), so it is
+    // loaded once and joined in memory. `segments` itself is never selected -
+    // it is a JSON blob per video and only its length matters here.
+    const cacheRows = (await prisma.$queryRawUnsafe(
+      `SELECT "videoId", "modelName", "hasEnglishSubs", "hasBurnedInSubs",
+              "subtitlesDisabled", "lastEnCheckAt", "createdAt",
+              CASE WHEN "segments" IS NULL THEN NULL
+                   ELSE json_array_length("segments") END AS "segmentCount"
+         FROM "SubtitleCache"`
+    )) as Array<Record<string, unknown>>;
+
+    const byVideoId = new Map<string, SubtitleRow>();
+    for (const r of cacheRows) {
+      const videoId = String(r.videoId);
+      byVideoId.set(videoId, {
+        videoId,
+        modelName: r.modelName === null || r.modelName === undefined ? null : String(r.modelName),
+        hasEnglishSubs: bool(r.hasEnglishSubs),
+        hasBurnedInSubs: bool(r.hasBurnedInSubs),
+        subtitlesDisabled: bool(r.subtitlesDisabled),
+        segmentCount: r.segmentCount === null || r.segmentCount === undefined ? null : num(r.segmentCount),
+        lastEnCheckAt: iso(r.lastEnCheckAt),
+        createdAt: iso(r.createdAt),
+      });
+    }
+
+    const seasonInputs: SeasonInput[] = [];
+    for (const ref of refs) {
+      const { cached, entries } = await readCachedSeasonEntries(ref);
+      seasonInputs.push({ season: ref.season, year: ref.year, cached, entries });
+    }
+    const report = buildSubtitleReport(seasonInputs, byVideoId);
+
+    // Overall totals cover the WHOLE cache, not the two seasons on screen -
+    // they are the "is this system healthy" numbers and most of the table is
+    // seasons that have long since aired.
+    const byModel: Record<string, number> = {};
+    let translated = 0;
+    let youtubeCc = 0;
+    let burnedIn = 0;
+    let ourSubsOff = 0;
+    let newestAt: string | null = null;
+    let lastChampionUploadAt: string | null = null;
+
+    for (const row of byVideoId.values()) {
+      const hasSegments = row.segmentCount !== null && row.segmentCount > 0;
+      if (hasSegments) {
+        translated++;
+        const model = row.modelName ?? 'unknown';
+        byModel[model] = (byModel[model] ?? 0) + 1;
+        if (row.modelName === CHAMPION && row.createdAt && (!lastChampionUploadAt || row.createdAt > lastChampionUploadAt)) {
+          lastChampionUploadAt = row.createdAt;
+        }
+      }
+      if (row.hasEnglishSubs) youtubeCc++;
+      if (row.hasBurnedInSubs) burnedIn++;
+      if (row.subtitlesDisabled) ourSubsOff++;
+      if (row.createdAt && (!newestAt || row.createdAt > newestAt)) newestAt = row.createdAt;
+    }
+
+    // Derived from the same ladder the upload path uses, so "needs redoing" here
+    // and "will be upgraded" there can never disagree.
+    const belowChampion = Object.entries(byModel)
+      .filter(([model]) => isBelowChampion(model === 'unknown' ? null : model))
+      .reduce((sum, [, n]) => sum + n, 0);
+
+    return res.json({
+      overall: {
+        tracked: byVideoId.size,
+        translated,
+        youtubeCc,
+        burnedIn,
+        ourSubsOff,
+        belowChampion,
+        byModel,
+        newestAt,
+      },
+      schedule: {
+        wednesday: describeBatchSchedule(now),
+        live: {
+          running: batchStatus.running,
+          season: batchStatus.season ?? null,
+          year: batchStatus.year || null,
+          startedAt: batchStatus.startedAt ?? null,
+          tail: batchStatus.log.slice(-20),
+        },
+        lastRun: await readPersistedBatchRun(),
+        // "Last upload seen", never "last run" - see the route's header comment.
+        champion: CHAMPION,
+        lastChampionUploadAt,
+      },
+      seasons: report.seasons,
+      rows: report.rows,
+    });
+  } catch (err) {
+    console.error('[translate/report]', err);
+    return res.status(500).json({ error: 'Could not build the subtitle report', code: 'SERVER_ERROR' });
+  }
 });
 
 export default router;

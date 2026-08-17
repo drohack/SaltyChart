@@ -153,10 +153,13 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   `AbortError` is routine interruption during rebuilds and must not show it -
   details at the `sc-autoplay-blocked` handling in the component.
 - Picture-in-picture is disabled. Chromecast is wired
-  (`@silvermine/videojs-chromecast`) but **cannot work over plain LAN HTTP**
-  the Cast SDK needs a secure context; serving HTTPS lights it up with no
-  code change. The SDK is warmed on `/random` and never awaited (it is the
-  one asset whose latency is someone else's internet).
+  (`@silvermine/videojs-chromecast`) and **works in production**, where the
+  reverse proxy serves the site over HTTPS. It is **not testable in local dev**:
+  `setupChromecast` gates on `window.isSecureContext`, and the Vite dev server
+  is plain HTTP, so the button is never offered there. Absence of a cast button
+  locally is the guard doing its job, not a regression - confirm against the
+  deployed site before chasing it. The SDK is warmed on `/random` and never
+  awaited (it is the one asset whose latency is someone else's internet).
 - While the player is open, `handleModalKey` is suppressed so Enter can't
   mark-watched underneath. Playback runs under the configured playback
   account, so progress never syncs to a viewer's Jellyfin profile.
@@ -175,7 +178,7 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
 
-**The three admin pages share `components/AdminShell.svelte`** - one `<main>`,
+**The four admin pages share `components/AdminShell.svelte`** - one `<main>`,
 one `Admin` heading, one tab strip, one admin gate. They previously had three
 different widths (`max-w-2xl`, `max-w-[100rem]`, `w-full sm:w-3/4`), and the
 Sonarr one used a bare `<div>` with no heading and **no gate**, so a non-admin
@@ -261,6 +264,75 @@ for the same reason. What lives nowhere else:
   `on:change` handler splits the value **inside `load()`**, not in a `$:`
   statement - reactive declarations have not flushed when the handler runs, which
   produced `?season=&year=NaN` and a 400.
+
+**`/admin/subtitles`** - what the trailer subtitle pipeline has actually
+produced. A **third** question again: not identity (`/admin/matching`) and not
+scope (`/admin/sonarr`), but production - and its data is keyed by YouTube video
+id rather than by series. **Trailers only**; Jellyfin episode subtitle tracks are
+a different subsystem with no cache table and are deliberately not reported.
+Four blocks: overall tiles, the schedule, a this-season/next-season summary
+sharing columns, then one table of trailers per season. What lives nowhere else:
+
+- **Overall covers the whole `SubtitleCache`, the seasons below do not**, and the
+  page says so. Most of that table is seasons that aired long ago, so the two
+  scopes disagreeing is correct rather than a bug. The tiles carry percentages
+  because the raw counts only ever grow, and the page spells out that "trailers
+  tracked" is *what we have looked at* - a cache size - not how many trailers
+  exist. It is deliberately not a tile for that reason.
+- **The page states the batch's eligibility rules rather than re-implementing
+  them** (format in TV/TV_SHORT/OVA/ONA/SPECIAL so movies are out, not 18+, no
+  SEQUEL/PREQUEL/SIDE_STORY/SPINOFF edge, has a YouTube trailer - and the sequel
+  test is the broad one, which also drops a first season that later spawned a
+  sequel). It also says that **on-demand translation ignores all of it**, which
+  is why the cache holds rows for movies and sequels the batch would never take.
+  The rules live in `filter_eligible`, `backend/scripts/batch_translate.py`;
+  copying them into TypeScript would be a fourth home for a rule already in
+  three files.
+- **Never say "below champion" on screen** - that was internal jargon and read as
+  meaningless. The tile is *"not on our best model"*, and it states that such a
+  translation still works and is a queue length rather than a fault count.
+- **`belowChampion` counts stored translations, not badges.** A row badged
+  `youtubeCc` can still hold an old `medium` translation, and the local GPU run
+  decides on cached segments and model rank alone - `check_server_cache` in
+  `tools/local_translate.py` never consults `hasEnglishSubs`. Gating the per-row
+  flag on `state === 'translated'` made the per-season totals disagree with the
+  overall figure; caught by cross-checking the filter count against the summary
+  column in a browser.
+- **One table, not one per season.** Grouping and column-sorting fight each
+  other - a sort that restarts every few rows is not a sort - so season is a
+  column plus a filter, and the per-season comparison keeps its own summary
+  block.
+- **Sort helpers take `(key, sortKey, sortAsc)`, and that is load-bearing.**
+  Svelte only re-evaluates a template expression when a variable *named in that
+  expression* changes, so `arrow(key)` reading component state inside its body
+  rendered once and froze while the rows underneath re-sorted correctly. The
+  same applies to `aria-sort`.
+- **Buttons use `btn-outline`, headers use `link` (not `link-hover`).** DaisyUI
+  renders `btn-ghost` with a transparent background *and* border until hover, so
+  at rest it is indistinguishable from plain text - a real complaint about this
+  page's first version. `link-hover` has the identical problem for sortable
+  headers. `btn-ghost` is still used ~19 times elsewhere in the app.
+- **The champion card says "last upload seen", never "last run".** The Sunday job
+  is a Windows Scheduled Task on someone's PC; the server cannot observe it, and
+  a run that found nothing new leaves no trace. Saying "last run" would turn a
+  quiet success into an apparent failure.
+- **An uncached season says so, in both the summary row and its table** - never
+  a row of zeroes. Same discipline as the Sonarr headline's "couldn't ask" is not
+  "nothing to do".
+- **Every state gets a visible badge**, including settled ones, and each badge's
+  `title` explains it - the `/admin/sonarr` lesson, where badging only the
+  interesting rows left a table that read as mostly rendering failures. The two
+  actionable states sort to the top, per season.
+- **Both row actions state their real cost.** *Turn our subs off* says "for
+  everyone", because `PATCH /dismiss` is global; the delete confirm names the
+  model and line count and warns that the next play re-translates at `small` - a
+  **downgrade**. It is for clearing a wrong translation, not forcing an upgrade.
+- **The delete button keys off "is there something to delete"** (a non-null
+  segment count), not off the state badge - so a row badged *YouTube CC* that
+  also carries cached segments still offers it.
+- `PATCH /dismiss` is called **without a token**, deliberately: it is
+  unauthenticated because the player's CC toggle is guest-facing, and adding auth
+  for this page would break subtitle toggling for logged-out viewers.
 
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
 contract (filter modes, provenance rules, the changed-vs-untouched Confirm

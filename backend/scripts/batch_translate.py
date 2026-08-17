@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from translate_stream import download_audio, check_subtitles
 
 # Model quality ranking - used for cache comparison. Keep in sync with the
-# copies in backend/src/routes/translate.ts and tools/local_translate.py.
+# copies in backend/src/lib/subtitleReport.ts and tools/local_translate.py.
 # 'large-v3-split' (the local champion pipeline) MUST be here - without it a
 # Sunday-uploaded large-v3-split row ranks as 0 and the Wednesday batch
 # needlessly re-downloads + re-transcribes the whole season for a no-op write.

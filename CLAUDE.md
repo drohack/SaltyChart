@@ -501,7 +501,8 @@ Every table and column, and why each cached row is persisted, is in
   runtime, so a new column has to land there as well as in
   `backend/prisma/schema.prisma`.
 - The `SubtitleCache.modelName` rank table lives in **three** places -
-  `backend/src/routes/translate.ts`, `backend/scripts/batch_translate.py` and
+  `backend/src/lib/subtitleReport.ts` (the one TS copy, imported by
+  `routes/translate.ts`), `backend/scripts/batch_translate.py` and
   `tools/local_translate.py`. A missing `large-v3-split` in any one makes that
   path treat champion output as rank 0 and reprocess it for nothing.
 
@@ -513,17 +514,20 @@ Every table and column, and why each cached row is persisted, is in
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (static assets), Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword,
-  Randomize, Compare, and **three admin pages** - Admin (`/admin`, Connection),
-  AdminMatching (`/admin/matching`), AdminSonarr (`/admin/sonarr`).
-  **All three render inside `components/AdminShell.svelte`**, which owns the
+  Randomize, Compare, and **four admin pages** - Admin (`/admin`, Connection),
+  AdminMatching (`/admin/matching`), AdminSonarr (`/admin/sonarr`),
+  AdminSubtitles (`/admin/subtitles`).
+  **All four render inside `components/AdminShell.svelte`**, which owns the
   `<main>`, the `Admin` heading, the tab strip and the admin gate (the `isAdmin`
   flag on `/api/jellyfin/status`, `stores/jellyfin.ts`). Put page-specific
   chrome in the page and shared chrome in the shell: the three had drifted into
   three different widths and one of them had no heading or gate at all, which
   read as three separate areas of the app.
   **`/admin/matching`** is the human end of the matching pipeline;
-  **`/admin/sonarr`** is the human end of the Sonarr auto-add. What each shows
-  and why is in `frontend/CLAUDE.md`.
+  **`/admin/sonarr`** is the human end of the Sonarr auto-add;
+  **`/admin/subtitles`** reports the trailer subtitle pipeline (trailers only -
+  Jellyfin episode subtitles are not covered). What each shows and why is in
+  `frontend/CLAUDE.md`.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
 #### Reading from the API - `src/lib/remote.ts`

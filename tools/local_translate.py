@@ -712,7 +712,8 @@ def detect_burned_in_subs(video_id: str, segments: list, video_url: str = None) 
 # large-v3-split (rank 6) = the champion pipeline (Demucs vocals + large-v3
 # transcribe + qwen3.5 translate). Outranks plain large-v3 (the e2e fallback /
 # legacy path) so existing large-v3 subs auto-upgrade. Keep in sync with the
-# server's MODEL_RANK in backend/src/routes/translate.ts.
+# server's MODEL_RANK in backend/src/lib/subtitleReport.ts (it lived in
+# routes/translate.ts until that file was made to import it).
 MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4,
               "large-v3": 5, "large-v3-split": 6}
 

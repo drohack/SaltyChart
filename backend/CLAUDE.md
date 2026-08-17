@@ -500,7 +500,37 @@ already renders them in its OVA/ONA/Special section), not to auto-add.
 - `POST /api/translate/upload`                  - upload pre-translated subtitles; admin only, respects model rank
 - `DELETE /api/translate/cache?videoId=`        - delete a cached translation; admin only
 - `POST /api/translate/batch`                   - trigger batch pre-translation; admin only, JWT required
-- `GET /api/translate/batch/status`             - batch job progress/logs; admin only
+- `GET /api/translate/batch/status`             - batch job progress/logs; admin only (in-memory only, see `/report`)
+- `GET /api/translate/report?season=&year=`     - everything `/admin/subtitles` renders; admin only
+
+`GET /report` is the one route here that reads `SeasonCache`, and like
+`/api/sonarr` it **never triggers a cold AniList fetch** - it serves a stale row
+happily, and reads the `''` format key (the `'TV'` row would drop every
+TV_SHORT). Defaults to the current season plus the next (`seasonsForSonarr`);
+`season`+`year` override it, both or neither. It returns `overall` (aggregates
+over the whole `SubtitleCache`), `schedule`, per-season `counts`, and one row per
+trailer carrying a single `state` from `lib/subtitleReport.ts`.
+
+**`cached: false` on a season means there is no `SeasonCache` row at all**, and
+is deliberately distinct from a row holding `[]` ("we asked, nothing yet"). The
+page must render the first as *not cached*, never as zero work.
+
+**The state ladder is `lib/subtitleReport.ts` and only there** -
+`ourSubsOff > burnedIn > youtubeCc > translated > checkedNoSubs > never`, with
+the argument for each rung at the function. One rung is easy to get wrong twice
+over: `youtubeCc` outranks `translated` because CC is *why* the pipeline skips a
+video, and **`never` is about evidence rather than about a row existing** - a
+null `hasEnglishSubs` has no check verdict, and `PATCH /dismiss` upserts, so the
+admin page's own subs toggle creates exactly such a row. Calling it "checked, no
+YouTube CC" would claim work nobody did.
+
+**What the schedule can honestly say.** The Wednesday medium batch is fully
+described from `lib/batchSchedule.ts`, which `index.ts` and this route now share
+so the page cannot name a night the job does not run; `wouldFireAtNextWindow` is
+evaluated **at the window**, not at now, or the page promises a run the scheduler
+will decline. The Sunday `large-v3-split` GPU run is a Windows Scheduled Task on
+someone's PC and **the server has no record it fired** - the page reports the
+newest champion row as *last upload seen*, never *last run*.
 
 Both check and stream query `SubtitleCache` first. On a hit, `/stream` sends a
 `{cached: true}` SSE event then all segments instantly (~50 ms); on a miss the
@@ -868,7 +898,12 @@ Tables / columns:
   the library), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched
   against TV series), and
   `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
-  per-season cooldowns after a 429), `jellyfinAvailability` /
+  per-season cooldowns after a 429), `subtitleBatchStatus` (the last completed
+  batch translation run - `batchStatus` in `routes/translate.ts` is in-memory and
+  a deploy is a restart, which is exactly when someone opens `/admin/subtitles`
+  wondering whether the job ran; written at **both** exits, clean and failed,
+  because "ran and failed" must stay distinguishable from "never ran"),
+  `jellyfinAvailability` /
   `jellyfinSourceDims` (the two per-item caches), and `remoteSweepStatus` (the
   last identity sweep's summary - persisted because "did the background
   resolver run, and what did it do" must survive the restart that follows a
@@ -920,10 +955,12 @@ review. **`rejected` has to be its own column** - it
   user subtitle preferences per YouTube video. `modelName` rank order (upload
   only upgrades to an equal-or-higher rank): tiny < base < small < medium <
   large-v2 < large-v3 < **large-v3-split** (the local champion pipeline). The
-  rank table lives in **three** places - `backend/src/routes/translate.ts`,
+  rank table lives in **three** places - `backend/src/lib/subtitleReport.ts`,
   `backend/scripts/batch_translate.py`, and `tools/local_translate.py` - keep
   all three in sync (a missing `large-v3-split` in any one makes that path treat
-  the champion output as rank 0 and needlessly reprocess it).
+  the champion output as rank 0 and needlessly reprocess it). It used to live in
+  `routes/translate.ts`; that file now imports it, so **TypeScript has one copy**
+  and only the two Python ones need syncing by hand.
 
 Performance indexes (added via `CREATE INDEX IF NOT EXISTS` at startup):
 

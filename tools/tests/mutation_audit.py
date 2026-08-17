@@ -116,6 +116,7 @@ BACKEND_REMOTE = "backend/src/lib/remoteIdentity.ts"
 BACKEND_SONARR = "backend/src/lib/sonarrSelect.ts"
 BACKEND_SONARR_PUSH = "backend/src/lib/sonarrPush.ts"
 BACKEND_SONARR_ROUTE = "backend/src/routes/sonarr.ts"
+BACKEND_SUBS = "backend/src/lib/subtitleReport.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 ADMIN_SONARR = "frontend/src/pages/AdminSonarr.svelte"
@@ -1655,6 +1656,38 @@ MUTATIONS: list[Mutation] = [
                "which is the exact cost the move existed to avoid - and it "
                "fails silently, because a rule that loads too often still works",
         settle=0.0,
+    ),
+    Mutation(
+        name="YouTube English CC stops outranking our own segments",
+        path=BACKEND_SUBS,
+        # Drop the rung and a trailer YouTube already captions falls through to
+        # `translated` - or, with no segments cached, all the way to
+        # `checkedNoSubs`, i.e. into the backlog. 83 of this deployment's 423
+        # tracked trailers have English CC, so the admin page would invent
+        # roughly that much work and someone would go re-translating videos the
+        # pipeline deliberately skips.
+        find="  if (row.hasEnglishSubs) return 'youtubeCc';",
+        replace="  /* mutation: CC no longer outranks our segments */",
+        test=T_UNIT,
+        expect="reports youtubeCc, not backlog",
+        guards="trailers YouTube already captions are counted as untranslated "
+               "work, which is the one misreading that costs GPU hours",
+    ),
+    Mutation(
+        name="a row with no English-CC verdict claims to have been checked",
+        path=BACKEND_SUBS,
+        # `never` is about evidence, not about a row existing. `PATCH /dismiss`
+        # upserts, so /admin/subtitles' own "turn our subs off" button creates a
+        # row carrying nothing but that toggle - found by driving the real page,
+        # not by any test. Without this rung it renders as "checked, no YouTube
+        # CC", which claims a check nobody ran.
+        find="  if (row.hasEnglishSubs === null || row.hasEnglishSubs === undefined) return 'never';",
+        replace="  /* mutation: a row existing counts as having been checked */",
+        test=T_UNIT,
+        expect="has never been checked",
+        guards="the page claims a trailer was checked for English captions when "
+               "nothing ever checked it - and its own subs toggle is what "
+               "manufactures those rows",
     ),
 ]
 

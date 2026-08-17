@@ -174,6 +174,11 @@ chronological order; all features listed are live.
   your library. A correction is remembered permanently.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
   done, with a *Add now* button and a pause switch.
+- **/admin/subtitles** - the state of trailer subtitles: how many trailers we
+  have translated and at what quality, which have YouTube captions or burned-in
+  subs, when the batch next runs, and a per-trailer table for this season and
+  next. Informative; the only actions are turning our subtitles off for a
+  trailer and clearing a bad translation.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
