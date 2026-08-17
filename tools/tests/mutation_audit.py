@@ -1725,7 +1725,7 @@ MUTATIONS: list[Mutation] = [
         # The pure predicate is tested above; this is the endpoint actually
         # calling it. Both matter - a correct rule nobody consults is not a rule.
         find="  if (!mayResetOpenly(user)) {",
-        replace="  if (false) { /* mutation */",
+        replace="  if (!mayResetOpenly(user) && false) { /* mutation */",
         test=T_ACCTSEC,
         expect="anonymous request reset an ADMIN password",
         guards="the takeover hole is reopened at the endpoint even though the "
@@ -1773,7 +1773,7 @@ MUTATIONS: list[Mutation] = [
         # construction. Without it a promoted account can use neither the open
         # reset (admins are refused) nor the coded one (no address).
         find="        if (!target.emailVerifiedAt) {",
-        replace="        if (false) { /* mutation */",
+        replace="        if (!target.emailVerifiedAt && false) { /* mutation */",
         test=T_ACCTSEC,
         expect="was promoted to admin",
         guards="an admin is created who cannot recover their own account by any "
@@ -1787,7 +1787,7 @@ MUTATIONS: list[Mutation] = [
         # credential - both admin actions clear one - so the only refusals worth
         # guarding are the two that would leave an account with no route back in.
         find="    if (target.isAdmin) {",
-        replace="    if (false) { /* mutation */",
+        replace="    if (target.isAdmin && false) { /* mutation */",
         test=T_ACCTSEC,
         expect="an admin's email was cleared",
         guards="an admin loses the address they recover through, and is blocked "

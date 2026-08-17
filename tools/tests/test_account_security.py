@@ -104,7 +104,12 @@ def main() -> int:
     build = subprocess.run(["npm", "run", "build"], cwd=BACKEND, capture_output=True,
                            text=True, timeout=300, shell=sys.platform == "win32")
     if build.returncode != 0 or not entry.exists():
-        skip_all(1, f"`npm run build` failed: {build.stderr[-300:] or build.stdout[-300:]}")
+        # FAIL, never skip. `skip_all` exits 0, and mutation_audit.py reads exit 0
+        # as "the test passed" - so a mutation that merely broke the build reported
+        # SURVIVED, which claims a working guard is unguarded. A build that does
+        # not compile is a real failure of this test, whatever caused it.
+        fail(1, "`npm run build` failed, so nothing below was actually exercised: "
+                f"{(build.stdout + build.stderr).strip()[-400:]}")
 
     scratch = Path(tempfile.gettempdir()) / f"saltychart-acctsec-{os.getpid()}.db"
     for leftover in scratch.parent.glob(f"{scratch.name}*"):

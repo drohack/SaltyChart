@@ -419,20 +419,24 @@
            nothing here a guest could act on. -->
       {#if $authToken && account}
         <div class="divider"></div>
-        <details class="mb-4 rounded border border-base-300" bind:open={accountOpen}>
-          <summary class="cursor-pointer select-none px-3 py-2 flex items-center gap-2">
-            <span class="label-text font-semibold">Account</span>
+        <!-- DaisyUI's `collapse collapse-arrow`, not a bare <details>: Tailwind's
+             preflight removes the native disclosure marker from <summary>, so a
+             hand-rolled one has no affordance at all - it reads as a heading that
+             mysteriously does something when clicked. -->
+        <details class="collapse collapse-arrow border border-base-300 bg-base-200 mb-4" bind:open={accountOpen}>
+          <summary class="collapse-title min-h-0 py-3 pr-10 text-sm font-semibold flex items-center gap-2 flex-wrap">
+            <span>Account</span>
             {#if account.needsEmail}
-              <span class="badge badge-warning badge-sm">email needed</span>
+              <span class="badge badge-warning badge-sm font-normal">email needed</span>
             {:else if awaitingCode}
-              <span class="badge badge-warning badge-sm">verify your email</span>
+              <span class="badge badge-warning badge-sm font-normal">verify your email</span>
             {:else if account.emailVerified}
-              <span class="badge badge-success badge-sm">protected</span>
+              <span class="badge badge-success badge-sm font-normal">protected</span>
             {:else}
-              <span class="text-xs opacity-60">email, password</span>
+              <span class="text-xs opacity-60 font-normal">email, password</span>
             {/if}
           </summary>
-          <div class="form-control px-3 pb-3">
+          <div class="collapse-content form-control">
 
           {#if account.needsEmail}
             <div class="alert alert-warning text-sm mb-2">

@@ -196,6 +196,15 @@
 
   $: adminCount = rows.filter((r) => r.isAdmin).length;
   $: adminsMissingEmail = rows.filter((r) => r.needsEmail);
+  $: protectedCount = rows.filter((r) => r.emailVerified).length;
+  /**
+   * Signups in the last 30 days. Worth a tile precisely because signup is open
+   * to the internet: a stranger arriving is the one thing on this page nobody
+   * would otherwise go looking for.
+   */
+  $: recentCount = rows.filter(
+    (r) => Date.now() - new Date(r.createdAt).getTime() < 30 * 24 * 60 * 60 * 1000
+  ).length;
 
   // --- Filtering and sorting -------------------------------------------------
   // Signup is open to the internet, so this list only grows, and it is mostly
@@ -265,7 +274,12 @@
 </script>
 
 <AdminShell current="users">
-<div class="flex flex-col gap-4">
+<!-- The shell is deliberately one width for every admin tab, so a page that
+     wants narrower content constrains its own children - the same thing the
+     Connection form does. Left unconstrained, this table stretched to 100rem
+     with vast gaps between columns and the stat tiles became 380px of empty
+     space around a two-digit number. -->
+<div class="flex flex-col gap-4 max-w-6xl">
   <!-- Mail status first: every recovery path on this page depends on it, and
        "why did nothing arrive" is the question this line answers up front.
        It is labelled as the SERVER's sending account rather than just "Email",
@@ -334,23 +348,47 @@
       <button class="btn btn-sm" on:click={load}>Retry</button>
     </div>
   {:else}
-    <div class="flex flex-wrap items-center gap-3">
-      <input
-        class="input input-bordered input-sm w-full max-w-xs"
-        type="search"
-        placeholder="Filter by username or email"
-        bind:value={search}
-      />
-      <span class="text-sm opacity-70">
+    <!-- Tiles then a titled table, matching the other admin tabs. -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div class="stat bg-base-200 rounded-box p-3">
+        <div class="stat-title text-xs">Accounts</div>
+        <div class="stat-value text-3xl">{rows.length}</div>
+        <div class="stat-desc text-xs">anyone can sign up</div>
+      </div>
+      <div class="stat bg-base-200 rounded-box p-3">
+        <div class="stat-title text-xs">Admins</div>
+        <div class="stat-value text-3xl">{adminCount}</div>
+        <div class="stat-desc text-xs">the last one can't be removed</div>
+      </div>
+      <div class="stat bg-base-200 rounded-box p-3">
+        <div class="stat-title text-xs">Reset by code</div>
+        <div class="stat-value text-3xl">{protectedCount}</div>
+        <div class="stat-desc text-xs">have a verified email</div>
+      </div>
+      <div class="stat bg-base-200 rounded-box p-3">
+        <div class="stat-title text-xs">Joined, 30 days</div>
+        <div class="stat-value text-3xl">{recentCount}</div>
+        <div class="stat-desc text-xs">{recentCount ? 'check you know them' : 'nobody new'}</div>
+      </div>
+    </div>
+
+    <div>
+      <h2 class="text-lg font-semibold mb-1">Accounts</h2>
+      <p class="text-sm opacity-70 mb-3">
+        Admins are equal. The last admin can't be removed, and promoting someone
+        needs a verified email on their account.
+      </p>
+      <div class="flex flex-wrap items-center gap-3">
+        <input
+          class="input input-bordered input-sm w-full max-w-xs"
+          type="search"
+          placeholder="Filter by username or email"
+          bind:value={search}
+        />
         {#if needle}
-          {visible.length} of {rows.length} accounts
-        {:else}
-          {rows.length} account{rows.length === 1 ? '' : 's'}
+          <span class="text-sm opacity-70">{visible.length} of {rows.length} shown</span>
         {/if}
-        {#if adminCount}
-          &middot; {adminCount} admin{adminCount === 1 ? '' : 's'}
-        {/if}
-      </span>
+      </div>
     </div>
 
     <div class="overflow-x-auto">
@@ -385,8 +423,11 @@
                 Admin{@html arrow('isAdmin')}
               </button>
             </th>
-            <th>Password</th>
-            <th>Email</th>
+            <!-- "Clear password" / "Clear email", not "Password" / "Email": the
+                 data column is already called Email, and two identical headers
+                 meaning different things is worse than two long ones. -->
+            <th class="whitespace-nowrap">Clear password</th>
+            <th class="whitespace-nowrap">Clear email</th>
             <th>Delete</th>
           </tr>
         </thead>
@@ -525,10 +566,6 @@
       </table>
     </div>
 
-    <p class="text-xs opacity-60">
-      Admins are equal. The last admin can't be removed, and promoting someone
-      needs a verified email on their account.
-    </p>
   {/if}
 </div>
 </AdminShell>
