@@ -1725,7 +1725,14 @@ MUTATIONS: list[Mutation] = [
         # The pure predicate is tested above; this is the endpoint actually
         # calling it. Both matter - a correct rule nobody consults is not a rule.
         find="  if (!mayResetOpenly(user)) {",
-        replace="  if (!mayResetOpenly(user) && false) { /* mutation */",
+        replace="  if (!mayResetOpenly(user) && !!process.env.MUTATION_OFF) {",
+        # `&& !!process.env.MUTATION_OFF` rather than `&& false`: rows aimed at
+        # test_account_security compile the backend for real, and TypeScript
+        # marks a statically-false branch unreachable - which DISCARDS the
+        # narrowing from the `if (!target) return` above it, so the build fails
+        # with "possibly null" instead of the guard being removed. A build
+        # failure is not this invariant going unnoticed. An env var the
+        # compiler cannot fold keeps narrowing and never fires at runtime.
         test=T_ACCTSEC,
         expect="anonymous request reset an ADMIN password",
         guards="the takeover hole is reopened at the endpoint even though the "
@@ -1773,7 +1780,14 @@ MUTATIONS: list[Mutation] = [
         # construction. Without it a promoted account can use neither the open
         # reset (admins are refused) nor the coded one (no address).
         find="        if (!target.emailVerifiedAt) {",
-        replace="        if (!target.emailVerifiedAt && false) { /* mutation */",
+        replace="        if (!target.emailVerifiedAt && !!process.env.MUTATION_OFF) {",
+        # `&& !!process.env.MUTATION_OFF` rather than `&& false`: rows aimed at
+        # test_account_security compile the backend for real, and TypeScript
+        # marks a statically-false branch unreachable - which DISCARDS the
+        # narrowing from the `if (!target) return` above it, so the build fails
+        # with "possibly null" instead of the guard being removed. A build
+        # failure is not this invariant going unnoticed. An env var the
+        # compiler cannot fold keeps narrowing and never fires at runtime.
         test=T_ACCTSEC,
         expect="was promoted to admin",
         guards="an admin is created who cannot recover their own account by any "
@@ -1787,7 +1801,14 @@ MUTATIONS: list[Mutation] = [
         # credential - both admin actions clear one - so the only refusals worth
         # guarding are the two that would leave an account with no route back in.
         find="    if (target.isAdmin) {",
-        replace="    if (target.isAdmin && false) { /* mutation */",
+        replace="    if (target.isAdmin && !!process.env.MUTATION_OFF) {",
+        # `&& !!process.env.MUTATION_OFF` rather than `&& false`: rows aimed at
+        # test_account_security compile the backend for real, and TypeScript
+        # marks a statically-false branch unreachable - which DISCARDS the
+        # narrowing from the `if (!target) return` above it, so the build fails
+        # with "possibly null" instead of the guard being removed. A build
+        # failure is not this invariant going unnoticed. An env var the
+        # compiler cannot fold keeps narrowing and never fires at runtime.
         test=T_ACCTSEC,
         expect="an admin's email was cleared",
         guards="an admin loses the address they recover through, and is blocked "
