@@ -123,16 +123,10 @@ separates them by three orders of magnitude; nothing else does.**
 
 **6. A warning is not a bug until a number moves.** The backend's constant
 `MaxListenersExceededWarning` is benign - **don't re-investigate unless RSS
-stops being flat.** Measured twice (dismissed at 74 occurrences, re-measured
-2026-08-06 at 204) so a third pass doesn't re-derive the same verdict: it is
-**always exactly `11 error listeners`** across 204 occurrences and 71 PIDs,
-never 12, never 50, ~2.9 per process lifetime - a real leak would climb. Under
-180 requests (150 cached, 30 `fresh`) RSS went 124.8 -> 124.5 MB, handles 277
--> 277, 0 new warnings. Almost certainly >10 requests queued on one keep-alive
-socket, each attaching an `error` listener while queued: that matches "always
-11" exactly. **Not established** - it could not be reproduced on demand, so
-that cause is inference rather than a traced stack. To settle it, run the dev
-backend once under `NODE_OPTIONS=--trace-warnings` during an audit.
+stops being flat.** Measured twice and dismissed twice (74 occurrences, then
+204 on 2026-08-06): always exactly 11 listeners, never climbing, with RSS and
+handle count flat under load. The full measurement and the un-proven cause are
+in `backend/CLAUDE.md`; a third pass should re-derive nothing.
 
 **And two habits that aren't about measurement:**
 
@@ -235,7 +229,7 @@ whether or not that skill is loaded:
 
 - **`run_all.py` is the deploy gate, not an end-of-task ritual.** Push to
   master builds and ships, so it runs once, immediately before a push. It takes
-  ~6 min with `--skip-burned-in` (measured 2026-08-06) and starts real
+  ~6.5 min with `--skip-burned-in` (re-measured 2026-09-21, 23 checks) and starts real
   transcodes on the box that
   also serves Plex and Jellyfin.
 - **`mutation_audit.py` is NOT a gate.** It edits tracked source, restarts the
@@ -294,8 +288,8 @@ reading the server's CPU from the mirrored syslog.
 ### API routes mounted under `/api/*`
 
 `/api/health`, `/api/auth`, `/api/list`, `/api/public-list`, `/api/users`,
-`/api/options` do what their names say - read `backend/src/routes/`. The three
-that don't:
+`/api/options`, `/api/status` do what their names say - read
+`backend/src/routes/`. The three that don't:
 
 - `/api/anime` - AniList GraphQL proxy + cache; page 1 reveals `lastPage`, then
   pages 2..N are fetched with a concurrency-3 pool - a mid-season cold load is
@@ -335,8 +329,8 @@ Route contracts, the code rules and the SMTP env vars are in
 rules stay here, because each binds from outside `backend/`:
 
 - **Admin-ness is `User.isAdmin`, not `ADMIN_USER_ID`.** That env var is only a
-  *bootstrap* (promoted once, when no admin exists) and the id the five scripts
-  in `tools/` sign tokens for. **Never gate on it inline** - an id comparison is
+  *bootstrap* (promoted once, when no admin exists) and the id the `tools/`
+  scripts sign tokens for. **Never gate on it inline** - an id comparison is
   wrong in both directions once accounts can be promoted: a promoted admin gets
   403, a demoted one still passes. `translate.ts` carried four such checks and
   they are gone; use `requireAdmin`.
@@ -556,15 +550,17 @@ Every table and column, and why each cached row is persisted, is in
 - Dev: `npm install && npm run dev` (Vite dev server on port 5173)
 - Build: `npm run build` (static assets), Preview: `npm run preview`
 - Pages (lazy-loaded in `App.svelte`): Home, Login, SignUp, ResetPassword,
-  Randomize, Compare, and **five admin pages** - Admin (`/admin`, Connection),
+  Randomize, Compare, and **six admin pages** - Admin (`/admin`, Connection),
   AdminMatching (`/admin/matching`), AdminSonarr (`/admin/sonarr`),
-  AdminSubtitles (`/admin/subtitles`), AdminUsers (`/admin/users`).
-  **All five render inside `components/AdminShell.svelte`**, which owns the
+  AdminStatus (`/admin/status`), AdminSubtitles (`/admin/subtitles`),
+  AdminUsers (`/admin/users`).
+  **All six render inside `components/AdminShell.svelte`**, which owns the
   `<main>`, the `Admin` heading, the tab strip and the admin gate (the `isAdmin`
   flag on `/api/jellyfin/status`, `stores/jellyfin.ts`). Put page-specific
-  chrome in the page and shared chrome in the shell: the three had drifted into
-  three different widths and one of them had no heading or gate at all, which
-  read as three separate areas of the app.
+  chrome in the page and shared chrome in the shell: three of them had drifted
+  into three different widths and one had no heading or gate at all, which read
+  as separate areas of the app.
+  **`/admin/status`** says whether the outside services still answer;
   **`/admin/matching`** is the human end of the matching pipeline;
   **`/admin/sonarr`** is the human end of the Sonarr auto-add;
   **`/admin/subtitles`** reports the trailer subtitle pipeline (trailers only -

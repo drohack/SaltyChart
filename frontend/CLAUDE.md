@@ -270,13 +270,13 @@ dead end for an admin with no address. That last step matters more than it
 looks - without it such an admin sits at a form refusing every submission,
 which reads as a broken page rather than a policy.
 
-**The five admin pages share `components/AdminShell.svelte`** - one `<main>`,
-one `Admin` heading, one tab strip, one admin gate. They previously had three
+**The six admin pages share `components/AdminShell.svelte`** - one `<main>`,
+one `Admin` heading, one tab strip, one admin gate. Three of them once had three
 different widths (`max-w-2xl`, `max-w-[100rem]`, `w-full sm:w-3/4`), and the
 Sonarr one used a bare `<div>` with no heading and **no gate**, so a non-admin
 got a load error where the others say plainly that the page is admin-only.
 Tabbing resized the content and dropped the title. **The frame is one width for
-all three**; a page wanting narrow content constrains its own children (the
+every page in it**; a page wanting narrow content constrains its own children (the
 Connection form caps its cards at `max-w-2xl`) - making width a shell prop just
 moved the inconsistency up a level.
 
@@ -309,7 +309,8 @@ for the same reason. What lives nowhere else:
   one.** It defaulted to `SEASONS[Math.floor(now.getMonth() / 3)]`, so in late
   September it opened on SUMMER - aired, settled, nothing to do - while FALL sat
   ten days out holding all 33 rows that needed a human. It now switches to the
-  coming season `LOOKAHEAD_DAYS` (30) before it starts: `isWithinAirWindow` lets
+  coming season `LOOKAHEAD_DAYS` (30 - the one in `AdminMatching.svelte`, not
+  the site-wide 50 in `stores/season.ts`) before it starts: `isWithinAirWindow` lets
   the Sonarr auto-add grab 14 days ahead, and an identity has to be right
   *before* something acts on it, so 30 gives a fortnight of lead over that. An
   explicit `?season=` still wins - `/admin/sonarr` deep-links here.
@@ -427,29 +428,6 @@ sharing columns, then one table of trailers per season. What lives nowhere else:
   expression* changes, so `arrow(key)` reading component state inside its body
   rendered once and froze while the rows underneath re-sorted correctly. The
   same applies to `aria-sort`.
-**`/admin/status`** - is every upstream service still answering us? A sixth
-question, distinct from the other five tabs: not identity, scope, production or
-access, but whether the things this site is built on are reachable at all. One
-row per service with a state badge, the last success, the last failure with its
-status code, and whether that service's alerts are on; plus the alert settings
-(master switch, per-service toggles, extra recipients) and a "Check now" button.
-
-- **The verdict comes from the server.** `state` is decided by `stateOf` in
-  `lib/upstreamHealth.ts`; this page renders it and never recomputes it, so the
-  page and the alert email can never disagree. Same division as the subtitles
-  page, where `broken` and `staleYtDlp` are the backend's call.
-- **`unknown` and `notConfigured` are rendered as themselves, never as OK.**
-  "Nothing has asked yet" and "nobody set this up" are the two states the whole
-  page exists to keep visible - folding either into green is exactly how skyhook
-  stayed invisible for weeks, and the same mistake as an unreachable Sonarr
-  reading "0 still to add". A row that is off on purpose says so too.
-- **The SMTP row states the circular case out loud**: with mail down, nothing
-  can mail to say mail is down, so while that row is red the absence of alerts
-  means nothing.
-- A TypeScript cast cannot appear in a template expression - `lang="ts"` applies
-  to the `<script>` block only, so an inline `as HTMLInputElement` is a *syntax*
-  error, not a type error. Handlers that need one live in the script block.
-
 - **Buttons use `btn-outline`, headers use `link` (not `link-hover`).** DaisyUI
   renders `btn-ghost` with a transparent background *and* border until hover, so
   at rest it is indistinguishable from plain text - a real complaint about this
@@ -479,6 +457,32 @@ status code, and whether that service's alerts are on; plus the alert settings
 - `PATCH /dismiss` is called **without a token**, deliberately: it is
   unauthenticated because the player's CC toggle is guest-facing, and adding auth
   for this page would break subtitle toggling for logged-out viewers.
+
+### /admin/subtitles can start a run
+
+The trigger had existed from the beginning - `POST /api/translate/batch`, admin
+only, with a 409 guard shared with the auto-scheduler and a `batch/status`
+endpoint for progress - and **nothing on screen ever reached it**, so starting a
+run meant curl. The page rendered the schedule, the live tail and the last run's
+exit code: everything except the button.
+
+It says **"Run now (medium)"** on purpose. The server is CPU-only and its image
+carries `small` and `medium`; the champion `large-v3-split` is Demucs +
+large-v3 + qwen3.5:9b on a GPU and cannot run there at all. A button that
+quietly produced a lower rank than the Sunday job is the confusion the
+`modelName` ladder exists to prevent, so the model is in the label and the
+limitation is stated under it.
+
+It disables itself while a run is going (the fire-and-forget failure this page's
+siblings already taught us), follows the run by re-reading the report the page
+is already built from rather than a second source that could disagree with it,
+and treats a 409 as "follow that one instead" rather than an error - the
+scheduler may have started it.
+
+**A test must never mail a human.** A batch exiting non-zero alerts the admins,
+and alerts default to the owner, so the browser flow switches the master alert
+off around its dry run and restores it in a `finally`. Leaving alerts off after
+a crashed test is the silent half of that bug.
 
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
 contract (filter modes, provenance rules, the changed-vs-untouched Confirm
@@ -514,7 +518,8 @@ the root guide. What lives nowhere else:
 - The header logo's `?` badge tooltip shows the deployed version - the
   `YYYYMMDD-<sha>` tag injected by CI (`APP_VERSION` build-arg ->
   `VITE_APP_VERSION`); local builds show `dev`.
-- First load uses a **50-day look-ahead** (`LOOKAHEAD_DAYS`,
+- First load uses a **50-day look-ahead** (`LOOKAHEAD_DAYS` in
+  `stores/season.ts` - the admin matching page has its own, 30,
   `computeInitialSeason()` in `stores/season.ts`): if the next season starts
   within 50 days it is shown instead. It was 76, which flipped the default
   two weeks after the current season's premieres - most of a season spent
@@ -524,28 +529,25 @@ the root guide. What lives nowhere else:
 - Ctrl+Shift+R / Ctrl+F5 hard-reloads and resets the cached season selection;
   the last selected season/year is otherwise remembered for an hour.
 
-### /admin/subtitles can start a run
+**`/admin/status`** - is every upstream service still answering us? A sixth
+question, distinct from the other five tabs: not identity, scope, production or
+access, but whether the things this site is built on are reachable at all. One
+row per service with a state badge, the last success, the last failure with its
+status code, and whether that service's alerts are on; plus the alert settings
+(master switch, per-service toggles, extra recipients) and a "Check now" button.
 
-The trigger had existed from the beginning - `POST /api/translate/batch`, admin
-only, with a 409 guard shared with the auto-scheduler and a `batch/status`
-endpoint for progress - and **nothing on screen ever reached it**, so starting a
-run meant curl. The page rendered the schedule, the live tail and the last run's
-exit code: everything except the button.
-
-It says **"Run now (medium)"** on purpose. The server is CPU-only and its image
-carries `small` and `medium`; the champion `large-v3-split` is Demucs +
-large-v3 + qwen3.5:9b on a GPU and cannot run there at all. A button that
-quietly produced a lower rank than the Sunday job is the confusion the
-`modelName` ladder exists to prevent, so the model is in the label and the
-limitation is stated under it.
-
-It disables itself while a run is going (the fire-and-forget failure this page's
-siblings already taught us), follows the run by re-reading the report the page
-is already built from rather than a second source that could disagree with it,
-and treats a 409 as "follow that one instead" rather than an error - the
-scheduler may have started it.
-
-**A test must never mail a human.** A batch exiting non-zero alerts the admins,
-and alerts default to the owner, so the browser flow switches the master alert
-off around its dry run and restores it in a `finally`. Leaving alerts off after
-a crashed test is the silent half of that bug.
+- **The verdict comes from the server.** `state` is decided by `stateOf` in
+  `lib/upstreamHealth.ts`; this page renders it and never recomputes it, so the
+  page and the alert email can never disagree. Same division as the subtitles
+  page, where `broken` and `staleYtDlp` are the backend's call.
+- **`unknown` and `notConfigured` are rendered as themselves, never as OK.**
+  "Nothing has asked yet" and "nobody set this up" are the two states the whole
+  page exists to keep visible - folding either into green is exactly how skyhook
+  stayed invisible for weeks, and the same mistake as an unreachable Sonarr
+  reading "0 still to add". A row that is off on purpose says so too.
+- **The SMTP row states the circular case out loud**: with mail down, nothing
+  can mail to say mail is down, so while that row is red the absence of alerts
+  means nothing.
+- A TypeScript cast cannot appear in a template expression - `lang="ts"` applies
+  to the `<script>` block only, so an inline `as HTMLInputElement` is a *syntax*
+  error, not a type error. Handlers that need one live in the script block.

@@ -216,8 +216,8 @@ chronological order; all features listed are live.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
   done, with a *Add now* button and a pause switch.
 - **/admin/status** - whether the outside services SaltyChart depends on are
-  still answering: YouTube, TVDB, TMDB, AniList, the id map, Jellyfin, Sonarr
-  and email. Each row shows its state, when it last worked, and the exact
+  still answering: YouTube, TVDB, TMDB, AniList, the id map, Jellyfin, Sonarr,
+  email and PyPI. Each row shows its state, when it last worked, and the exact
   failure if it is not working. An email goes out once when a service stops
   responding and once when it recovers - a status code like 400 or 403 usually
   means the service changed what it accepts rather than that it is offline. The
@@ -227,13 +227,17 @@ chronological order; all features listed are live.
   have translated and at what quality, which have YouTube captions or burned-in
   subs, when the batch next runs, and a per-trailer table for this season and
   next. It leads with a red banner when trailer downloads have failed three
-  times running (with the one hint that matters: a 403 there is an out-of-date
-  yt-dlp, not an authentication problem), a warning line while YouTube is
-  rate-limiting the server, and the Sunday GPU run's own last report. The same
-  events email every admin with a verified address, once per state change -
-  broken, recovered, a failed batch, a failed or silent Sunday run. The only
-  actions are turning our subtitles off for a trailer and clearing a bad
-  translation.
+  times running for a reason that is about *us* - a 403 or a bot wall - with the
+  one hint that matters: a 403 there is an out-of-date yt-dlp, not an
+  authentication problem. A video YouTube no longer has does not count towards
+  that, because an old season can lose five trailers in a row without anything
+  being wrong. There is also a warning line while YouTube is rate-limiting the
+  server, and the Sunday GPU run's own last report. The same events email the
+  **owner** - the first admin with a verified address - plus any extra
+  recipients set on `/admin/status`, once per state change: broken, recovered, a
+  failed batch, a failed or silent Sunday run. The actions are starting a run
+  (the server's `medium` batch; the GPU champion cannot run there), turning our
+  subtitles off for a trailer, and clearing a bad translation.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
@@ -389,7 +393,7 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect the final line: "Pre-deploy: 18/18 passed - ready to build"
+   # Expect the final line: "Pre-deploy: 24/24 passed - ready to build"
    # (17/17 with --skip-burned-in - use it if no CUDA)
    ```
 

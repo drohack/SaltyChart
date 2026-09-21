@@ -543,6 +543,23 @@ someone's PC; the server cannot observe it, so `lastChampionUploadAt` is only
 it did, a run that produced nothing was indistinguishable from a quiet week -
 four Sundays of 46/49 download failures left no trace an admin could see.
 
+**All three scripts in `backend/scripts/` force stdout and stderr to UTF-8.**
+Python on Windows encodes REDIRECTED output as cp1252, and the backend always
+spawns these through a pipe - so one show title outside cp1252 (a Cyrillic "o"
+in `Jyuou Mujin Dandivine` is what found it) raised `UnicodeEncodeError` and
+killed the whole run. Every script in `tools/` already did this; none of the
+three here did, which is exactly backwards, since these are the ones something
+else always pipes. `errors='replace'` is the backstop: a console that cannot
+represent a glyph should mangle one title, never lose the run.
+
+**The batch script derives its DB path from its own location** (`SCHEMA_DIR` in
+`batch_translate.py`), not from a hardcoded container path. Prisma resolves a
+relative `DATABASE_URL` against the SCHEMA directory, so `<base>/prisma` is the
+base and `<base>/prisma/prisma/data.db` is genuinely where the file lives - in
+the image (`/app/scripts` beside `/app/prisma`) and in the repo
+(`backend/scripts` beside `backend/prisma`) alike. It was `/app/prisma`
+literally, which is right in production and cannot be right anywhere else.
+
 **Both batch scripts exit with a verdict, and both self-upgrade yt-dlp first.**
 `run_verdict` in `translate_stream.py` (one definition; `local_translate.py`
 imports it) turns the run-wide error count into an exit code: 0, **2 when at
@@ -799,8 +816,8 @@ the same measured run (51 of 63 trailers downloaded, 12 failures):
   `should_retry_download` and it has **one definition**: `tools/local_translate.py`
   keeps its own `download_audio` (it also returns a video URL for frame grabs),
   so the server-side fix did not reach the GPU run - the very run that lost the
-  six trailers. What is shared is the RETRY (`download_with_retry`), imported by
-  both; what is not shared is the `ydl_opts`, because those differ for measured
+  six trailers - which is why the retry is shared: `translate_stream` defines
+  `download_with_retry` and `tools/local_translate.py` imports it; what is not shared is the `ydl_opts`, because those differ for measured
   reasons - the server takes `worstaudio` since Whisper resamples to 16 kHz
   anyway, while the GPU run takes `bestaudio` because Demucs benchmarked worse
   on low-quality input, and only it carries cookies and its own request pacing.
@@ -822,8 +839,10 @@ report (`POST /local-run`), and once when the Sunday run has been **silent for
 `LOCAL_RUN_SILENT_DAYS` (8)** - a daily timer in `index.ts`
 (`checkLocalRunSilence`) stamps `silentAlertedAt` on the stored report so it
 mails once per silence, and the next report replaces the row and re-arms it.
-Recipients are admins with a **verified** address only (`verifiedAdminEmails`,
-pure); with SMTP unconfigured it logs `would have sent` instead. Every trigger
+Recipients are the **owner** - the lowest-id admin with a verified address
+(`ownerEmail`, pure) - plus any extras set on `/admin/status`. A second admin
+promoted later is a peer for permissions but is not signed up for the site's
+operational mail; with SMTP unconfigured it logs `would have sent` instead. Every trigger
 is a state change, never a per-failure event - an alert that fires on every
 failure is the alert that gets muted. **Residual gap, documented rather than
 closed**: a Scheduled Task that never fires even once after deploy leaves no
@@ -948,8 +967,11 @@ exactly once at the crossing. It keeps its own store (its bot-wall hold and
 stale-yt-dlp hint are YouTube-specific, and its gates are pinned by mutation
 rows), so `upstreamHealth` covers everything else and `GET /report` composes
 both. The transitions are a threshold-aware twin rather than shared code -
-per-service thresholds are the point - and `upstreamHealth.test.ts` asserts the
-two **agree at the default**, the same discipline `MODEL_RANK` follows.
+per-service thresholds are the point - and `upstreamHealth.test.ts` pins what
+must still match (the streak arithmetic) **and the divergence itself**. They no
+longer agree on the mail: this module needs a quiet window, that one watches a
+path whose calls are minutes apart and does not. Asserting a deliberate
+difference is the same discipline `MODEL_RANK` follows, one step on.
 
 - `GET  /report` - admin; every service with a server-decided `state`, plus the
   alert settings and whether SMTP is configured at all.
@@ -1057,10 +1079,28 @@ fake verdict and restores it in a `finally`; **per-service toggles do not yet
 reach the subtitle alerts**, only the master switch and the recipient list. **An absent per-service
 key means enabled** - if absence meant off, every service added later would
 arrive silent, which is the failure this whole feature exists to end. Recipients
-are verified admins plus the extras, de-duplicated. **SMTP itself stays in
+are the **owner** plus the extras, de-duplicated - not every verified admin, for
+the reason given under the subtitle alerts. **SMTP itself stays in
 `.env`**: a mail password in `AppConfig` is a mail password in every backup.
 Residual gap, stated on the page rather than hidden: with SMTP down, nothing can
 mail to say that mail is down.
+
+### The `MaxListenersExceededWarning` is benign - the measurement
+
+The root guide's rule is "don't re-investigate unless RSS stops being flat".
+This is the evidence, so a third pass re-derives nothing.
+
+Measured twice and dismissed twice - **74 occurrences**, then **re-measured
+2026-08-06 at 204** across 71 PIDs. It is **always exactly `11 error
+listeners`**: never 12, never 50, about 2.9 per process lifetime. A real leak
+would climb. Under 180 requests (150 cached, 30 `fresh`) RSS went 124.8 ->
+124.5 MB, handle count 277 -> 277, and **zero** new warnings appeared.
+
+Almost certainly more than ten requests queued on one keep-alive socket, each
+attaching an `error` listener while queued - that matches "always 11" exactly.
+**Not established**: it could not be reproduced on demand, so the cause is
+inference rather than a traced stack. To settle it, run the dev backend once
+under `NODE_OPTIONS=--trace-warnings` during an audit.
 
 ## Matching internals - how identities get made
 
