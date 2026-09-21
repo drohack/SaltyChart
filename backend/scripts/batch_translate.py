@@ -15,7 +15,8 @@ OVA, ONA, SPECIAL -- skipping 18+, sequels, no-trailer), and translates each
 trailer. By default a run covers ONLY the single current-displayed season, so
 it never hits YouTube with more than one season's worth of downloads;
 --all-seasons restores the old prev+current+next sweep. Downloads are
-sequential with a polite gap between trailers (--download-delay, default 5s).
+sequential with a polite gap between trailers (--download-delay; the default is
+DOWNLOAD_DELAY_DEFAULT in translate_stream.py, reasoning at its definition).
 Results are saved to SubtitleCache in SQLite using a single persistent
 connection for the entire batch run.
 
@@ -29,9 +30,14 @@ Usage:
   python3 -u batch_translate.py --season SPRING --year 2026
   python3 -u batch_translate.py --dry-run                # list trailers only
   python3 -u batch_translate.py --cutoff 10              # stop by 10am
-  python3 -u batch_translate.py --download-delay 10      # slower / politer to YouTube
+  python3 -u batch_translate.py --download-delay 20      # slower / politer to YouTube
 
 Note: use -u flag for unbuffered stdout when spawned as a child process.
+
+Exit code is the run's verdict (translate_stream.run_verdict): 0 fine, 2 most
+downloads failed, 3 aborted on a YouTube bot-challenge. The backend stores it
+(persistBatchRun) and /admin/subtitles renders a non-zero code as a failed run.
+yt-dlp is self-upgraded before the first download unless --no-update/--dry-run.
 
 Scheduling: auto-scheduled by the backend (index.ts) on Wednesdays 2-4am,
 50 days before season start.
@@ -51,14 +57,20 @@ from datetime import datetime
 
 # Import shared helpers from translate_stream (same directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from translate_stream import download_audio, check_subtitles
+from translate_stream import (download_audio, check_subtitles, DOWNLOAD_DELAY_DEFAULT,
+                              is_bot_block, classify_error, run_verdict, ensure_ytdlp_current,
+                              MODEL_RANK)
 
-# Model quality ranking - used for cache comparison. Keep in sync with the
-# copies in backend/src/lib/subtitleReport.ts and tools/local_translate.py.
-# 'large-v3-split' (the local champion pipeline) MUST be here - without it a
-# Sunday-uploaded large-v3-split row ranks as 0 and the Wednesday batch
-# needlessly re-downloads + re-transcribes the whole season for a no-op write.
-MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4, "large-v3": 5, "large-v3-split": 6}
+# Run-wide tallies for the exit verdict. Per-season counters already existed and
+# were printed; nothing ever added them up or looked at the total, which is how a
+# run with 46 of 49 downloads failing exited 0. See run_verdict.
+RUN_STATS = {"attempted": 0, "errors": 0, "kinds": {}, "aborted": False}
+
+# MODEL_RANK is imported from translate_stream (one Python definition; the
+# TypeScript twin is lib/subtitleReport.ts and test_run_verdict.py asserts they
+# are equal). It used to be a third hand-synced copy here, and a missing
+# 'large-v3-split' in any copy made that path rank the Sunday champion output as
+# 0 and re-transcribe the whole season for a no-op write.
 
 # ---------------------------------------------------------------------------
 # AniList GraphQL
@@ -228,11 +240,9 @@ def get_seasons_to_process() -> list:
 # Translation
 # ---------------------------------------------------------------------------
 
-def _is_bot_block(msg: str) -> bool:
-    """True if YouTube returned a 'confirm you're not a bot' challenge - we abort
-    the run on this rather than hammering YouTube with the remaining trailers."""
-    m = (msg or "").lower()
-    return ("confirm you" in m and "not a bot" in m) or "sign in to confirm" in m
+# The detector lives in translate_stream.is_bot_block - one definition for the
+# container. This alias keeps the call sites below readable and greppable.
+_is_bot_block = is_bot_block
 
 
 def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connection,
@@ -243,9 +253,12 @@ def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connectio
         conn: persistent SQLite connection (reused across batch)
         has_english: if already known from cache, skip the YouTube API check
     """
-    # Check for English subs if not already known from cache
+    # Check for English subs if not already known from cache. THREE-valued:
+    # True / False are verdicts; None means the check could not find out (IP
+    # block, package missing, timeout) and must NOT be written as "no CC" -
+    # that pinned a false negative for seven days per transient block.
     if has_english is None:
-        has_english = check_subtitles(video_id).get("hasEnglish", False)
+        has_english = check_subtitles(video_id).get("hasEnglish")
 
     tmpdir = tempfile.mkdtemp()
     try:
@@ -272,21 +285,28 @@ def translate_video(model, video_id: str, media_id: int, conn: sqlite3.Connectio
                 "text": text,
             })
 
-        # Save to database (using persistent connection)
+        # Save to database (using persistent connection). The CC verdict is
+        # the third write site after the two in routes/translate.ts (which go
+        # through lib/subtitleCheck.ts checkVerdict): a None verdict binds NULL,
+        # COALESCE keeps whatever verdict the row already had, and the check
+        # timestamp only moves when a real verdict was written - otherwise a
+        # failed check would be trusted as "checked, no CC" for seven days.
         seg_json = json.dumps(segments)
+        en_val = None if has_english is None else int(bool(has_english))
         conn.execute(
             """INSERT INTO "SubtitleCache" ("videoId", "mediaId", "modelName", "hasEnglishSubs", "segments", "lastEnCheckAt")
-               VALUES (?, ?, 'medium', ?, ?, CURRENT_TIMESTAMP)
+               VALUES (?, ?, 'medium', ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
                ON CONFLICT("videoId") DO UPDATE SET
                  "mediaId" = COALESCE(excluded."mediaId", "SubtitleCache"."mediaId"),
                  "modelName" = excluded."modelName",
-                 "hasEnglishSubs" = excluded."hasEnglishSubs",
+                 "hasEnglishSubs" = COALESCE(excluded."hasEnglishSubs", "SubtitleCache"."hasEnglishSubs"),
                  "segments" = excluded."segments",
-                 "lastEnCheckAt" = CURRENT_TIMESTAMP
+                 "lastEnCheckAt" = CASE WHEN excluded."hasEnglishSubs" IS NULL
+                                        THEN "SubtitleCache"."lastEnCheckAt" ELSE CURRENT_TIMESTAMP END
                WHERE "SubtitleCache"."modelName" IS NULL
                   OR "SubtitleCache"."modelName" IN ('tiny', 'base', 'small')
             """,
-            (video_id, media_id, 1 if has_english else 0, seg_json),
+            (video_id, media_id, en_val, seg_json, en_val),
         )
         conn.commit()
 
@@ -325,9 +345,12 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="List trailers without translating")
     parser.add_argument("--cutoff", type=int, default=10, help="Stop after this hour (24h, default: 10)")
     parser.add_argument("--db", type=str, default=None, help="SQLite database path")
-    parser.add_argument("--download-delay", type=float, default=5.0, metavar="SECONDS",
+    parser.add_argument("--download-delay", type=float, default=DOWNLOAD_DELAY_DEFAULT, metavar="SECONDS",
                         help="Seconds between trailers to stay polite to YouTube / avoid "
-                             "bot-detection (default: 5). Downloads are sequential.")
+                             "bot-detection (default: %(default)s). Downloads are sequential.")
+    parser.add_argument("--no-update", action="store_true",
+                        help="Skip the yt-dlp self-upgrade at the start of the run (it is "
+                             "best-effort and skipped on --dry-run anyway)")
     parser.add_argument("--all-seasons", action="store_true",
                         help="Process prev + current + next season (3). Default is the "
                              "single current-displayed season only, so a run never hits "
@@ -360,6 +383,12 @@ def main():
     print(f"[batch] Database: {db_path}")
     print(f"[batch] Cutoff: {args.cutoff}:00")
     print()
+
+    # Before the first download, not on a timer: a stale yt-dlp is the one
+    # failure that takes out every trailer at once. See ensure_ytdlp_current.
+    if not args.dry_run and not args.no_update:
+        ensure_ytdlp_current(say=lambda s: print(f"[batch] {s}", flush=True))
+        print()
 
     # Single persistent DB connection and lazily-loaded model reused across all seasons
     conn = sqlite3.connect(db_path)
@@ -467,12 +496,17 @@ def main():
                         print(f"\n[batch] ABORT: YouTube bot-challenge ('not a bot') - "
                               f"stopping to avoid deepening the block. Re-run after a cool-down.")
                         bot_blocked = True
+                        RUN_STATS["aborted"] = True
                         break
                     print(f"  ERROR: {e}")
                     errors += 1
+                    kind = classify_error(e)
+                    RUN_STATS["kinds"][kind] = RUN_STATS["kinds"].get(kind, 0) + 1
 
             print()
             remaining = len(uncached) - translated - errors
+            RUN_STATS["attempted"] += translated + errors
+            RUN_STATS["errors"] += errors
             print(f"[batch] {season} {year}: {translated} translated, {errors} errors"
                   + (f", {remaining} remaining" if remaining > 0 else ""))
             print()
@@ -483,6 +517,14 @@ def main():
     finally:
         conn.close()
 
+    # The verdict is the LAST line and the exit code. The backend's
+    # persistBatchRun() stores the code and the log tail, and /admin/subtitles
+    # already renders a non-zero code as a failed run - it just never received
+    # one before, because this function used to end here with no exit at all.
+    code, line = run_verdict(RUN_STATS["attempted"], RUN_STATS["errors"], RUN_STATS["kinds"], RUN_STATS["aborted"])
+    print(line, flush=True)
+    return code
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

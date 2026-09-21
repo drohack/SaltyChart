@@ -50,6 +50,24 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/scripts ./scripts
 
+# Refresh yt-dlp on every deploy.
+#
+# The base image pins whatever yt-dlp was current when IT was built, and the
+# base is only ever rebuilt by manual dispatch - so that copy silently ages.
+# YouTube periodically changes what its media servers will serve, and an aged
+# yt-dlp keeps asking the old way: extraction still succeeds, then the download
+# 403s. (Measured 2026-09-20: the March build asked for the whole file in one
+# request, which YouTube now refuses; the August build fetches it in chunks.)
+# That is exactly how trailer subtitles broke site-wide while every test stayed
+# green - cached videos kept working, so it looked selective.
+#
+# This line sits AFTER the COPYs on purpose: those layers change on every code
+# deploy, so Docker cannot serve this one from cache. Put it above them and it
+# would be cached forever - reintroducing the bug it exists to prevent.
+# Caveat: a rebuild of the SAME commit has no changed layer above this one and
+# does hit the cache; the daily updater in lib/ytdlpUpdate.ts covers that gap.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade yt-dlp
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

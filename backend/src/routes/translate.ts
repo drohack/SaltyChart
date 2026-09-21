@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import { spawn, ChildProcess } from 'child_process';
+import { recordDownloadOk, recordDownloadFailure, getDownloadHealth, shouldHoldDownloads } from '../lib/downloadHealth';
+import { checkVerdict } from '../lib/subtitleCheck';
+import { alertAdmins, localRunSilence, LOCAL_RUN_SILENT_DAYS } from '../lib/subtitleAlerts';
+import type { RecycleOutcome } from '../lib/ytdlpUpdate';
 import path from 'path';
 import crypto from 'crypto';
 import prisma from '../db';
@@ -90,8 +94,19 @@ function handleDaemonLine(line: string): void {
   const res = pendingStreams.get(rid);
   if (!res) return;
 
-  // Strip rid before forwarding to client
-  const { rid: _rid, ...payload } = data;
+  // Strip rid, and the daemon's operator-only fields, before forwarding.
+  // `raw` is the unedited yt-dlp text and `stage` is internal plumbing; both
+  // feed the download-health record below and neither belongs in a browser.
+  const { rid: _rid, raw: _raw, stage: _stage, kind: _kind, ...payload } = data;
+
+  // Record whether the *download* step is working. Driven entirely by traffic
+  // that was going to happen anyway - see lib/downloadHealth.ts for why this is
+  // not a canary. `progress: transcribing` is the daemon's "download returned".
+  if (payload.progress === 'transcribing') {
+    void recordDownloadOk();
+  } else if (payload.error && data.stage === 'download') {
+    void recordDownloadFailure(String(data.raw ?? payload.error), String(data.kind ?? 'other'));
+  }
 
   if (payload.done) {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -265,6 +280,28 @@ function ensureDaemon(): Promise<void> {
   });
 }
 
+/**
+ * Retire an idle daemon so the next request respawns it.
+ *
+ * Python caches `yt_dlp` in `sys.modules` at first import, so upgrading the
+ * package under a running daemon changes nothing - it keeps using the copy it
+ * loaded, which is the stale one we just replaced. Only a fresh process picks
+ * the new version up.
+ *
+ * Refuses while a translation is in flight: killing the daemon mid-run would
+ * surface as "Translation daemon exited" to whoever is watching that trailer.
+ * The caller is a daily timer, so waiting for the next one costs nothing.
+ * Returns whether it actually recycled, because a job that logs "updated" while
+ * silently declining to apply it is the kind of thing nobody catches for months.
+ */
+export function recycleTranslateDaemon(): RecycleOutcome {
+  if (!daemon) return 'none';
+  if (activeTranslations > 0 || pendingStreams.size > 0) return 'busy';
+  daemon.kill('SIGTERM');
+  cleanupDaemon();
+  return 'recycled';
+}
+
 function sendCommand(cmd: object): void {
   if (daemon && daemon.stdin && !daemon.stdin.destroyed) {
     daemon.stdin.write(JSON.stringify(cmd) + '\n');
@@ -309,20 +346,48 @@ router.get('/check-batch', async (req: Request, res: Response) => {
     console.error('[translate/check-batch] DB lookup failed:', err);
   }
 
-  const known = new Map<string, number>(rows.map((r: any) => [r.videoId, Number(r.hasEnglishSubs)]));
+  // `null` must survive this map. It used to be `Number(r.hasEnglishSubs)`, and
+  // `Number(null)` is 0 - so "nobody has checked" and "checked, no English CC"
+  // became the same value, which is the distinction the queueing below turns on.
+  const known = new Map<string, number | null>(
+    rows.map((r: any) => [r.videoId, r.hasEnglishSubs == null ? null : Number(r.hasEnglishSubs)]),
+  );
 
   // Return confirmed positives immediately
   const result: Record<string, boolean> = {};
   for (const id of ids) {
     if (known.get(id) === 1) result[id] = true;
   }
+
+  // Decide up front whether anything will be queued, and say so in a header.
+  // It is the only observable surface for "the hold stopped us" - a test cannot
+  // read the server console - and it has to be computed before the body goes
+  // out, because headers cannot follow it. `uncached` below reuses this.
+  const uncachedIds = ids.filter(id => !known.has(id) || known.get(id) === null);
+  const held = uncachedIds.length > 0 && (await shouldHoldDownloads()).hold;
+  res.setHeader('X-Check-Queue', held ? 'held' : (daemon && daemonReady ? `queued:${uncachedIds.length}` : 'no-daemon'));
   res.json(result);
 
   // Background: queue Python checks for IDs not in DB at all so the cache
   // self-populates while the user browses. Bounded concurrency - a burst of
   // ~80 parallel youtube_transcript_api hits from one IP trips YouTube's bot
   // wall and poisons results with false negatives.
-  const uncached = ids.filter(id => !known.has(id));
+  // A row EXISTING is not a verdict. `hasEnglishSubs` is null on any row created
+  // by something other than a check - `PATCH /dismiss` upserts one, and so does
+  // caching translated segments - and the filter used to be `!known.has(id)`,
+  // which read those rows as "already answered" and never queued a check again.
+  //
+  // That is a one-way trap, and it is upstream of the whole 403: a video whose
+  // first view raced ahead of its check got a segments row, was never asked
+  // about again, and so took the download path forever - including for videos
+  // that have English CC and never needed downloading at all. Measured on
+  // `8AnNxEp733c`: `check_subtitles` returns hasEnglish=true, the stored verdict
+  // was null, and check-batch returned `{}` without queueing anything.
+  const uncached = uncachedIds;
+  // While YouTube is refusing us, queue nothing: a background check is a
+  // YouTube request too, and the point of the hold is to stop poking a blocked
+  // IP from every direction at once. These ids get checked on a later visit.
+  if (held) return;
   const CHECK_CONCURRENCY = 2;
   let cursor = 0;
   const runCheck = async (videoId: string) => {
@@ -334,7 +399,12 @@ router.get('/check-batch', async (req: Request, res: Response) => {
           sendCommand({ cmd: 'check', rid, videoId });
           setTimeout(() => { pendingChecks.delete(rid); resolve({ error: 'timeout' }); }, 15000);
         });
-        if (checkResult?.hasEnglish !== undefined) {
+        // Only a real verdict is written. A failed check (IP block, timeout,
+        // package missing) comes back as `hasEnglish: null`, and `null` passes
+        // an `!== undefined` test - which is how a transient block used to be
+        // pinned as "no CC" for seven days. checkVerdict() is the one gate.
+        const verdict = checkVerdict(checkResult);
+        if (verdict !== null) {
           // Stamp lastEnCheckAt so the /check 7-day negative-recheck logic
           // trusts this batch-populated row (it ignores negatives with a null
           // timestamp, otherwise re-hitting YouTube on the first modal open).
@@ -343,7 +413,7 @@ router.get('/check-batch', async (req: Request, res: Response) => {
              ON CONFLICT("videoId") DO UPDATE SET
                "hasEnglishSubs" = CASE WHEN excluded."hasEnglishSubs" = 1 THEN 1 ELSE "SubtitleCache"."hasEnglishSubs" END,
                "lastEnCheckAt" = CURRENT_TIMESTAMP`,
-            videoId, checkResult.hasEnglish ? 1 : 0
+            videoId, verdict
           ).catch(() => {});
         }
       }
@@ -408,6 +478,14 @@ router.get('/check', async (req: Request, res: Response) => {
     console.error('[translate/cache] Check lookup failed:', err);
   }
 
+  // While YouTube is refusing us, this is one more live request per modal open
+  // at a blocked IP - the same door /check-batch and /stream already close.
+  // Answer from cache only: `hasEnglish: null` is "could not find out", which
+  // the frontend already treats as "try translating" (and /stream then refuses
+  // with the hold message). Nothing is written, so nothing is pinned.
+  const hold = await shouldHoldDownloads();
+  if (hold.hold) return res.json({ ...cachedExtra, hasEnglish: null, holdUntil: hold.until });
+
   let result: any;
 
   if (daemon && daemonReady) {
@@ -458,7 +536,10 @@ router.get('/check', async (req: Request, res: Response) => {
   // days. Only update hasEnglishSubs when the new value is true - never
   // overwrite a correct true with a potentially wrong false from a transient
   // network failure.
-  if (result && result.hasEnglish !== undefined) {
+  // Same gate as check-batch: a `null` verdict (the check could not find out)
+  // must never be written as 0 - see lib/subtitleCheck.ts.
+  const verdict = checkVerdict(result);
+  if (verdict !== null) {
     prisma.$executeRawUnsafe(
       `INSERT INTO "SubtitleCache" ("videoId", "mediaId", "hasEnglishSubs", "lastEnCheckAt")
        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -468,7 +549,7 @@ router.get('/check', async (req: Request, res: Response) => {
          "lastEnCheckAt" = CURRENT_TIMESTAMP`,
       videoId,
       mediaId,
-      result.hasEnglish ? 1 : 0
+      verdict
     ).catch((err: any) => console.error('[translate/cache] Failed to cache check result:', err));
   }
 
@@ -548,6 +629,21 @@ router.get('/stream', async (req: Request, res: Response) => {
       console.error('[translate] in-flight wait failed; falling through to re-translate:', err);
     }
     // If cache still empty after waiting, fall through to translate
+  }
+
+  // Cache miss - but first: is YouTube currently refusing us? If the last
+  // download failure was an explicit bot wall, do not start another attempt.
+  // Every viewer opening a trailer during a block would otherwise fire one
+  // more request at a blocked IP and deepen it - the production twin of the
+  // hand-retry loop tools/yt_guard.py exists to stop. Answer with the message
+  // the daemon would have produced, and record nothing: this is a refusal, not
+  // a failure. Duration and reasoning: BOT_WALL_HOLD_MS in lib/downloadHealth.ts.
+  const hold = await shouldHoldDownloads();
+  if (hold.hold) {
+    res.write(`data: ${JSON.stringify({ error: 'YouTube rate-limited this server, try again later', holdUntil: hold.until })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
+    return;
   }
 
   // Cache miss - translate via daemon
@@ -663,10 +759,10 @@ router.patch('/dismiss', express.json(), async (req: Request, res: Response) => 
  * Admin only. Upserts into SubtitleCache - upgrades if new model is higher rank.
  * Body: { videoId, mediaId?, modelName, segments: [{start, end, text}, ...] }
  */
-// MODEL_RANK now lives in lib/subtitleReport.ts - the one TypeScript copy,
-// shared with the /report route below. The two Python copies
-// (scripts/batch_translate.py, tools/local_translate.py) still need syncing by
-// hand; the reasoning is at the constant.
+// MODEL_RANK lives in lib/subtitleReport.ts - the one TypeScript copy, shared
+// with the /report route below. Its Python twin is translate_stream.MODEL_RANK
+// (both batch scripts import it) and tools/tests/test_run_verdict.py fails when
+// the two disagree; the reasoning is at the constant.
 
 router.post('/upload', express.json({ limit: '5mb' }), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   const { videoId, mediaId, modelName, segments, hasBurnedInSubs, force } = req.body || {};
@@ -846,6 +942,17 @@ async function persistBatchRun(code: number | null): Promise<void> {
     // already succeeded or failed on its own terms.
     console.error('[translate/batch] could not persist run status:', err);
   }
+  // A non-zero exit is the batch's own verdict (run_verdict in
+  // translate_stream.py): most downloads failed, or a bot-wall abort. `null`
+  // means killed by a signal, which is a failure too. Fires once per child
+  // exit by construction, so a restart cannot re-send it.
+  if (code !== 0) {
+    void alertAdmins(
+      `server subtitle batch failed (exit ${code ?? 'signal'})`,
+      `The Wednesday medium batch for ${run.season ?? '?'} ${run.year ?? ''} exited ${code ?? 'by signal'} ` +
+      `at ${run.finishedAt}.\n\nLast lines:\n${run.tail.join('\n')}\n\n/admin/subtitles has the run record.`,
+    );
+  }
 }
 
 /** The last completed run, or null. A corrupt row parses to null, never throws. */
@@ -857,6 +964,148 @@ async function readPersistedBatchRun(): Promise<PersistedBatchRun | null> {
     return parsed && typeof parsed === 'object' ? (parsed as PersistedBatchRun) : null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The Sunday GPU run reports its own verdict.
+//
+// The server cannot observe that job - it is a Windows Scheduled Task on the
+// owner's PC - so /admin/subtitles could only show "last upload seen", the
+// newest champion row. That made a run which produced NOTHING indistinguishable
+// from a quiet week: four Sundays running, 46 of 49 downloads failed on a stale
+// yt-dlp, the task reported lastResult=0x0, and no surface anywhere said so.
+// The script now ends by POSTing here whatever run_verdict decided.
+// ---------------------------------------------------------------------------
+const LOCAL_RUN_KEY = 'subtitleLocalRunStatus';
+
+export interface PersistedLocalRun {
+  reportedAt: string;
+  startedAt: string | null;
+  exitCode: number;
+  line: string;
+  attempted: number;
+  errors: number;
+  kinds: Record<string, number>;
+  aborted: boolean;
+  /**
+   * Set by checkLocalRunSilence() when the silence alert has been sent for THIS
+   * report, so it fires once per silence. A new report is written without it
+   * (the POST route never sets it), which re-arms the check. Optional so rows
+   * stored before the field existed still parse.
+   */
+  silentAlertedAt?: string | null;
+}
+
+function asCount(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1_000_000 ? v : null;
+}
+
+/**
+ * POST /local-run - admin only. Body: { exitCode, line, attempted, errors, kinds?, aborted?, startedAt? }.
+ * Replaces the previous report; there is only ever "the last run".
+ */
+router.post('/local-run', express.json({ limit: '64kb' }), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const exitCode = asCount(b.exitCode);
+  const attempted = asCount(b.attempted);
+  const errors = asCount(b.errors);
+  const line = typeof b.line === 'string' ? b.line.slice(0, 500) : null;
+  if (exitCode === null || exitCode > 255 || attempted === null || errors === null || line === null) {
+    return res.status(400).json({ error: 'exitCode (0-255), attempted, errors and line are required', code: 'BAD_REQUEST' });
+  }
+  const kinds: Record<string, number> = {};
+  const kindsIn = b.kinds && typeof b.kinds === 'object' && !Array.isArray(b.kinds) ? (b.kinds as Record<string, unknown>) : {};
+  for (const [k, v] of Object.entries(kindsIn).slice(0, 10)) {
+    const n = asCount(v);
+    if (n !== null) kinds[k.slice(0, 32)] = n;
+  }
+  const run: PersistedLocalRun = {
+    reportedAt: new Date().toISOString(),
+    startedAt: typeof b.startedAt === 'string' ? b.startedAt.slice(0, 40) : null,
+    exitCode, line, attempted, errors, kinds,
+    aborted: b.aborted === true,
+  };
+  try {
+    await prisma.appConfig.upsert({
+      where: { key: LOCAL_RUN_KEY },
+      update: { value: JSON.stringify(run) },
+      create: { key: LOCAL_RUN_KEY, value: JSON.stringify(run) },
+    });
+  } catch (err) {
+    console.error('[translate/local-run] could not persist the run report:', err);
+    return res.status(500).json({ error: 'Could not store the run report', code: 'SERVER_ERROR' });
+  }
+  // One line in the server log either way, loud when it failed: the whole point
+  // is that this stops being invisible.
+  if (exitCode !== 0) {
+    console.warn(`[translate/local-run] the local GPU run reported FAILURE (exit ${exitCode}): ${line}`);
+    // Once per report; the script posts once per run.
+    void alertAdmins(
+      `Sunday subtitle run failed (exit ${exitCode})`,
+      `The local large-v3 run reported exit ${exitCode} at ${run.reportedAt}.\n\n${line}\n\n` +
+      `${errors} of ${attempted} downloads failed.\n\n/admin/subtitles shows "Last run reported".`,
+    );
+  } else {
+    console.log(`[translate/local-run] ${line}`);
+  }
+  return res.json({ ok: true });
+});
+
+/** The last report, or null. A corrupt row parses to null, never throws. */
+async function readPersistedLocalRun(): Promise<PersistedLocalRun | null> {
+  try {
+    const row = await prisma.appConfig.findUnique({ where: { key: LOCAL_RUN_KEY } });
+    if (!row?.value) return null;
+    const parsed = JSON.parse(row.value);
+    return parsed && typeof parsed === 'object' ? (parsed as PersistedLocalRun) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Daily: has the Sunday GPU run gone quiet?
+ *
+ * A run that never happens is the failure mode the log showed for a month -
+ * the task fired, downloaded nothing, and exited 0 - and now that a run
+ * reports itself, NOT reporting is the remaining way to be invisible. So once a
+ * day: if the last report is older than LOCAL_RUN_SILENT_DAYS and nobody has
+ * been told about this particular silence, mail the admins and stamp the row.
+ *
+ * Always logs exactly one line (the Sonarr rule: a silent daily job is
+ * indistinguishable from one that never ran). Never throws - it runs on a
+ * timer and a failure here must not become a second incident.
+ */
+export async function checkLocalRunSilence(): Promise<void> {
+  try {
+    const run = await readPersistedLocalRun();
+    const state = localRunSilence(run);
+    if (state === 'never') {
+      console.log('[translate/local-run] no Sunday run has ever reported; silence cannot be judged yet');
+      return;
+    }
+    if (state !== 'silent') {
+      console.log(`[translate/local-run] Sunday run last reported ${run!.reportedAt} (${state})`);
+      return;
+    }
+    // Stamp first, then mail: if the mail fails we would rather stay quiet than
+    // re-alert every day, and the log line below is loud regardless.
+    const stamped: PersistedLocalRun = { ...run!, silentAlertedAt: new Date().toISOString() };
+    await prisma.appConfig.upsert({
+      where: { key: LOCAL_RUN_KEY },
+      update: { value: JSON.stringify(stamped) },
+      create: { key: LOCAL_RUN_KEY, value: JSON.stringify(stamped) },
+    });
+    console.warn(`[translate/local-run] the Sunday GPU run has not reported since ${run!.reportedAt}`);
+    void alertAdmins(
+      'Sunday subtitle run has not reported',
+      `The local large-v3 run last reported at ${run!.reportedAt} (${run!.line}).\n\n` +
+      `It runs weekly; more than ${LOCAL_RUN_SILENT_DAYS} days without a report means the Scheduled Task did not ` +
+      `fire or could not reach the server. Check Task Scheduler on the PC and tools/logs/translate.log.`,
+    );
+  } catch (err: any) {
+    console.warn(`[translate/local-run] silence check could not run: ${err?.message ?? err}`);
   }
 }
 
@@ -1027,7 +1276,13 @@ router.get('/report', requireAuth, requireAdmin, async (req: AuthRequest, res: R
       .filter(([model]) => isBelowChampion(model === 'unknown' ? null : model))
       .reduce((sum, [, n]) => sum + n, 0);
 
+    // Is the download path working? Cheap (one AppConfig row) and the whole
+    // reason it is on this page: the 2026-09 outage was invisible for months
+    // because nothing anywhere reported that downloads had stopped.
+    const download = await getDownloadHealth();
+
     return res.json({
+      download,
       overall: {
         tracked: byVideoId.size,
         translated,
@@ -1048,7 +1303,10 @@ router.get('/report', requireAuth, requireAdmin, async (req: AuthRequest, res: R
           tail: batchStatus.log.slice(-20),
         },
         lastRun: await readPersistedBatchRun(),
-        // "Last upload seen", never "last run" - see the route's header comment.
+        // What the Sunday run itself said at its end (POST /local-run), or null
+        // if it has never reported. Distinct from lastChampionUploadAt, which is
+        // still only "last upload seen".
+        lastLocalRun: await readPersistedLocalRun(),
         champion: CHAMPION,
         lastChampionUploadAt,
       },

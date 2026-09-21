@@ -59,27 +59,36 @@ def click_trailer(page, video_id: str):
 
 
 def find_overlay(page):
-    """Whisper overlay div, if visible with text."""
-    el = page.locator('div.absolute.left-1\\/2:has-text("")').first
+    """The Whisper cue (`.sc-subtitle` - the class exists for this test and the
+    fullscreen stylesheet), if rendered with text. It used to be selected by
+    layout classes (`absolute left-1/2`) and silently matched nothing once the
+    cue became a centred child of a full-width row: Path C could not see the
+    overlay and Path B's "no overlay" check passed vacuously."""
+    el = page.locator('.sc-subtitle:has-text("")').first
     return el if el.count() > 0 and (el.text_content() or "").strip() else None
 
 
 def wait_for_overlay_text(page, max_wait_ms: int = 10_000, poll_ms: int = 500) -> str:
-    """Poll for the Whisper overlay to render non-empty text. Returns the text
+    """Poll for the Whisper cue to render non-empty text. Returns the text
     (empty string if it never appeared within the timeout). Used in place of a
-    blind wait_for_timeout - exits as soon as the overlay appears (~2-3s
-    typically) instead of always sleeping the full max."""
+    blind wait_for_timeout - exits as soon as the cue appears (~2-3s typically)
+    instead of always sleeping the full max.
+
+    Polls rather than waiting once because the cue is EMPTY in the gaps between
+    segments: it appears, disappears and reappears throughout playback, so a
+    single look can land in a gap on a perfectly working player.
+
+    Selects on `.sc-subtitle`. It used to walk `div.absolute` for a class
+    containing `left-1/2`, which stopped matching anything when the cue became a
+    centred child of a full-width row - Paths C and D then failed on a clean
+    build, and Path B's "no overlay" assertion passed vacuously.
+    """
     waited = 0
     while waited < max_wait_ms:
         text = page.evaluate("""() => {
-          const divs = Array.from(document.querySelectorAll('div.absolute'));
-          for (const d of divs) {
-            if (d.className.includes('left-1/2')) {
-              const t = (d.textContent || '').trim();
-              if (t.length > 0) return t;
-            }
-          }
-          return '';
+          const el = document.querySelector('.sc-subtitle');
+          const t = el ? (el.textContent || '').trim() : '';
+          return t.length > 0 ? t : '';
         }""")
         if text:
             return text
@@ -90,19 +99,44 @@ def wait_for_overlay_text(page, max_wait_ms: int = 10_000, poll_ms: int = 500) -
 
 def test_b_youtube_cc(page):
     p = "[1/3 PathB-CC]"
-    print(f"{p} step 1/3: opening trailer with YouTube English CC", flush=True)
+    print(f"{p} step 1/5: opening trailer with YouTube English CC", flush=True)
     click_trailer(page, VIDEO_EN_CC)
     page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
     iframe_src = page.locator('iframe[src*="youtube"]').first.get_attribute("src") or ""
-    print(f"{p} step 2/3: checking iframe config", flush=True)
+    print(f"{p} step 2/5: checking iframe config", flush=True)
     assert "cc_load_policy=0" in iframe_src, f"missing cc_load_policy=0: {iframe_src}"
     assert "cc_lang_pref=en" in iframe_src, f"missing cc_lang_pref=en: {iframe_src}"
-    print(f"{p} step 3/3: verifying no Whisper overlay rendered", flush=True)
+    print(f"{p} step 3/5: verifying no Whisper overlay rendered", flush=True)
     time.sleep(3)
-    overlay_count = page.locator('div.absolute.left-1\\/2').filter(
+    overlay_count = page.locator('.sc-subtitle').filter(
         has_text=re.compile(r".+")).count()
     assert overlay_count == 0, f"unexpected Whisper overlay rendered: {overlay_count}"
-    print(f"{p} PASS - iframe configured, no overlay", flush=True)
+    # Fullscreen is player chrome, not a subtitle control, and this is the path
+    # that lost it: the button was wrapped in the `!hasEnglishSubs` gate while
+    # the iframe carries no `allowfullscreen`, so YouTube-CC trailers had no
+    # fullscreen at all. Nothing else opens a Path A trailer, so it is pinned here.
+    print(f"{p} step 4/5: fullscreen button must be there while YouTube CC is active", flush=True)
+    fs = page.locator('button[title="Fullscreen"]')
+    assert fs.count() == 1 and fs.first.is_visible(), \
+        f"fullscreen button missing with YouTube CC active (count={fs.count()})"
+    fs.first.click()
+    page.wait_for_timeout(600)
+    fs_el = page.evaluate("document.fullscreenElement ? document.fullscreenElement.className : ''")
+    assert "sc-player" in fs_el, f"fullscreen element is not the player wrapper: {fs_el!r}"
+    # In a real browser Escape is the browser's own leave-fullscreen gesture and
+    # never reaches the page; a synthetic Escape here DOES reach our handler,
+    # which must leave the modal alone while fullscreen (the guard frontend/
+    # CLAUDE.md describes). Fullscreen is then left the way the page offers -
+    # the same button - and the modal must still be there afterwards.
+    print(f"{p} step 5/5: Escape in fullscreen keeps the modal; the button leaves fullscreen", flush=True)
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(400)
+    assert page.locator('iframe[src*="youtube"]').count() == 1, "Escape while fullscreen closed the modal"
+    page.locator('button[title="Exit fullscreen"]').first.click()
+    page.wait_for_timeout(600)
+    assert not page.evaluate("!!document.fullscreenElement"), "still fullscreen after the exit button"
+    assert page.locator('iframe[src*="youtube"]').count() == 1, "leaving fullscreen closed the modal"
+    print(f"{p} PASS - iframe configured, no overlay, fullscreen works", flush=True)
     page.locator('.fixed.inset-0.bg-black\\/80').click(position={"x": 5, "y": 5})
     page.wait_for_timeout(1500)
 
@@ -123,7 +157,7 @@ def test_d_cc_toggle(page, backend: str):
     print(f"{p} step 1/5: clicking CC toggle to hide overlay", flush=True)
     page.locator('button[title="Hide subtitles"]').click()
     page.wait_for_timeout(1500)
-    overlay_count = page.locator('div.absolute.left-1\\/2').filter(
+    overlay_count = page.locator('.sc-subtitle').filter(
         has_text=re.compile(r".+")).count()
     assert overlay_count == 0, "overlay still visible after toggle off"
 
@@ -142,7 +176,7 @@ def test_d_cc_toggle(page, backend: str):
     # the overlay isn't going to render - if dismiss was broken, the overlay
     # would have shown by 4s the same way Path C shows it by ~3s.
     page.wait_for_timeout(4_000)
-    overlay_count = page.locator('div.absolute.left-1\\/2').filter(
+    overlay_count = page.locator('.sc-subtitle').filter(
         has_text=re.compile(r".+")).count()
     assert overlay_count == 0, "overlay reappeared on reopen - dismiss not honored"
 

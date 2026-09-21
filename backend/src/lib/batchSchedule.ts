@@ -4,8 +4,8 @@
  * Extracted from the scheduler IIFE in `index.ts` so the scheduler and
  * `/admin/subtitles` describe the **same** schedule. A second copy of "Wednesday
  * 2-4 am, within 50 days" would eventually drift, and the page would confidently
- * name a night the job does not run - the `MODEL_RANK`-in-three-places mistake
- * in miniature.
+ * name a night the job does not run - the mistake `MODEL_RANK` once made with
+ * three hand-synced copies, in miniature.
  *
  * **Everything here is LOCAL time**, matching the scheduler's own `getDay()` /
  * `getHours()` gates. Describing the schedule in UTC would name a different

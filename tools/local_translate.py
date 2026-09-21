@@ -73,13 +73,24 @@ Flags:
   --keep-ollama      Leave Ollama running after the run (default: stop it)
   --limit N          Cap trailers translated per season (for testing)
   --vram-log         Interleave GPU VRAM samples with the phase log
-  --download-delay   Seconds between trailer downloads (default: 5)
+  --download-delay   Seconds between trailer downloads (default: DOWNLOAD_DELAY_DEFAULT)
+  --no-update        Skip the yt-dlp self-upgrade that otherwise runs first
   --cookies FILE     Netscape cookies.txt for yt-dlp (YouTube bot wall)
   --cookies-from-browser BROWSER
                      Read YouTube cookies from edge/chrome/firefox
   (see --help for the authoritative full list)
 
-Windows wrapper: tools/translate.bat (uses py -3.13)
+Exit code is the run's verdict (translate_stream.run_verdict): 0 fine, 2 most
+downloads failed, 3 aborted on a YouTube bot-challenge. EVERY exit path goes
+through it - the season loop, --video, and the --within-days decline (which
+reports `Done: skipped - ...`, exit 0) - because the paths that bypassed it were
+exactly how four runs with 46 of 49 downloads failing exited 0. The verdict is
+also POSTed to /api/translate/local-run whenever the run authenticated and is
+not --dry-run / --no-upload, so /admin/subtitles shows *Last run reported*.
+
+Windows wrapper: tools/translate.bat (uses py -3.13). The "SaltyChart Translate"
+Scheduled Task invokes THIS FILE directly, not the .bat, so editing the .bat
+changes nothing about the Sunday run.
 """
 
 import argparse
@@ -97,6 +108,22 @@ from datetime import datetime
 # Swappable pipeline stages (Demucs vocal separation, Ollama qwen3.5 translation)
 # shared with the bake-off harness. Sits next to this file in tools/.
 import bench_pipeline as bp
+
+# Shared with the container's batch script: ONE definition each, imported, not
+# copied. translate_stream.py has only stdlib imports at module level, so this is
+# cheap, and it removes a "keep the copies equal" burden. This script runs from
+# the repo checkout (the Scheduled Task invokes it by full path), so backend/
+# is always beside tools/.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "scripts"))
+from translate_stream import (DOWNLOAD_DELAY_DEFAULT, is_bot_block, classify_error,  # noqa: E402
+                              run_verdict, ensure_ytdlp_current, MODEL_RANK)
+
+# Run-wide tallies for the exit verdict - see run_verdict. Per-season counters
+# were printed and discarded, which is how four Sunday runs with ~46 of 49
+# downloads failing each showed lastResult=0x0 in Task Scheduler. startedAt is
+# module load, which is the run start to within a second.
+RUN_STATS = {"attempted": 0, "errors": 0, "kinds": {}, "aborted": False,
+             "startedAt": datetime.now().astimezone().isoformat(timespec="seconds")}
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +315,19 @@ class BotBlockError(Exception):
 
 
 def _is_bot_block(msg: str) -> bool:
-    m = (msg or "").lower()
-    return ("confirm you" in m and "not a bot" in m) or "sign in to confirm" in m
+    # One detector (translate_stream.is_bot_block). A hit also tells the guard,
+    # so the cooldown that follows binds EVERYTHING in this repo, not just this
+    # script: the expensive version of this failure is someone (or some agent)
+    # immediately retrying by hand and deepening a block that then prevents
+    # verifying anything at all.
+    hit = is_bot_block(msg)
+    if hit:
+        try:
+            import yt_guard
+            yt_guard.note_block()
+        except Exception:
+            pass
+    return hit
 
 
 def download_audio(video_id: str, tmpdir: str):
@@ -310,10 +348,18 @@ def download_audio(video_id: str, tmpdir: str):
         "noprogress": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
         "outtmpl": os.path.join(tmpdir, "full.%(ext)s"),
-        # ~1.5s between the metadata/API calls yt-dlp makes per video (yt-dlp's
-        # own recommended anti-rate-limit setting); the between-trailer gap is
-        # handled by --download-delay in the serial Phase-1 loop.
+        # ~1.5s between the metadata/API calls yt-dlp makes per video. yt-dlp's
+        # own `-t sleep` preset (README, checked 2026-09-20 against the raw text)
+        # uses `--sleep-requests 0.75`; this is twice that, deliberately. The
+        # option has no default unless the preset is used. The between-trailer
+        # gap is handled by --download-delay in the serial Phase-1 loop.
         "sleep_interval_requests": 1.5,
+        # yt-dlp enables only deno by default. Without a JS runtime it cannot
+        # solve YouTube's player challenge and warns that formats may be
+        # missing - the deprecated path. Node is on this PC and in the server
+        # image, so name both and let whichever exists win. Same option as
+        # `backend/scripts/translate_stream.py`; keep them together.
+        "js_runtimes": {"deno": {}, "node": {}},
         **_cookie_opts(),
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -709,13 +755,11 @@ def detect_burned_in_subs(video_id: str, segments: list, video_url: str = None) 
 # Server communication
 # ---------------------------------------------------------------------------
 
-# large-v3-split (rank 6) = the champion pipeline (Demucs vocals + large-v3
-# transcribe + qwen3.5 translate). Outranks plain large-v3 (the e2e fallback /
-# legacy path) so existing large-v3 subs auto-upgrade. Keep in sync with the
-# server's MODEL_RANK in backend/src/lib/subtitleReport.ts (it lived in
-# routes/translate.ts until that file was made to import it).
-MODEL_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v2": 4,
-              "large-v3": 5, "large-v3-split": 6}
+# MODEL_RANK comes from translate_stream (imported above): large-v3-split
+# (rank 6) is the champion pipeline (Demucs vocals + large-v3 transcribe +
+# qwen3.5 translate) and outranks plain large-v3 (the e2e fallback) so existing
+# large-v3 subs auto-upgrade. The TypeScript twin is lib/subtitleReport.ts;
+# test_run_verdict.py asserts the two are equal and that no script redefines it.
 
 
 def check_server_cache(server: str, video_id: str, model_name: str) -> tuple:
@@ -751,6 +795,32 @@ def login(server: str, username: str, password: str) -> str:
     if "token" not in data:
         raise Exception(f"Login failed: {data.get('error', 'unknown error')}")
     return data["token"]
+
+
+def report_local_run(server: str, token: str, code: int, line: str) -> str:
+    """Tell the server how this run went, so /admin/subtitles can show it.
+
+    Until this existed the server could only infer the Sunday run from uploads:
+    a run that produced nothing looked identical to a quiet week, and four runs
+    with 46 of 49 downloads failing left no trace anywhere an admin looks.
+    Best-effort - the verdict has already been printed and is the exit code;
+    failing to deliver it must not change either.
+    """
+    body = json.dumps({
+        "exitCode": code, "line": line,
+        "attempted": RUN_STATS["attempted"], "errors": RUN_STATS["errors"],
+        "kinds": RUN_STATS["kinds"], "aborted": RUN_STATS["aborted"],
+        "startedAt": RUN_STATS["startedAt"],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{server}/api/translate/local-run", data=body, method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return f"run verdict reported to the server (HTTP {r.status})"
+    except Exception as e:
+        return f"could not report the run verdict to the server: {type(e).__name__}: {str(e)[:120]}"
 
 
 def upload_segments(server: str, token: str, video_id: str, media_id: int, model_name: str, segments: list, has_burned_in: bool = False, force: bool = False) -> dict:
@@ -938,7 +1008,7 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
     # Phase 1: download SERIALLY with a delay between trailers (never parallel -
     # bursty parallel downloads are what trip YouTube's bot-detection), then
     # Demucs-separate sequentially (GPU, loaded once). One season at a time.
-    delay = max(0.0, getattr(args, "download_delay", 5.0) or 0.0)
+    delay = max(0.0, getattr(args, "download_delay", DOWNLOAD_DELAY_DEFAULT) or 0.0)
     print(f"[local] {head}Phase 1/3: download (serial, ~{delay:.0f}s apart) + separate ({n} trailer(s))...")
     prepared, errors = [], 0
 
@@ -955,7 +1025,10 @@ def _run_phased(items, server, token, args, device, compute_type, tmpdirs, verbo
             msg = str(e)
             print(f"  {tag('download', i + 1, n)} {label}: DOWNLOAD ERROR: {msg[:120]}")
             errors += 1
+            kind = classify_error(e)
+            RUN_STATS["kinds"][kind] = RUN_STATS["kinds"].get(kind, 0) + 1
             if _is_bot_block(msg):
+                RUN_STATS["aborted"] = True
                 # Bubbles up to abort the whole run - rationale on BotBlockError.
                 raise BotBlockError(
                     "YouTube is challenging downloads ('not a bot'). Aborted before "
@@ -1058,7 +1131,8 @@ def main():
     parser.add_argument("--server", required=True, help="SaltyChart server URL (e.g. http://192.168.1.X:8085)")
     parser.add_argument("--username", "-u", type=str, help="SaltyChart username")
     parser.add_argument("--password", "-p", type=str, help="SaltyChart password")
-    parser.add_argument("--token", type=str, help="JWT auth token (alternative to username/password)")
+    parser.add_argument("--token", type=str, help="JWT auth token (alternative to username/password). "
+                        "Logins expire in 7 days, so this suits a one-off run, not the weekly task")
     parser.add_argument("--season", type=str, help="Season: WINTER, SPRING, SUMMER, FALL")
     parser.add_argument("--year", type=int, help="Year (e.g. 2026)")
     parser.add_argument("--model", type=str, default="large-v3", help="Whisper model (default: large-v3)")
@@ -1066,6 +1140,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="List trailers without translating")
     parser.add_argument("--video", type=str, help="Translate a single YouTube video ID (skip AniList fetch)")
     parser.add_argument("--no-upload", action="store_true", help="Translate but don't upload to server")
+    parser.add_argument("--no-update", action="store_true",
+                        help="Skip the yt-dlp self-upgrade at the start of the run (best-effort; "
+                             "skipped on --dry-run anyway)")
     parser.add_argument("--force", action="store_true", help="Force re-translation even if cached")
     parser.add_argument("--log", type=str, nargs="?", const=os.path.join(os.path.dirname(__file__), "logs", "translate.log"),
                         help="Log output to file (default: tools/logs/translate.log)")
@@ -1087,8 +1164,8 @@ def main():
     parser.add_argument("--vram-log", action="store_true",
                         help="Sample total GPU VRAM every 0.5s and interleave it with the "
                              "phase log (diagnostic for peak-usage attribution)")
-    parser.add_argument("--download-delay", type=float, default=5.0, metavar="SECONDS",
-                        help="Seconds between trailer downloads (default: 5). Downloads "
+    parser.add_argument("--download-delay", type=float, default=DOWNLOAD_DELAY_DEFAULT, metavar="SECONDS",
+                        help="Seconds between trailer downloads (default: %(default)s). Downloads "
                              "are always serial - bursty parallel downloads trip YouTube "
                              "bot-detection. Raise it if you still get challenged.")
     parser.add_argument("--download-workers", type=int, default=1, metavar="N",
@@ -1130,19 +1207,6 @@ def main():
                 _original_print(*args, **{**kwargs, "file": log_file, "flush": True})
         builtins.print = tee_print
 
-    # --- Within-days gate ---
-    if args.within_days is not None:
-        days = days_until_next_season()
-        if days > args.within_days:
-            season, year = next_season_info()
-            print(f"[local] Next season ({season} {year}) is {days} days away (threshold: {args.within_days}). Exiting.")
-            if log_file:
-                log_file.close()
-            return
-        else:
-            season, year = next_season_info()
-            print(f"[local] Next season ({season} {year}) is {days} days away - within {args.within_days}-day window, proceeding.")
-
     server = args.server.rstrip("/")
 
     # Authenticate (optional for --video --no-upload)
@@ -1158,6 +1222,30 @@ def main():
     if not token and not args.no_upload and not (args.video and args.no_upload):
         if not args.username or not args.password:
             parser.error("Provide --username and --password, or --token (not needed with --video --no-upload)")
+
+    def finish(code: int, line: str) -> int:
+        """The ONE way out of main(). Prints the verdict as the last line, reports
+        it to the server when this run authenticated, closes the log, returns the
+        exit code. Every exit path calls this: --video and the --within-days
+        decline used to `return` before the verdict existed, exit 0, silently."""
+        if token and not args.no_upload and not args.dry_run:
+            print(f"[local] {report_local_run(server, token, code, line)}", flush=True)
+        print(line, flush=True)
+        if log_file:
+            log_file.write(f"{line}\nRun ended: {datetime.now().isoformat()}\n")
+            log_file.close()
+        return code
+
+    # --- Within-days gate --- AFTER login, so a decline can still be reported:
+    # before, it returned before authenticating and the server's card read "did
+    # not run" for a run that ran and decided, correctly, to do nothing.
+    if args.within_days is not None:
+        days = days_until_next_season()
+        season, year = next_season_info()
+        if days > args.within_days:
+            print(f"[local] Next season ({season} {year}) is {days} days away (threshold: {args.within_days}). Exiting.")
+            return finish(0, f"Done: skipped - next season {season} {year} is {days} days away, over the {args.within_days}-day window")
+        print(f"[local] Next season ({season} {year}) is {days} days away - within {args.within_days}-day window, proceeding.")
 
     # Determine seasons to process
     if args.season and args.year:
@@ -1206,6 +1294,12 @@ def main():
 
     # Start Ollama if needed (only when we'll actually translate via the split).
     ollama_ready, ollama_proc = False, None
+    # Before the first download, inside this run - not a separate job. The Sunday
+    # task sat on yt-dlp 2026.03.17 for six months and lost four straight weeks to
+    # a change the 2026.08.19 release had already fixed. See ensure_ytdlp_current.
+    if not args.dry_run and not args.no_update:
+        ensure_ytdlp_current(say=lambda s: print(f"[local] {s}", flush=True))
+
     if split_enabled and not args.dry_run:
         ollama_ready, ollama_proc = ensure_ollama_running(args.ollama_host, args.translate_model)
 
@@ -1240,39 +1334,54 @@ def main():
                                  print(f"[vram] PEAK = {_vpeak['v']}MB", flush=True)))
     print()
 
-    # Single video mode
+    # Single video mode. One attempt, counted like any other so the run's exit
+    # code is a verdict here too (it used to `return` past the verdict, exit 0).
     if args.video:
         print(f"[local] Single video mode: {args.video}")
-        if split_enabled and ollama_ready:
-            run_phased([{"vid": args.video, "title": None, "media_id": 0}],
-                       server, token, args, device, compute_type, verbose=True)
-        else:
-            # Legacy / fallback: single-pass e2e translate (Whisper only)
-            print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
-            from faster_whisper import WhisperModel
-            model = WhisperModel(args.model, device=device, compute_type=compute_type)
-            use_chunking = args.model == "small"
-            segments, video_url, used_split = translate_video(
-                model, args.video, use_chunking=use_chunking, title=None,
-                split=split_enabled, translate_model=args.translate_model,
-                ollama_host=args.ollama_host, ollama_ready=ollama_ready)
-            model_name = "large-v3-split" if used_split else args.model
-            print(f"[local] Translated: {len(segments)} segments [{model_name}]")
-            for seg in segments:
-                print(f"  [{seg['start']:6.1f}s - {seg['end']:6.1f}s] {seg['text']}")
-            has_burned_in = False
-            if segments:
-                try:
-                    has_burned_in = detect_burned_in_subs(args.video, segments, video_url=video_url)
-                except Exception as e:
-                    print(f"[local] Burned-in detection failed: {e}")
-            if not args.no_upload and token:
-                result = upload_segments(server, token, args.video, 0, model_name, segments, has_burned_in, args.force)
-                print(f"[local] Uploaded: {result.get('action', 'ok')}")
-            elif args.no_upload:
-                print("[local] --no-upload: skipping upload")
+        RUN_STATS["attempted"] = 1
+        try:
+            if split_enabled and ollama_ready:
+                run_phased([{"vid": args.video, "title": None, "media_id": 0}],
+                           server, token, args, device, compute_type, verbose=True)
+            else:
+                # Legacy / fallback: single-pass e2e translate (Whisper only)
+                print(f"[local] Loading Whisper {args.model} model ({compute_type})...")
+                from faster_whisper import WhisperModel
+                model = WhisperModel(args.model, device=device, compute_type=compute_type)
+                use_chunking = args.model == "small"
+                segments, video_url, used_split = translate_video(
+                    model, args.video, use_chunking=use_chunking, title=None,
+                    split=split_enabled, translate_model=args.translate_model,
+                    ollama_host=args.ollama_host, ollama_ready=ollama_ready)
+                model_name = "large-v3-split" if used_split else args.model
+                print(f"[local] Translated: {len(segments)} segments [{model_name}]")
+                for seg in segments:
+                    print(f"  [{seg['start']:6.1f}s - {seg['end']:6.1f}s] {seg['text']}")
+                has_burned_in = False
+                if segments:
+                    try:
+                        has_burned_in = detect_burned_in_subs(args.video, segments, video_url=video_url)
+                    except Exception as e:
+                        print(f"[local] Burned-in detection failed: {e}")
+                if not args.no_upload and token:
+                    result = upload_segments(server, token, args.video, 0, model_name, segments, has_burned_in, args.force)
+                    print(f"[local] Uploaded: {result.get('action', 'ok')}")
+                elif args.no_upload:
+                    print("[local] --no-upload: skipping upload")
+        except BotBlockError as e:
+            print(f"\n[local] ABORT: {e}")
+            RUN_STATS["errors"] = 1
+            RUN_STATS["kinds"]["botwall"] = 1
+            RUN_STATS["aborted"] = True
+        except Exception as e:
+            print(f"[local] ERROR: {e}")
+            RUN_STATS["errors"] = 1
+            RUN_STATS["kinds"][classify_error(e)] = 1
+            if _is_bot_block(str(e)):
+                RUN_STATS["aborted"] = True
         _cleanup_ollama()
-        return
+        code, line = run_verdict(RUN_STATS["attempted"], RUN_STATS["errors"], RUN_STATS["kinds"], RUN_STATS["aborted"])
+        return finish(code, line)
 
     print(f"[local] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
     print()
@@ -1356,7 +1465,7 @@ def main():
                 print()
             translated = 0
             errors = 0
-            dl_delay = getattr(args, "download_delay", 5.0) or 0.0
+            dl_delay = getattr(args, "download_delay", DOWNLOAD_DELAY_DEFAULT) or 0.0
             bot_blocked = False
             for i, (show, reason) in enumerate(uncached):
                 vid = show["trailer"]["id"]
@@ -1383,35 +1492,50 @@ def main():
                     print(f"  Uploaded: {result.get('action', 'ok')}")
                     translated += 1
                 except BotBlockError as e:
+                    # Counted as a failure of kind botwall, or the verdict reads
+                    # "0 of 0" for a run YouTube refused outright.
                     print(f"\n[local] ABORT: {e}")
+                    errors += 1
+                    RUN_STATS["kinds"]["botwall"] = RUN_STATS["kinds"].get("botwall", 0) + 1
+                    RUN_STATS["aborted"] = True
                     bot_blocked = True
                     break
                 except Exception as e:
                     msg = str(e)
                     print(f"  ERROR: {msg}")
                     errors += 1
+                    kind = classify_error(e)
+                    RUN_STATS["kinds"][kind] = RUN_STATS["kinds"].get(kind, 0) + 1
                     # Bot-challenge -> abort the run (rationale on BotBlockError).
                     if _is_bot_block(msg):
                         print("\n[local] ABORT: YouTube bot-challenge detected - stopping to avoid deepening the block.")
                         bot_blocked = True
+                        RUN_STATS["aborted"] = True
                         break
-
-            # A bot-challenge is IP-wide - stop the whole run, not just this season.
-            if bot_blocked:
-                break
 
         print()
         remaining = len(uncached) - translated - errors
+        # Accumulate BEFORE the abort check below: a season cut short by a bot
+        # wall used to `break` past this and the verdict said "0 of 0".
+        RUN_STATS["attempted"] += translated + errors
+        RUN_STATS["errors"] += errors
         print(f"[local] SEASON {si}/{ns} done - {season} {year}: {translated} translated, {errors} errors"
               + (f", {remaining} remaining" if remaining > 0 else ""))
         print()
+        # A bot-challenge is IP-wide - stop the whole run, not just this season.
+        if bot_blocked:
+            break
 
     _cleanup_ollama()
 
-    if log_file:
-        log_file.write(f"\nRun ended: {datetime.now().isoformat()}\n")
-        log_file.close()
+    # The verdict is the LAST line printed and the process exit code. Task
+    # Scheduler shows the code as lastResult, and the log keeps the line - so a
+    # run that produced nothing is finally distinguishable from a quiet week.
+    code, line = run_verdict(RUN_STATS["attempted"], RUN_STATS["errors"], RUN_STATS["kinds"], RUN_STATS["aborted"])
+    return finish(code, line)
 
 
 if __name__ == "__main__":
-    main()
+    # main() returns run_verdict's code; without this line it was discarded and
+    # every run - including four with 46/49 downloads failing - exited 0.
+    sys.exit(main())

@@ -20,10 +20,11 @@
  * existing entries.
  *
  * **This is the one TypeScript copy.** `routes/translate.ts` imports it from
- * here rather than declaring its own. Two Python copies remain and must be kept
- * in sync by hand - `backend/scripts/batch_translate.py` and
- * `tools/local_translate.py`; a missing `large-v3-split` in either makes that
- * path treat champion output as rank 0 and reprocess it for nothing.
+ * here rather than declaring its own. The one Python copy is `MODEL_RANK` in
+ * `backend/scripts/translate_stream.py` (both batch scripts import it), and
+ * `tools/tests/test_run_verdict.py` asserts the two are equal - a missing
+ * `large-v3-split` in either would make that path treat champion output as
+ * rank 0 and reprocess it for nothing.
  */
 export const MODEL_RANK: Record<string, number> = {
   tiny: 0,

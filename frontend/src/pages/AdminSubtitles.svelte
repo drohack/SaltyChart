@@ -22,9 +22,11 @@
    * in its own summary block above.
    *
    * **Two things this page must never claim.** The Sunday run is a Windows
-   * Scheduled Task and the server has no record it fired, so the champion line
-   * says *last upload seen*, never *last run*. And an uncached season says so
-   * rather than rendering zeroes - "couldn't ask" is not "nothing to do".
+   * Scheduled Task the server cannot observe, so the champion line says *last
+   * upload seen*, never *last run* - the only thing called a run is the run's
+   * OWN report (`schedule.lastLocalRun`, posted at its end), rendered beside it.
+   * And an uncached season says so rather than rendering zeroes - "couldn't ask"
+   * is not "nothing to do".
    *
    * Scope: trailers only. Jellyfin episode subtitles are a different subsystem
    * with no cache table and are deliberately not reported here.
@@ -121,6 +123,21 @@
   };
 
   type Report = {
+    download: {
+      lastOkAt: string | null;
+      lastFailAt: string | null;
+      lastFailReason: string | null;
+      lastFailKind: string | null;
+      consecutiveFailures: number;
+      okCount: number;
+      failCount: number;
+      broken: boolean;
+      // Decided server-side (lib/downloadHealth.ts) so this page never carries
+      // its own copy of the "what does a stale-yt-dlp failure look like" rule.
+      staleYtDlp: boolean;
+      // Non-null while /stream is refusing new downloads after a bot wall.
+      holdingUntil: string | null;
+    };
     overall: {
       tracked: number;
       translated: number;
@@ -152,6 +169,17 @@
         season: string | null;
         year: number | null;
         tail: string[];
+      } | null;
+      // The Sunday run's own verdict, POSTed at its end; null if never reported.
+      lastLocalRun: {
+        reportedAt: string;
+        startedAt: string | null;
+        exitCode: number;
+        line: string;
+        attempted: number;
+        errors: number;
+        kinds: Record<string, number>;
+        aborted: boolean;
       } | null;
       champion: string;
       lastChampionUploadAt: string | null;
@@ -435,6 +463,55 @@
       </div>
     {/if}
 
+    <!-- ====================== Download health ========================= -->
+    <!-- Deliberately the FIRST thing on the page, and only loud when it is bad.
+         A stale yt-dlp broke every new trailer's download for months and the
+         only place it showed was a chip in a modal that cleared itself after
+         6 seconds. If that happens again, it says so here before anything
+         else. `broken` is a streak, not a single failure - one private or
+         deleted trailer is not an outage. -->
+    <!-- A hold is a deliberate refusal, not a failure count, so it gets its own
+         line and can show with or without the red banner: one bot wall holds
+         downloads for BOT_WALL_HOLD_MS even before three failures accrue. -->
+    {#if report.download?.holdingUntil}
+      <div class="alert alert-warning">
+        <div>
+          <h3 class="font-semibold">Holding new trailer downloads until {when(report.download.holdingUntil)}</h3>
+          <p class="text-sm">
+            YouTube challenged or rate-limited this server, so the site is
+            deliberately not sending it more requests. Cached trailers still play.
+            Viewers opening an uncached trailer see "YouTube rate-limited this
+            server, try again later". Nothing to do but wait; it lifts itself.
+          </p>
+        </div>
+      </div>
+    {/if}
+    {#if report.download?.broken}
+      <div class="alert alert-error">
+        <div>
+          <h3 class="font-semibold">Trailer downloads are failing</h3>
+          <p class="text-sm">
+            {report.download.consecutiveFailures} in a row. New trailers cannot be
+            translated; ones already in the cache keep working, which is why the
+            site looks mostly fine.
+            {#if report.download.lastFailReason}
+              <br /><span class="font-mono text-xs opacity-80">{report.download.lastFailReason}</span>
+            {/if}
+            {#if report.download.staleYtDlp}
+              <br />A 403 here is almost always an out-of-date yt-dlp on the
+              server, not an authentication problem.
+            {/if}
+          </p>
+        </div>
+      </div>
+    {:else if report.download && (report.download.okCount || report.download.failCount)}
+      <p class="text-sm opacity-70">
+        Trailer downloads OK
+        {#if report.download.lastOkAt}(last success {ago(report.download.lastOkAt)}){/if}.
+        {report.download.failCount} failure{report.download.failCount === 1 ? '' : 's'} all time.
+      </p>
+    {/if}
+
     <!-- ============================ Overall =========================== -->
     <section>
       <h2 class="text-lg font-semibold mb-1">Overall</h2>
@@ -597,10 +674,27 @@
                 <span class="opacity-70">({ago(report.schedule.lastChampionUploadAt)})</span>
               {/if}
             </p>
+            {#if report.schedule.lastLocalRun}
+              <p class="text-sm" class:text-error={report.schedule.lastLocalRun.exitCode !== 0}>
+                Last run reported:
+                <strong>{when(report.schedule.lastLocalRun.reportedAt)}</strong>
+                <span class="opacity-70">({ago(report.schedule.lastLocalRun.reportedAt)})</span>
+                {#if report.schedule.lastLocalRun.exitCode === 0}
+                  <span class="badge badge-success badge-sm ml-1">OK</span>
+                {:else}
+                  <span class="badge badge-error badge-sm ml-1">exit {report.schedule.lastLocalRun.exitCode}</span>
+                {/if}
+                <br /><span class="font-mono text-xs">{report.schedule.lastLocalRun.line}</span>
+              </p>
+            {:else}
+              <p class="text-sm opacity-70">Last run reported: never.</p>
+            {/if}
             <p class="text-xs opacity-60">
-              This is the newest {report.schedule.champion} row in the cache, not a record
-              that the task ran. The server cannot observe that job - a run that found
-              nothing new to do leaves no trace here.
+              "Last upload seen" is the newest {report.schedule.champion} row in the cache,
+              not a record that the task ran. "Last run reported" is the task's own verdict,
+              posted at the end of every run - so a run that produced nothing now says so
+              here instead of leaving no trace. If it is more than a week old, the task did
+              not run or could not reach the server.
             </p>
           </div>
         </div>

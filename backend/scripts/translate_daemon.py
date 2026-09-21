@@ -27,6 +27,13 @@ free, Plex transcoding most of the time), so cheap-and-neighbourly beats fast:
   (default `small`), WHISPER_LIVE_THREADS (CTranslate2 cpu_threads; default 2 -
   benchmarked sweet spot, 0 = CT2 default), WHISPER_LIVE_WORKERS (default 2),
   WHISPER_LIVE_IDLE (idle-exit seconds), WHISPER_LIVE_NICE.
+- NO yt-dlp self-upgrade here, on purpose. A viewer is waiting on this process,
+  and `ensure_ytdlp_current` is a pip round trip (6.2 s on the dev PC in the
+  already-current case, 2026-09-20; longer when it downloads) before the
+  first byte of audio. The two batch scripts DO run it - they are off-hours and
+  a stale yt-dlp costs them a whole season - but the live path relies on the
+  backend's daily updater (lib/ytdlpUpdate.ts), which recycles this daemon after
+  an upgrade so the next spawn imports the new version. Do not add it here.
 - Single ffmpeg pass: `download_audio(..., as_wav=False)` keeps the native
   audio (no whole-file WAV transcode); `extract_chunk` slices 16 kHz-mono
   chunks straight from it with `-threads 1`. (Batch still uses as_wav=True for
@@ -59,6 +66,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from translate_stream import (
     check_subtitles,
     download_audio,
+    classify_error,
+    friendly_error,
     generate_chunks,
     transcribe_chunks,
 )
@@ -110,10 +119,16 @@ def handle_translate(model, rid: str, video_id: str, cancelled: threading.Event,
                 stats["first"] = time.time()
         emit(rid, data)
 
+    # Which stage a failure came from. The download is the fragile one (it is
+    # the only step that depends on YouTube still serving us), so the backend
+    # tracks its health separately - a transcription error says nothing about
+    # whether downloads work, and conflating them would make the signal noise.
+    stage = "download"
     try:
         # Native download (no whole-file WAV transcode) - chunks are sliced on the fly.
         full_audio, duration = download_audio(video_id, tmpdir, as_wav=False)
         dl = time.time() - t0
+        stage = "transcribe"
 
         if cancelled.is_set():
             return
@@ -135,7 +150,16 @@ def handle_translate(model, rid: str, video_id: str, cancelled: threading.Event,
         sys.stderr.flush()
 
     except Exception as e:
-        emit(rid, {"error": str(e)})
+        # The viewer gets a message written for them; the operator gets the raw
+        # one on stderr, which is where the backend log reads it from.
+        sys.stderr.write(f"[daemon] {video_id} FAILED at {stage}: {e}\n")
+        sys.stderr.flush()
+        # `raw` and `stage` are for the backend's download-health record and are
+        # STRIPPED before this reaches a browser (routes/translate.ts) - the raw
+        # text is operator detail, and leaking internals to viewers is the habit
+        # that put `HTTP Error 403: Forbidden` on screen in the first place.
+        emit(rid, {"error": friendly_error(e), "stage": stage, "raw": str(e)[:500],
+                   "kind": classify_error(e)})
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
