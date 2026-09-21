@@ -3,9 +3,10 @@
 Pre-deploy smoke + regression tests for SaltyChart. Run these before building
 Docker images to catch site-breaking regressions.
 
-The suite is **12 parallel checks** (no browser, no shared state) followed by
-**4 sequential browser checks** - 5 with the burned-in GPU test - so 16/17
-checks in total. Wall-clock varies with cache warmth and what Jellyfin is
+The suite is **15 parallel checks** (no browser, no shared state) followed by
+**7 sequential checks** - the three that mutate a backend `AppConfig` row and
+restore it, then the four browser checks; 8 with the burned-in GPU test - so
+22/23 checks in total. Wall-clock varies with cache warmth and what Jellyfin is
 doing; ~6 min with `--skip-burned-in` (measured 2026-08-06, before the Sonarr
 check was added - it runs inside the parallel phase and against a warm cache
 adds nothing measurable).
@@ -55,6 +56,11 @@ start rather than pass vacuously against missing data.
 | `test_jellyfin.py` | 12 steps: `/api/jellyfin` auth + admin gates, `?token=` paths, availability shape incl. `matchedBy` and an id-tier liveness check, stream proxy, a manifest credential-leak assertion, a subtitle fetch, `Cache-Control` on subtitles/attachments, a well-formed WebVTT header, the config keep-on-empty round trip, the admin lookup (a name search offers id-bearing picks; a pasted `tvdb:<held id>` comes back named and cross-walked to TMDB), and the identity-override round trip (wrong id / rejection / unheld film all flip the verdict, Confirm keeps provenance, and the invalidation reaches the persisted blob); live steps auto-skip when Jellyfin is unconfigured (set on /admin) | backend running | ~5s unconfigured, ~90s live |
 | `backend npm run test:unit` | Title/id matching helpers via `node --test` - the Unicode normalisation guards and the known false positive | nothing | ~1s |
 | `backend npx tsc --noEmit` | Backend type-checks clean (same gate CI runs before building images) | nothing | <1 min |
+| `test_yt_guard.py` | The enforced YouTube budget (`tools/yt_guard.py`): every matcher decision - the positives, the false positives that each blocked a person once (GitHub docs about yt-dlp, a prose mention, `pip install`, compiling our own script), and that the **live** `settings.json` pre-filter can reach every positive (a fixture of the grep as it shipped pins that it could NOT reach `local_translate.py`; the live check FAILS until the grep is widened) - plus the four budget gates, cooldown/strike/adaptive tightening, and that `--clear` keeps strike history. State goes to a temp file, never the real budget | nothing | <1s |
+| `test_download_hold.py` | While `AppConfig.subtitleDownloadHealth` records a bot wall: `/api/translate/stream` refuses a cache miss with the friendly message and `holdUntil`, `/check-batch` queues nothing (`X-Check-Queue: held`) and writes no verdict, `/check` answers from cache only (`hasEnglish: null`) and writes no row, and nothing is recorded for a refusal (a refusal is not an attempt). Sequential group: it mutates shared backend state. Injects the row and restores it in a `finally`; makes no YouTube request while the guard holds | backend running | ~2s |
+| `test_status_page.py` | `/api/status` - the upstream service status page. Forces a real probe of every configured service, so it is also the only check that would notice a probe query going stale (the AniList one shipped selecting only `pageInfo` and got a 400). Every route 401s unauthenticated and 403s for a signed-up non-admin; `/report` names every registered service and gives each a server-decided state; **a service that is not set up reads `notConfigured`, never `down`**, and after a forced probe nothing probeable is still `unknown`; the alert settings round-trip, with a malformed address dropped rather than stored; rubbish input is coerced, never a 500. Forces one real probe per configured service, so it lives in the sequential group and backs up both AppConfig keys | backend running | ~10-60s |
+| `test_run_verdict.py` | `translate_stream.run_verdict` - a batch run that mostly failed must exit non-zero and name the remedy. Pins the case that shipped silently (46 of 49 -> exit 2, "stale yt-dlp"), what must not fail a run (two private trailers; 3 of 49; nothing to do), both threshold edges, the bot-wall abort code, `classify_error`, the **three-valued CC check** (a blocked or timed-out `check_subtitles` is `null`, never `false`; driven through a fake `youtube_transcript_api` module, no network), **`MODEL_RANK` parity** between `translate_stream.py` and `lib/subtitleReport.ts` (via ts-node) plus an AST check that neither script redefines it, the pip `no such option` retry in `ensure_ytdlp_current`, and that `yt_guard.BLOCK_SIGNS` is the imported `BOT_WALL_SIGNS`, not a copy | nothing, node + ts-node | ~2s |
+| `test_local_run_report.py` | `POST /api/translate/local-run` - the Sunday run's self-report: 401 unauthenticated, 403 for a signed-up non-admin, 400 on a malformed body, 200 for an admin, and `/report.schedule.lastLocalRun` carries the exit code, line, counts and breakdown. Backs up and restores the stored report | backend running | ~5s |
 | `frontend npm run build` | Frontend production build exits clean with zero a11y warnings | nothing | <1 min |
 | `test_svelte_check.py` | Catches references to identifiers that no longer exist in `.svelte` script blocks - `vite build` compiles them clean and they throw at runtime. A ratchet against the pre-existing error baseline: fails only when the count rises | nothing | ~1 min |
 | `test_rate_limits.py` | The rate limiters actually limit - every limiter is skipped in dev, so nothing else in the suite ever consults one. Boots a second production-mode backend on a spare port with a throwaway DB and hits it until it 429s | nothing (boots its own backend) | ~30s |
@@ -62,7 +68,7 @@ start rather than pass vacuously against missing data.
 | `test_match_replay.py` | Replays the shipping `matchSeries` over a frozen 8-season corpus and diffs every verdict against a committed baseline; twelve real false positives asserted by name. SKIPs where the (gitignored) fixtures haven't been built | fixtures built locally (else SKIP) | ~30s |
 | `test_frontend_smoke.py` | Home/Login/SignUp/Randomize/Compare pages render with no console errors, auth-gated routes accessible after signup | backend + frontend | ~20s |
 | `test_ui_interactions.py` | 27 flows: button-click smoke (login, search, hide 18+, season, watched-trailer, theme, wheel, logout, modal Escape, Compare with 2 users), the exploratory-pass guards (no-results message, zero availability calls + disabled Hide button on an unaired season, check-batch chunking, visible translation errors, phone sidebar collapsed, guest options + Compare's missing-user warning, an oversized wheel image warning instead of wedging the page, a theme choice surviving signup), admin page, unknown-never-hides, share-as-image, progressive loading, three silent-failure paths (unreachable library, hung backend, failed hide write), and the /admin/matching review of a resolver title-text accept | backend + frontend | ~3 min |
-| `test_subtitle_paths.py` | Subtitle Paths B/C/D - YouTube English CC, Whisper overlay, CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
+| `test_subtitle_paths.py` | Subtitle Paths B/C/D - YouTube English CC (plus: the fullscreen button is there and works while YouTube CC is active, and Escape in fullscreen keeps the modal - the path that lost fullscreen once), Whisper overlay (`.sc-subtitle`), CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
 | `test_player.py` | 10 steps driving the **real Jellyfin player**, which nothing else does: pop-up pre-warm fires and no stream starts early, playback actually advances, exactly one subtitle menu defaulting to plain English, `[`/`]` stepping 0.10 with the control bar hidden, burned-in subtitles verified in the pixels (12 frames sampled with subtitles on and off), the quality menu reaching 480p in one restart, Escape stopping the transcode. Skips when Jellyfin is unconfigured or nothing in the season is in the library | backend + frontend + Jellyfin | ~2 min |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR + sentence-transformers burned-in detection: Eren=yes, Sparks=no | CUDA GPU, backend running | ~60s |
 
@@ -115,8 +121,8 @@ anything it finds twice should graduate into this suite with a
 `mutation_audit.py` row. Read its *Traps* section before starting; several
 plausible-looking "bugs" there are measurement artifacts.
 
-The mutation audit itself is 74 rows (measured: 74 rows in 19 min on
-2026-08-05), and a full run **prints its own wall clock** on the last line
+The mutation audit itself is 143 rows (2026-09-20; the last full run measured
+86 rows in 21 min on 2026-08-06), and a full run **prints its own wall clock** on the last line
 (`N rows, M min, measured <date>`) - quote that, never an estimate. It warms
 the season cache once at the start, so a full run has to fit inside the 6 h
 `SeasonCache` TTL or its later rows re-fetch against AniList mid-audit. A run

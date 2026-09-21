@@ -18,7 +18,8 @@ transcode-cache hazard, the YouTube download pacing that keeps batch runs off
 the bot wall, bumping `RESOLVER_VERSION` when a change would decide a stored
 row differently, keeping skyhook off a viewer's request path, the raw-SQL
 schema path being authoritative in production, and the `modelName` rank table
-that lives in three files - one of them `tools/local_translate.py`.
+having exactly one Python definition (`translate_stream.py`, which
+`tools/local_translate.py` imports).
 
 ---
 
@@ -154,7 +155,7 @@ Routes (contracts here; each guard's story is commented at its code):
   reachability.
 - `GET /users` - admin only; ids + names for the playback-account picker.
 - `GET /identity` - admin only; every override row.
-- `POST /identity/resolve` - admin only; `{ mediaIds[], years?, titles? }` (max 200) ->
+- `POST /identity/resolve` - admin only; `{ mediaIds[], years?, titles?, dates? }` (max 200) ->
   what we believe about each and where it came from. Pairs with
   `/availability/batch` on `/admin/matching`: that says *whether* a show
   resolved, this says *which id* and whether a human confirmed it. Unmatched
@@ -164,7 +165,13 @@ Routes (contracts here; each guard's story is commented at its code):
   classifier, so the admin panel's per-season and all-seasons rows agree by
   construction). `years` and `titles` are the optional mediaId-keyed maps those
   two computations need, sent by the page because nothing stored on a miss row
-  records them. Carries `sweep` - the last resolver
+  records them. `dates` is a third: day-precision premieres, feeding
+  **`settledByDate`** - did the entry's own premiere date SEPARATE a
+  multi-candidate row, so the review queue can stop asking about a match nothing
+  disputes. A year cannot serve there (the rule measures a 31-day gap and a year
+  is 365 days of slack), and a caller that sends no `dates` settles nothing -
+  the honest default, and the first thing `test_candidate_separation.py`
+  asserts. Carries `sweep` - the last resolver
   sweep's persisted summary (`AppConfig.remoteSweepStatus`), written at BOTH
   sweep exits because "ran and found nothing" must be distinguishable from
   "never ran"; a corrupt row parses to null, never a throw. `remaining` counts
@@ -493,15 +500,16 @@ already renders them in its OVA/ONA/Special section), not to auto-add.
 
 ## Translation routes (`/api/translate`)
 
-- `GET /api/translate/check-batch?videoIds=id1,id2,...` - bulk DB lookup for English sub status (up to 100 IDs); returns only confirmed positives; queues background Python checks for uncached IDs
-- `GET /api/translate/check?videoId=&mediaId=`  - checks English subs + subtitle dismiss state; cached
+- `GET /api/translate/check-batch?videoIds=id1,id2,...` - bulk DB lookup for English sub status (up to 100 IDs); returns only confirmed positives; queues background Python checks for uncached IDs - **except during a bot-wall hold**, when it queues nothing. `X-Check-Queue: held | queued:N | no-daemon` says which, so the decision is observable even with no daemon running
+- `GET /api/translate/check?videoId=&mediaId=`  - checks English subs + subtitle dismiss state; cached. During a hold it answers from cache only (`hasEnglish: null`, `holdUntil`) and writes no row
 - `GET /api/translate/stream?videoId=&mediaId=&start=` - SSE subtitle stream; serves from cache on repeat plays. Optional `start=<sec>` begins transcription at the viewer's playhead (live CPU savings); `start>0` runs are partial and not cached
 - `PATCH /api/translate/dismiss?videoId=`       - persist subtitle on/off preference; no auth, all users
 - `POST /api/translate/upload`                  - upload pre-translated subtitles; admin only, respects model rank
 - `DELETE /api/translate/cache?videoId=`        - delete a cached translation; admin only
 - `POST /api/translate/batch`                   - trigger batch pre-translation; admin only, JWT required
 - `GET /api/translate/batch/status`             - batch job progress/logs; admin only (in-memory only, see `/report`)
-- `GET /api/translate/report?season=&year=`     - everything `/admin/subtitles` renders; admin only
+- `GET /api/translate/report?season=&year=`     - everything `/admin/subtitles` renders; admin only, and carries `download` (the health record below) and `schedule.lastLocalRun`
+- `POST /api/translate/local-run`               - the Sunday GPU run posts its `run_verdict` here at the end; admin only; stored in `AppConfig.subtitleLocalRunStatus`
 
 `GET /report` is the one route here that reads `SeasonCache`, and like
 `/api/sonarr` it **never triggers a cold AniList fetch** - it serves a stale row
@@ -529,8 +537,42 @@ described from `lib/batchSchedule.ts`, which `index.ts` and this route now share
 so the page cannot name a night the job does not run; `wouldFireAtNextWindow` is
 evaluated **at the window**, not at now, or the page promises a run the scheduler
 will decline. The Sunday `large-v3-split` GPU run is a Windows Scheduled Task on
-someone's PC and **the server has no record it fired** - the page reports the
-newest champion row as *last upload seen*, never *last run*.
+someone's PC; the server cannot observe it, so `lastChampionUploadAt` is only
+*last upload seen*. **The run now reports itself**: it ends by `POST`ing its
+`run_verdict` to `/local-run`, and `schedule.lastLocalRun` is that report. Until
+it did, a run that produced nothing was indistinguishable from a quiet week -
+four Sundays of 46/49 download failures left no trace an admin could see.
+
+**Both batch scripts exit with a verdict, and both self-upgrade yt-dlp first.**
+`run_verdict` in `translate_stream.py` (one definition; `local_translate.py`
+imports it) turns the run-wide error count into an exit code: 0, **2 when at
+least `RUN_FAIL_MIN` failures make up more than `RUN_FAIL_RATIO` of attempts**,
+3 on a bot-wall abort - with a final `Done:` line naming the dominant failure
+kind and its remedy (a 403 run says "stale yt-dlp, upgrade it"). Before that,
+per-season errors were counted, printed and discarded and `main()` fell off the
+end with exit 0 (Sundays 2026-08-23 through 2026-09-20; `tools/logs/translate.log`
+is the record every "four Sundays" mention points at). **Every exit path of
+`local_translate.py` goes through it** - `main()` ends in one `finish()`: the
+season loop, `--video` (one attempt, counted), and a `--within-days` decline,
+which now sits *after* login so it can report `Done: skipped - ...` (exit 0)
+instead of leaving the server's card reading "did not run". A bot-wall abort
+accumulates the season's counts before it breaks, or the verdict read "0 of 0".
+The report is posted whenever the run authenticated and is not `--dry-run` /
+`--no-upload`. These three exit paths have **no offline test** (the script
+imports torch); the decline is verified live with `--within-days 0`, the other
+two by compile and review.
+
+`ensure_ytdlp_current()` runs before the first download unless
+`--dry-run`/`--no-update`; it reads the version **out of process** on purpose -
+importing `yt_dlp` first would pin the stale module in `sys.modules` for the
+whole run - and never fails the run on its own. When pip is old enough to reject
+`--break-system-packages` (pip < 23, "no such option") it **retries once without
+the flag** rather than logging a polite failure and staying stale. **The live
+daemon deliberately does not call it**: a viewer is waiting, it is a pip round
+trip (6.2 s on the dev PC in the already-current case, measured 2026-09-20;
+longer when it downloads), and the daily updater (`lib/ytdlpUpdate.ts`) plus the
+daemon recycle covers that path. The rule is: the two off-hours batches check
+every run; the live path never does.
 
 Both check and stream query `SubtitleCache` first. On a hit, `/stream` sends a
 `{cached: true}` SSE event then all segments instantly (~50 ms); on a miss the
@@ -559,8 +601,22 @@ old `ytt.fetch(languages=["en"])` found only manual tracks).
 `SubtitleCache.hasEnglishSubs` trusts positives forever and negatives for
 **7 days** (`lastEnCheckAt`), so newly added CC is eventually noticed without
 re-checking every play; a cache write never downgrades a stored true.
+
+**The check has three answers, not two.** `check_subtitles()` returns
+`hasEnglish: true` / `false` only when YouTube definitively said so
+(`DEFINITIVE_NO_CC` in `translate_stream.py` - matched by exception class *name*
+through the MRO, so the module stays stdlib-only at import for `yt_guard.py`);
+an IP block, a PO-token demand, a network error, a timeout, or a missing
+`youtube_transcript_api` all return `hasEnglish: null` plus `checkError`, and
+**no write site pins a null**: `checkVerdict()` (`lib/subtitleCheck.ts`) gates
+both route writes, and `batch_translate.py`'s upsert `COALESCE`s the stored
+verdict and leaves `lastEnCheckAt` untouched. Before this every failure was
+written as "no CC" with a fresh timestamp and trusted for seven days - one
+transient block sent a captioned trailer down the download path for a week.
 `youtube_transcript_api` must be installed locally (`pip install
-youtube-transcript-api`) - without it every check silently returns false.
+youtube-transcript-api`); without it nothing is pinned and every trailer takes
+the Whisper path. The class names were checked against 1.2.4 (2026-09-20);
+`test_run_verdict.py` re-checks them against whatever is installed.
 
 On-demand translation is a persistent Python daemon
 (`backend/scripts/translate_daemon.py`, Whisper `small` int8); batch
@@ -619,8 +675,10 @@ The backend auto-scheduler (`index.ts`) runs the medium batch on Wednesdays
 3 seasons first, so the Wednesday batch is its fallback. A batch run covers
 **only the displayed season** by default (one season's downloads per run avoids
 the YouTube bot wall; `--all-seasons` restores the old sweep). Downloads are
-sequential with `--download-delay` (default 5 s) and the run **aborts on a
-bot-challenge** (`_is_bot_block`) instead of hammering on.
+sequential with `--download-delay` (default `DOWNLOAD_DELAY_DEFAULT` in
+`translate_stream.py` - one definition per deployable, reasoning at the
+constant, printed into `--help` via `%(default)s` so the text cannot drift) and
+the run **aborts on a bot-challenge** (`_is_bot_block`) instead of hammering on.
 
 Chunking ramps 5 s, 5 s, 10 s, 10 s, then 20 s from second 0. On-demand uses
 `beam_size=1, condition_on_previous_text=False` for speed; batch `beam_size=5,
@@ -632,13 +690,174 @@ kills the pre-speech lead-in. Subtitle timing syncs to the YouTube iframe's
 Python deps: `faster-whisper`, `yt-dlp`, `youtube-transcript-api`, system
 `ffmpeg`. Both `small` and `medium` are pre-downloaded in the Docker image.
 
+### Keeping yt-dlp current - the failure that looks like an auth problem
+
+**The symptom:** trailers report `Subtitles unavailable`, the backend log shows
+`unable to download video data: HTTP Error 403: Forbidden`, and *some* trailers
+still work perfectly. **The cause is never authentication.** We send no
+credentials to YouTube and need none, and extraction succeeds - only the
+download fails.
+
+**The mechanism, traced 2026-09-20 rather than assumed.** It is not a stale URL
+signature, which was the first and wrong guess: the very URL yt-dlp 403s on
+returns `206` when curl asks for it. The difference is the *shape of the
+request* - YouTube caps how many bytes one request may take. Measured against
+one 674,555-byte audio format, same URL each time:
+
+| `Range` header | result |
+|---|---|
+| none (whole file) | **403** |
+| `bytes=0-` (open-ended) | **403** |
+| `bytes=0-499999` (500 KB) | **403** |
+| `bytes=0-449999` (450 KB) | **206** |
+| `bytes=0-100000` | **206** |
+
+So it is **not** "send a Range header" - the range must be bounded *and* under a
+cap somewhere between 450 and 500 KB **for that one video and format, measured
+once** - YouTube can move the number; the shape (bounded) is the finding. A
+whole-file GET cannot work at any size.
+`2026.03.17` asks for the file in **one** unranged request and is refused;
+`2026.08.19` fetches the same audio in **24** bounded requests and is served.
+Same video, same options, no credentials either side.
+
+**Why the "some videos work" part is the giveaway, not a contradiction.**
+`GET /stream` serves a `SubtitleCache` hit and returns *before* the daemon is
+involved, so every already-translated trailer keeps working while every new one
+fails. That makes a total failure of the download path look selective, and it is
+why this went unnoticed: nothing in the suite downloads a fresh video.
+
+**Four mechanisms keep it current, and each reaches a machine the others do
+not:**
+
+1. `backend/Dockerfile` upgrades it in the runtime stage, **deliberately placed
+   after the `COPY --from=builder` lines** - those layers change on every code
+   deploy, so Docker cannot serve the upgrade from cache. Moved above them it
+   would be cached forever, which is the original bug. Caveat: a rebuild of the
+   *same* commit has no changed layer above it and hits the cache; (2) covers
+   that. Check the first deploy's build log for the `pip install` step not
+   reading `CACHED`.
+2. `lib/ytdlpUpdate.ts` re-checks daily (and 5 min after boot), logging one line
+   either way, and recycles the translate daemon when the version changed -
+   Python caches `yt_dlp` in `sys.modules`, so a running daemon keeps the copy
+   it imported. `recycleTranslateDaemon()` returns `recycled` / `busy` / `none`
+   and the log line says which: `busy` means the **old** version keeps serving
+   until the daemon's next respawn; `none` (not running is the idle norm) means
+   the very next spawn already imports the new one.
+3. `ensure_ytdlp_current()` at the start of both batch scripts - the only one of
+   the four that reaches the **Sunday PC**, where nothing else runs.
+4. `Dockerfile.base` still installs it, but that is only the offline floor - the
+   base is rebuilt by manual dispatch only, so its copy ages by design.
+
+**Do not pin a version.** Pinning is how this broke: the base image froze
+whatever was current when it was built, and nothing ever moved it.
+
+#### Knowing when it breaks - `lib/downloadHealth.ts`
+
+Staying current is not enough on its own, because the outage was never hard to
+*fix* - it was impossible to *see*. Cached trailers kept serving, the suite
+stayed green (nothing in it downloads a fresh video), and the only symptom was a
+chip in a modal that cleared itself after six seconds.
+
+So every real download now records whether it worked, in
+`AppConfig.subtitleDownloadHealth`. **It makes no requests of its own** - no
+canary, no polling: the thing that breaks is YouTube's tolerance for our
+traffic, so a health check that adds traffic is the wrong shape. The daemon tags
+a failure with the `stage` it came from (`download` vs `transcribe`), because a
+transcription error says nothing about whether downloads work.
+
+**The signal is a streak, not a failure.** One failure is a private or deleted
+trailer; `BROKEN_AFTER = 3` consecutive ones is the path being down for
+everyone. It logs loudly exactly once, when the streak crosses - logging every
+failure would bury it - and `/admin/subtitles` leads with a red banner naming
+the reason, plus the "a 403 here is a stale yt-dlp, not auth" hint that took an
+afternoon to establish the first time. Verified by driving the state machine:
+clean at 1 and 2 failures, `broken` at 3 with one log line, no second line at 4,
+and a success clears the streak and logs the recovery. The transitions are pure
+(`failureTransition` / `okTransition`), so "once, at the crossing" is a unit
+test and a mutation row, not a hope. Whatever `kind` the daemon sends is
+normalised to `FAIL_KINDS` (`normalizeFailKind`) before it is persisted, and the
+stale-yt-dlp hint (`looksLikeStaleYtDlp(reason, kind)`) hangs only on a
+`forbidden` kind - a challenge can arrive as a 403 whose body says "confirm you
+are not a bot", and a bare regex on the text would offer the wrong remedy.
+
+**Crossing that line also mails the admins** (`lib/subtitleAlerts.ts`): once
+when the path breaks, once when it recovers, once per failed Wednesday batch
+exit (`persistBatchRun`, any non-zero or signal exit), once per failed Sunday
+report (`POST /local-run`), and once when the Sunday run has been **silent for
+`LOCAL_RUN_SILENT_DAYS` (8)** - a daily timer in `index.ts`
+(`checkLocalRunSilence`) stamps `silentAlertedAt` on the stored report so it
+mails once per silence, and the next report replaces the row and re-arms it.
+Recipients are admins with a **verified** address only (`verifiedAdminEmails`,
+pure); with SMTP unconfigured it logs `would have sent` instead. Every trigger
+is a state change, never a per-failure event - an alert that fires on every
+failure is the alert that gets muted. **Residual gap, documented rather than
+closed**: a Scheduled Task that never fires even once after deploy leaves no
+report to be silent, so the timer logs `no Sunday run has ever reported` and
+sends nothing.
+
+`stage`, `raw` and `kind` are **stripped in `routes/translate.ts` before the
+payload reaches a browser**. The raw text is operator detail; putting it on
+screen is what sent the owner hunting for an authentication bug that never
+existed.
+
+**And when it breaks the OTHER way - YouTube refusing the server - it holds.**
+The daemon classifies every download failure (`classify_error` in
+`translate_stream.py`: one definition, also behind the viewer's message) and
+sends `kind` with the error. A `botwall` kind - the challenge / 429 phrases in
+`BOT_WALL_SIGNS` - makes `/stream` **refuse new downloads for `BOT_WALL_HOLD_MS`**
+(`lib/downloadHealth.ts`; 15 min, **a guess and labelled as one** - nothing
+publishes how long a YouTube soft block lasts) with the same friendly message
+plus a `holdUntil` (the chip shows it as minutes), recording nothing;
+`/check-batch` queues no background checks meanwhile (`X-Check-Queue: held`) and
+`/check` answers from cache only. **One bot wall is enough** - it is YouTube saying "you", not
+"that video", unlike the three-strike `broken` rule. A `forbidden` (403) failure
+deliberately does **not** hold: that is the stale-yt-dlp signature, each attempt
+fails fast, and the daily updater or a deploy may fix it any minute - holding
+would hide the recovery the whole record exists to show. `botwall` is checked
+before `forbidden` because a challenge can arrive with a 403 status.
+`/admin/subtitles` renders the hold as its own warning line. Guarded by
+`downloadHealth.test.ts`, `test_download_hold.py` and four mutation rows (the
+stream gate, the check-batch gate, the check gate, and a 403 never holding).
+
+#### The trap that sent us down the download path unnecessarily
+
+`GET /check-batch` queued background checks only for ids it had no row for
+(`!known.has(id)`), and built its map with `Number(r.hasEnglishSubs)`, where
+`Number(null)` is `0`. Two one-way consequences:
+
+- **A row existing is not a verdict.** `PATCH /dismiss` upserts a row, and so
+  does caching translated segments. Such a row has a null `hasEnglishSubs`, was
+  read as "already answered", and was never checked again.
+- **null and "checked, no English CC" collapsed to the same value**, so nothing
+  downstream could tell them apart.
+
+Net effect: a video whose first view raced ahead of its check got a segments row
+and then took the **download** path forever - including videos that have English
+CC and never needed downloading at all. Measured on `8AnNxEp733c` (the trailer
+that reported the 403): `check_subtitles` returns `hasEnglish: true`, the stored
+verdict was `null`, and `/check-batch` returned `{}` without queueing anything.
+**Detection was never broken; only its scheduling was.**
+
+**A JS runtime must be present.** yt-dlp enables **only deno** by default, which
+this image does not have; without one it warns *"some formats may be missing"*
+and takes a path it calls deprecated. `download_audio` therefore passes
+`js_runtimes: {"deno": {}, "node": {}}` - the runtime image is `node:20-slim`,
+so Node is already there and costs nothing. Verified: `JS runtimes: node-22.16.0`,
+challenge provider available, no warning.
+
+**The viewer never sees the raw yt-dlp string.** `friendly_error()`
+(`translate_stream.py`) maps it to something actionable and the raw text goes to
+stderr for the log. The raw `HTTP Error 403: Forbidden` actively misled - it
+reads as "SaltyChart must log in to YouTube", which is never true.
+
 **Local GPU translation** - `tools/local_translate.py` runs the champion split
 pipeline on this PC (requirements, pipeline, Ollama management, and fallback
 behaviour are in its docstring) and uploads as **`large-v3-split`** (rank 6,
 above plain `large-v3`, so older results auto-upgrade on the next run; use
 `--force` to re-do everything). Operational facts that live nowhere else:
 
-- Phase-1 downloads are **serial** with a delay (`--download-delay`, 5 s) -
+- Phase-1 downloads are **serial** with a delay (`--download-delay`, default
+  `DOWNLOAD_DELAY_DEFAULT`) -
   parallel downloads tripped YouTube's bot wall, so `--download-workers` is
   ignored; a bot-challenge aborts the run. YouTube auth via `--cookies
   <cookies.txt>` (Netscape format; `--cookies-from-browser` fails on modern
@@ -659,8 +878,133 @@ schedule) every **Sunday 5 am** via `py -3.13` against http://192.168.1.2:8085,
 covering 3 seasons, skipping already-cached videos. Change args in Task
 Scheduler -> Properties -> Actions -> Edit (needs the Windows password; created
 2026-04-08, LogonType: Password). The Sunday run ensures large-v3 completes
-before Wednesday's medium batch.
+before Wednesday's medium batch. **Its `lastResult` is now meaningful**: 0x0 is
+a run that worked, 0x2 is one where most downloads failed, 0x3 a bot-wall
+abort. It showed 0x0 for four runs of 46/49 failures before the verdict existed
+(`tools/logs/translate.log` has the whole history). It also posts that verdict to
+the server, so `/admin/subtitles` shows *Last run reported*, and the server mails
+the admins on a non-zero code and again if no report arrives for 8 days.
 
+**The task's credentials should come from the environment, not its arguments.**
+`-u`/`-p`/`--token` all default to `$SALTYCHART_USER` / `$SALTYCHART_PASSWORD` /
+`$SALTYCHART_TOKEN`, so the Arguments field need carry no secret - a password
+there sits in the task XML in plain text and in any process listing while the
+run goes. **`--token` is not the answer for the weekly task**: `/api/auth` signs
+**7-day** tokens (`auth.ts`), so one minted today is expired by the run after
+next. It is for a one-off, like the `--within-days` check.
+
+
+## Upstream service status (`/api/status`)
+
+**Why it exists.** Two third-party services changed and broke silently in one
+week - YouTube's media requests and skyhook's `User-Agent` - and in both cases a
+`catch` turned the failure into a plausible empty answer. "Could not ask" and
+"there is nothing there" were the same value, so nothing could tell. This router
+and `lib/upstreamHealth.ts` are where those stop being the same value.
+
+`lib/downloadHealth.ts` already solved this for YouTube and is the shape:
+record what real traffic says, treat a **streak** as the signal, log and mail
+exactly once at the crossing. It keeps its own store (its bot-wall hold and
+stale-yt-dlp hint are YouTube-specific, and its gates are pinned by mutation
+rows), so `upstreamHealth` covers everything else and `GET /report` composes
+both. The transitions are a threshold-aware twin rather than shared code -
+per-service thresholds are the point - and `upstreamHealth.test.ts` asserts the
+two **agree at the default**, the same discipline `MODEL_RANK` follows.
+
+- `GET  /report` - admin; every service with a server-decided `state`, plus the
+  alert settings and whether SMTP is configured at all.
+- `PUT  /alerts` - admin; save the alert settings. The body is *coerced*, not
+  rejected: these are preferences, and the response echoes what was actually
+  stored so the page cannot believe it saved an address the server dropped.
+- `POST /probe` - admin; run every due check now.
+
+**Five states, and two of them exist only to stop a reader being misled.**
+`stateOf` decides `ok` / `failing` / `down` / `unknown` / `notConfigured` **on
+the server**; the page renders a verdict and never computes one, so the page and
+the alert email cannot disagree. `unknown` means nothing has asked yet and must
+never render as healthy - that is how skyhook stayed invisible. `notConfigured`
+means nobody set the service up, which is deliberate and not a fault; a skip
+touches neither counter, so an unconfigured Sonarr is never painted green *or*
+red. Both are the same rule as the Sonarr page's "couldn't ask is not zero".
+
+**Probe daily, confirm fast.** Third-party APIs break on a release cadence -
+weeks or months - so probing hourly would monitor far faster than the event ever
+happens, against someone else's free service. Each spec declares
+`minProbeIntervalMs` (a **day** for skyhook, TMDB, SMTP and the id map; **15 min**
+for Jellyfin and Sonarr, which are our own boxes and fail for ordinary reasons
+several times a day). A daily probe with a 3-failure threshold would take three
+days to say anything, so a service that has just failed is re-checked after
+`CONFIRM_RETRY_MS` instead: a real API change fails *every* call and is
+confirmed within the hour, while a transient 500 clears itself and never
+reaches the threshold.
+
+**The sweep logs when it ACTED, not every time it fires**, with a heartbeat every
+six hours so silence stays unambiguous. "A scheduled job that is silent unless it
+acts is indistinguishable from one that never ran" is the rule the daily jobs
+follow and it is right for them - but this fires every 15 minutes and most
+firings have nothing due, so applied literally it printed `0 run ... 7 not due`
+four times an hour and became the only thing visible in the log, drowning the
+identity sweep beside it. A rule that holds at daily cadence can invert at
+quarter-hourly.
+
+The identity re-grade, which runs beside it, **reports its own progress** for the
+same reason: a drain is minutes to an hour of work and used to log nothing until
+it finished, so "is it still going?" had no answer short of querying the database
+by hand. Every line carries its position (`re-grade 150/725`), because a progress
+line that cannot say where it is in the run is not a progress line.
+
+**YouTube alone is `passiveOnly`, and a mutation row stops that being undone.**
+Its failure mode *is* request volume, so a synthetic probe risks deepening the
+bot wall it exists to detect - monitoring that causes the outage it watches for.
+Its record comes from real traffic.
+
+AniList was passive at first **and that was wrong on both counts**, which is
+worth recording because the reasoning looked sound. "A probe competes with the
+shared ~30/min budget" is one request against ~43,200 a day - 0.002%. And "real
+traffic is frequent enough" is false: AniList is called *only* from the
+`/api/anime` route, never on a timer, so a quiet server would leave that row
+unchecked for ever - the exact gap probes exist to close. It is probed daily
+through `pingAniList`, which goes through `fetchAniListPage` so it exercises the
+same headers, budget recording and 429 handling a viewer's page load does. A 429
+that exhausts the retries is reported as **healthy** - it means AniList is
+talking to us and rate-limiting, which is normal under a shared IP.
+
+That probe's first query selected only `pageInfo` and AniList answered **400 "No
+field provided"**: it reported AniList down while AniList was fine. A `Page` must
+select a content field; the query asks for `media(id: 1) { id }` too.
+
+**A probe goes through our own client, never a hand-rolled request.** skyhook's
+outage was our axios instance being refused while `curl` to the identical URL
+returned 200; a probe that built its own request would have reported green
+throughout. The TMDB probe sends the same shape `remoteIdentity.searchOne` does,
+field for field.
+
+**TMDB is graded separately from Jellyfin** even though it is reached through
+it, because "Jellyfin is up but its metadata provider is failing" was the single
+blindest failure in the codebase (`searchOne` swallowed it with no log at all).
+A blanket axios interceptor would have merged the two.
+
+Alert settings live in `AppConfig.alertSettings` (`lib/alertSettings.ts`):
+master switch, per-service toggles, extra recipients. **`alertAdmins`
+(`lib/subtitleAlerts.ts`) is the one funnel every alert in the codebase goes
+through** - the download-path break and its recovery, the Wednesday batch, the
+Sunday report and its silence - so the master switch and the extra recipients
+are honoured there, once, rather than at each caller. They were not, at first:
+the page shipped a switch that nothing read, and the deploy gate's deliberately
+fake Sunday verdict (`test_local_run_report.py`) landed in the owner's real
+inbox with alerts apparently on. **A control that lies is worse than no
+control**, because someone who switches it off and keeps receiving mail cannot
+tell a broken switch from a broken service. The read **fails open** - a missing
+or unparseable row yields the defaults, alerts ON - for the same reason an
+absent per-service key means enabled. The gate turns the switch off around its
+fake verdict and restores it in a `finally`; **per-service toggles do not yet
+reach the subtitle alerts**, only the master switch and the recipient list. **An absent per-service
+key means enabled** - if absence meant off, every service added later would
+arrive silent, which is the failure this whole feature exists to end. Recipients
+are verified admins plus the extras, de-duplicated. **SMTP itself stays in
+`.env`**: a mail password in `AppConfig` is a mail password in every backup.
+Residual gap, stated on the page rather than hidden: with SMTP down, nothing can
+mail to say that mail is down.
 
 ## Matching internals - how identities get made
 
@@ -683,6 +1027,21 @@ misses use Jellyfin's own TMDB remote search (Radarr's proxy was measured and
 rescued zero movies, so no new dependency). skyhook is someone else's free
 service: calls are paced, bounded per run, degrade to the Jellyfin path, and
 **never appear on a viewer's request path**.
+
+**Send a real `User-Agent`, and never cache a failed lookup.** skyhook answers
+**400** to axios's default agent (measured 2026-09-20: `axios/1.x` and an empty
+UA both 400; `curl/8.0`, `Sonarr/4.0` and our own string all 200 on the same URL
+in the same second). `skyhookShow` had a bare `catch` that turned every failure
+into `{ episodes: [], tmdbId: null }` **and cached it** - so the whole TVDB
+evidence tier was dead and nothing said so: rung B0 could never fire,
+`hasUndatedFutureSeason` was always false, and the cross-provider candidate
+merge never had a `tmdbId` to merge on. Eight stored rows carry the season
+rung, from before this broke, and none since. Both halves of the fix matter -
+the header, and refusing to cache a failure - because "could not ask" and "this
+show has no schedule" were the same value, which is the same mistake `unknown`
+availability and the empty-Sonarr-snapshot guard each exist to prevent. It now
+logs one `[skyhook]` warning per failure, and two unit tests plus a mutation row
+hold the caching rule.
 
 A sweep runs 90 s after boot and daily, reads entries from `SeasonCache`
 (every cached season, however old - a first-ever lookup is made regardless of
@@ -770,6 +1129,41 @@ alike. Consequences encoded in the ladder:
 - The TVDB season-premiere rung sits **above** the held-library rung: held
   episodes are stale by construction for a season nobody has grabbed yet
   (Ranma S3 rejected at 287 d while TVDB had S3E1 on the entry's premiere day).
+- It sits **above the exact-title rung too**, and is fetched for that shape
+  rather than only to rescue a rejection. An exact title with no candidate date
+  used to stop at `exact title` - a rung no date vouches for, so the row grades
+  `weak` - while TVDB knew the day: PSYREN and Sirotan were Sonarr auto-add
+  candidates on title text alone while AniList and TVDB agreed **to the day**.
+  Audited over 8 aired seasons against the 515 entries the Fribb map
+  independently pairs (`tools/audit_premiere_dates.py`, 2026-09-20): **first
+  seasons 345/345 inside tolerance - 100%, 298 exact to the day, none outside**;
+  sequels 140/167 (83.8%).
+- **It reaches a TMDB-only candidate through the id cross-walk.** The lookup
+  needs a TVDB id and roughly half a search's results carry only a TMDB one;
+  `completeIdentityIds` cross-walks them, but it runs AFTER the verdict, so the
+  stored row ended up showing a TVDB id the ladder had never been allowed to
+  use. That reads as "TVDB does not know this season" when the truth is "nobody
+  asked" - the same shape as the bare `catch` that killed the whole tier. The
+  cross-walk is an in-memory join on a map already loaded, so it costs no
+  request, and it **never crosses the film/series namespace** (TMDB numbers them
+  independently). Measured on FALL 2026: `Kizu darake Seijo yori Houfuku wo
+  Komete Season2` stored tmdb 293124 alone and sat `remote: unverified`, while
+  TVDB's season 2 premiere for the show that id cross-walks to is its AniList
+  premiere **to the day**.
+- **That rung may only UPGRADE, never refute.** All 27 known-correct entries it
+  fails to vouch for are sequels, and every one is a TVDB-vs-AniList modelling
+  difference rather than a wrong match - a split cour filed as ONE TVDB season
+  puts Part 2 ~182 d from its own Part 1 (Dr. STONE, Uma Musume, Samurai
+  Troopers and Ooi! Tonbo all land on exactly 182), and movies and specials hang
+  off the parent series record. Out of tolerance it declines to fire and the
+  title rung below still accepts, so those rows are exactly as they were.
+  Refuting would send 16% of correct sequels to review and buy nothing the audit
+  could measure.
+- **Use the SEASON premiere, never the series' `firstAired`.** On the same
+  corpus the series date is inside tolerance for only **13.2%** of sequels, 118
+  of them more than a year off (Natsume Yuujinchou Shichi by 5,937 days) - it is
+  season 1's date, and reading it as "the premiere" would have demoted nearly
+  every sequel.
 - A held-library rejection softens to queue while TVDB lists an **undated
   future season** (the Frieren-S3 shape); One Piece Fan Letter and Babylon 5
   list none and still reject.
@@ -782,6 +1176,23 @@ alike. Consequences encoded in the ladder:
 - `pickCandidate` applies the same evidence to title collisions (dated-within
   exacts by distance first - DIVE IN! shipped its 167 d sibling while the
   16 d one sat second in TMDB's popularity order).
+- **A multi-candidate row leaves the review queue when the date SEPARATED the
+  candidates** - `dateSettlesCandidates` (`lib/seriesIdentity.ts`, beside
+  `matchGrade` and for the same reason: the page asked the same question, and a
+  correctness rule with two copies can disagree with itself). Queueing every
+  multi-candidate row is right for Echo, whose three candidates are all titled
+  "Echo" and are three different films - but it also fired on rows a date had
+  settled to the day: **142 of 170** premiere-date-rung multi-candidate rows
+  stored here (2026-09-21). Three conditions, each excluding a measured case:
+  exactly one candidate inside tolerance (**21** rows have two or more - the
+  date did not discriminate), no undated sibling (**7** do, among them `Cyborg
+  009: Nemesis`, which exists twice in TVDB with one copy undated - settling it
+  would undo the merge refusal by a side door), and the stored pick IS that
+  candidate (**1 of 146** had stored a refuted one). Echo and the season rung
+  are both untouched by construction rather than by a special case: Echo's
+  nearest candidate is 46 d out so nothing lands inside, and the season rung's
+  evidence is the season date rather than any candidate's own - left alone
+  deliberately, because that rung was never measured for this rule.
 - There was an `isRelation` guard rejecting results related to the entry; it
   was wrong and was removed (sequel->parent is *correct* - TVDB/TMDB put
   seasons inside one series). Don't reintroduce a title or relation heuristic
@@ -1017,7 +1428,16 @@ Tables / columns:
   the library), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched
   against TV series), and
   `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
-  per-season cooldowns after a 429), `subtitleBatchStatus` (the last completed
+  per-season cooldowns after a 429), `subtitleDownloadHealth` (is the trailer
+  download path working - see *Knowing when it breaks* above; its
+  `lastFailKind` is what arms the bot-wall hold on `/stream`),
+  `subtitleLocalRunStatus` (the Sunday GPU run's own verdict, posted to
+  `/local-run` at its end - the only record the server has that it ran),
+  `upstreamHealth` (one row holding every upstream service's record - see
+  *Upstream service status*; one read, one atomic write, no per-service key
+  sprawl) and `alertSettings` (the master switch, per-service toggles and extra
+  recipients; deliberately NOT the SMTP connection, which stays in `.env`),
+  `subtitleBatchStatus` (the last completed
   batch translation run - `batchStatus` in `routes/translate.ts` is in-memory and
   a deploy is a restart, which is exactly when someone opens `/admin/subtitles`
   wondering whether the job ran; written at **both** exits, clean and failed,
@@ -1074,12 +1494,13 @@ review. **`rejected` has to be its own column** - it
   user subtitle preferences per YouTube video. `modelName` rank order (upload
   only upgrades to an equal-or-higher rank): tiny < base < small < medium <
   large-v2 < large-v3 < **large-v3-split** (the local champion pipeline). The
-  rank table lives in **three** places - `backend/src/lib/subtitleReport.ts`,
-  `backend/scripts/batch_translate.py`, and `tools/local_translate.py` - keep
-  all three in sync (a missing `large-v3-split` in any one makes that path treat
-  the champion output as rank 0 and needlessly reprocess it). It used to live in
-  `routes/translate.ts`; that file now imports it, so **TypeScript has one copy**
-  and only the two Python ones need syncing by hand.
+  rank table has **one definition per language**: `backend/src/lib/subtitleReport.ts`
+  (TypeScript; `routes/translate.ts` imports it) and `MODEL_RANK` in
+  `backend/scripts/translate_stream.py` (Python; `batch_translate.py` and
+  `tools/local_translate.py` import it). `test_run_verdict.py` asserts the two
+  are equal and that neither script redefines it - three hand-synced copies is
+  how a missing `large-v3-split` once made a path treat champion output as rank
+  0 and reprocess a season for nothing.
 
 Performance indexes (added via `CREATE INDEX IF NOT EXISTS` at startup):
 

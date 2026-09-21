@@ -215,11 +215,25 @@ chronological order; all features listed are live.
   your library. A correction is remembered permanently.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
   done, with a *Add now* button and a pause switch.
+- **/admin/status** - whether the outside services SaltyChart depends on are
+  still answering: YouTube, TVDB, TMDB, AniList, the id map, Jellyfin, Sonarr
+  and email. Each row shows its state, when it last worked, and the exact
+  failure if it is not working. An email goes out once when a service stops
+  responding and once when it recovers - a status code like 400 or 403 usually
+  means the service changed what it accepts rather than that it is offline. The
+  same page turns those alerts on or off, per service, and takes extra
+  recipients; the SMTP connection itself is set on the server.
 - **/admin/subtitles** - the state of trailer subtitles: how many trailers we
   have translated and at what quality, which have YouTube captions or burned-in
   subs, when the batch next runs, and a per-trailer table for this season and
-  next. Informative; the only actions are turning our subtitles off for a
-  trailer and clearing a bad translation.
+  next. It leads with a red banner when trailer downloads have failed three
+  times running (with the one hint that matters: a 403 there is an out-of-date
+  yt-dlp, not an authentication problem), a warning line while YouTube is
+  rate-limiting the server, and the Sunday GPU run's own last report. The same
+  events email every admin with a verified address, once per state change -
+  broken, recovered, a failed batch, a failed or silent Sunday run. The only
+  actions are turning our subtitles off for a trailer and clearing a bad
+  translation.
 
 **Version badge in header**
 - A small `?` at the top-right of the SaltyChart logo shows the deployed
@@ -299,7 +313,14 @@ so the frontend defaults subtitles off.
 
 **Per-user subtitle settings** - font size, family, position, text/bg color,
 opacity, text outline. Settings popup via gear icon next to the CC button.
-Stored per-user in the Settings table.
+Stored per-user in the Settings table. The size and position you pick are
+treated as "at a full-size desktop player" and scale down with the player, so
+the same settings stay readable and correctly placed on a phone.
+
+**Fullscreen trailers with subtitles** - the trailer player has its own
+fullscreen button, and our subtitles and controls stay on screen in fullscreen.
+(YouTube's own fullscreen button is turned off, because it fullscreens only its
+iframe and would leave the subtitles behind.)
 
 **Auth improvements**
 - Login page links directly to Sign Up and Password Reset.
@@ -410,7 +431,9 @@ pre-downloaded Whisper models - live in a separate **pinned base image**,
 `backend/Dockerfile.base`. `backend/Dockerfile` builds `FROM` that pinned
 tag, so a routine deploy only transfers ~100 MB of app layers.
 
-To update the base (new yt-dlp, model change, etc.):
+To update the base (a model change, a new system package - **not** yt-dlp,
+which is upgraded in the app image on every deploy and again daily at runtime;
+rebuilding the base for it is the procedure that let it age for six months):
 
 1. Edit `backend/Dockerfile.base`.
 2. Run the **build-base** workflow (GitHub -> Actions -> build-base -> Run

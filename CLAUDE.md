@@ -242,8 +242,8 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06), a full run of the whole
-  table.
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 148 rows
+  now (2026-09-21) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
   Windows loses track of it - the process then serves whatever it last compiled
@@ -398,6 +398,17 @@ instead would have been worse: Sonarr's global `listSyncLevel` unmonitors
 library series that fall off every import list, so correctness would have hinged
 on a setting we do not own. The full argument is `lib/sonarrPush.ts`.
 
+### Upstream service status (`/api/status`)
+
+Admin-only, and **not** `/api/health`: that says this process is alive, this
+says whether the services it depends on are answering. Contract, probe schedule
+and the alert rules are in **`backend/CLAUDE.md`**. Two bind from outside it:
+
+- **Never probe YouTube.** Its failure mode *is* request volume, so a synthetic
+  check risks deepening the bot wall it detects. A mutation row guards it.
+- **A probe goes through our own client, never a hand-rolled request** - skyhook
+  refused our axios instance while `curl` to the same URL returned 200.
+
 ### Matching AniList entries to the library
 
 `backend/src/lib/animeMatch.ts` - pure, no I/O, unit-tested directly and
@@ -532,11 +543,10 @@ Every table and column, and why each cached row is persisted, is in
   `ensureDatabaseSchema()` (`backend/src/index.ts`) is authoritative at
   runtime, so a new column has to land there as well as in
   `backend/prisma/schema.prisma`.
-- The `SubtitleCache.modelName` rank table lives in **three** places -
-  `backend/src/lib/subtitleReport.ts` (the one TS copy, imported by
-  `routes/translate.ts`), `backend/scripts/batch_translate.py` and
-  `tools/local_translate.py`. A missing `large-v3-split` in any one makes that
-  path treat champion output as rank 0 and reprocess it for nothing.
+- The `SubtitleCache.modelName` rank table has **one definition per language**:
+  `backend/src/lib/subtitleReport.ts` and `MODEL_RANK` in
+  `backend/scripts/translate_stream.py` (both Python scripts import it).
+  `test_run_verdict.py` fails when the two disagree.
 
 ## Frontend Service
 
@@ -690,8 +700,8 @@ steps are worth writing down, because nothing in the repo will tell you:
 
 ```bash
 cp backend/.env.example backend/.env   # provides DATABASE_URL for ts-node-dev
-pip install youtube-transcript-api     # without it, English CC detection
-                                       # silently returns false for every video
+pip install youtube-transcript-api     # without it no CC check reaches a
+                                       # verdict; every trailer takes Whisper
 ```
 
 ## Technical rules (specific to this codebase)
@@ -714,9 +724,18 @@ pip install youtube-transcript-api     # without it, English CC detection
   process restart**, because restarts are what generate the load in the first
   place; an in-memory counter is zero on every fresh process. Never call
   AniList from the browser, where no backend throttle can see it.
-- **Never parallelise YouTube downloads, and never retry through a bot
-  challenge** - both batch translators download serially and abort on a
-  challenge. Full rule in `.claude/rules/tools.md`.
+- **YouTube volume is capped and ENFORCED** by a PreToolUse hook running
+  `tools/yt_guard.py`; the budgets are the constants at the top of that file
+  (`py -3.13 tools/yt_guard.py` prints the live values) and a detected block
+  starts a repo-wide cooldown. Serial downloads and aborting on a bot challenge
+  are still required but were **not sufficient** - obeying only those still
+  tripped the IP block, which then prevents verifying anything. **Stage
+  verification; never loop.** Full rule in `.claude/rules/tools.md`.
+- **Never pin `yt-dlp`, and never let it age.** An aged copy gets 403 *after*
+  extraction succeeds - not auth, no cookie fixes it - and cached trailers keep
+  playing, so it reads as "some videos are broken"; every new trailer went
+  unsubtitled for four weeks this way. Four mechanisms keep it current, none of
+  them a person remembering; which reaches which machine is in `backend/CLAUDE.md`.
 
 ## Troubleshooting
 
@@ -727,9 +746,9 @@ pip install youtube-transcript-api     # without it, English CC detection
 - For CORS or proxy issues, verify `vite.config.ts` proxy settings
   (frontend).
 - If every trailer shows Whisper auto-translation instead of YouTube English CC
-  locally, run `pip install youtube-transcript-api`. Without it the Python
-  `check_subtitles()` silently returns `hasEnglish: false` for all videos.
-  The backend ts-node-dev process must be restarted after installing.
+  locally, run `pip install youtube-transcript-api`. Without it
+  `check_subtitles()` returns no verdict (`hasEnglish: null` - nothing is
+  pinned) and every trailer takes the Whisper path. Restart ts-node-dev after.
 - `npx prisma generate` failing with **EPERM renaming
   `query_engine-windows.dll.node`** means a running node process has the
   engine loaded. `kill_stale.py` only frees the *ports* - stale ts-node-dev
@@ -737,6 +756,13 @@ pip install youtube-transcript-api     # without it, English CC detection
   once) and every one blocks the rename. Kill all ts-node-dev processes except
   the pair owning :3000, then stop that pair too, generate (it takes ~100ms
   once unlocked), and restart the backend.
+  **A stale pair is not idle.** Only one can bind :3000, but every one still
+  runs the timers - the boot sweep, the daily jobs - against the *same* SQLite
+  file, so a process running last week's code can rewrite rows while you are
+  testing this week's. Three were found running at once, and the oldest
+  re-graded identity rows with a resolver that predated the fix being measured.
+  Before trusting any measurement that writes to the DB, check the process list
+  (`Get-CimInstance Win32_Process -Filter "Name='node.exe'"`), not just the port.
 - If the backend starts but every request returns 500, `DATABASE_URL` is
   missing. The server now exits with `[FATAL]` on startup if it's not set.
   Fix: ensure `backend/.env` exists (copy from `backend/.env.example`).

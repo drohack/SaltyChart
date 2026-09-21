@@ -88,6 +88,41 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   couldn't definitely answer - so `?.available === false` refuses to act on
   an unanswered show.
 
+**The trailer player** (the modal in `AnimeGridTranslate.svelte`) - a YouTube
+iframe with our subtitle overlay and CC controls as siblings. Three rules, each
+from a bug that shipped:
+
+- **We fullscreen our own wrapper, never the iframe**, and the iframe carries no
+  `allowfullscreen` so YouTube hides its own button. A fullscreen element is the
+  root of what gets rendered, so YouTube's button took the iframe and left our
+  subtitles and every control unrendered. `JellyfinPlayerModal` solves the same
+  problem by re-parenting into `player.el()`; that is not available here,
+  because a cross-origin iframe has no DOM to append to. Escape therefore has to
+  check `document.fullscreenElement` before closing the modal, or leaving
+  fullscreen also takes the trailer away - the same guard the Jellyfin player has.
+- **The control cluster is always mounted; only the SUBTITLE controls inside
+  it are gated, on `hasEnglishSubs`.** It was gated on `translationLoading ||
+  translating || translationError`, which made it *unmount itself*: a failed
+  translation clears the first two and the error clears after 6 s, so the CC
+  toggle, the settings gear and fullscreen vanished permanently. Chrome fades
+  with `controlsVisible`; it never stops existing. **Fullscreen sits outside the
+  CC gate**: the iframe carries no `allowfullscreen`, so our button is the only
+  way to fullscreen a trailer, and the first fix wrapped it in the gate and took
+  fullscreen away from every YouTube-CC trailer - an audit caught it, and Path A
+  of `test_subtitle_paths.py` now pins it (with the Escape-keeps-the-modal rule).
+  A refusal during a bot-wall hold shows its `holdUntil` as minutes in the chip
+  (`withHoldHint`): "try again later" is not actionable, "about 12 min" is.
+- **The subtitle cue is a centred child of a full-width row, not an
+  `absolute left-1/2` box.** An absolutely positioned box shrink-to-fits against
+  the space from its `left` edge to the container edge, so anchoring at 50%
+  capped every cue at *half* the player and `max-width` did nothing - that is why
+  the text never spread across the picture. Size and position scale from
+  `playerWidth` against a 1536px reference, and the two scale **differently**:
+  position is pure geometry (no floor, so "a tenth up" stays a tenth), font size
+  keeps a legibility floor or a phone gets 7px text. Do not add
+  `text-wrap: balance` - it was tried, and it split one-line cues into two even
+  halves using 50% of the width.
+
 **The player** (`JellyfinPlayerModal.svelte`) - a thin wrapper around
 video.js 8, lazy-loaded in its own chunk; keep it that way. video.js owns the
 control bar, menus, fullscreen, hotkeys, errors. The wrapper adds only: the
@@ -261,6 +296,23 @@ for the same reason. What lives nowhere else:
   count is not reviewable: "39 proposed" says nothing, "50 dropped on a
   prequel/parent edge" says whether the filter is sane. Each row has an *Include
   anyway* button (the force-include overlay, the only override direction).
+- **Every TVDB and TMDB id is a link** (`components/ExternalIdLink.svelte`,
+  shared with `/admin/matching`). It renders the bare number, so the columns look
+  the same, but both pages exist to answer "is this id the right series?" and
+  that was unanswerable while the id was plain text: **TVDB has no by-id page** -
+  `thetvdb.com/series/471609` is a 404, the public URL is a slug
+  (`/series/psyren-sairen`) - so checking one meant guessing the show's name and
+  searching. `dereferrer/series/<id>` is TVDB's own by-id redirect (verified
+  2026-09-20). TMDB numbers films and shows separately, so `tmdbKind` picks
+  `/tv/` or `/movie/`; getting that wrong silently opens the wrong title.
+- **`/admin/matching` opens on the season that needs review, not the calendar
+  one.** It defaulted to `SEASONS[Math.floor(now.getMonth() / 3)]`, so in late
+  September it opened on SUMMER - aired, settled, nothing to do - while FALL sat
+  ten days out holding all 33 rows that needed a human. It now switches to the
+  coming season `LOOKAHEAD_DAYS` (30) before it starts: `isWithinAirWindow` lets
+  the Sonarr auto-add grab 14 days ahead, and an identity has to be right
+  *before* something acts on it, so 30 gives a fortnight of lead over that. An
+  explicit `?season=` still wins - `/admin/sonarr` deep-links here.
 - **`noUsableTvdbId` rows link to `/admin/matching?season=&year=`** - the one
   real seam between the two pages, since an unresolved id is a matching problem.
   That page reads the query params **once at mount**, falling back to the calendar
@@ -330,6 +382,17 @@ a different subsystem with no cache table and are deliberately not reported.
 Four blocks: overall tiles, the schedule, a this-season/next-season summary
 sharing columns, then one table of trailers per season. What lives nowhere else:
 
+- **Download health leads the page, and only shouts when it is bad.** A stale
+  yt-dlp broke every new trailer's download for months and the only place it
+  ever showed was a 6-second chip inside a modal. `report.download.broken` (a
+  streak of `BROKEN_AFTER`, not one failure - a private trailer is not an outage) renders a
+  red banner naming the raw reason, and a 403 adds "almost always an
+  out-of-date yt-dlp, not an authentication problem" because that is the wrong
+  turn it sent someone down the first time. Healthy, it is one quiet line.
+  A **hold** (`report.download.holdingUntil`) is its own warning line above
+  that, shown with or without the red banner: one bot wall holds new downloads
+  before three failures accrue, and the line quotes the viewer-facing message so
+  the admin recognises what viewers are being told.
 - **Overall covers the whole `SubtitleCache`, the seasons below do not**, and the
   page says so. Most of that table is seasons that aired long ago, so the two
   scopes disagreeing is correct rather than a bug. The tiles carry percentages
@@ -364,15 +427,41 @@ sharing columns, then one table of trailers per season. What lives nowhere else:
   expression* changes, so `arrow(key)` reading component state inside its body
   rendered once and froze while the rows underneath re-sorted correctly. The
   same applies to `aria-sort`.
+**`/admin/status`** - is every upstream service still answering us? A sixth
+question, distinct from the other five tabs: not identity, scope, production or
+access, but whether the things this site is built on are reachable at all. One
+row per service with a state badge, the last success, the last failure with its
+status code, and whether that service's alerts are on; plus the alert settings
+(master switch, per-service toggles, extra recipients) and a "Check now" button.
+
+- **The verdict comes from the server.** `state` is decided by `stateOf` in
+  `lib/upstreamHealth.ts`; this page renders it and never recomputes it, so the
+  page and the alert email can never disagree. Same division as the subtitles
+  page, where `broken` and `staleYtDlp` are the backend's call.
+- **`unknown` and `notConfigured` are rendered as themselves, never as OK.**
+  "Nothing has asked yet" and "nobody set this up" are the two states the whole
+  page exists to keep visible - folding either into green is exactly how skyhook
+  stayed invisible for weeks, and the same mistake as an unreachable Sonarr
+  reading "0 still to add". A row that is off on purpose says so too.
+- **The SMTP row states the circular case out loud**: with mail down, nothing
+  can mail to say mail is down, so while that row is red the absence of alerts
+  means nothing.
+- A TypeScript cast cannot appear in a template expression - `lang="ts"` applies
+  to the `<script>` block only, so an inline `as HTMLInputElement` is a *syntax*
+  error, not a type error. Handlers that need one live in the script block.
+
 - **Buttons use `btn-outline`, headers use `link` (not `link-hover`).** DaisyUI
   renders `btn-ghost` with a transparent background *and* border until hover, so
   at rest it is indistinguishable from plain text - a real complaint about this
   page's first version. `link-hover` has the identical problem for sortable
   headers. `btn-ghost` is still used ~19 times elsewhere in the app.
-- **The champion card says "last upload seen", never "last run".** The Sunday job
-  is a Windows Scheduled Task on someone's PC; the server cannot observe it, and
-  a run that found nothing new leaves no trace. Saying "last run" would turn a
-  quiet success into an apparent failure.
+- **The champion card keeps "last upload seen" AND shows "last run reported".**
+  The Sunday job is a Windows Scheduled Task on someone's PC and the server
+  cannot observe it, so the upload timestamp is never called a run. The run now
+  posts its own verdict (`schedule.lastLocalRun`: exit code, the `Done:` line,
+  counts) and the card renders it, red on a non-zero code, "never" if it has not
+  reported. Both stay: a run that uploaded nothing and a run that did not happen
+  used to look identical, and that is how four failed Sundays went unseen.
 - **An uncached season says so, in both the summary row and its table** - never
   a row of zeroes. Same discipline as the Sonarr headline's "couldn't ask" is not
   "nothing to do".

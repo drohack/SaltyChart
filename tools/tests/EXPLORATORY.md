@@ -227,7 +227,10 @@ app by design and produced a false finding on pass 1 (`overflow-x: clip` clips
 without creating a scroll container).
 
 **9. Ordinary clumsiness.** Double- and triple-click submit buttons. Spam Spin.
-Browser back/forward after opening modals. Escape a trailer mid-load. Log out
+Browser back/forward after opening modals. Escape a trailer mid-load. Fullscreen
+a trailer (our button, top right - YouTube's own is hidden on purpose) and press
+Escape: expect to leave fullscreen with the modal still open, and a second Escape
+to close it; a YouTube-captioned trailer must offer the button too. Log out
 with a modal open. Two tabs on one account. Throttle the network and reload.
 
 ---

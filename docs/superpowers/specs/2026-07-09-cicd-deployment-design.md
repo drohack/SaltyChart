@@ -54,9 +54,12 @@ Built **only** by the manually-dispatched `build-base.yml` workflow with an
 explicit `version` input. The app Dockerfile pins `FROM
 ghcr.io/drohack/saltychart-backend-base:v1`, so the heavy layer digests
 cannot drift - a routine deploy is guaranteed to transfer only the app
-layers (~50-150 MB), independent of CI cache state. Updating yt-dlp or a
-model = edit `Dockerfile.base`, dispatch `build-base` with `v2`, bump the
-`FROM` line. That one deploy pulls big; then it's stable again.
+layers (~50-150 MB), independent of CI cache state. Updating a model = edit
+`Dockerfile.base`, dispatch `build-base` with `v2`, bump the `FROM` line. That
+one deploy pulls big; then it's stable again. (yt-dlp used to be on this list.
+Since 2026-09 the app Dockerfile upgrades it in the runtime stage on every
+deploy and the backend re-checks daily, because the base-pinned copy aged for
+six months and every new trailer's subtitles 403'd for four weeks.)
 
 ### App images (built every push by `deploy.yml`)
 
