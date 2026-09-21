@@ -219,6 +219,7 @@
         {/if}
 
         <li
+          data-rank-row={item.id}
           class={`group p-1 rounded text-sm shadow flex items-center gap-2 cursor-grab bg-base-100 w-full ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
           class:opacity-50={dragIdx === i}
           class:scale-105={isTouchDragging && dragIdx === i}
@@ -262,10 +263,10 @@
             viewBox="0 0 24 24"
             fill="currentColor"
             class="w-5 h-5 opacity-60 shrink-0 md:p-0 p-2 -m-2"
-            aria-labelledby="drag-title"
+            aria-labelledby="drag-title-{item.id}"
             role="img"
           >
-            <title id="drag-title">Drag handle</title>
+            <title id="drag-title-{item.id}">Drag handle</title>
             <path d="M10 4a2 2 0 11-4 0 2 2 0 014 0zm0 8a2 2 0 11-4 0 2 2 0 014 0zm-2 8a2 2 0 100-4 2 2 0 000 4zm8-16a2 2 0 114 0 2 2 0 01-4 0zm0 8a2 2 0 114 0 2 2 0 01-4 0zm2 8a2 2 0 100-4 2 2 0 000 4z" />
           </svg>
 

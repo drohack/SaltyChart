@@ -320,7 +320,7 @@
             used still reports. Checked {ago(report.generatedAt)}.
           </p>
         </div>
-        <button class="btn btn-outline btn-sm" on:click={checkNow} disabled={probing}>
+        <button class="btn btn-outline btn-sm" data-probe-now on:click={checkNow} disabled={probing}>
           {#if probing}<span class="loading loading-spinner loading-xs"></span>{/if}
           Check now
         </button>
@@ -339,7 +339,7 @@
           </thead>
           <tbody>
             {#each rows as s (s.id)}
-              <tr>
+              <tr data-svc-row={s.id}>
                 <td>
                   <div class="font-medium">{s.label}</div>
                   <div class="text-xs opacity-60 max-w-[34rem]">{s.impact}</div>
@@ -348,7 +348,7 @@
                   {/if}
                 </td>
                 <td class="whitespace-nowrap">
-                  <span class="badge badge-sm {STATE[s.state].cls}" title={STATE[s.state].help}>
+                  <span class="badge badge-sm {STATE[s.state].cls}" data-svc-state={s.state} title={STATE[s.state].help}>
                     {STATE[s.state].label}
                   </span>
                   {#if s.state === 'failing' || s.state === 'down'}
@@ -419,7 +419,7 @@
         {/if}
 
         <label class="flex items-center gap-3 cursor-pointer">
-          <input type="checkbox" class="toggle toggle-primary" bind:checked={masterEnabled} />
+          <input type="checkbox" class="toggle toggle-primary" data-alert-master bind:checked={masterEnabled} />
           <span class="text-sm">Send alert emails</span>
         </label>
 

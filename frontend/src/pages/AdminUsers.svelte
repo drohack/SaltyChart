@@ -440,7 +440,7 @@
             </tr>
           {/if}
           {#each visible as row (row.id)}
-            <tr class:opacity-60={busy[row.id]}>
+            <tr data-user-row={row.username} class:opacity-60={busy[row.id]}>
               <td>
                 <div class="flex items-center gap-2">
                   <span class="font-medium">{row.username}</span>
@@ -450,6 +450,7 @@
                 </div>
                 {#if notice[row.id]}
                   <div
+                    data-row-notice={notice[row.id].kind}
                     class="text-xs mt-1 whitespace-pre-wrap"
                     class:text-success={notice[row.id].kind === 'ok'}
                     class:text-error={notice[row.id].kind === 'error'}
@@ -484,6 +485,7 @@
                     title={adminCount <= 1
                       ? 'The only admin cannot be demoted - promote someone else first'
                       : 'Remove admin access'}
+                    data-act="demote"
                     on:click={() => setAdmin(row, false)}
                   >
                     Remove
@@ -495,6 +497,7 @@
                     title={row.emailVerified
                       ? 'Make this account an admin'
                       : 'Needs a verified email address first - an admin who cannot receive a code cannot recover their account'}
+                    data-act="promote"
                     on:click={() => setAdmin(row, true)}
                   >
                     Make admin
@@ -525,6 +528,7 @@
                     title={row.isAdmin && !row.emailVerified
                       ? 'They are an admin with no verified email, so clearing it would leave no way back in. Remove their admin access first.'
                       : 'Clear their password so they can set a new one themselves'}
+                    data-act="clear-pw"
                     on:click={() => clearPassword(row)}
                   >
                     Clear
@@ -539,6 +543,7 @@
                       : row.isAdmin
                         ? 'An admin with no email cannot recover their account. Remove their admin access first.'
                         : 'Remove their email so they can reset with just their username - the fix when someone loses that inbox'}
+                    data-act="clear-email"
                     on:click={() => clearEmail(row)}
                   >
                     Clear
@@ -555,6 +560,7 @@
                     : row.isAdmin && adminCount <= 1
                       ? 'The only admin cannot be deleted - promote someone else first'
                       : `Permanently delete ${row.username} and their list`}
+                  data-act="delete"
                   on:click={() => removeUser(row)}
                 >
                   Delete

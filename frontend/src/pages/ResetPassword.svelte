@@ -157,11 +157,11 @@
   }
 </script>
 
-<div class="max-w-sm mx-auto my-20 p-6 shadow rounded bg-base-200 space-y-4">
+<div class="max-w-sm mx-auto my-20 p-6 shadow rounded bg-base-200 space-y-4" data-reset-step={step}>
   <h2 class="text-xl font-bold text-center">Reset Password</h2>
 
   {#if error}
-    <div class="text-error text-sm">{error}</div>
+    <div class="text-error text-sm" data-reset-error>{error}</div>
   {/if}
 
   {#if step === 'username'}

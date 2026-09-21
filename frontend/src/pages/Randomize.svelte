@@ -2089,7 +2089,7 @@ $: {
             <h4 class="font-semibold mb-1 text-sm">Other users' nicknames:</h4>
             <ul class="list-disc list-inside space-y-1 text-sm">
               {#each nicknameList.filter(n => $nicknameSelected.has(n.userName) && n.userName !== $activeUserName) as n}
-                <li>
+                <li data-nickname-row={n.userName}>
                   <span class="font-medium">{n.userName}</span>:
                   {#if n.nickname}
                     {` ${n.nickname}`} {#if n.rank != null}(<span class="opacity-70">#{n.rank}</span>){/if}
