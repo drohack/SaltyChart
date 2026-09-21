@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 27 flows.
+Pre-deploy smoke test: frontend UI interactions - 36 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -89,6 +89,34 @@ Exploratory pass-1 guards that were claimed and missing for months (21-24):
   No Escape after typing: svelte-select clears its filter text on Escape,
   hiding the very warning under test.
 
+Ordinary things a user does, which nothing here used to do (30-36). The suite
+was strong on failure paths and thin on the successful ones, because every
+uncovered item was something that had simply always worked:
+- My List reorder (30) and the Randomize watched-rank reorder (31). Two drag
+  surfaces, two different endpoints - My List PUTs the whole list, only the
+  Randomize sidebar uses PATCH /api/list/rank - and every earlier test SEEDED
+  an order over the API and read it back, so the drag itself was unexercised.
+  31 reads the ranks back rather than trusting the response: that route answers
+  {ok:true} even when its `where` matched nothing.
+- the reset page (32), which no test had ever LOADED. Its open path runs for
+  real against an account created with no email; the `code` and `blocked`
+  branches are asserted against a STUBBED /reset-request, because that route
+  mails the verified address of a coded account and the dev admin's address is
+  a real inbox.
+- /admin/users (33): the last-admin floor as a disabled control with a reason,
+  a refusal rendered beside its own row, and Delete - against an account the
+  flow created seconds earlier. Never `Send test email`, which falls back to
+  the signed-in admin's real inbox.
+- /admin/status (34): all five badge states, injected into AppConfig rather
+  than provoked, and restored in a `finally`. Includes a long failure streak
+  WITH a recent success, which must read Failing and not Down. `Check now` is
+  never clicked - it probes skyhook, AniList and Gmail, and a crossing record
+  mails the owner.
+- Compare's share-as-image (35): the untested half of a pair CLAUDE.md calls
+  brittle, plus the font stylesheets it disables during capture being restored.
+- nicknames (36): set through the rename dialog and asserted on the request,
+  since saving re-PUTs the whole list and a dropped field still returns 200.
+
 Seeds from live season data - the old hardcoded mediaIds aged out of the
 season entirely, so every seeded list joined against zero shows and the
 looser assertions passed anyway.
@@ -101,6 +129,7 @@ Usage:
 import argparse
 import json
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -109,7 +138,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 29
+TOTAL = 36
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -209,6 +238,78 @@ def admin_token() -> str:
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def mark_watched(backend: str, token: str, ids: list[int]) -> None:
+    """Mark entries watched, in order - which is also the order their ranks land.
+
+    `PATCH /api/list/watched` assigns `watchedCount - 1` only when the stored
+    rank is null, so the first call gets rank 0, the second rank 1.
+    """
+    for m in ids:
+        r = requests.patch(f"{backend}/api/list/watched", timeout=15,
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                                 "mediaId": m, "watched": True})
+        assert r.status_code == 200, f"marking watched failed: {r.status_code} {r.text[:120]}"
+
+
+def drag_row(page, row_sel: str, src: int, dst: int, below: bool = True) -> None:
+    """Reorder a drag sidebar by synthesising the events it actually listens for.
+
+    Playwright's `drag_to` drives Chromium's native HTML5 drag, which is flaky
+    headless and wants a real `dataTransfer`. Neither sidebar reads one - the
+    order comes from the component's own `dragIdx`/`placeholder` - so dispatching
+    the three events directly is both sufficient and deterministic.
+
+    `bubbles: False` is load-bearing, not tidiness: the sidebar's own element
+    carries a `drop` handler that performs the SAME `move()`, so a bubbling drop
+    reorders twice and lands somewhere that looks almost right.
+
+    `below` picks which half of the target row the cursor is in, because
+    `calcPlaceholder` returns `idx` above the midpoint and `idx + 1` below it.
+    """
+    moved = page.evaluate("""([sel, src, dst, below]) => {
+        const rows = [...document.querySelectorAll(sel)];
+        if (rows.length <= Math.max(src, dst)) return null;
+        const a = rows[src], b = rows[dst];
+        const r = b.getBoundingClientRect();
+        const y = below ? r.bottom - 2 : r.top + 2;
+        const ev = (t) => new DragEvent(t, { bubbles: false, cancelable: true, clientY: y });
+        a.dispatchEvent(new DragEvent('dragstart', { bubbles: false }));
+        b.dispatchEvent(ev('dragover'));
+        b.dispatchEvent(ev('drop'));
+        a.dispatchEvent(new DragEvent('dragend', { bubbles: false }));
+        return true;
+    }""", [row_sel, src, dst, below])
+    assert moved, f"could not find rows {src}/{dst} for {row_sel}"
+
+
+def row_order(page, row_sel: str) -> list[int]:
+    """The mediaIds currently on screen, top to bottom."""
+    attr = row_sel.strip("[]")
+    return page.evaluate(
+        "([sel, attr]) => [...document.querySelectorAll(sel)]"
+        ".map(e => Number(e.getAttribute(attr)))", [row_sel, attr])
+
+
+def continue_to_step(page, timeout_ms: int = 15_000) -> str:
+    """Press Continue on the reset page and report which step it landed on.
+
+    Deliberately not `wait_for_selector` on the step we want: that turns "it
+    offered the wrong form" into a locator timeout, whose message says nothing
+    about the invariant. Returning the step lets the caller assert it by name,
+    which is what a mutation ignoring `codeRequired` has to be caught by.
+    """
+    page.get_by_role("button", name="Continue").click()
+    waited = 0
+    while waited < timeout_ms:
+        page.wait_for_timeout(300)
+        waited += 300
+        now = page.get_attribute("[data-reset-step]", "data-reset-step")
+        if now and now != "username":
+            return now
+    return page.get_attribute("[data-reset-step]", "data-reset-step") or ""
 
 
 def step(n: int, msg: str) -> None:
@@ -2017,6 +2118,582 @@ def test_guest_options_and_compare_warning(page, frontend: str):
 # Before adding a label here: run it alone, then run it alone WITH its
 # mutation applied, and confirm it still fails. Passing alone is not enough -
 # every flow below has been watched BOTH ways.
+def test_my_list_reorder(page, backend: str, frontend: str, token: str):
+    """Reordering My List persists.
+
+    The app's core action, and until now every test SEEDED an order over the API
+    and only ever read it back. Nothing dragged a row, so the write the user
+    actually performs was unexercised - and it is not the endpoint the audit
+    first assumed: My List sends the whole list to `PUT /api/list`, while
+    `PATCH /api/list/rank` belongs to the Randomize sidebar (next flow).
+    """
+    step(30, "step 1/4: seeding a three-item list and opening Home")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(frontend)
+    wait_for_grids(page)
+    page.wait_for_selector("[data-list-row]", timeout=15_000)
+    before = row_order(page, "[data-list-row]")
+    assert len(before) == 3, f"expected 3 rows in My List, saw {len(before)}"
+
+    step(30, "step 2/4: dragging the first row below the last")
+    sent: list = []
+    def on_req(req):
+        if req.method == "PUT" and req.url.rstrip("/").endswith("/api/list"):
+            try:
+                sent.append([i["mediaId"] for i in (req.post_data_json or {}).get("items", [])])
+            except Exception:
+                pass
+    page.on("request", on_req)
+    try:
+        drag_row(page, "[data-list-row]", 0, 2, below=True)
+        page.wait_for_timeout(1500)
+    finally:
+        page.remove_listener("request", on_req)
+
+    expected = [before[1], before[2], before[0]]
+    after = row_order(page, "[data-list-row]")
+    assert after == expected, f"on screen the order is {after}, expected {expected}"
+
+    step(30, "step 3/4: the new order was sent to the server")
+    assert sent, "reordering fired no PUT /api/list - the move never left the browser"
+    assert sent[-1] == expected, f"the request carried {sent[-1]}, expected {expected}"
+
+    step(30, "step 4/4: and it survives a reload")
+    # The screen agreeing with the request proves only that the component is
+    # consistent with itself. A reload re-reads the server, which is the thing
+    # the user is relying on.
+    page.reload()
+    wait_for_grids(page)
+    page.wait_for_selector("[data-list-row]", timeout=15_000)
+    reloaded = row_order(page, "[data-list-row]")
+    assert reloaded == expected, f"after reload the order is {reloaded}, expected {expected}"
+    step(30, f"PASS - {before} -> {expected}, persisted across a reload")
+
+
+def test_watched_rank_reorder(page, backend: str, frontend: str, token: str):
+    """Reordering the Randomize watched list persists.
+
+    This is the `PATCH /api/list/rank` surface. The route answers `{ok:true}`
+    whether or not it matched a single row - ids for entries that are not
+    `watched`, or not in this season, update nothing and still return 200 - so
+    asserting on the response would be vacuous. This reads the ranks back.
+    """
+    step(31, "step 1/4: seeding two watched entries and opening Randomize")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    mark_watched(backend, token, ids[:2])
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(f"{frontend}/random")
+    page.wait_for_selector("[data-rank-row]", timeout=30_000)
+    before = row_order(page, "[data-rank-row]")
+    assert len(before) == 2, f"expected 2 watched rows, saw {len(before)}"
+
+    step(31, "step 2/4: dragging the top one below the other")
+    sent: list = []
+    def on_req(req):
+        if req.method == "PATCH" and req.url.rstrip("/").endswith("/api/list/rank"):
+            try:
+                sent.append((req.post_data_json or {}).get("ids"))
+            except Exception:
+                pass
+    page.on("request", on_req)
+    try:
+        drag_row(page, "[data-rank-row]", 0, 1, below=True)
+        page.wait_for_timeout(1500)
+    finally:
+        page.remove_listener("request", on_req)
+
+    expected = [before[1], before[0]]
+    step(31, "step 3/4: the new order was sent")
+    assert sent, "reordering fired no PATCH /api/list/rank"
+    assert sent[-1] == expected, f"the request carried {sent[-1]}, expected {expected}"
+
+    step(31, "step 4/4: and watchedRank really moved on the server")
+    r = requests.get(f"{backend}/api/list", timeout=15,
+                     headers={"Authorization": f"Bearer {token}"},
+                     params={"season": SEEDED_SEASON, "year": SEEDED_YEAR})
+    assert r.status_code == 200, f"could not read the list back: {r.status_code}"
+    ranks = {row["mediaId"]: row.get("watchedRank") for row in r.json()}
+    assert ranks.get(expected[0]) == 0 and ranks.get(expected[1]) == 1, \
+        f"watchedRank did not move: {ranks} (expected {expected[0]}=0, {expected[1]}=1)"
+    step(31, f"PASS - {before} -> {expected}, watchedRank {ranks}")
+
+
+def test_password_reset_journey(page, backend: str, frontend: str):
+    """The forgot-password page, which nothing had ever rendered.
+
+    `test_account_security.py` covers these routes thoroughly on its own
+    throwaway backend - every code, every refusal. What no test did was LOAD the
+    page: the only `page.goto` targets in this suite were Home, /login, /signup,
+    /random and /compare. So a locked-out user's entire path was drawn by code
+    nobody exercised.
+
+    MAIL SAFETY. `POST /reset-request` mails the verified address of any
+    code-path account, and the dev database's admin address is a real inbox.
+    This flow therefore only ever reaches the server for an account it just
+    created with no email at all, which `resetPathFor` puts on the open path by
+    construction. The `code` and `blocked` branches are decided ENTIRELY by that
+    response body, so they are asserted against a stubbed one - which is the
+    page's real contract, render what the server said, and reaches no mailer.
+    """
+    step(32, "step 1/5: a throwaway account with no email - the open reset path")
+    name = f"ui_rst_{int(time.time())}"
+    r = requests.post(f"{backend}/api/auth/signup", timeout=10,
+                      json={"username": name, "password": "ui_rst_old_pw"})
+    assert r.status_code == 200, f"{name} signup failed: {r.status_code} {r.text[:120]}"
+
+    prior_token = page.evaluate("localStorage.getItem('token')")
+    prior_name = page.evaluate("localStorage.getItem('username')")
+    try:
+        page.goto(frontend)
+        page.evaluate("localStorage.removeItem('token'); localStorage.removeItem('username')")
+        page.goto(f"{frontend}/reset-password")
+        page.wait_for_selector('[data-reset-step="username"]', timeout=15_000)
+
+        step(32, "step 2/5: username -> confirm -> success")
+        page.fill('input[placeholder="Username"]', name)
+        assert continue_to_step(page) == "confirm", \
+            "an account with no email was not offered the one-step reset"
+        page.fill('input[placeholder="New password"]', "ui_rst_new_pw")
+        page.get_by_role("button", name="Reset Password").click()
+        page.wait_for_selector('[data-reset-step="success"]', timeout=15_000)
+
+        step(32, "step 3/5: and the new password actually logs in")
+        # The page saying "Password updated successfully" is the page's opinion.
+        # Only a login proves the write landed.
+        lr = requests.post(f"{backend}/api/auth/login", timeout=10,
+                           json={"username": name, "password": "ui_rst_new_pw"})
+        assert lr.status_code == 200, \
+            f"the reset reported success but the new password does not log in: {lr.status_code}"
+
+        step(32, "step 4/5: a coded account is offered the code form, not the open one")
+        page.route("**/api/auth/reset-request",
+                   lambda route: route.fulfill(
+                       status=200, content_type="application/json",
+                       body='{"codeRequired": true, "hint": "a*****z@example.test"}'))
+        try:
+            page.goto(f"{frontend}/reset-password")
+            page.wait_for_selector('[data-reset-step="username"]', timeout=15_000)
+            page.fill('input[placeholder="Username"]', name)
+            assert continue_to_step(page) == "code", \
+                "a coded account was handed the open reset form - knowing the "\
+                "username would be enough to take it over"
+            assert page.locator('input[placeholder="000000"]').count() == 1, \
+                "the code step rendered no 6-digit field"
+            assert "a*****z@example.test" in page.inner_text("body"), \
+                "the code step did not name the masked address it sent to"
+        finally:
+            page.unroute("**/api/auth/reset-request")
+
+        step(32, "step 5/5: an admin with no address is told why, not handed a form")
+        blocked = ("This is an admin account with no verified email address, so it "
+                   "cannot be reset here. Ask another admin to remove its admin "
+                   "access first.")
+        page.route("**/api/auth/reset-request",
+                   lambda route: route.fulfill(
+                       status=200, content_type="application/json",
+                       body=json.dumps({"codeRequired": True, "noAddress": True,
+                                        "message": blocked})))
+        try:
+            page.goto(f"{frontend}/reset-password")
+            page.wait_for_selector('[data-reset-step="username"]', timeout=15_000)
+            page.fill('input[placeholder="Username"]', name)
+            assert continue_to_step(page) == "blocked", \
+                "an admin with no address got a form instead of an explanation"
+            assert page.locator('input[placeholder="New password"]').count() == 0, \
+                "the blocked step still offered a password field"
+            assert "remove its admin access" in page.inner_text("body"), \
+                "the blocked step did not explain why it refused"
+        finally:
+            page.unroute("**/api/auth/reset-request")
+    finally:
+        page.goto(frontend)
+        page.evaluate("""([t, n]) => {
+            if (t) localStorage.setItem('token', t); else localStorage.removeItem('token');
+            if (n) localStorage.setItem('username', n); else localStorage.removeItem('username');
+        }""", [prior_token, prior_name])
+    step(32, "PASS - open path resets and logs in; code and blocked branches render")
+
+
+def test_admin_users_page(page, backend: str, frontend: str):
+    """/admin/users - account access, never once loaded in a browser.
+
+    The server rules are `test_account_security.py`'s, on its own backend. What
+    this asserts is what the ADMIN SEES: that the last-admin floor is a disabled
+    button with an explanation rather than an error after the fact, that a
+    refusal lands beside the row it belongs to, and that Delete works.
+
+    SAFETY. The dev database has exactly one admin and a live SMTP config, so:
+    `Send test email` is never clicked (it falls back to the signed-in admin's
+    real inbox), `Clear password` and `Clear email` are never DELIVERED - the one
+    click is against a stubbed 409 - and the only account deleted is one this
+    flow created seconds earlier.
+    """
+    step(33, "step 1/6: minting an admin token")
+    tok = admin_token()
+    if not tok:
+        step(33, "SKIP - could not sign an admin token (node or backend/.env missing)")
+        return
+    page.goto(frontend)
+    page.evaluate("t => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', 'admin_probe'); }", tok)
+    page.goto(f"{frontend}/admin/users")
+    page.wait_for_selector("[data-user-row]", timeout=20_000)
+
+    step(33, "step 2/6: the last admin cannot be demoted or deleted, and is told why")
+    admin_rows = page.locator('[data-user-row]:has([data-act="demote"])')
+    if admin_rows.count() != 1:
+        step(33, f"SKIP - {admin_rows.count()} admins on this box; the floor is only "
+                 f"observable at one")
+    else:
+        demote = admin_rows.first.locator('[data-act="demote"]')
+        delete = admin_rows.first.locator('[data-act="delete"]')
+        assert demote.is_disabled(), \
+            "the only admin could be demoted - the floor is not on screen"
+        assert "promote someone else" in (demote.get_attribute("title") or ""), \
+            "the disabled demote button does not say why"
+        assert delete.is_disabled(), "the only admin could be deleted"
+
+    step(33, "step 3/6: a new account appears, and the filter finds it")
+    name = f"ui_adm_{int(time.time())}"
+    r = requests.post(f"{backend}/api/auth/signup", timeout=10,
+                      json={"username": name, "password": "ui_adm_pw"})
+    assert r.status_code == 200, f"{name} signup failed: {r.status_code} {r.text[:120]}"
+    page.reload()
+    page.wait_for_selector(f'[data-user-row="{name}"]', timeout=20_000)
+    page.fill('input[placeholder="Filter by username or email"]', name)
+    page.wait_for_timeout(500)
+    assert page.locator("[data-user-row]").count() == 1, \
+        f"filtering for {name} left {page.locator('[data-user-row]').count()} rows"
+
+    step(33, "step 4/6: sorting flips the header's aria-sort")
+    page.fill('input[placeholder="Filter by username or email"]', "")
+    page.wait_for_timeout(300)
+    # `text-is` cannot match this button: it renders `User` plus an injected
+    # sort arrow, so the accessible name is "User" only while unsorted.
+    header = page.locator('th:has(button:has-text("User"))').first
+    first_sort = header.get_attribute("aria-sort")
+    header.locator("button").click()
+    page.wait_for_timeout(300)
+    assert header.get_attribute("aria-sort") != first_sort, \
+        f"clicking the User header did not change aria-sort (stayed {first_sort!r})"
+
+    step(33, "step 5/6: a server refusal lands beside the row it belongs to")
+    # Stubbed, so nothing is actually cleared. The point is that `mutate()` puts
+    # the server's sentence in that row rather than in a banner nobody links to
+    # the account it is about.
+    page.on("dialog", lambda d: d.accept())
+    page.route("**/api/admin/users/*/clear-password",
+               lambda route: route.fulfill(
+                   status=409, content_type="application/json",
+                   body='{"error": "This is the only admin account. Promote someone '
+                        'else first.", "code": "LAST_ADMIN"}'))
+    try:
+        row = page.locator(f'[data-user-row="{name}"]')
+        row.locator('[data-act="clear-pw"]').click()
+        page.wait_for_selector(f'[data-user-row="{name}"] [data-row-notice="error"]',
+                               timeout=10_000)
+        notice = row.locator("[data-row-notice]").inner_text()
+        assert "only admin account" in notice, \
+            f"the row notice did not carry the server's reason: {notice!r}"
+    finally:
+        page.unroute("**/api/admin/users/*/clear-password")
+
+    step(33, "step 6/6: Delete removes the account for real")
+    page.locator(f'[data-user-row="{name}"] [data-act="delete"]').click()
+    page.wait_for_selector(f'[data-user-row="{name}"]', state="detached", timeout=15_000)
+    left = requests.get(f"{backend}/api/admin/users", timeout=15,
+                        headers={"Authorization": f"Bearer {tok}"})
+    assert left.status_code == 200, f"could not re-read the user list: {left.status_code}"
+    assert not any(u["username"] == name for u in left.json()["users"]), \
+        f"{name} vanished from the table but not from the server"
+    step(33, f"PASS - floor shown as disabled controls, refusal rendered in-row, "
+             f"{name} deleted")
+
+
+HEALTH_DB = REPO / "backend" / "prisma" / "prisma" / "data.db"
+HEALTH_KEYS = ("upstreamHealth", "alertSettings")
+
+
+def _appconfig_backup() -> dict:
+    c = sqlite3.connect(HEALTH_DB)
+    try:
+        return {k: (r[0] if (r := c.execute(
+            "SELECT value FROM AppConfig WHERE key = ?", (k,)).fetchone()) else None)
+            for k in HEALTH_KEYS}
+    finally:
+        c.close()
+
+
+def _appconfig_restore(saved: dict) -> None:
+    c = sqlite3.connect(HEALTH_DB)
+    try:
+        for k, v in saved.items():
+            if v is None:
+                c.execute("DELETE FROM AppConfig WHERE key = ?", (k,))
+            else:
+                c.execute("INSERT INTO AppConfig(key, value) VALUES(?, ?) "
+                          "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
+        c.commit()
+    finally:
+        c.close()
+
+
+def test_admin_status_badges(page, backend: str, frontend: str):
+    """/admin/status - the page a broken upstream is supposed to explain.
+
+    `test_status_page.py` covers the ROUTE. Nothing rendered the page, which is
+    where the distinction that matters lives: `Not checked` and `Not set up` are
+    not `OK`, and a service mid-wobble is `Failing`, not `Down`.
+
+    States are INJECTED rather than provoked, for the reason `test_status_page`
+    gives about skips: on a working box nothing is down, so "if it is down,
+    check the badge" asserts nothing at all. `POST /api/status/probe` is never
+    called - it hits skyhook, AniList and Gmail, and a crossing record mails the
+    owner.
+    """
+    step(34, "step 1/4: minting an admin token")
+    tok = admin_token()
+    if not tok:
+        step(34, "SKIP - could not sign an admin token (node or backend/.env missing)")
+        return
+
+    saved = _appconfig_backup()
+    try:
+        step(34, "step 2/4: injecting one service per state")
+        now = time.time()
+        iso = lambda secs_ago: time.strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - secs_ago))
+        # `stateOf` is a pure function of the record, so each of these is exact.
+        # skyhook's `brokenAfter` is 6 and the quiet window is 10 minutes: the
+        # `failing` case below is a streak PAST that threshold with a recent
+        # success, which must still read amber. That pairing is the whole point -
+        # it is the case the badge used to get wrong.
+        health = {
+            "skyhook":  {"consecutiveFailures": 9, "lastCheckedAt": iso(30),
+                         "lastFailAt": iso(30), "lastOkAt": iso(20),
+                         "lastFailReason": "injected", "lastFailStatus": 500},
+            "tmdb":     {"consecutiveFailures": 9, "lastCheckedAt": iso(30),
+                         "lastFailAt": iso(30), "lastOkAt": None,
+                         "lastFailReason": "injected", "lastFailStatus": 500},
+            "sonarr":   {"lastCheckedAt": iso(60), "lastSkipped": "no Sonarr server configured"},
+            "anilist":  {"consecutiveFailures": 0, "lastCheckedAt": iso(60), "lastOkAt": iso(60)},
+            "jellyfin": {"lastCheckedAt": None},
+        }
+        c = sqlite3.connect(HEALTH_DB)
+        try:
+            c.execute("INSERT INTO AppConfig(key, value) VALUES(?, ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                      ("upstreamHealth", json.dumps(health)))
+            c.commit()
+        finally:
+            c.close()
+
+        page.goto(frontend)
+        page.evaluate("t => { localStorage.setItem('token', t);"
+                      " localStorage.setItem('username', 'admin_probe'); }", tok)
+        page.goto(f"{frontend}/admin/status")
+        page.wait_for_selector("[data-svc-row]", timeout=20_000)
+
+        step(34, "step 3/4: every state renders its own badge, and the words differ")
+        want = {"skyhook": ("failing", "Failing"), "tmdb": ("down", "Down"),
+                "sonarr": ("notConfigured", "Not set up"),
+                "anilist": ("ok", "OK"), "jellyfin": ("unknown", "Not checked")}
+        for svc, (state, label) in want.items():
+            badge = page.locator(f'[data-svc-row="{svc}"] [data-svc-state]').first
+            got = badge.get_attribute("data-svc-state")
+            assert got == state, f"{svc} reads state {got!r}, expected {state!r}"
+            text = (badge.inner_text() or "").strip()
+            assert text == label, f"{svc} badge says {text!r}, expected {label!r}"
+
+        step(34, "step 4/4: the worst news sorts to the top")
+        order = page.evaluate(
+            "() => [...document.querySelectorAll('[data-svc-row]')]"
+            ".map(e => e.querySelector('[data-svc-state]').getAttribute('data-svc-state'))")
+        rank = {"down": 0, "failing": 1, "unknown": 2, "ok": 3, "notConfigured": 4}
+        seen = [rank[o] for o in order if o in rank]
+        assert seen == sorted(seen), f"rows are not worst-first: {order}"
+        step(34, f"PASS - 5 states rendered distinctly, {len(order)} rows sorted worst-first")
+    finally:
+        _appconfig_restore(saved)
+
+
+def test_compare_share_image(page, backend: str, frontend: str):
+    """Compare's share button really produces an image.
+
+    CLAUDE.md names BOTH share functions as DOM-clone-heavy and says to verify
+    them by hand; only `shareMyList()` was ever automated. `shareCompare()` does
+    two things its sibling does not, either of which fails silently inside the
+    same swallowing try/catch: it reads the live `<select>` labels and swaps
+    them into spans on a second clone, and it disables cross-origin Google Fonts
+    stylesheets for the capture and puts them back in a `finally`.
+    """
+    step(35, "step 1/3: seeding two users with differing orders")
+    ts = int(time.time())
+    user_a, user_b = f"ui_shr_A_{ts}", f"ui_shr_B_{ts}"
+    tokens = {}
+    for name in (user_a, user_b):
+        r = requests.post(f"{backend}/api/auth/signup", timeout=10,
+                          json={"username": name, "password": "pw"})
+        assert r.status_code == 200, f"{name} signup failed: {r.status_code} {r.text[:120]}"
+        tokens[name] = r.json()["token"]
+    x, y, z = season_ids(backend, 3)
+    seed_list(backend, tokens[user_a], [x, y, z])
+    seed_list(backend, tokens[user_b], [z, x, y])
+
+    page.goto(frontend)
+    page.evaluate("([t, u]) => { localStorage.setItem('token', t);"
+                  " localStorage.setItem('username', u); }", [tokens[user_a], user_a])
+    pin_season(page)
+    page.goto(f"{frontend}/compare")
+    page.wait_for_timeout(2500)
+
+    step(35, f"step 2/3: picking {user_b} so there is something to share")
+    box = page.locator("#otherUser").first
+    box.wait_for(timeout=15_000)
+    box.click()
+    box.type(user_b, delay=40)
+    option = page.get_by_text(user_b, exact=True).last
+    for _ in range(10):
+        page.wait_for_timeout(800)
+        if option.count():
+            break
+    if option.count():
+        option.click()
+    else:
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-compare-row]').length > 0", timeout=20_000)
+
+    share = page.locator("[data-share-btn]").first
+    if not share.count() or not share.is_visible():
+        # `hidden md:inline-flex` - below 768px the control genuinely is not there.
+        step(35, "SKIP - the share control is not rendered at this viewport")
+        return
+
+    step(35, "step 3/3: clicking Share and checking what it wrote")
+    # Same stub as the Home flow: the real `window.open` runs after an await, by
+    # which point Chrome has withdrawn the user activation and blocks the popup.
+    # Stubbing it keeps the test on the part that fails silently - the render.
+    page.evaluate("""() => {
+        window.__shared = null;
+        window.open = () => ({
+            document: {
+                open() {}, close() {},
+                write: (html) => { window.__shared = (window.__shared || '') + html; },
+            },
+            focus() {}, close() {},
+        });
+    }""")
+    share.click()
+    try:
+        page.wait_for_function("() => window.__shared", timeout=90_000)
+    except Exception:
+        raise AssertionError("Compare share produced nothing - toJpeg most likely "
+                             "resolved to undefined and its try/catch swallowed it")
+    src = page.evaluate("""() => (window.__shared.match(/src="([^"]+)"/) || [])[1] || ''""")
+    assert src.startswith("data:image/jpeg"), \
+        f"Compare share produced no JPEG data URL (got {src[:60]!r})"
+    assert len(src) > 5000, f"Compare share produced a tiny image ({len(src)} chars)"
+    colours = page.evaluate(COUNT_COLOURS, src)
+    assert colours > 1, "the shared Compare image is one flat colour - it rendered blank"
+
+    # The font stylesheets are disabled during capture and restored in a
+    # `finally`. Leaving them off would not fail anything here, and the page
+    # would silently lose its typeface until the next navigation.
+    disabled = page.evaluate(
+        "() => [...document.styleSheets].filter(s => s.disabled).length")
+    assert disabled == 0, \
+        f"{disabled} stylesheet(s) left disabled after sharing - the restore did not run"
+    step(35, f"PASS - {len(src) // 1024} KB JPEG, {colours} colour buckets, "
+             f"stylesheets restored")
+
+
+def test_nicknames_set_and_shown(page, backend: str, frontend: str, token: str):
+    """Nicknames - a whole feature with four endpoints and no UI coverage.
+
+    A "nickname" is `WatchList.customName`, and there is no route that writes
+    one: saving re-PUTs the entire list, so a bug in the mapping silently drops
+    the name while every request still returns 200. The reading half is the four
+    unauthenticated `/api/list/*` endpoints, rendered only inside the Randomize
+    pop-up and only for users the viewer has selected.
+    """
+    step(36, "step 1/4: seeding a list and naming one entry through the UI")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(frontend)
+    wait_for_grids(page)
+    page.wait_for_selector("[data-list-row]", timeout=15_000)
+
+    target = row_order(page, "[data-list-row]")[0]
+    nickname = f"ui nick {int(time.time())}"
+    sent: list = []
+    def on_req(req):
+        if req.method == "PUT" and req.url.rstrip("/").endswith("/api/list"):
+            try:
+                sent.append((req.post_data_json or {}).get("items", []))
+            except Exception:
+                pass
+    page.on("request", on_req)
+    try:
+        page.locator(f'[data-list-row="{target}"] button').first.dblclick()
+        page.wait_for_selector("#watchlist-custom-name", timeout=10_000)
+        page.fill("#watchlist-custom-name", nickname)
+        # Scoped to the dialog, and exact: a trailer button's aria-label reads
+        # "Play trailer for Saved By the Ice Cold Prince's Embrace", which a
+        # substring match on "Save" happily picks up.
+        page.locator("dialog").get_by_role("button", name="Save", exact=True).click()
+        page.wait_for_timeout(1500)
+    finally:
+        page.remove_listener("request", on_req)
+
+    step(36, "step 2/4: the name reached the server inside the whole-list PUT")
+    assert sent, "saving a nickname fired no PUT /api/list"
+    named = [i for i in sent[-1] if i.get("mediaId") == target]
+    assert named and named[0].get("customName") == nickname, \
+        f"the PUT carried {named!r} - customName was dropped on the way out"
+
+    step(36, "step 3/4: a second user's nickname is seeded and read back")
+    other = f"ui_nk_{int(time.time())}"
+    r = requests.post(f"{backend}/api/auth/signup", timeout=10,
+                      json={"username": other, "password": "pw"})
+    assert r.status_code == 200, f"{other} signup failed: {r.status_code}"
+    other_token = r.json()["token"]
+    other_nick = "their name for it"
+    pr = requests.put(f"{backend}/api/list", timeout=15,
+                      headers={"Authorization": f"Bearer {other_token}"},
+                      json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                            "items": [{"mediaId": target, "customName": other_nick}]})
+    assert pr.status_code == 200, f"seeding {other}'s nickname failed: {pr.status_code}"
+
+    step(36, "step 4/4: and it is shown on Randomize, attributed and ranked")
+    mark_watched(backend, token, [target])
+    page.goto(f"{frontend}/random")
+    page.wait_for_selector(f'[data-rank-row="{target}"]', timeout=30_000)
+    page.locator(f'[data-rank-row="{target}"]').dblclick()
+    row = page.locator(f'[data-nickname-row="{other}"]')
+    try:
+        row.wait_for(timeout=15_000)
+    except Exception:
+        shown = page.evaluate("() => [...document.querySelectorAll('[data-nickname-row]')]"
+                              ".map(e => e.getAttribute('data-nickname-row'))")
+        raise AssertionError(f"{other}'s nickname was not shown; rows present: {shown}")
+    text = row.inner_text()
+    assert other_nick in text, f"the row named {other} but not their nickname: {text!r}"
+    assert "#" in text, f"the row showed no rank: {text!r}"
+    step(36, f"PASS - set {nickname!r} through the UI, and {other}'s {other_nick!r} renders")
+
+
 SELECTABLE_FLOWS = {
     "compare 2 users",
     "admin page",
@@ -2038,6 +2715,13 @@ SELECTABLE_FLOWS = {
     "theme survives signup",
     "sonarr page renders",
     "subtitle batch button",
+    "my list reorder",
+    "watched rank reorder",
+    "password reset journey",
+    "admin users page",
+    "admin status badges",
+    "compare share image",
+    "nicknames set and shown",
 }
 
 
@@ -2269,6 +2953,13 @@ def main():
                 ("theme survives signup", lambda: test_theme_survives_signup_and_reload(page, args.backend, frontend)),
                 ("sonarr page renders", lambda: test_sonarr_page_renders(page, frontend)),
                 ("subtitle batch button", lambda: test_subtitle_batch_button(page, args.backend, frontend)),
+                ("my list reorder",     lambda: test_my_list_reorder(page, args.backend, frontend, token_a)),
+                ("watched rank reorder",lambda: test_watched_rank_reorder(page, args.backend, frontend, token_a)),
+                ("password reset journey", lambda: test_password_reset_journey(page, args.backend, frontend)),
+                ("admin users page",    lambda: test_admin_users_page(page, args.backend, frontend)),
+                ("admin status badges", lambda: test_admin_status_badges(page, args.backend, frontend)),
+                ("compare share image", lambda: test_compare_share_image(page, args.backend, frontend)),
+                ("nicknames set and shown", lambda: test_nicknames_set_and_shown(page, args.backend, frontend, token_a)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]
