@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import ExternalIdLink from '../components/ExternalIdLink.svelte';
   import { authToken } from '../stores/auth';
   import { apiJson, QUICK, SEASON, ApiError } from '../lib/remote';
   import AdminShell from '../components/AdminShell.svelte';
@@ -62,17 +63,53 @@
   const now = new Date();
 
   /**
+   * How far ahead to look before this page switches to the coming season.
+   *
+   * The calendar season is the wrong default here, and it took until someone
+   * asked "why does it open on SUMMER 2026?" in late September to notice. By
+   * then SUMMER had aired and settled - every entry in it long since matched -
+   * while FALL, ten days out, held all 33 of the rows actually needing review.
+   * Reviewing the calendar season is reviewing history.
+   *
+   * 30 days rather than a round number for its own sake: `isWithinAirWindow`
+   * lets the Sonarr auto-add start grabbing 14 days before a season airs, and
+   * an identity has to be *right* before something acts on it. Thirty gives a
+   * fortnight of review lead over that, and by the last month of a season
+   * nothing in it is still changing.
+   */
+  const LOOKAHEAD_DAYS = 30;
+
+  /** A season's first day: WINTER Jan 1, SPRING Apr 1, SUMMER Jul 1, FALL Oct 1. */
+  function seasonStart(idx: number, year: number): Date {
+    return new Date(year, idx * 3, 1);
+  }
+
+  /**
+   * The season a reviewer actually wants: the current one, until the next is
+   * close enough to be the work, and then that one.
+   */
+  function defaultSeason(at: Date): { season: string; year: number } {
+    const idx = Math.floor(at.getMonth() / 3);
+    const nextIdx = (idx + 1) % 4;
+    const nextYear = nextIdx === 0 ? at.getFullYear() + 1 : at.getFullYear();
+    const daysToNext = (seasonStart(nextIdx, nextYear).getTime() - at.getTime()) / 86_400_000;
+    return daysToNext <= LOOKAHEAD_DAYS
+      ? { season: SEASONS[nextIdx] as string, year: nextYear }
+      : { season: SEASONS[idx] as string, year: at.getFullYear() };
+  }
+
+  /**
    * `?season=&year=` opens this page on a specific season, so `/admin/sonarr`
    * can link straight to the entries it could not resolve - the one place the
    * two admin pages genuinely overlap. Read once, at mount: after that the
    * `<select>` below is the only thing that changes the season, so a stale URL
    * cannot fight a reviewer mid-review.
    *
-   * Anything unrecognised falls back to today's season rather than erroring - a
-   * bad link should land somewhere sensible, not on a broken page.
+   * Anything unrecognised falls back to the default season rather than erroring
+   * - a bad link should land somewhere sensible, not on a broken page.
    */
   function initialSeason(): { season: string; year: number } {
-    const fallback = { season: SEASONS[Math.floor(now.getMonth() / 3)] as string, year: now.getFullYear() };
+    const fallback = defaultSeason(now);
     try {
       const q = new URLSearchParams(window.location.search);
       const s = (q.get('season') ?? '').toUpperCase();
@@ -121,6 +158,14 @@
     /** The entry's own premiere, so an unverified reason can name the gap. */
     startDateMs?: number | null;
     /**
+     * The server's verdict on whether this entry's premiere date SEPARATED a
+     * multi-candidate row - exactly one candidate inside tolerance, none
+     * undated, and that candidate the one stored. Decided in
+     * `dateSettlesCandidates` (lib/seriesIdentity.ts); this page renders it and
+     * must never recompute it, or the queue and the resolver can disagree.
+     */
+    settledByDate?: boolean;
+    /**
      * Where an unmatched row stands with the auto-search: never searched,
      * cooling down until nextRetryAt, or retired (aired >2 y ago). null on
      * settled rows - there is nothing to retry.
@@ -141,6 +186,9 @@
     matchedTitle: string;
     exact: boolean;
     year: number | null;
+    /** Day-precision premiere. Absent on rows stored before the resolver read
+     *  dates - which is why every reader must treat missing as "no evidence". */
+    premiereDate?: string | null;
   };
 
   let rows: Row[] = [];
@@ -499,6 +547,14 @@
                 // same classifier the sweep tallies with, so the panel's two
                 // scopes can't disagree.
                 titles: Object.fromEntries(slice.map((x) => [x.mediaId, x.titles])),
+                // Day precision, not the year above: the separation rule
+                // measures a 31-day gap and a year would be 365 days of slack.
+                dates: Object.fromEntries(
+                  slice.filter((x) => x.startDate?.year).map((x) => [
+                    x.mediaId,
+                    Date.UTC(x.startDate.year, (x.startDate.month ?? 1) - 1, x.startDate.day ?? 1),
+                  ])
+                ),
               }) },
             { label: 'admin/identity', timeoutMs: QUICK }
           ),
@@ -534,6 +590,7 @@
           note: i.note ?? null,
           retry: i.retry ?? null,
           tier: i.tier ?? null,
+          settledByDate: !!i.settledByDate,
           startDateMs: s.startDate?.year
             ? Date.UTC(s.startDate.year, (s.startDate.month ?? 1) - 1, s.startDate.day ?? 1)
             : null,
@@ -589,7 +646,7 @@
     // signal this queue exists for, and it is unconfirmed by construction.
     (isViewerPick(r) && !r.confirmed && !r.rejected) ||
     (r.pending && !!(r.tvdbId || r.tmdbId)) ||
-    (!r.confirmed && (r.candidates?.length ?? 0) > 1) ||
+    (!r.confirmed && (r.candidates?.length ?? 0) > 1 && !r.settledByDate) ||
     (!r.pending && r.matchedBy === 'title' && !r.confirmed);
 
   // Title-text / release-year accepts: reachable but never demanding review -
@@ -621,7 +678,7 @@
    */
   function unverifiedBecause(r: Row): string {
     const chosen = (r.candidates ?? []).find((c) => c.matchedTitle === r.matchedTitle);
-    const prem = (chosen as { premiereDate?: string | null } | undefined)?.premiereDate;
+    const prem = chosen?.premiereDate;
     if (prem && r.startDateMs != null) {
       const days = Math.round(Math.abs(Date.parse(prem) - r.startDateMs) / 86_400_000);
       if (Number.isFinite(days)) {
@@ -1001,6 +1058,29 @@
                   <span class="opacity-60">No match - search...</span>
                 {/if}
               </button>
+              <!-- The ids as LINKS, deliberately outside the button above.
+                   They were inside it, which is invalid HTML (an <a> is
+                   interactive content and may not sit in a <button>) and broke
+                   the control for real: the anchor's `stopPropagation` swallowed
+                   the click, so pressing the middle of "change the match" opened
+                   TheTVDB in a new tab instead of the picker. Playwright found
+                   it only because the anchor happened to sit at the button's
+                   centre. Both ids show here rather than the canonical one -
+                   this line exists to be checked, and the whole reason it exists
+                   is that a stored id cannot be verified any other way. -->
+              {#if selected[r.mediaId]?.tvdbId || selected[r.mediaId]?.tmdbId}
+                <span class="text-[11px] opacity-60 flex flex-wrap gap-x-2" data-match-ids>
+                  {#if selected[r.mediaId]?.tvdbId}
+                    <ExternalIdLink id={selected[r.mediaId]?.tvdbId}
+                      label={`TVDB ${selected[r.mediaId]?.tvdbId}`} />
+                  {/if}
+                  {#if selected[r.mediaId]?.tmdbId}
+                    <ExternalIdLink kind="tmdb" id={selected[r.mediaId]?.tmdbId}
+                      tmdbKind={selected[r.mediaId]?.tmdbKind}
+                      label={`TMDB ${selected[r.mediaId]?.tmdbId}`} />
+                  {/if}
+                </span>
+              {/if}
               {#if r.retry}
                 <span class="text-[11px] opacity-60" data-retry-state>{retryText(r.retry)}</span>
               {/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ExternalIdLink from '../components/ExternalIdLink.svelte';
   import { authToken } from '../stores/auth';
   import { apiJson, QUICK, ApiError } from '../lib/remote';
   import AdminShell from '../components/AdminShell.svelte';
@@ -769,7 +770,7 @@
         <p class="opacity-80">We only ever read from Sonarr, so these have to be deleted by hand.</p>
         <ul class="list-disc pl-5">
           {#each report.orphans as o (o.tvdbId)}
-            <li>Delete <b>{o.title}</b> (tvdb {o.tvdbId}) - its entry now resolves to {o.nowTvdbId}.</li>
+            <li>Delete <b>{o.title}</b> (tvdb <ExternalIdLink id={o.tvdbId} />) - its entry now resolves to <ExternalIdLink id={o.nowTvdbId} />.</li>
           {/each}
         </ul>
       </div>
@@ -808,7 +809,7 @@
                       {/if}
                     </td>
                     <td class="truncate" title={p.title}>{p.title}</td>
-                    <td class="opacity-60">{p.tvdbId}</td>
+                    <td class="opacity-60"><ExternalIdLink id={p.tvdbId} /></td>
                     <td class="opacity-60">{p.format ?? '-'}</td>
                     <td class="opacity-60 whitespace-nowrap">
                       {airDate(p.startDate)}
@@ -873,7 +874,7 @@
                         {/if}
                       </td>
                       <td class="truncate" title={r.title ?? ''}>{r.title ?? '(untitled)'}</td>
-                      <td class="opacity-60">{r.tvdbId ?? ''}</td>
+                      <td class="opacity-60"><ExternalIdLink id={r.tvdbId} /></td>
                       <td class="opacity-60">{r.format ?? '-'}</td>
                       <td class="opacity-60 whitespace-nowrap">{airDate(r.startDate)}</td>
                       <td class="opacity-60 text-right">{r.episodes ?? '?'}</td>
@@ -942,7 +943,7 @@
                       {/if}
                     </td>
                     <td class="truncate" title={r.title ?? ''}>{r.title ?? '(untitled)'}</td>
-                    <td class="opacity-60">{r.tvdbId ?? ''}</td>
+                    <td class="opacity-60"><ExternalIdLink id={r.tvdbId} /></td>
                     <td class="opacity-60">{r.format ?? '-'}</td>
                     <td class="opacity-60 whitespace-nowrap">{airDate(r.startDate)}</td>
                     <td class="opacity-60 text-right">{r.episodes ?? '?'}</td>
@@ -1013,7 +1014,9 @@
                 <span
                   class="badge badge-sm whitespace-nowrap {STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.cls ?? 'badge-outline'}"
                 >{STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.label ?? p.status}</span>
-                <span class="flex-1 truncate" title={p.title}>{p.title || `tvdb ${p.tvdbId}`}</span>
+                <span class="flex-1 truncate" title={p.title}>
+                  {#if p.title}{p.title}{:else}tvdb <ExternalIdLink id={p.tvdbId} />{/if}
+                </span>
                 {#if p.lastError && (p.status === 'lookupFailed' || p.status === 'failed')}
                   <span class="opacity-50 text-xs truncate max-w-[18rem]" title={p.lastError}>
                     {p.lastError}
