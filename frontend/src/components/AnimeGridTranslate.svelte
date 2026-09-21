@@ -85,12 +85,30 @@ $: _currentLang = $options.titleLanguage;
   // no way to get the subtitles, or the controls, back. Fullscreening the
   // wrapper keeps the iframe, the overlay and the controls in one subtree.
   //
-  // That is also why the iframe no longer carries `allowfullscreen`: without
-  // it, YouTube's player hides its own fullscreen button, so there is exactly
-  // one control and it is ours. (JellyfinPlayerModal solves the same problem by
-  // re-parenting its overlay into the player element - not an option here,
-  // since a cross-origin iframe has no DOM we can append to.)
+  // ...EXCEPT that we no longer have to. YouTube's own fullscreen works, and
+  // the subtitles follow it into the TOP LAYER.
+  //
+  // A fullscreen element is promoted to the browser's top layer, which is why
+  // a sibling overlay vanishes: it is not painted, and no z-index reaches it.
+  // But the top layer holds more than one element, and they stack in the order
+  // they entered it - so an overlay promoted AFTER the iframe paints above it.
+  // `popover` is how we ask for that promotion.
+  //
+  // This was verified by screenshot over a real fullscreen YouTube player
+  // before any of it was written, because the previous two attempts here were
+  // reasoned rather than observed and both were wrong: the first assumed
+  // dropping `allowfullscreen` would HIDE YouTube's button (it renders it and
+  // lets the click fail), and the second tried to steal the fullscreen back
+  // onto our wrapper (a click inside a cross-origin frame does not hand us the
+  // activation that needs).
+  //
+  // The `popover` attribute is added and removed at runtime rather than sitting
+  // in the markup: a popover element is `display:none` until it is shown, so
+  // leaving it there permanently would hide the subtitles during NORMAL, non
+  // fullscreen playback - which is the state they are needed in most.
   let playerWrap: HTMLDivElement | null = null;
+  /** The cue row. Promoted to the top layer while YouTube owns the screen. */
+  let subtitleLayer: HTMLDivElement | null = null;
   let isFullscreen = false;
   // -- Subtitle scaling -------------------------------------------------
   // The prefs are plain pixels, which silently means "pixels at whatever size
@@ -108,20 +126,74 @@ $: _currentLang = $options.titleLanguage;
   //    relatively larger on a small player - the same thing every video player
   //    does, and the reason subtitles stay readable on a phone.
   let playerWidth = 0;
+  let viewportWidth = 0;
+  /** True while the IFRAME is the fullscreen element - YouTube's own fullscreen. */
+  let ytFullscreen = false;
   // A 1080p desktop at `xl:w-4/5` - the case the current defaults look right in.
   const SUBTITLE_REF_WIDTH = 1536;
-  $: subRatio = playerWidth > 0 ? playerWidth / SUBTITLE_REF_WIDTH : 1;
+  // Scale against whatever the cue is actually drawn over. In YouTube's own
+  // fullscreen that is the SCREEN, not the wrapper: the wrapper keeps its modal
+  // size because it was never the element that went fullscreen, so scaling from
+  // it left a 1280px picture carrying subtitles sized for a 700px box. Caught by
+  // screenshotting the result rather than by reading the DOM, which reported the
+  // cue present, positioned and "on screen" - all true, and all missing the
+  // point.
+  $: cueBasisWidth = ytFullscreen && viewportWidth > 0 ? viewportWidth : playerWidth;
+  $: subRatio = cueBasisWidth > 0 ? cueBasisWidth / SUBTITLE_REF_WIDTH : 1;
   $: subPosScale = subRatio;
   $: subFontScale = Math.min(1.15, Math.max(0.52, subRatio));
   // Narrow players get more of their width: a fixed 80% wraps a line that would
   // have fitted, and a two-line subtitle on a short player eats the picture.
-  $: subMaxWidth = playerWidth > 0 && playerWidth < 700 ? 94 : playerWidth < 1100 ? 88 : 80;
+  $: subMaxWidth = cueBasisWidth > 0 && cueBasisWidth < 700 ? 94 : cueBasisWidth < 1100 ? 88 : 80;
 
-  function onFullscreenChange() {
-    isFullscreen = !!document.fullscreenElement;
-    // Fullscreen entry/exit is a deliberate action, so re-arm the fade rather
-    // than leaving the controls hidden at the moment the layout just changed.
-    showControls();
+  /**
+   * Put the cue layer in the top layer while YOUTUBE owns the screen.
+   *
+   * Only for the iframe's own fullscreen. When our wrapper is the fullscreen
+   * element the overlay is already inside that subtree and renders normally;
+   * promoting it there would be a second, pointless positioning context.
+   */
+  /** Promote (or release) one element into the browser's top layer. */
+  function setPromoted(el: HTMLElement | null, on: boolean) {
+    if (!el) return;
+    try {
+      if (on && !el.matches(':popover-open')) {
+        el.setAttribute('popover', 'manual');
+        el.showPopover();
+      } else if (!on && el.hasAttribute('popover')) {
+        if (el.matches(':popover-open')) el.hidePopover();
+        el.removeAttribute('popover');
+      }
+    } catch (err) {
+      // No popover support, or the node was detached mid-transition. The
+      // element is simply absent from YouTube's fullscreen - which is where
+      // this started, and never a thrown error over a playing video.
+      console.warn('[player] could not promote a layer:', err);
+    }
+  }
+
+  function syncSubtitleLayer() {
+    ytFullscreen = document.fullscreenElement === iframeElement;
+    // The CONTROLS are deliberately NOT promoted. They can be painted above the
+    // fullscreen iframe exactly as the cues are - but they cannot be CLICKED:
+    // the fullscreen element captures pointer input for its whole area, and a
+    // forced click on a promoted button left the subtitles untouched. Painting
+    // them there would produce a visible dead control, which is the complaint
+    // this entire change began with. Escape returns to the windowed player,
+    // where they work.
+    const el = subtitleLayer;
+    if (!el) return;
+    setPromoted(el, ytFullscreen);
+  }
+
+  function promoteWhileYouTubeFullscreen(node: HTMLDivElement) {
+    subtitleLayer = node;
+    syncSubtitleLayer();
+    return {
+      destroy() {
+        if (subtitleLayer === node) subtitleLayer = null;
+      },
+    };
   }
 
   async function toggleFullscreen() {
@@ -132,11 +204,24 @@ $: _currentLang = $options.titleLanguage;
         await playerWrap.requestFullscreen();
       }
     } catch (err) {
-      // Denied (iOS Safari on <div>, or a permissions policy). Playback is
+      // Denied (iOS Safari on a <div>, or a permissions policy). Playback is
       // unaffected, so this must never surface as an error to the viewer.
       console.warn('[player] fullscreen request rejected:', err);
     }
   }
+
+  function onFullscreenChange() {
+    // NOT attempted: moving the fullscreen onto our wrapper so the controls
+    // would work too. Tested by clicking YouTube's own button through the
+    // frame - the browser refuses with "API can only be initiated by a user
+    // gesture", because activation does not cross a cross-origin boundary.
+    syncSubtitleLayer();
+    isFullscreen = !!document.fullscreenElement;
+    // Fullscreen entry/exit is a deliberate action, so re-arm the fade rather
+    // than leaving the controls hidden at the moment the layout just changed.
+    showControls();
+  }
+
 
   function showControls() {
     controlsVisible = true;
@@ -728,7 +813,7 @@ const dispatch = createEventDispatcher();
 
 <!-- Must be top-level: <svelte:window> can't sit inside a block. The handler
      itself checks whether the trailer modal is open. -->
-<svelte:window on:keydown={handleWindowKey} />
+<svelte:window on:keydown={handleWindowKey} bind:innerWidth={viewportWidth} />
 <!-- `fullscreenchange` fires on the element and bubbles to the document, and it
      is the only way to learn that the viewer left fullscreen with Escape or the
      browser's own chrome rather than our button. -->
@@ -959,9 +1044,34 @@ const dispatch = createEventDispatcher();
         bind:this={iframeElement}
         class="w-full h-full rounded"
         src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=0&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+        allowfullscreen
         on:load={onIframeLoad}
       />
+
+      <!-- An INVISIBLE cover over YouTube's own fullscreen button.
+           Its offset is measured, not guessed: the button sits 24px from the
+           right and 80px from the bottom of the iframe at 48x48, identical at
+           1024x576 and 1536x864, so it is fixed rather than proportional.
+           Nothing is drawn - YouTube's own icon shows through and the control
+           looks entirely native - but the CLICK is ours, and ours fullscreens
+           the WRAPPER.
+           That distinction is the whole point. Only the fullscreen element
+           receives pointer input, so with YouTube's iframe fullscreen our CC
+           toggle and settings are painted above it and dead (proven: a forced
+           click on them changed nothing). With the wrapper fullscreen, the
+           iframe, the cues and the controls are all inside one subtree and all
+           of them work.
+           Their button still works if this ever misaligns - and the cue layer
+           is promoted into the top layer in that case, so the subtitles show
+           either way. It degrades to the lesser mode, never to nothing. -->
+      <button
+        class="absolute z-20 w-12 h-12 opacity-0"
+        style="right: 24px; bottom: 80px;"
+        aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        on:click|stopPropagation={toggleFullscreen}
+      ></button>
 
       <!-- Player chrome: status chip + CC toggle + settings, then fullscreen.
            The cluster is ALWAYS mounted; fading with `controlsVisible` is the
@@ -1037,23 +1147,6 @@ const dispatch = createEventDispatcher();
             </svg>
           </button>
           {/if}
-          <!-- Fullscreen. Ours, because YouTube's would take only the iframe
-               and leave the subtitles behind - see the `playerWrap` comment.
-               Outside the CC gate on purpose (see the block comment above). -->
-          <button
-            class="flex items-center gap-1 bg-black/60 text-white text-sm px-2 py-1.5 rounded hover:bg-black/80 transition-colors"
-            on:click|stopPropagation={toggleFullscreen}
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
-              {#if isFullscreen}
-                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
-              {:else}
-                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
-              {/if}
-            </svg>
-          </button>
         </div>
 
       <!-- Subtitle settings panel -->
@@ -1079,7 +1172,9 @@ const dispatch = createEventDispatcher();
              whole width to shrink-to-fit against, and `max-width` finally
              means what it says. -->
         <div
-          class="absolute left-0 right-0 flex justify-center pointer-events-none z-10"
+          bind:this={subtitleLayer}
+          use:promoteWhileYouTubeFullscreen
+          class="sc-cue-layer absolute left-0 right-0 flex justify-center pointer-events-none z-10"
           style="bottom: {$options.subtitlePrefs.position * subPosScale}px;"
           transition:fade={{ duration: 150 }}
         >
@@ -1117,6 +1212,8 @@ const dispatch = createEventDispatcher();
      the `playerWrap` comment), so it has to stop being a 4/5-width 16:9 box and
      become the screen. Without this it keeps its aspect-ratio and sits as a
      small rectangle on a black field. */
+  /* The wrapper is the fullscreen element again - our cover puts it there - so
+     it has to fill the screen and drop the aspect box it uses when windowed. */
   .sc-player:fullscreen {
     width: 100vw;
     height: 100vh;
@@ -1125,8 +1222,6 @@ const dispatch = createEventDispatcher();
     aspect-ratio: auto;
     background: #000;
   }
-  /* The iframe fills it; YouTube letterboxes inside its own player, so the
-     picture keeps its shape without us computing it. */
   .sc-player:fullscreen iframe {
     width: 100%;
     height: 100%;
@@ -1139,6 +1234,33 @@ const dispatch = createEventDispatcher();
      the soft blurred shadow of the `medium` border blurs a 15px glyph into the
      picture. A heavier face plus a tight dark halo keeps the glyph edges hard
      at any size; the viewer's own `textBorder` choice still layers on top. */
+  /* While promoted, the browser gives a popover its own UA box - centred, auto
+     margins, a border and a background. Undo all of it: this is a transparent
+     full-width row whose only job is to centre one cue, exactly as it is when
+     it is an ordinary child of the player. The inline `bottom` still wins over
+     the `inset` shorthand here, so the viewer's position preference keeps
+     working in fullscreen. */
+  .sc-cue-layer:popover-open {
+    position: fixed;
+    inset: auto 0 0 0;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: visible;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .sc-cue-layer::backdrop {
+    background: transparent;
+    pointer-events: none;
+  }
+
   .sc-subtitle {
     font-weight: 650;
     line-height: 1.25;
