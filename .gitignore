@@ -94,3 +94,10 @@ tools/benchmark_data/
 # would publish an inventory of the media server. Build them locally instead:
 #   py -3.13 -u tools/tests/build_match_fixtures.py
 tools/tests/fixtures/
+
+# yt_guard rate-budget state - local, per-machine, never shared
+tools/.yt_budget.json
+
+# A local admin JWT, minted for the tools/ scripts. This repo is public and the
+# file is at the repo root, where a careless `git add .` would take it.
+.tok
