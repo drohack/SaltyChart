@@ -151,9 +151,546 @@ T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
 # Runs in about a second against no servers, so the doc rows below are the
 # cheapest in the table.
 T_ANCHORS = PY + [str(TESTS / "test_audit_anchors.py")]
+T_YTGUARD = PY + [str(TESTS / "test_yt_guard.py")]
+T_HOLD = PY + [str(TESTS / "test_download_hold.py")]
+T_VERDICT = PY + [str(TESTS / "test_run_verdict.py")]
+T_SUBS = PY + [str(TESTS / "test_subtitle_paths.py")]
+T_STATUS = PY + [str(TESTS / "test_status_page.py")]
+T_LOCALRUN = PY + [str(TESTS / "test_local_run_report.py")]
 T_SONARR = PY + [str(TESTS / "test_sonarr.py")]
 
 MUTATIONS: list[Mutation] = [
+    Mutation(
+        name="the broken-downloads alert mails on every failure past the threshold",
+        path="backend/src/lib/downloadHealth.ts",
+        # An alert that fires on every failure is the alert that gets muted. The
+        # edge is exactly the failure that takes the streak to BROKEN_AFTER.
+        find="    crossed: streak === BROKEN_AFTER,",
+        replace="    crossed: streak >= BROKEN_AFTER, /* mutation: mails on every failure */",
+        test=T_UNIT,
+        expect="the broken alert fires once, at the crossing, not on every failure after it",
+        guards="a month-long outage produces one mail, not one per trailer per viewer",
+    ),
+    Mutation(
+        name="an unverified admin address receives alerts",
+        path="backend/src/lib/subtitleAlerts.ts",
+        # The root rule: a verified email is what counts. An unverified address
+        # could be anyone's, and it would be told when the server is degraded.
+        find="    if (!r.email || !r.emailVerifiedAt) continue;",
+        replace="    if (!r.email) continue; /* mutation: unverified addresses count */",
+        test=T_UNIT,
+        expect="an unverified admin address never receives an alert",
+        guards="the same rule that keeps an unverified address from protecting an account",
+    ),
+    Mutation(
+        name="the Sunday-run silence alert repeats every day",
+        path="backend/src/lib/subtitleAlerts.ts",
+        # Without the stamp the daily timer mails once a day for as long as the
+        # task stays down - which is the volume that gets a rule created to bin it.
+        find="  if (run.silentAlertedAt) return 'alreadyAlerted';",
+        replace="  /* mutation: stamp ignored */",
+        test=T_UNIT,
+        expect="a silence already alerted is not alerted again",
+        guards="once per silence; a new report clears the stamp and re-arms it",
+    ),
+    Mutation(
+        name="a failed CC check is written as no-CC again",
+        path="backend/src/lib/subtitleCheck.ts",
+        # The original bug: `null !== undefined` is true, so a check that could
+        # not find out was pinned as 0 with a fresh lastEnCheckAt for seven days.
+        find="  return typeof v === 'boolean' ? (v ? 1 : 0) : null;",
+        replace="  return v === undefined ? null : (v ? 1 : 0); /* mutation: null is written as 0 */",
+        test=T_UNIT,
+        expect="a null verdict from a failed check is not written as no-CC",
+        guards="a transient IP block sent a video WITH English captions down the download "
+               "path for a week",
+    ),
+    Mutation(
+        name="an arbitrary failure kind is persisted to AppConfig",
+        path="backend/src/lib/downloadHealth.ts",
+        # `kind` arrives from a spawned process's JSON; everything else on that
+        # path is bounded. Only the four known kinds may be stored.
+        find="  return (FAIL_KINDS as readonly string[]).includes(k as string) ? (k as FailKind) : 'other';",
+        replace="  return typeof k === 'string' ? (k as FailKind) : 'other'; /* mutation: any string stored */",
+        test=T_UNIT,
+        expect="an unknown failure kind is stored as other",
+        guards="persisted config is not a place for an unbounded string from a child process",
+    ),
+    Mutation(
+        name="an idle daemon is logged as busy after a yt-dlp upgrade",
+        path="backend/src/lib/ytdlpUpdate.ts",
+        # 'none' is the idle norm (the daemon exits after two quiet hours). Calling
+        # it busy tells the operator the old version is still serving when it is not.
+        find="    case 'none': return 'no daemon was running (not running is the idle norm), the next spawn imports it';",
+        replace="    case 'none': return 'daemon busy with a translation, it keeps the old version until its next respawn'; /* mutation */",
+        test=T_UNIT,
+        expect="an idle daemon is not reported as busy",
+        guards="the one daily log line must say which version the next translation uses",
+    ),
+    Mutation(
+        name="a bot wall delivered as a 403 gets the stale-yt-dlp hint",
+        path="backend/src/lib/downloadHealth.ts",
+        # The daemon checks bot-wall phrases before the 403 status. The hint must
+        # follow the same precedence or the admin page recommends the wrong remedy.
+        find="  if (kind && kind !== 'forbidden') return false;",
+        replace="  /* mutation: kind ignored */",
+        test=T_UNIT,
+        expect="a bot wall delivered as a 403 gets no stale-yt-dlp hint",
+        guards="'upgrade yt-dlp' under a rate-limit banner sends someone down the wrong path",
+    ),
+    Mutation(
+        name="check-batch queues live checks while YouTube is refusing us",
+        path="backend/src/routes/translate.ts",
+        # Inverting the hold makes every held id queue a live transcript-API call
+        # - poking a blocked IP from the one door the hold was supposed to close.
+        find="  const held = uncachedIds.length > 0 && (await shouldHoldDownloads()).hold;",
+        replace="  const held = uncachedIds.length > 0 && !(await shouldHoldDownloads()).hold; /* mutation: hold inverted */",
+        test=T_HOLD,
+        expect="FAIL: check-batch queues nothing while holding",
+        guards="the header is the observable; the daemon-down case reads no-daemon, not held",
+    ),
+    Mutation(
+        name="/check makes a live YouTube call while holding",
+        path="backend/src/routes/translate.ts",
+        # `hold.hold && !hold.hold` is always false and type-checks (`false &&`
+        # would narrow). The request falls through to a live check on a fake id.
+        find="  if (hold.hold) return res.json({ ...cachedExtra, hasEnglish: null, holdUntil: hold.until });",
+        replace="  if (hold.hold && !hold.hold) return res.json({ ...cachedExtra, hasEnglish: null, holdUntil: hold.until }); /* mutation */",
+        test=T_HOLD,
+        expect="FAIL: check answers from cache only while holding",
+        guards="one more live request per modal open at a blocked IP",
+    ),
+    Mutation(
+        name="the local-run report route drops its admin gate",
+        path="backend/src/routes/translate.ts",
+        # /admin/subtitles repeats whatever this route stores. Without the gate
+        # any account could rewrite what the page says about the Sunday run -
+        # including painting a failed month green.
+        find="router.post('/local-run', express.json({ limit: '64kb' }), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {",
+        replace="router.post('/local-run', express.json({ limit: '64kb' }), requireAuth, async (req: AuthRequest, res: Response) => {  /* mutation */",
+        test=T_LOCALRUN,
+        expect="FAIL: local-run rejects a non-admin",
+        guards="every write route in this router is admin-gated and each has a row; "
+               "this one decides what the admin page reports",
+    ),
+    Mutation(
+        name="a batch run that mostly failed exits 0 again",
+        path="backend/scripts/translate_stream.py",
+        # The original behaviour, restored: no error count ever fails a run. This
+        # is the shape that let four Sunday runs with 46/49 failures report
+        # lastResult=0x0 for a month.
+        find="    if errors >= RUN_FAIL_MIN and errors > attempted * RUN_FAIL_RATIO:",
+        replace="    if errors > attempted:  # mutation: impossible, so a run can never fail",
+        test=T_VERDICT,
+        expect="FAIL: 46 of 49 failures is a failed run",
+        guards="Task Scheduler and persistBatchRun both read the exit code; a run "
+               "that cannot exit non-zero is a run whose failure nobody can see",
+    ),
+    Mutation(
+        name="the YouTube budget lets one call over the 10-minute cap through",
+        path="tools/yt_guard.py",
+        # An off-by-one on a budget is the classic silent loosening: nothing
+        # errors, the guard just admits one more burst than it claims to.
+        find="    if len(recent10) >= max10:",
+        replace="    if len(recent10) > max10:  # mutation: one over the cap",
+        test=T_YTGUARD,
+        expect="FAIL: 10-min cap enforced at exactly the cap",
+        guards="the burst cap is the gate that maps onto the run that tripped the IP "
+               "block; a loose one is a documented number that isn't enforced",
+    ),
+    Mutation(
+        name="a failed skyhook lookup is cached as an empty schedule",
+        path="backend/src/lib/skyhookIdentity.ts",
+        # The outage shape, restored. skyhook started answering 400 to axios's
+        # default User-Agent; the bare catch made every failure an empty result
+        # and this line pinned it for the process lifetime, so the whole TVDB
+        # evidence tier was dead and nothing said a word.
+        find="  if (!failed) _showCache.set(tvdbId, show);",
+        replace="  _showCache.set(tvdbId, show);  /* mutation: a 400 becomes permanent */",
+        test=T_UNIT,
+        expect='a failed show lookup is not cached as "this show has no episodes"',
+        guards="'could not ask' must never be cached as 'nothing to find' - the same "
+               "rule the unknown-availability and empty-Sonarr-snapshot guards follow",
+    ),
+    Mutation(
+        name="an unverified address can become the alert owner",
+        path="backend/src/lib/subtitleAlerts.ts",
+        # The same rule the password-reset path follows, for the same reason: a
+        # typo in an address nobody confirmed would redirect every alert into a
+        # black hole, permanently and silently - and the failure is invisible,
+        # because an alert that is never delivered looks exactly like no alert
+        # being needed.
+        find="""    if (!r.email || !r.emailVerifiedAt) continue;
+    if (!best || r.id < best.id) best = { id: r.id, email: r.email };""",
+        replace="""    if (!r.email) continue;  /* mutation: unverified counts */
+    if (!best || r.id < best.id) best = { id: r.id, email: r.email };""",
+        test=T_UNIT,
+        expect="an unverified address can never make someone the owner",
+        guards="a verified address is the only thing that makes a recipient real; "
+               "this is where every operational alert is addressed",
+    ),
+    Mutation(
+        name="a service nobody has checked reports as working",
+        path="backend/src/lib/upstreamHealth.ts",
+        # The single most load-bearing rule on the status page, and the exact
+        # shape of the outage it exists for: "we have not asked" rendered as
+        # green is how skyhook stayed invisible for weeks. Same family as an
+        # unreachable Sonarr reading "0 still to add".
+        find="  if (!rec.lastCheckedAt) return 'unknown';",
+        replace="  if (!rec.lastCheckedAt) return 'ok';  /* mutation: never asked reads as healthy */",
+        test=T_UNIT,
+        expect="a service nobody has checked reads unknown, never ok",
+        guards="a status page that cannot say 'I do not know' is worse than none - "
+               "it converts ignorance into false reassurance",
+    ),
+    Mutation(
+        name="a service with no saved alert preference goes silent",
+        path="backend/src/lib/alertSettings.ts",
+        # Absence must mean ENABLED. If it meant off, every service added to the
+        # registry later would arrive silent - the failure this feature exists
+        # to end, reintroduced through its own settings file.
+        find="  return settings.perService[id] !== false;",
+        replace="  return settings.perService[id] === true;  /* mutation: absent means off */",
+        test=T_UNIT,
+        expect="a service nobody has configured still alerts",
+        guards="a new dependency must alert by default; opting out is a decision "
+               "someone makes, not the state they inherit",
+    ),
+    Mutation(
+        name="the outage email fires on every failure instead of once",
+        path="backend/src/lib/upstreamHealth.ts",
+        # The edge rule, per service. `>=` mails on every failure after the
+        # third, which is how an alert becomes the noise that gets filtered.
+        find="    crossed: streak === brokenAfter,",
+        replace="    crossed: streak >= brokenAfter,  /* mutation: mails on every failure */",
+        test=T_UNIT,
+        expect="the down alert fires once, at the crossing, not on every failure after it",
+        guards="an alert that repeats is an alert that gets muted, and a muted "
+               "alert is indistinguishable from the silence it replaced",
+    ),
+    Mutation(
+        name="a failing service waits a full day to be re-checked",
+        path="backend/src/lib/upstreamProbes.ts",
+        # Removes the "confirm fast" half of "probe daily, confirm fast". With a
+        # daily interval and a 3-failure threshold, a real outage would take
+        # THREE DAYS to send one email - which is the season-scale blindness the
+        # whole feature exists to end.
+        find="  const wait = rec.consecutiveFailures > 0 ? CONFIRM_RETRY_MS : (spec.minProbeIntervalMs ?? DAY_MS);",
+        replace="  const wait = spec.minProbeIntervalMs ?? DAY_MS;  /* mutation: no fast confirm */",
+        test=T_UNIT,
+        expect="a service that just failed is re-checked in minutes, not tomorrow",
+        guards="probing daily is right because APIs break on a release cadence; it "
+               "is only safe if a suspected break is confirmed in minutes",
+    ),
+    Mutation(
+        name="a passive-only service gets probed anyway",
+        path="backend/src/lib/upstreamProbes.ts",
+        # YouTube is unprobed on purpose: its failure mode IS request volume,
+        # so a synthetic request risks deepening the bot wall it exists to
+        # detect. This is monitoring that causes the outage it watches for.
+        find="  if (spec.passiveOnly) return false;",
+        replace="  if (spec.passiveOnly && false) return false;  /* mutation: probe everything */",
+        test=T_UNIT,
+        expect="passive-only services are never due, and force cannot override that",
+        guards="the one service whose failure mode IS request volume must never be "
+               "probed; nothing else in the code stops a future edit adding one",
+    ),
+    Mutation(
+        name="a service nobody set up is reported as broken",
+        path="backend/src/lib/upstreamHealth.ts",
+        # "Not set up" is a deliberate state. Painting it red puts a permanent
+        # fault on the page for a service that does not exist, which trains the
+        # reader to ignore the page - the same damage as painting it green.
+        find="  if (rec.lastSkipped) return 'notConfigured';",
+        replace="  if (rec.lastSkipped) return 'down';  /* mutation: unconfigured reads as broken */",
+        test=T_STATUS,
+        expect="a skipped service reads notConfigured, not down",
+        guards="'nobody set this up', 'it is working' and 'it is broken' are three "
+               "different answers; the whole page is about keeping them apart",
+    ),
+    Mutation(
+        name="the status report drops its admin gate",
+        path="backend/src/routes/status.ts",
+        # The page names every service this deployment depends on, its failure
+        # text and the addresses that get alerted. None of that is a viewer's
+        # business, and a new router is exactly where a missing gate hides.
+        find="router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: Response) => {",
+        replace="router.get('/report', requireAuth, async (_req: AuthRequest, res: Response) => {  /* mutation: no admin gate */",
+        test=T_STATUS,
+        expect="GET /report is 403 for a non-admin",
+        guards="every route on this router is admin-only; the service topology and "
+               "the alert recipient list are not viewer-facing",
+    ),
+    Mutation(
+        name="the season premiere is skipped once the title already matched",
+        path="backend/src/lib/remoteIdentity.ts",
+        # The ordering bug, restored: rung A2 (`exact title`) short-circuited
+        # past B0, so a date that agreed was never consulted. PSYREN and Sirotan
+        # became Sonarr auto-add candidates graded `weak` while TVDB and AniList
+        # agreed on the air date to the day.
+        find="  if (input.tvdbSeasonDeltaMs != null && input.tvdbSeasonDeltaMs <= AIR_DATE_TOLERANCE_MS) {",
+        replace="  if (!input.exact && input.tvdbSeasonDeltaMs != null && input.tvdbSeasonDeltaMs <= AIR_DATE_TOLERANCE_MS) {  /* mutation: title text wins again */",
+        test=T_UNIT,
+        expect="a season premiere outranks matching title text",
+        guards="a date that agrees is the difference between dateVerified and weak, "
+               "and weak is what keeps a correct match out of the Sonarr auto-add",
+    ),
+    Mutation(
+        name="a split cour is demoted by its own Part 1 premiere",
+        path="backend/src/lib/remoteIdentity.ts",
+        # The tempting over-reach: let the season premiere REFUTE as well as
+        # vouch. Measured over 8 aired seasons, all 27 known-correct entries it
+        # would refute are sequels whose cour TVDB files as one season - Part 2
+        # sits ~182d from its own Part 1. This mutant sends them to review.
+        find="  if (input.exact && p == null) return { verdict: 'accept', rung: 'exact title' };",
+        replace="  if (input.exact && p == null && input.tvdbSeasonDeltaMs == null) return { verdict: 'accept', rung: 'exact title' };  /* mutation: refutes too */",
+        test=T_UNIT,
+        expect="a season premiere that disagrees never demotes an exact title",
+        guards="the rung may only upgrade; refuting costs 16% of correct sequels and "
+               "buys nothing the audit could measure",
+    ),
+    Mutation(
+        name="a re-decided row forgets whether its title matched exactly",
+        path="backend/src/lib/remoteIdentity.ts",
+        # The re-decide path recovers the row's own stored candidate instead of
+        # re-searching for it. `exact` is the field that makes that safe: the
+        # ladder branches on it, so losing it re-decides an exact-title accept
+        # as something else entirely - silently, on a path built for speed.
+        find="    exact: match.exact,",
+        replace="    exact: false,  /* mutation: forgets the exact-title match */",
+        test=T_UNIT,
+        expect="the stored choice keeps `exact`, because the ladder branches on it",
+        guards="a fast path that quietly decides differently from the slow one is "
+               "worse than no fast path",
+    ),
+    Mutation(
+        name="a sequel is judged by its parent series' air date",
+        path="backend/src/lib/remoteIdentity.ts",
+        # The original gate, restored: the lookup ran only when we HELD the
+        # series and its episodes looked wrong, so a candidate about to accept on
+        # title text alone never asked - the evidence existed upstream and was
+        # simply never requested. The ladder cannot use what nobody fetched.
+        find="  const needsSeasonDate = !dateAlreadyVouches;",
+        replace="  const needsSeasonDate = false;  /* mutation: only rescues, never verifies */",
+        test=T_UNIT,
+        expect="the season premiere is FETCHED for a title-only accept",
+        guards="the ladder half is useless without the fetch half; this is the one "
+               "that actually reaches an unheld upcoming season",
+    ),
+    Mutation(
+        name="a link is nested inside the match-control button",
+        path="frontend/src/pages/AdminMatching.svelte",
+        # Exactly how this shipped for a few hours: making stored ids verifiable
+        # put an <a> inside the <button>. That is invalid HTML - an anchor is
+        # interactive content and may not sit in a button - and it broke the
+        # control for real, because the anchor's `stopPropagation` swallowed the
+        # click. Pressing the middle of "change the match" opened TheTVDB in a
+        # new tab instead of the picker. Nothing else catches it: the build was
+        # clean, svelte-check was clean, and the id rendered correctly.
+        find="                    {:else if selected[r.mediaId]?.tvdbId}TVDB {selected[r.mediaId]?.tvdbId}\n                    {:else if selected[r.mediaId]?.tmdbId}",
+        replace="                    {:else if selected[r.mediaId]?.tvdbId}<ExternalIdLink id={selected[r.mediaId]?.tvdbId} label={`TVDB ${selected[r.mediaId]?.tvdbId}`} />\n                    {:else if selected[r.mediaId]?.tmdbId}",
+        test=T_UI,
+        flows=("remote accept visible",),
+        expect="waiting for locator(\"[data-match-dropdown]\")",
+        guards="an admin cannot change a wrong match at all, and the failure "
+               "looks like a dead button rather than an error",
+    ),
+    Mutation(
+        name="the alert master switch governs nothing",
+        path="backend/src/lib/subtitleAlerts.ts",
+        # How the page actually shipped: /admin/status offered a master switch
+        # and `alertAdmins` - the one funnel every alert goes through - never
+        # read it. Switching alerts off kept mailing, which is worse than having
+        # no switch: someone who turns it off and still receives mail cannot
+        # tell a broken control from a broken service. Found when the deploy
+        # gate's fake Sunday verdict landed in the owner's real inbox.
+        find="    if (!(await (deps.settings ?? readAlertSettings)()).masterEnabled) {",
+        replace="    if (false) {  /* mutation: the switch governs nothing */",
+        test=T_UNIT,
+        expect="the master switch on /admin/status actually stops the mail",
+        guards="a setting that silently does nothing is believed, so the page "
+               "would lie about who is being emailed",
+    ),
+    Mutation(
+        name="an undated sibling counts as refuted",
+        path="backend/src/lib/seriesIdentity.ts",
+        # The tempting simplification: treat a candidate with no premiere date
+        # as one the date rules out, so the row settles anyway. `Cyborg 009:
+        # Nemesis` exists TWICE in TVDB with one copy undated - nothing proves
+        # they are the same show, which is why the resolver refuses to merge
+        # them. "We do not know when it aired" is not evidence against it, the
+        # same mistake as reading `unknown` availability as "not in the library".
+        find="    if (!Number.isFinite(prem)) return false;",
+        replace="    if (!Number.isFinite(prem)) continue;  /* mutation: undated means refuted */",
+        test=T_UNIT,
+        expect="an undated sibling settles nothing - the Cyborg 009: Nemesis shape",
+        guards="a duplicate TVDB record would be silently pinned as the match, "
+               "undoing the merge rule by a side door",
+    ),
+    Mutation(
+        name="the queue settles a row whose stored pick the date refutes",
+        path="backend/src/lib/seriesIdentity.ts",
+        # Measured: 1 of 146 otherwise-separable rows had stored a candidate the
+        # date refutes. Without this check that row leaves the review queue
+        # looking settled, which is worse than looking unverified - nothing
+        # downstream would ever question it again.
+        find="  return (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)",
+        replace="  return true || (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)",
+        test=T_UNIT,
+        expect="a stored pick the date REFUTES is never settled",
+        guards="settling a row on evidence that points at a DIFFERENT candidate "
+               "pins a match its own date disagrees with",
+    ),
+    Mutation(
+        name="a TMDB-only candidate can never be dated",
+        path="backend/src/lib/remoteIdentity.ts",
+        # The gate as it stood after the sequel fix: the season lookup needed a
+        # TVDB id on the candidate itself, and half the search results carry only
+        # a TMDB one. completeIdentityIds cross-walks them AFTER the verdict, so
+        # the stored row showed a TVDB id the ladder was never allowed to use -
+        # which reads as "TVDB does not know this season" rather than "we never
+        # asked". Kizu darake Seijo S2 sat unverified while TVDB agreed to the day.
+        find="    ?? crosswalkIds({ tmdbId: hit.tmdbId, tmdbKind: hit.tmdbKind })?.tvdbId",
+        # A no-op operand rather than a deletion: the mutant must type-check,
+        # or the row audits the compiler instead of the guard.
+        replace="    ?? null  /* mutation: TMDB-only candidates stay undated */",
+        test=T_UNIT,
+        expect="a TMDB-only candidate is dated through the id cross-walk",
+        guards="half of every search's results reach the season rung only through "
+               "the cross-walk; without it they are decided on title text",
+    ),
+    Mutation(
+        name="the cross-walk hands a film a TV series' seasons",
+        path="backend/src/lib/anilistTvdbMap.ts",
+        # TMDB numbers films and shows independently, so the same integer is two
+        # different works. Dropping the namespace check dates a movie candidate
+        # against a TV series' season premiere - a confident wrong answer, and the
+        # same class as parsing themoviedb_id as a scalar.
+        find="      if (input.tmdbKind && ref.kind !== input.tmdbKind) continue;",
+        replace="      /* mutation: ignore the namespace */",
+        test=T_UNIT,
+        expect="a movie id must not borrow a TV series TVDB id",
+        guards="a film dated against a series premiere is accepted as fact and "
+               "never looks wrong on the page",
+    ),
+    Mutation(
+        name="the CC check calls every failure a definitive no",
+        path="backend/scripts/translate_stream.py",
+        # The original bug, restored: check_subtitles swallowed every exception
+        # as hasEnglish=False, and each write site pinned that as a verdict for
+        # seven days - so one transient IP block sent a video WITH English CC
+        # down the download path for a week.
+        find="    return False if names & set(DEFINITIVE_NO_CC) else None",
+        replace="    return False  # mutation: every failure is a verdict",
+        test=T_VERDICT,
+        expect="FAIL: an IP block is not a verdict",
+        guards="the third answer is the whole fix; without it a blocked check is "
+               "indistinguishable from a checked video with no CC",
+    ),
+    Mutation(
+        name="the Python model rank drifts from the TypeScript one",
+        path="backend/scripts/translate_stream.py",
+        # The drift the consolidation exists to make impossible: three hand-synced
+        # copies, one missing or mis-ranking large-v3-split, and that path treats
+        # champion output as a downgrade target and reprocesses a season for nothing.
+        find='    "large-v3-split": 6,',
+        replace='    "large-v3-split": 5,  # mutation: ties plain large-v3',
+        test=T_VERDICT,
+        expect="FAIL: Python MODEL_RANK equals the TypeScript copy",
+        guards="one definition per language, and a test that says when the two "
+               "disagree, is the only thing standing between a Sunday upload and a "
+               "Wednesday re-transcription of the same season",
+    ),
+    Mutation(
+        name="an old pip's unknown-option refusal is accepted as a failed update",
+        path="backend/scripts/translate_stream.py",
+        # pip < 23 exits 2 on --break-system-packages. "Failing gracefully" here
+        # means staying on the stale yt-dlp forever, which is the outage.
+        find='        if r.returncode != 0 and "no such option" in (r.stderr or r.stdout).lower():',
+        replace='        if r.returncode != 0 and "no such option" in "":  # mutation: never retries',
+        test=T_VERDICT,
+        expect="FAIL: an old pip's 'no such option' triggers exactly one retry without the flag",
+        guards="the self-upgrade is what reaches the Sunday PC; a pip that refuses the "
+               "flag would otherwise leave it stale with a polite log line",
+    ),
+    Mutation(
+        name="the guard's pre-filter check says every command is reachable",
+        path="tools/yt_guard.py",
+        # The tautology, restored in a new costume: the first --selftest compared
+        # samples against this file's own token list and stayed green while four
+        # invocation patterns were unreachable by the real settings.json grep.
+        find="    return pat.search(sample) is not None",
+        replace='    return True  # mutation: every sample "reaches"',
+        test=T_YTGUARD,
+        expect="FAIL: the shipped pre-filter could not reach local_translate.py",
+        guards="the pre-filter is hand-maintained in a gitignored file; this check is "
+               "the only thing that notices when it and the matcher drift apart",
+    ),
+    Mutation(
+        name="fullscreen is gated on YouTube CC again",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        # The regression this session shipped and an audit caught: the fullscreen
+        # button sat inside `{#if !hasEnglishSubs}`, and with `allowfullscreen`
+        # gone from the iframe that left YouTube-CC trailers with no fullscreen
+        # at all. An inline style reproduces exactly that for the same viewers.
+        #
+        # NOT `hidden={hasEnglishSubs}`, which was tried first and SURVIVED: the
+        # UA stylesheet's `[hidden] { display: none }` loses to Tailwind's
+        # `.flex { display: flex }` on the button itself, so the attribute was
+        # set and the button stayed on screen. A mutant has to be watched fail.
+        find="""            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >""",
+        replace="""            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            style={hasEnglishSubs ? 'display:none' : ''}
+          >""",
+        test=T_SUBS,
+        expect="FAIL [B] - fullscreen button missing",
+        guards="fullscreen is player chrome, not a subtitle control; Path A is the "
+               "path with the most trailers on it and the one nothing else exercises",
+    ),
+    Mutation(
+        name="the YouTube guard goes back to substring matching",
+        path="tools/yt_guard.py",
+        # The original bug, restored: matching the WORD anywhere blocked fetching
+        # yt-dlp's own docs from GitHub and `echo "yt-dlp wiki FAQ"`. A guard that
+        # blocks reading about itself gets routed around, and then protects nothing.
+        find="    return bool(_HOST_RE.search(cmd) or _INVOKE_RE.search(cmd))",
+        replace='    return "yt-dlp" in cmd.lower() or bool(_HOST_RE.search(cmd) or _INVOKE_RE.search(cmd))  # mutation',
+        test=T_YTGUARD,
+        expect="FAIL: matcher negative: GitHub docs about yt-dlp",
+        guards="precision is what makes the guard survivable; every false positive it "
+               "shipped with was found by blocking a person mid-work",
+    ),
+    Mutation(
+        name="a plain 403 starts holding downloads like a bot wall",
+        path="backend/src/lib/downloadHealth.ts",
+        # The asymmetry is the design: a bot wall is YouTube saying "you", a 403
+        # is the stale-yt-dlp signature that the daily updater may fix any minute.
+        # Holding on a 403 would hide the recovery the health record exists to show.
+        find="  if (h.lastFailKind !== 'botwall' || !h.lastFailAt) return null;",
+        replace="  if (!h.lastFailAt) return null; /* mutation: every failure kind holds */",
+        test=T_UNIT,
+        expect="a forbidden (403) failure never holds downloads",
+        guards="the 2026-09 outage was a 403; under this mutant the fix would have "
+               "deployed and the site would have kept refusing viewers for 15 minutes "
+               "after every failed attempt, indistinguishable from still-broken",
+    ),
+    Mutation(
+        name="/stream ignores the bot-wall hold",
+        path="backend/src/routes/translate.ts",
+        # `hold.hold && !hold.hold` is always false and type-checks; `false &&`
+        # would narrow and risk an unreachable-code diagnostic (the compiler
+        # trap the account-security rows hit). Under this mutant the request falls
+        # through to the daemon, which tries the fake id - one harmless YouTube
+        # "unavailable" - so the row is also cheap to watch fail.
+        find="  if (hold.hold) {",
+        replace="  if (hold.hold && !hold.hold) { /* mutation: hold never applies */",
+        test=T_HOLD,
+        expect="FAIL: stream refused while holding",
+        guards="without the gate every viewer who opens a trailer during a block "
+               "sends one more request at a blocked IP - the production twin of the "
+               "hand-retry loop tools/yt_guard.py exists to stop",
+    ),
     Mutation(
         name="Jellyfin API key is no longer stripped from transcodingUrl",
         path=BACKEND_JF,
@@ -570,7 +1107,7 @@ MUTATIONS: list[Mutation] = [
         # "Server busy" was written for a human and only ever reached the
         # console; the viewer saw a trailer with no subtitles, identical to a
         # trailer that simply has none.
-        find="          showTranslationError(data.error);",
+        find="          showTranslationError(withHoldHint(data.error, data.holdUntil));",
         replace="          /* mutation: console-only again */",
         flows=("translation error visible",),
         test=T_UI,
@@ -1430,7 +1967,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="Escape stops closing the trailer modal",
         path="frontend/src/components/AnimeGridTranslate.svelte",
-        find="    if (modal && e.key === 'Escape') closeModal();",
+        find="    if (modal && e.key === 'Escape' && !document.fullscreenElement) closeModal();",
         replace="    /* mutation: escape disabled */",
         flows=("trailer modal esc",),
         test=T_UI,
@@ -2032,7 +2569,7 @@ def wait_for_backend(timeout: float = 90.0) -> None:
 #: Tests that read the mutated file off disk and compile it themselves, never
 #: talking to :3000. `npm run test:unit` is node --test over the .test.ts files;
 #: the replay is pure and makes zero HTTP calls (asserted: no requests import).
-OFFLINE_TESTS = (T_UNIT, T_REPLAY)
+OFFLINE_TESTS = (T_UNIT, T_REPLAY, T_YTGUARD, T_VERDICT)
 
 
 def _is_offline(m: Mutation) -> bool:

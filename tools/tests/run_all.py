@@ -138,6 +138,10 @@ def main():
         # short one from a complete one, so the shape is asserted on every push.
         ("Sonarr list",      ["py", "-3.13", "-u", str(TESTS / "test_sonarr.py"),
                               "--backend", args.backend],     None, 120),
+        # The queue rule is unit-tested off the network; this covers the half a
+        # unit test cannot - that the verdict reaches the page, over real rows.
+        ("candidate sep",    ["py", "-3.13", "-u", str(TESTS / "test_candidate_separation.py"),
+                              "--backend", args.backend],     None, 60),
         ("title match",      ["npm", "run", "test:unit"],     REPO / "backend",  60),
         # `vite build` does not type-check .svelte script blocks, so a reference
         # to a deleted identifier compiles and ships. This is the only check
@@ -158,15 +162,38 @@ def main():
         # unaudited. Catching it costs a second and no servers, so it belongs on
         # every push rather than waiting for the next audit.
         ("audit anchors",    ["py", "-3.13", "-u", str(TESTS / "test_audit_anchors.py")], None, 30),
+        # Offline, sub-second. The YouTube budget guard: every matcher decision
+        # was wrong once and found by blocking a person; this pins all of them.
+        ("yt guard",         ["py", "-3.13", "-u", str(TESTS / "test_yt_guard.py")], None, 30),
+        # Offline. A batch run that mostly failed must exit non-zero and say why;
+        # four Sunday runs with 46/49 failures once exited 0.
+        ("run verdict",      ["py", "-3.13", "-u", str(TESTS / "test_run_verdict.py")], None, 30),
         # The live corpus check is too slow to gate a push (numbers in
         # test_match_replay.py's docstring). This replays the same shipping
         # matcher over frozen fixtures in seconds, and asserts twelve real
         # false positives BY NAME rather than by a summary count.
         ("match replay",     ["py", "-3.13", "-u", str(TESTS / "test_match_replay.py")], None, 120),
     ]
-    # The browser checks. Run sequentially so they don't fight over the dev
-    # server or share stale state.
+    # Sequential: the browser checks, so they don't fight over the dev server
+    # or share stale state - and, first, the two checks that MUTATE global
+    # backend state (an AppConfig row each) and restore it. In the parallel
+    # group a concurrent /stream or /check from another test could land inside
+    # the injected bot-wall window and fail for a reason nobody was testing.
     sequential_checks: list[tuple[str, list[str], Path | None, int]] = [
+        # The production twin of the guard: /stream, /check and /check-batch must
+        # refuse new YouTube work while YouTube is refusing us. Injects a bot-wall
+        # failure into AppConfig.subtitleDownloadHealth and restores it; makes no
+        # YouTube request while the guard holds.
+        ("download hold",    ["py", "-3.13", "-u", str(TESTS / "test_download_hold.py")], None, 60),
+        # The Sunday run's self-report route: stored, surfaced in /report, and
+        # admin-only (the admin page repeats whatever is stored). Overwrites and
+        # restores AppConfig.subtitleLocalRunStatus.
+        ("local-run report", ["py", "-3.13", "-u", str(TESTS / "test_local_run_report.py")], None, 90),
+        # The upstream status page. Sequential for the same reason: it rewrites
+        # AppConfig.upstreamHealth and alertSettings and restores both. It also
+        # forces a probe run, so it makes one real call to each configured
+        # service - which is the point, and why it is not in the parallel group.
+        ("service status",   ["py", "-3.13", "-u", str(TESTS / "test_status_page.py")], None, 240),
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),
                              "--frontend", args.frontend],     None, 120),
         ("UI interactions", ["py", "-3.13", "-u", str(TESTS / "test_ui_interactions.py"),

@@ -1195,7 +1195,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         page.goto(frontend)
         page.evaluate("t => { localStorage.setItem('token', t);"
                       " localStorage.setItem('username', 'admin_probe'); }", tok)
-        page.goto(f"{frontend}/admin/matching")
+        page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
         page.wait_for_selector("[data-matching-list], [data-matching-empty], [data-matching-error]",
                                timeout=30_000)
         page.wait_for_timeout(1000)
@@ -1239,7 +1239,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             # Stop the completion poll the click started (it would tick against
             # the real backend for the rest of the file) - navigation destroys
             # the component and its interval.
-            page.goto(f"{frontend}/admin/matching")
+            page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
             page.wait_for_selector(
                 "[data-matching-list], [data-matching-empty], [data-matching-error]",
                 timeout=30_000)
@@ -1325,7 +1325,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         page.route(LOOKUP_ROUTE, lambda rt: rt.fulfill(
             status=200, content_type="application/json", body=LOOKUP_BODY))
         try:
-            page.goto(f"{frontend}/admin/matching")
+            page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
             page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
             page.wait_for_timeout(1000)
             page.locator("[data-filter-mode]").select_option("attention+accepts")
@@ -1355,7 +1355,7 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             requests.put(f"{backend}/api/jellyfin/identity", headers=ah, timeout=15,
                          json={"anilistId": mid, "tvdbId": "99999998", "source": "remote",
                                "pending": True, "note": "remote: unverified"})
-            page.goto(f"{frontend}/admin/matching")
+            page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
             page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
             page.wait_for_timeout(1000)
             unv = (page.locator("[data-matching-list] li", has_text=seed_title)
