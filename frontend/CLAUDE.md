@@ -524,6 +524,23 @@ the root guide. What lives nowhere else:
 - Each unmatched row captions its own standing: "auto-searched 2 d ago -
   retries in ~5 h".
 
+**`data-*` attributes are this codebase's test handles.** Randomize's picker has
+carried a set for a long time (`data-pick-open`, `data-library-status`,
+`data-not-aired`); the surfaces that had none were exactly the ones no test had
+ever driven. Six more were added with the flows that drive them:
+`data-list-row` / `data-rank-row` (the two drag sidebars, whose rows otherwise
+have no identity at all), `data-user-row` + `data-act` + `data-row-notice`
+(`/admin/users`, where **two buttons in adjacent columns both read `Clear`** and
+one of them clears an email), `data-svc-row` + `data-svc-state` + `data-probe-now`
++ `data-alert-master` (`/admin/status`), `data-reset-step` + `data-reset-error`
+(the reset page, whose two password fields share a placeholder) and
+`data-nickname-row`. Extend that set rather than keying a new test to button
+text - a copy edit should not be able to turn a test green by accident.
+
+Fixed on the way past: both drag sidebars emitted `<title id="drag-title">`
+inside *every* row, so the id was duplicated and each row's `aria-labelledby`
+pointed at the first row's title. It is `drag-title-{item.id}` now.
+
 **Misc**
 - The header logo's `?` badge tooltip shows the deployed version - the
   `YYYYMMDD-<sha>` tag injected by CI (`APP_VERSION` build-arg ->

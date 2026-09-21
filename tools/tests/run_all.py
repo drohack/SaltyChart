@@ -196,8 +196,12 @@ def main():
         ("service status",   ["py", "-3.13", "-u", str(TESTS / "test_status_page.py")], None, 240),
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),
                              "--frontend", args.frontend],     None, 120),
+        # 36 flows, measured 175 s on a quiet box (2026-09-21). The budget was
+        # 180 s against a 158 s run and seven new flows walked it to the edge -
+        # a timeout here reads as a hard DO NOT deploy, so the headroom is
+        # deliberate rather than tight.
         ("UI interactions", ["py", "-3.13", "-u", str(TESTS / "test_ui_interactions.py"),
-                             "--backend", args.backend, "--frontend", args.frontend], None, 180),
+                             "--backend", args.backend, "--frontend", args.frontend], None, 360),
         ("subtitle paths",  ["py", "-3.13", "-u", str(TESTS / "test_subtitle_paths.py"),
                              "--backend", args.backend, "--frontend", args.frontend], None, 120),
         ("Jellyfin player", ["py", "-3.13", "-u", str(TESTS / "test_player.py"),

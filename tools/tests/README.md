@@ -9,7 +9,9 @@ restore it, then the four browser checks; 8 with the burned-in GPU test - so
 **23/24** checks in total. Wall-clock varies with cache warmth and what Jellyfin
 is doing: **~6.5 min** with `--skip-burned-in`, re-measured 2026-09-21 at 23
 checks (a 35 s parallel phase, then 353 s of sequential checks - the player and
-the UI flows are 159 s and 158 s of that, and nothing else exceeds 36 s).
+the UI flows are 159 s and 158 s of that, and nothing else exceeds 36 s). The UI
+flows went to **175 s at 36 flows** later the same day, which is why that check's
+own timeout is 360 s rather than the 180 s it sat at while the run took 158 s.
 
 ## One-shot pre-deploy
 
@@ -70,7 +72,7 @@ start rather than pass vacuously against missing data.
 | `test_audit_anchors.py` | Every `mutation_audit.py` row still points at code that exists; `EXPLORATORY.md`, the three `CLAUDE.md` guides and `.claude/rules/*.md` cite no dead file paths or `file.ext:NN` line references; the guide split holds (root inside its size budget, every moved section still pointed at from the root, no stub grown back into a second copy); and every path-scoped rule is committable and carries `paths:` frontmatter. The cheap half of doc/anchor rot | nothing | ~2s |
 | `test_match_replay.py` | Replays the shipping `matchSeries` over a frozen 8-season corpus and diffs every verdict against a committed baseline; twelve real false positives asserted by name. SKIPs where the (gitignored) fixtures haven't been built | fixtures built locally (else SKIP) | ~30s |
 | `test_frontend_smoke.py` | Home/Login/SignUp/Randomize/Compare pages render with no console errors, auth-gated routes accessible after signup | backend + frontend | ~20s |
-| `test_ui_interactions.py` | 29 flows: button-click smoke (login, search, hide 18+, season, watched-trailer, theme, wheel, logout, modal Escape, Compare with 2 users), the exploratory-pass guards (no-results message, zero availability calls + disabled Hide button on an unaired season, check-batch chunking, visible translation errors, phone sidebar collapsed, guest options + Compare's missing-user warning, an oversized wheel image warning instead of wedging the page, a theme choice surviving signup), admin page, unknown-never-hides, share-as-image, progressive loading, three silent-failure paths (unreachable library, hung backend, failed hide write), and the /admin/matching review of a resolver title-text accept | backend + frontend | ~3 min |
+| `test_ui_interactions.py` | 36 flows: button-click smoke (login, search, hide 18+, season, watched-trailer, theme, wheel, logout, modal Escape, Compare with 2 users), the exploratory-pass guards (no-results message, zero availability calls + disabled Hide button on an unaired season, check-batch chunking, visible translation errors, phone sidebar collapsed, guest options + Compare's missing-user warning, an oversized wheel image warning instead of wedging the page, a theme choice surviving signup), admin page, unknown-never-hides, share-as-image, progressive loading, three silent-failure paths (unreachable library, hung backend, failed hide write), the /admin/matching review of a resolver title-text accept, and **seven ordinary actions a user performs that nothing used to** - reordering My List and the Randomize watched list (the two drag surfaces, two different endpoints), the password-reset page end to end, /admin/users, /admin/status badge states, Compare's share-as-image, and setting and displaying a nickname | backend + frontend | ~3 min |
 | `test_subtitle_paths.py` | Subtitle Paths B/C/D - YouTube English CC (plus: the fullscreen button is there and works while YouTube CC is active, and Escape in fullscreen keeps the modal - the path that lost fullscreen once), Whisper overlay (`.sc-subtitle`), CC toggle persistence | backend + frontend + populated SubtitleCache | ~15s |
 | `test_player.py` | 10 steps driving the **real Jellyfin player**, which nothing else does: pop-up pre-warm fires and no stream starts early, playback actually advances, exactly one subtitle menu defaulting to plain English, `[`/`]` stepping 0.10 with the control bar hidden, burned-in subtitles verified in the pixels (12 frames sampled with subtitles on and off), the quality menu reaching 480p in one restart, Escape stopping the transcode. Skips when Jellyfin is unconfigured or nothing in the season is in the library | backend + frontend + Jellyfin | ~2 min |
 | `test_burned_in_detection.py` | Whisper large-v3 + OCR + sentence-transformers burned-in detection: Eren=yes, Sparks=no | CUDA GPU, backend running | ~60s |
@@ -124,7 +126,7 @@ anything it finds twice should graduate into this suite with a
 `mutation_audit.py` row. Read its *Traps* section before starting; several
 plausible-looking "bugs" there are measurement artifacts.
 
-The mutation audit itself is 159 rows (2026-09-21; the last full run measured
+The mutation audit itself is 166 rows (2026-09-21; the last full run measured
 86 rows in 21 min on 2026-08-06), and a full run **prints its own wall clock** on the last line
 (`N rows, M min, measured <date>`) - quote that, never an estimate. It warms
 the season cache once at the start, so a full run has to fit inside the 6 h

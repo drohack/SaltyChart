@@ -108,7 +108,7 @@ A row costs what its **mutant** run costs, which is not what the test costs
 normally - and the two differ in opposite directions depending on the test.
 `test_jellyfin` and `test_player` call `fail()`, which `sys.exit(1)`s at the
 guarded step, so a caught row pays only as far as its own assertion.
-`test_ui_interactions` catches per flow and **runs all 29 regardless**, so an
+`test_ui_interactions` catches per flow and **runs all 36 regardless**, so an
 un-narrowed UI row pays the whole suite every time. That asymmetry, not the
 nominal cost of each test, is why narrowing mattered enormously for UI rows and
 not at all for Jellyfin ones. Measured per row on a full audit:
@@ -119,7 +119,7 @@ not at all for Jellyfin ones. Measured per row on a full audit:
 | `T_JELLYFIN` | ~13 s | exits at the guarded step; a *clean* 13-step run is 60-90 s |
 | `T_UI` with `flows=(...)` | ~3-37 s | one self-sufficient flow - the only way to write a UI row |
 | `T_NEGATIVE` | ~10-30 s | |
-| `T_UI`, no `flows` | **~142 s** | all 29 flows; nothing stops early. No row does this any more |
+| `T_UI`, no `flows` | **~175 s** | all 36 flows; nothing stops early. No row does this any more |
 | `player(...)` | minutes | real transcodes; keep the step list narrow |
 
 - **Pin the invariant at the cheapest layer that can see it.** `classifyMatch`'s
@@ -128,7 +128,7 @@ not at all for Jellyfin ones. Measured per row on a full audit:
 - **Name the flow on a `T_UI` row** (`flows=("remote accept visible",)`). Only
   labels in that file's `SELECTABLE_FLOWS` are allowed, because a flow that
   inherits state from its predecessors passes alone while proving nothing.
-  All 33 UI rows now name one; the un-narrowed default remains only so that
+  All 40 UI rows now name one; the un-narrowed default remains only so that
   forgetting is slow rather than wrong.
 - **An inherited precondition is a bug in the flow, not a reason to keep it off
   the allowlist.** `phone sidebar collapsed` was the standing counter-example -
@@ -185,7 +185,7 @@ phase plus 353 s of sequential checks) and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin - an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate - it edits tracked source, restarts the
-backend twice per row (159 rows as of 2026-09-21) and starts real transcodes, which is not
+backend twice per row (166 rows as of 2026-09-21) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
 line is the only figure worth quoting. Last measured: **86 rows in 21 min**
