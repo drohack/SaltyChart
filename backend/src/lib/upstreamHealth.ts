@@ -52,6 +52,16 @@ export interface UpstreamRecord {
    * must never render as a fault; cleared by the first real result either way.
    */
   lastSkipped: string | null;
+  /**
+   * When we last MAILED that this service is down, or null.
+   *
+   * Exists so "announce once" survives a rule that is no longer a single
+   * equality: the streak and the quiet window can become true in either order.
+   * It is also what pairs the recovery mail to an outage we actually reported -
+   * keying recovery off the streak instead would announce a recovery from an
+   * outage nobody was told about.
+   */
+  downAlertedAt: string | null;
 }
 
 export const EMPTY_RECORD: UpstreamRecord = {
@@ -64,6 +74,7 @@ export const EMPTY_RECORD: UpstreamRecord = {
   failCount: 0,
   lastCheckedAt: null,
   lastSkipped: null,
+  downAlertedAt: null,
 };
 
 /** What a probe says. `skipped` is NOT a failure - see `UpstreamState`. */
@@ -253,6 +264,26 @@ export function upstreamById(id: string): UpstreamSpec | undefined {
  * `brokenAfter` - not before, not on any failure after it. That single edge is
  * what gets logged and mailed; mailing every failure is how an alert gets muted.
  */
+/**
+ * A run of failures only means "down" if NOTHING succeeded for this long.
+ *
+ * A streak alone is not an outage, and skyhook proved it: measured over one
+ * evening it answered 66 calls and failed 16 - a 19.5% failure rate, every one
+ * a 500, while working perfectly well. The resolver drains at 300 ms per call,
+ * so three consecutive failures is 0.9 SECONDS, and at that failure rate a few
+ * hundred drain calls are near-certain to contain such a run. It mailed "not
+ * responding" and "working again" one minute apart.
+ *
+ * Raising the threshold (3 -> 6) was the first response and it was tuning, not
+ * fixing: six in a row is still about two seconds. What separates a flaky
+ * upstream from a dead one is not how many failures arrive in a burst, it is
+ * whether ANY call has succeeded recently. Ten minutes is comfortably longer
+ * than any burst inside a drain and comfortably shorter than an outage worth
+ * an email - a probed service retries every CONFIRM_RETRY_MS (5 min), so a
+ * genuinely dead service clears this in two retries.
+ */
+export const MIN_OUTAGE_MS = 10 * 60_000;
+
 export function failureTransition(
   rec: UpstreamRecord,
   reason: string,
@@ -261,6 +292,17 @@ export function failureTransition(
   brokenAfter: number,
 ): { next: UpstreamRecord; crossed: boolean } {
   const streak = rec.consecutiveFailures + 1;
+  // Has anything worked lately? A success moments ago means this is a flaky
+  // upstream mid-burst, not an outage - see MIN_OUTAGE_MS. No success ever
+  // recorded counts as "not recently": a service that has never answered is
+  // exactly the one worth hearing about.
+  const sinceOk = rec.lastOkAt ? Date.parse(nowIso) - Date.parse(rec.lastOkAt) : Infinity;
+  const quiet = !Number.isFinite(sinceOk) || sinceOk >= MIN_OUTAGE_MS;
+  // `>=` and a stored flag rather than `=== brokenAfter`, because the two
+  // conditions can now become true in either order: the streak may reach the
+  // threshold while a success is still recent, and the window opens later. The
+  // flag is what keeps it to one mail, and okTransition clears it.
+  const crossed = streak >= brokenAfter && quiet && !rec.downAlertedAt;
   return {
     next: {
       ...rec,
@@ -271,8 +313,9 @@ export function failureTransition(
       failCount: rec.failCount + 1,
       lastCheckedAt: nowIso,
       lastSkipped: null,
+      downAlertedAt: crossed ? nowIso : rec.downAlertedAt,
     },
-    crossed: streak === brokenAfter,
+    crossed,
   };
 }
 
@@ -282,6 +325,10 @@ export function okTransition(
   nowIso: string,
   brokenAfter: number,
 ): { next: UpstreamRecord; recovered: boolean } {
+  // Announce recovery only from an outage we actually announced. `brokenAfter`
+  // stays in the signature because the downloadHealth twin still takes it and
+  // the agreement test compares them.
+  void brokenAfter;
   return {
     next: {
       ...rec,
@@ -290,8 +337,9 @@ export function okTransition(
       okCount: rec.okCount + 1,
       lastCheckedAt: nowIso,
       lastSkipped: null,
+      downAlertedAt: null,
     },
-    recovered: rec.consecutiveFailures >= brokenAfter,
+    recovered: !!rec.downAlertedAt,
   };
 }
 

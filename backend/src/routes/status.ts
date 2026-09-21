@@ -54,6 +54,9 @@ async function youtubeRecord(): Promise<UpstreamRecord> {
     failCount: h.failCount,
     lastCheckedAt: h.lastOkAt ?? h.lastFailAt,
     lastSkipped: null,
+    // downloadHealth keeps its own once-only logging, so this composed view
+    // never drives an alert and has nothing to remember.
+    downAlertedAt: null,
   };
 }
 

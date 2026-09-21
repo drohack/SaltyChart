@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EMPTY_RECORD,
+  MIN_OUTAGE_MS,
   UPSTREAMS,
   failureTransition,
   okTransition,
@@ -23,7 +24,9 @@ test('the down alert fires once, at the crossing, not on every failure after it'
   // The rule the whole design rests on: one failure is a blip, a run of them is
   // an outage, and mailing every failure after the first is how an alert gets
   // filtered into a folder nobody opens.
-  let r = rec();
+  // lastOkAt well before the window, so the quiet condition is satisfied and
+  // this test is about the "once" rule alone.
+  let r = rec({ lastOkAt: new Date(Date.parse(NOW) - 60 * 60_000).toISOString() });
   const crossings: number[] = [];
   for (let i = 1; i <= 6; i++) {
     const t = failureTransition(r, `fail ${i}`, 500, NOW, 3);
@@ -38,25 +41,84 @@ test('the down alert fires once, at the crossing, not on every failure after it'
 test('each service gets its own threshold', () => {
   // Not cosmetic: AniList answers 429 as normal operation and needs a longer
   // run before we call it down, while SMTP failing twice is already serious.
-  const two = failureTransition(rec({ consecutiveFailures: 1, failCount: 1 }), 'x', null, NOW, 2);
+  const old = new Date(Date.parse(NOW) - 60 * 60_000).toISOString();
+  const two = failureTransition(rec({ consecutiveFailures: 1, failCount: 1, lastOkAt: old }), 'x', null, NOW, 2);
   assert.equal(two.crossed, true, 'brokenAfter 2 crosses on the second failure');
-  const five = failureTransition(rec({ consecutiveFailures: 1, failCount: 1 }), 'x', null, NOW, 5);
+  const five = failureTransition(rec({ consecutiveFailures: 1, failCount: 1, lastOkAt: old }), 'x', null, NOW, 5);
   assert.equal(five.crossed, false, 'brokenAfter 5 does not');
 });
 
-test('recovery is announced only when the service was actually down', () => {
-  const down = okTransition(rec({ consecutiveFailures: 3, failCount: 3 }), NOW, 3);
+test('recovery is announced only for an outage we actually reported', () => {
+  // Keyed on the stored flag, not on the streak. Since a streak at the
+  // threshold no longer implies a mail went out, reading recovery off the
+  // streak would announce "working again" for an outage nobody was told about -
+  // which is worse than silence, because it implies a first mail was missed.
+  const down = okTransition(rec({ consecutiveFailures: 3, failCount: 3, downAlertedAt: NOW }), NOW, 3);
   assert.equal(down.recovered, true);
   assert.equal(down.next.consecutiveFailures, 0, 'a success clears the streak');
-  const blip = okTransition(rec({ consecutiveFailures: 2, failCount: 2 }), NOW, 3);
-  assert.equal(blip.recovered, false, 'it never crossed, so there is nothing to announce');
+  assert.equal(down.next.downAlertedAt, null, 'and re-arms the next outage');
+  const blip = okTransition(rec({ consecutiveFailures: 9, failCount: 9 }), NOW, 3);
+  assert.equal(blip.recovered, false, 'a long streak we never announced has nothing to announce');
 });
 
-test('the transitions agree with downloadHealth at the default threshold', () => {
-  // These are a threshold-aware TWIN of downloadHealth's, not shared code:
-  // per-service thresholds are the point here, and that module's constants are
-  // pinned by a mutation row. Two implementations of one rule only stay honest
-  // if something says when they disagree - the MODEL_RANK lesson.
+test('a burst of failures is not an outage while something just worked', () => {
+  // The rule this whole gate exists for. skyhook answered 66 calls and failed
+  // 16 in one evening - 19.5%, every one a 500 - while working fine. The
+  // resolver drains at 300 ms per call, so ten consecutive failures is three
+  // SECONDS, and it mailed "not responding" then "working again" a minute
+  // apart. A success moments ago is proof the service is reachable.
+  const justWorked = new Date(Date.parse(NOW) - 1_000).toISOString();
+  let r = rec({ lastOkAt: justWorked });
+  for (let i = 1; i <= 10; i++) {
+    const t = failureTransition(r, `500 #${i}`, 500, NOW, 3);
+    assert.equal(t.crossed, false, `failure ${i} must not be called an outage`);
+    r = t.next;
+  }
+  assert.equal(r.consecutiveFailures, 10, 'the streak is still counted, just not believed');
+});
+
+test('the same streak IS an outage once nothing has worked for the window', () => {
+  // The other direction, or the gate would just be a mute button.
+  const stale = new Date(Date.parse(NOW) - MIN_OUTAGE_MS - 1_000).toISOString();
+  const t = failureTransition(rec({ consecutiveFailures: 2, failCount: 2, lastOkAt: stale }), 'boom', 500, NOW, 3);
+  assert.equal(t.crossed, true);
+  assert.ok(t.next.downAlertedAt, 'and it remembers, so the next failure is quiet');
+});
+
+test('a service that has NEVER answered is not given the benefit of the doubt', () => {
+  // `lastOkAt: null` must read as "nothing has worked", not as "something
+  // worked just now". A brand-new service that has never once answered is
+  // exactly the one worth hearing about.
+  const t = failureTransition(rec({ consecutiveFailures: 2, failCount: 2 }), 'boom', 500, NOW, 3);
+  assert.equal(t.crossed, true);
+});
+
+test('the outage is announced once even when the window opens later', () => {
+  // The ordering the old `=== brokenAfter` could not express: the streak can
+  // pass the threshold while a success is still recent, and the window opens
+  // afterwards. Exactly one mail, at whichever moment both became true.
+  const justWorked = Date.parse(NOW) - 1_000;
+  let r = rec({ lastOkAt: new Date(justWorked).toISOString() });
+  let crossings = 0;
+  for (let i = 1; i <= 8; i++) {
+    // Time advances a few minutes per failure; the success recedes.
+    const at = new Date(justWorked + i * 3 * 60_000).toISOString();
+    const t = failureTransition(r, 'boom', 500, at, 3);
+    if (t.crossed) crossings++;
+    r = t.next;
+  }
+  assert.equal(crossings, 1, 'exactly one mail, however the two conditions line up');
+});
+
+test('the twin still agrees on the streak, and is deliberately stricter on the mail', () => {
+  // These were a threshold-aware twin of downloadHealth's and were asserted to
+  // agree exactly. They no longer do, ON PURPOSE, and that divergence is worth
+  // stating rather than deleting the test: downloadHealth watches a path whose
+  // calls are MINUTES apart, so three in a row already spans time, while this
+  // module watches services the resolver hammers hundreds of times a minute.
+  //
+  // What must still agree is the arithmetic - the streak, and a success
+  // clearing it. What differs is only whether a streak is believed.
   for (let streak = 0; streak <= 5; streak++) {
     const mine = failureTransition(rec({ consecutiveFailures: streak }), 'boom', null, NOW, BROKEN_AFTER);
     const theirs = downloadFailureTransition(
@@ -64,8 +126,8 @@ test('the transitions agree with downloadHealth at the default threshold', () =>
         lastFailKind: null, consecutiveFailures: streak, okCount: 0, failCount: 0 },
       'boom', 'other', NOW,
     );
-    assert.equal(mine.crossed, theirs.crossed, `crossed disagrees at streak ${streak}`);
-    assert.equal(mine.next.consecutiveFailures, theirs.next.consecutiveFailures);
+    assert.equal(mine.next.consecutiveFailures, theirs.next.consecutiveFailures,
+      `streak arithmetic disagrees at ${streak}`);
 
     const mineOk = okTransition(rec({ consecutiveFailures: streak }), NOW, BROKEN_AFTER);
     const theirsOk = downloadOkTransition(
@@ -73,8 +135,15 @@ test('the transitions agree with downloadHealth at the default threshold', () =>
         lastFailKind: null, consecutiveFailures: streak, okCount: 0, failCount: 0 },
       NOW,
     );
-    assert.equal(mineOk.recovered, theirsOk.recovered, `recovered disagrees at streak ${streak}`);
+    assert.equal(mineOk.next.consecutiveFailures, theirsOk.next.consecutiveFailures);
   }
+
+  // And the divergence itself, pinned: a recent success mutes us and not them.
+  const justWorked = new Date(Date.parse(NOW) - 1_000).toISOString();
+  const muted = failureTransition(
+    rec({ consecutiveFailures: BROKEN_AFTER - 1, lastOkAt: justWorked }), 'boom', null, NOW, BROKEN_AFTER);
+  assert.equal(muted.crossed, false,
+    'a recent success must mute this module even at the threshold');
 });
 
 test('a service nobody has checked reads unknown, never ok', () => {
