@@ -31,6 +31,7 @@ import re
 import os
 import subprocess
 import tempfile
+import time
 
 # Seconds between consecutive trailer downloads in the batch scripts.
 #
@@ -231,6 +232,10 @@ _FRIENDLY = {
 #
 # The two thresholds exist so a run is not failed by the normal case - a couple
 # of private or removed trailers - but IS failed when most of it did not happen.
+# Pause before the single 403 retry in `download_audio`. Long enough that we are
+# not hammering the edge that just refused, short enough to stay inside a run.
+RETRY_403_DELAY_S = 3.0
+
 RUN_FAIL_MIN = 3        # fewer failures than this can never fail a run
 RUN_FAIL_RATIO = 0.5    # more than this share of attempts failing does
 
@@ -357,11 +362,42 @@ def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
             "key": "FFmpegExtractAudio",
             "preferredcodec": "wav",
         }]
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(
-            f"https://www.youtube.com/watch?v={video_id}", download=True
-        )
-        duration = info.get("duration", 120)
+    # ONE retry, and only for a 403.
+    #
+    # Measured rather than assumed: a run failed six trailers with
+    # `HTTP Error 403: Forbidden` after extraction had already succeeded, and
+    # re-running ONE of them minutes later downloaded it in full (Firefly
+    # Wedding, 14 MB, 79 s, same yt-dlp, same options). So that 403 is transient
+    # - a CDN edge refusing a particular request - and giving up on first sight
+    # silently drops trailers that are perfectly fetchable.
+    #
+    # Deliberately narrow, because request volume is what trips YouTube's IP
+    # block and that block then prevents verifying anything:
+    #   * only `forbidden` retries. A dead video and a bot wall must NOT - the
+    #     first can never succeed and the second is YouTube saying "you", where
+    #     retrying deepens the block that `_is_bot_block` exists to escape.
+    #   * exactly one extra attempt, so a failing video costs 2 requests, never
+    #     a loop.
+    #   * a short pause first, since an immediate retry to the edge that just
+    #     refused is the least likely to work and the most likely to look like
+    #     hammering.
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}", download=True
+                )
+                duration = info.get("duration", 120)
+            break
+        except Exception as e:                       # noqa: BLE001 - re-raised below
+            last_err = e
+            msg = str(e)
+            if attempt == 2 or classify_error(msg) != "forbidden":
+                raise
+            time.sleep(RETRY_403_DELAY_S)
+    else:                                            # pragma: no cover - loop always breaks or raises
+        raise last_err
 
     # Locate the produced file (extension depends on as_wav / source format).
     for name in os.listdir(tmpdir):

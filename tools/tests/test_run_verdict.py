@@ -190,6 +190,91 @@ check("an old pip's 'no such option' triggers exactly one retry without the flag
       repr(pip_calls))
 check("the retried run is not reported as an update failure", not any("update failed" in x for x in said), repr(said))
 
+print("-- a transient 403 is retried once, and nothing else is --", flush=True)
+
+# Measured before this existed: a run failed six trailers with `HTTP Error 403:
+# Forbidden` AFTER extraction had already succeeded, and re-running one of them
+# minutes later downloaded it in full (Firefly Wedding, 14 MB, 79 s, same
+# yt-dlp, same options). So that 403 is transient and giving up on first sight
+# silently drops trailers that are perfectly fetchable.
+#
+# The retry has to stay narrow, because request volume is what trips YouTube's
+# IP block - and a block then prevents verifying anything. A fake yt_dlp lets
+# this assert the policy offline, without a single real request.
+import types  # noqa: E402
+
+
+class _FakeYDL:
+    """Stands in for yt_dlp.YoutubeDL. Raises `script` errors in order."""
+
+    def __init__(self, opts):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def extract_info(self, url, download=True):
+        _FakeYDL.calls += 1
+        err = _FakeYDL.script.pop(0) if _FakeYDL.script else None
+        if err:
+            raise RuntimeError(err)
+        return {"duration": 42}
+
+
+def _run_download(script, tmp_has_file=True):
+    """Drive download_audio against the fake, returning (attempts, outcome)."""
+    _FakeYDL.calls = 0
+    _FakeYDL.script = list(script)
+    fake = types.ModuleType("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    saved = sys.modules.get("yt_dlp")
+    sys.modules["yt_dlp"] = fake
+    saved_sleep = ts.time.sleep
+    ts.time.sleep = lambda *_a, **_k: None          # no real backoff in a test
+    saved_listdir = os.listdir
+    ts.os.listdir = lambda d: (["full.wav"] if tmp_has_file else [])
+    try:
+        try:
+            ts.download_audio("VIDEOID", "/tmp")
+            return _FakeYDL.calls, "ok"
+        except Exception as e:                       # noqa: BLE001
+            return _FakeYDL.calls, ts.classify_error(str(e))
+    finally:
+        ts.os.listdir = saved_listdir
+        ts.time.sleep = saved_sleep
+        if saved is None:
+            sys.modules.pop("yt_dlp", None)
+        else:
+            sys.modules["yt_dlp"] = saved
+
+
+FORBIDDEN = "unable to download video data: HTTP Error 403: Forbidden"
+attempts, outcome = _run_download([FORBIDDEN, None])
+check("a 403 is retried once and the second attempt is kept",
+      attempts == 2 and outcome == "ok", f"attempts={attempts} outcome={outcome}")
+
+attempts, outcome = _run_download([FORBIDDEN, FORBIDDEN])
+check("a 403 that fails twice gives up - one retry, never a loop",
+      attempts == 2 and outcome == "forbidden", f"attempts={attempts} outcome={outcome}")
+
+# The two that must NEVER be retried, and they are the safety argument: a dead
+# video can never succeed, and retrying a bot wall deepens the block that
+# aborting exists to escape.
+attempts, outcome = _run_download(["ERROR: [youtube] X: Video unavailable"] * 2)
+check("a dead video is not retried", attempts == 1 and outcome == "unavailable",
+      f"attempts={attempts} outcome={outcome}")
+
+attempts, outcome = _run_download(["Sign in to confirm you are not a bot"] * 2)
+check("a bot wall is not retried - retrying deepens the block",
+      attempts == 1 and outcome == "botwall", f"attempts={attempts} outcome={outcome}")
+
+attempts, outcome = _run_download([None])
+check("a clean download still costs exactly one request", attempts == 1 and outcome == "ok",
+      f"attempts={attempts} outcome={outcome}")
+
 print("-- one definition: tools/ imports the container's phrase list --", flush=True)
 sys.path.insert(0, os.path.join(HERE, ".."))
 import yt_guard as g  # noqa: E402
