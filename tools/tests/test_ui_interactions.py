@@ -109,7 +109,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 28
+TOTAL = 29
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -2008,8 +2008,84 @@ SELECTABLE_FLOWS = {
     "wheel image quota",
     "theme survives signup",
     "sonarr page renders",
+    "subtitle batch button",
 }
 
+
+
+def test_subtitle_batch_button(page, backend: str, frontend: str):
+    """/admin/subtitles can actually START a batch.
+
+    The trigger existed from the beginning - `POST /api/translate/batch`, admin
+    only, with a 409 guard shared with the auto-scheduler - and nothing on
+    screen ever reached it, so starting a run meant curl. The page showed the
+    schedule, the live tail and the last run's exit code: everything except the
+    button.
+
+    ALERTS ARE SWITCHED OFF around this. A batch that exits non-zero mails the
+    admins, and since alerts default to the owner that is a real inbox. A test
+    that mails a human on every run is the same defect as an alert that fires on
+    every failure - it trains the reader to ignore it. The master switch is
+    restored in the `finally`, because leaving alerts off after a crashed test
+    is the silent half of that bug.
+    """
+    step(29, "step 1/5: minting an admin token")
+    tok = admin_token()
+    if not tok:
+        step(29, "SKIP - could not sign an admin token (node or backend/.env missing)")
+        return
+    ah = {"Authorization": f"Bearer {tok}"}
+
+    step(29, "step 2/5: silencing alerts so this run cannot mail a human")
+    saved = requests.get(f"{backend}/api/status/report", headers=ah, timeout=20)
+    saved_settings = saved.json().get("settings") if saved.status_code == 200 else None
+    requests.put(f"{backend}/api/status/alerts", headers=ah, timeout=20,
+                 json={"masterEnabled": False, "perService": {}, "extraRecipients": []})
+    try:
+        page.goto(frontend)
+        page.evaluate("t => { localStorage.setItem('token', t);"
+                      " localStorage.setItem('username', 'admin_probe'); }", tok)
+        page.goto(f"{frontend}/admin/subtitles")
+        page.wait_for_selector("[data-batch-controls]", timeout=40_000)
+
+        step(29, "step 3/5: the control is present, enabled and honest about the model")
+        btn = page.locator("[data-run-batch]")
+        assert btn.count(), (
+            "no Run-now control on /admin/subtitles - the batch endpoint is "
+            "reachable only by curl again")
+        label = (btn.first.text_content() or "").strip()
+        # The page must not imply it can run the champion pipeline: the server
+        # is CPU-only and the image carries small + medium, nothing else.
+        assert "medium" in label.lower(), (
+            f"the button must say which model it runs (got {label!r}) - a run that "
+            "quietly produced a lower rank than the Sunday job is the confusion "
+            "the modelName ladder exists to prevent")
+
+        step(29, "step 4/5: clicking it reaches the endpoint")
+        posts: list[str] = []
+        page.on("request", lambda r: posts.append(r.method)
+                if "translate/batch" in r.url and r.method == "POST" else None)
+        page.locator("[data-batch-dry-run]").check()
+        btn.first.click()
+        page.wait_for_selector("[data-batch-notice], [data-batch-error]", timeout=20_000)
+        assert posts, "clicking Run now sent no POST to /api/translate/batch"
+        err = page.locator("[data-batch-error]")
+        assert not err.count(), f"the batch could not be started: {err.first.text_content()!r}"
+
+        step(29, "step 5/5: and the button reflects the run rather than firing blind")
+        # The fire-and-forget failure this page's siblings already taught us:
+        # a control that changes nothing on screen is indistinguishable from a
+        # dead one. Disabled-or-running is the visible consequence.
+        assert btn.first.is_disabled(), (
+            "Run now stayed enabled after starting a batch - the admin cannot "
+            "tell a started run from a dead button, and can double-fire")
+    finally:
+        if saved_settings:
+            requests.put(f"{backend}/api/status/alerts", headers=ah, timeout=20,
+                         json=saved_settings)
+        else:
+            requests.put(f"{backend}/api/status/alerts", headers=ah, timeout=20,
+                         json={"masterEnabled": True, "perService": {}, "extraRecipients": []})
 
 
 def test_sonarr_page_renders(page, frontend: str):
@@ -2163,6 +2239,7 @@ def main():
                 ("wheel image quota", lambda: test_wheel_image_quota(page, frontend, token_a)),
                 ("theme survives signup", lambda: test_theme_survives_signup_and_reload(page, args.backend, frontend)),
                 ("sonarr page renders", lambda: test_sonarr_page_renders(page, frontend)),
+                ("subtitle batch button", lambda: test_subtitle_batch_button(page, args.backend, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

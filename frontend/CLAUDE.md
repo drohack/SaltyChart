@@ -524,3 +524,28 @@ the root guide. What lives nowhere else:
 - Ctrl+Shift+R / Ctrl+F5 hard-reloads and resets the cached season selection;
   the last selected season/year is otherwise remembered for an hour.
 
+### /admin/subtitles can start a run
+
+The trigger had existed from the beginning - `POST /api/translate/batch`, admin
+only, with a 409 guard shared with the auto-scheduler and a `batch/status`
+endpoint for progress - and **nothing on screen ever reached it**, so starting a
+run meant curl. The page rendered the schedule, the live tail and the last run's
+exit code: everything except the button.
+
+It says **"Run now (medium)"** on purpose. The server is CPU-only and its image
+carries `small` and `medium`; the champion `large-v3-split` is Demucs +
+large-v3 + qwen3.5:9b on a GPU and cannot run there at all. A button that
+quietly produced a lower rank than the Sunday job is the confusion the
+`modelName` ladder exists to prevent, so the model is in the label and the
+limitation is stated under it.
+
+It disables itself while a run is going (the fire-and-forget failure this page's
+siblings already taught us), follows the run by re-reading the report the page
+is already built from rather than a second source that could disagree with it,
+and treats a 409 as "follow that one instead" rather than an error - the
+scheduler may have started it.
+
+**A test must never mail a human.** A batch exiting non-zero alerts the admins,
+and alerts default to the owner, so the browser flow switches the master alert
+off around its dry run and restores it in a `finally`. Leaving alerts off after
+a crashed test is the silent half of that bug.

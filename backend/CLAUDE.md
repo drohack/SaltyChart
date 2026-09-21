@@ -885,13 +885,18 @@ abort. It showed 0x0 for four runs of 46/49 failures before the verdict existed
 the server, so `/admin/subtitles` shows *Last run reported*, and the server mails
 the admins on a non-zero code and again if no report arrives for 8 days.
 
-**The task's credentials should come from the environment, not its arguments.**
-`-u`/`-p`/`--token` all default to `$SALTYCHART_USER` / `$SALTYCHART_PASSWORD` /
-`$SALTYCHART_TOKEN`, so the Arguments field need carry no secret - a password
-there sits in the task XML in plain text and in any process listing while the
-run goes. **`--token` is not the answer for the weekly task**: `/api/auth` signs
-**7-day** tokens (`auth.ts`), so one minted today is expired by the run after
-next. It is for a one-off, like the `--within-days` check.
+**The task's credentials live in its Arguments, and `local_translate.py` reads
+them from nowhere else.** An earlier version of this paragraph claimed `-u`/`-p`
+default to `$SALTYCHART_USER` / `$SALTYCHART_PASSWORD`; they do not - the script
+contains no `os.environ` lookup at all, and a run relying on that claim exits 2
+with `Provide --username and --password`. The env-var support was drafted and
+reverted; the sentence describing it was not, which is precisely the drift this
+guide's first rule is about. To run it by hand, pass `-u`/`-p`, or start the
+Scheduled Task itself (`Start-ScheduledTask -TaskName 'SaltyChart Translate'`),
+which reuses the stored credentials without anyone handling them.
+**`--token` is not the answer for the weekly task**: `/api/auth` signs **7-day**
+tokens (`auth.ts`), so one minted today is expired by the run after next. It is
+for a one-off, like the `--within-days` check.
 
 
 ## Upstream service status (`/api/status`)
@@ -917,6 +922,22 @@ two **agree at the default**, the same discipline `MODEL_RANK` follows.
   rejected: these are preferences, and the response echoes what was actually
   stored so the page cannot believe it saved an address the server dropped.
 - `POST /probe` - admin; run every due check now.
+
+**A streak is not an outage unless nothing succeeded for `MIN_OUTAGE_MS`
+(10 min).** The first version crossed on `streak === brokenAfter` with no notion
+of time, and skyhook proved that wrong: measured over one evening it answered 66
+calls and failed 16 - a **19.5% failure rate, every one a 500**, while working
+perfectly. The resolver drains at 300 ms a call, so three consecutive failures
+is **0.9 seconds**, and at that rate a few hundred drain calls are near-certain
+to contain such a run. It mailed *not responding* and *working again* one minute
+apart. Raising the threshold (3 -> 6) was the first response and it was tuning,
+not fixing: six in a row is still about two seconds. What separates a flaky
+upstream from a dead one is whether **anything** has succeeded recently, so the
+alert now needs both. A never-successful service counts as quiet - that one is
+worth hearing about. Because the two conditions can become true in either order,
+"once" is a stored flag (`downAlertedAt`) rather than an equality, and recovery
+is keyed off that same flag so a recovery mail can never arrive for an outage
+nobody was told about. Three mutation rows guard the three halves.
 
 **Five states, and two of them exist only to stop a reader being misled.**
 `stateOf` decides `ok` / `failing` / `down` / `unknown` / `notConfigured` **on

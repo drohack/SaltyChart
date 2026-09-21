@@ -361,8 +361,12 @@ MUTATIONS: list[Mutation] = [
         path="backend/src/lib/upstreamHealth.ts",
         # The edge rule, per service. `>=` mails on every failure after the
         # third, which is how an alert becomes the noise that gets filtered.
-        find="    crossed: streak === brokenAfter,",
-        replace="    crossed: streak >= brokenAfter,  /* mutation: mails on every failure */",
+        # The "once" rule moved from `=== brokenAfter` to a stored flag when the
+        # quiet window arrived: the streak and the window can become true in
+        # either order, so an equality can no longer express "exactly one mail".
+        # Dropping the flag is the same bug in its new clothes.
+        find="  const crossed = streak >= brokenAfter && quiet && !rec.downAlertedAt;",
+        replace="  const crossed = streak >= brokenAfter && quiet;  /* mutation: mails on every failure */",
         test=T_UNIT,
         expect="the down alert fires once, at the crossing, not on every failure after it",
         guards="an alert that repeats is an alert that gets muted, and a muted "
@@ -494,6 +498,36 @@ MUTATIONS: list[Mutation] = [
         expect="waiting for locator(\"[data-match-dropdown]\")",
         guards="an admin cannot change a wrong match at all, and the failure "
                "looks like a dead button rather than an error",
+    ),
+    Mutation(
+        name="a burst of failures is called an outage",
+        path="backend/src/lib/upstreamHealth.ts",
+        # How it shipped: `crossed: streak === brokenAfter`, with no notion of
+        # time. skyhook answered 66 calls and failed 16 in one evening - 19.5%,
+        # every one a 500, while working fine - and the resolver drains at 300 ms
+        # a call, so three in a row is 0.9 SECONDS. It mailed "not responding"
+        # and "working again" one minute apart. Raising the threshold 3 -> 6 was
+        # tuning; what separates flaky from dead is whether anything succeeded
+        # recently.
+        find="  const quiet = !Number.isFinite(sinceOk) || sinceOk >= MIN_OUTAGE_MS;",
+        replace="  const quiet = true;  /* mutation: a streak is always an outage */",
+        test=T_UNIT,
+        expect="a burst of failures is not an outage while something just worked",
+        guards="an alert that cries wolf during every drain is the alert that "
+               "gets filtered into a folder nobody opens",
+    ),
+    Mutation(
+        name="recovery is announced for an outage nobody was told about",
+        path="backend/src/lib/upstreamHealth.ts",
+        # The pairing. Once "down" is no longer a single equality, reading
+        # recovery off the streak announces "working again" for an outage that
+        # was never reported - which is worse than silence, because it implies
+        # the reader missed a first mail.
+        find="    recovered: !!rec.downAlertedAt,",
+        replace="    recovered: rec.consecutiveFailures >= brokenAfter,",
+        test=T_UNIT,
+        expect="recovery is announced only for an outage we actually reported",
+        guards="an unpaired recovery mail reads as a missed outage mail",
     ),
     Mutation(
         name="the alert master switch governs nothing",

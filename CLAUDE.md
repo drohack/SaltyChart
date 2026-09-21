@@ -568,9 +568,10 @@ Every table and column, and why each cached row is persisted, is in
   **`/admin/matching`** is the human end of the matching pipeline;
   **`/admin/sonarr`** is the human end of the Sonarr auto-add;
   **`/admin/subtitles`** reports the trailer subtitle pipeline (trailers only -
-  Jellyfin episode subtitles are not covered); **`/admin/users`** is account
-  access - promote, demote, reset, delete. What each shows and why is in
-  `frontend/CLAUDE.md`.
+  Jellyfin episode subtitles are not covered) and can *start a run* - the server
+  `medium` batch, never the GPU champion, which is why the button says so;
+  **`/admin/users`** is account access - promote, demote, reset, delete. What
+  each shows and why is in `frontend/CLAUDE.md`.
 - State: simple Svelte stores in `src/stores/` (e.g. `authToken`, `userName`)
 
 #### Reading from the API - `src/lib/remote.ts`
