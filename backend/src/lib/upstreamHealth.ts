@@ -23,8 +23,10 @@
  * The transitions here are a threshold-aware twin of that module's. They are
  * not shared code, because per-service thresholds are the whole point and
  * `downloadHealth`'s are module constants pinned by a mutation row;
- * `upstreamHealth.test.ts` asserts the two agree at the default, so a drift
- * fails a test rather than going unnoticed. Same rule as `MODEL_RANK`.
+ * `upstreamHealth.test.ts` pins what must still match (the streak
+ * arithmetic) AND the divergence itself, so neither can drift unnoticed. They
+ * no longer agree on the mail: this module needs a quiet window, that one
+ * watches a path whose calls are minutes apart and does not. Same rule as `MODEL_RANK`.
  */
 import prisma from '../db';
 import { alertAdmins, ownerEmail } from './subtitleAlerts';
@@ -91,7 +93,11 @@ export interface UpstreamSpec {
   label: string;
   /** What a viewer loses while this is down. Rendered on the page and mailed. */
   impact: string;
-  /** Consecutive failures before we call it down and mail once. */
+  /**
+   * Consecutive failures before this counts as down. NOT sufficient on its own
+   * to mail: `MIN_OUTAGE_MS` must also have passed with no success - see
+   * `noRecentSuccess`.
+   */
   brokenAfter: number;
   /**
    * No probe on purpose. YouTube is the only one: what breaks there is its
@@ -260,11 +266,6 @@ export function upstreamById(id: string): UpstreamSpec | undefined {
 // --- Pure transitions --------------------------------------------------------
 
 /**
- * One more failure. `crossed` is true on exactly the failure that reaches
- * `brokenAfter` - not before, not on any failure after it. That single edge is
- * what gets logged and mailed; mailing every failure is how an alert gets muted.
- */
-/**
  * A run of failures only means "down" if NOTHING succeeded for this long.
  *
  * A streak alone is not an outage, and skyhook proved it: measured over one
@@ -338,7 +339,12 @@ export function failureTransition(
   };
 }
 
-/** A success. `recovered` is true only if the service was down before it. */
+/**
+ * A success. `recovered` is true only if we ACTUALLY MAILED about this outage -
+ * `stateOf` can call a record `down` on the streak while the quiet window kept
+ * the mail back, and announcing a recovery from an outage nobody was told about
+ * reads as a first mail that went missing.
+ */
 export function okTransition(
   rec: UpstreamRecord,
   nowIso: string,

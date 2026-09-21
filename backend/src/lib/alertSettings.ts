@@ -47,7 +47,8 @@ export function alertsEnabledFor(settings: AlertSettings, id: string): boolean {
 }
 
 /**
- * Who hears about it: every verified admin, plus the extras, de-duplicated
+ * Who hears about it: whatever the caller resolved as the base set - in
+ * practice the owner alone - plus the extras, de-duplicated
  * case-insensitively so adding your own admin address as an "extra" does not
  * send you two copies of everything. Pure - the admin list is passed in.
  */

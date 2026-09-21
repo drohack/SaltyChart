@@ -16,9 +16,15 @@
    *
    *  - a **title-only** match, which resolved but has no id to verify it;
    *  - a suggestion from our own remote lookup that no air date could confirm;
-   *  - any row where the lookup returned **more than one plausible answer**,
-   *    even if the air-date gate accepted one - that is precisely where a
-   *    picker earns its keep.
+   *  - any row where the lookup returned **more than one plausible answer**
+   *    AND the entry's premiere date could not separate them - see
+   *    `dateSettlesCandidates` (lib/seriesIdentity.ts, decided server-side and
+   *    arriving as `settledByDate`). Echo's three candidates are all titled
+   *    "Echo" and are three different films, which is what this rung is for;
+   *    142 of 170 such rows turned out to be matches nothing disputed, and
+   *    those no longer ask for a click;
+   *  - a **viewer pick** from the Watch pop-up, unconfirmed by construction -
+   *    somebody contradicted the matcher, which is exactly this queue's job.
    *
    * Resolver **accepts decided on title text or release year alone** are
    * trusted but unverified - they live behind the "+ resolver accepts" filter,
@@ -636,7 +642,7 @@
     }
   }
 
-  // The "Needs attention" queue - the three row kinds are in the header doc.
+  // The "Needs attention" queue - the four row kinds are in the header doc.
   // A pending row with NO ids is a recorded *miss* (the resolver searched and
   // found nothing), so it stays out of the queue.
   /** A viewer corrected this from the Watch pop-up - see `viewerPick`. */

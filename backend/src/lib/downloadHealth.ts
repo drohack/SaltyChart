@@ -22,8 +22,10 @@
  * failure, or the alert becomes the noise that gets muted.
  *
  * The transitions are pure functions (`failureTransition`, `okTransition`) so
- * the "once, at the crossing" rule is unit-tested; the `record*` wrappers only
- * read, transition, write, and act on the flags.
+ * the "once, at the crossing" rule is unit-tested. The `record*` wrappers read,
+ * decide, write and act on the flags - `recordDownloadFailure` also asks
+ * `countsTowardBroken` first, and a dead video writes the counters without
+ * touching the streak at all.
  *
  * Persisted in `AppConfig` for the reason everything else here is: a deploy is a
  * restart, and a restart is precisely when someone asks "is it working now".

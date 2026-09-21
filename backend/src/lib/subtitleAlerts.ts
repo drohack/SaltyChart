@@ -112,7 +112,9 @@ async function defaultRecipients(): Promise<string[]> {
 }
 
 /**
- * Send one plain-text mail to every admin with a verified address.
+ * Send one plain-text mail to each resolved recipient - by default the OWNER
+ * alone (see `defaultRecipients`), plus any extras configured on /admin/status.
+ * Deliberately not every verified admin.
  *
  * Returns what happened rather than throwing: callers are on the translation
  * path or a timer, and an alert failing must never become a second failure.

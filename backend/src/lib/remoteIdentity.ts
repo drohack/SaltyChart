@@ -1154,8 +1154,11 @@ async function saveSweepStatus(s: SweepStatus): Promise<void> {
 /**
  * TVDB schedule evidence for the candidate being judged. The resolver's own
  * map answers when the candidate came from skyhook; otherwise it is fetched
- * lazily - and only for the reject-shaped held case, the one place the
- * schedule changes a verdict (see hasUndatedFutureSeason in skyhookIdentity).
+ * lazily whenever NO DATE HAS VOUCHED for the candidate yet - which covers a
+ * title with no date at all and a date that refutes (a sequel carrying its
+ * parent's first-air date), not just the reject-shaped held case it began as.
+ * The gate's own comment carries the evidence for each shape.
+ * (see hasUndatedFutureSeason in skyhookIdentity).
  * Memoised inside skyhookEpisodes, degrades to nothing.
  */
 export async function tvdbEvidenceFor(

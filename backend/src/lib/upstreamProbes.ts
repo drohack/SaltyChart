@@ -212,8 +212,11 @@ export function probeDue(
 /**
  * Run whatever is due and record it. Returns a one-line summary for the log.
  *
- * Logs even when it did nothing: a scheduled job that is silent unless it acts
- * is indistinguishable from a job that never ran - the same rule the Sonarr
+ * Returns a summary rather than logging one. The CALLER decides whether a
+ * firing is worth a line - `index.ts` suppresses the no-op case behind a
+ * six-hour heartbeat, because "silent unless it acts is indistinguishable from
+ * never ran" is right for a daily job and inverts at quarter-hourly cadence,
+ * where it printed four lines an hour and buried the identity sweep - the same rule the Sonarr
  * push and the yt-dlp updater already follow.
  */
 export async function runDueProbes(force = false): Promise<string> {

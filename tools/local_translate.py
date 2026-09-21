@@ -362,7 +362,7 @@ def download_audio(video_id: str, tmpdir: str):
         **_cookie_opts(),
     }
     # One retry for a transient 403, on the SAME policy the server uses -
-    # `should_retry_download` is imported, not reimplemented, so the two cannot
+    # `download_with_retry` is imported, not reimplemented, so the two cannot
     # drift. This run is the one that lost six trailers to 403s, and its own
     # `download_audio` meant the server-side fix did not reach it.
     # The retry lives in translate_stream, once - see download_with_retry. The

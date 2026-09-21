@@ -401,9 +401,12 @@ def main():
             #
             # That base was hardcoded to `/app/prisma` - the container's layout -
             # which is right in production and cannot be right anywhere else. The
-            # stock dev `DATABASE_URL` is `file:./prisma/data.db`, so off the
-            # container it resolved to `/app/prisma/prisma/data.db` and the run
-            # died with "unable to open database file". It stayed hidden because
+            # bug was the hardcoded `/app` ROOT, not the doubled `prisma`:
+            # `DATABASE_URL` is `file:./prisma/data.db` relative to the schema
+            # directory, so `<base>/prisma/prisma/data.db` is genuinely where the
+            # file lives (the root guide says so too). Off the container the old
+            # code looked under `/app`, which is not there, and the run died with
+            # "unable to open database file". It stayed hidden because
             # nothing on screen could start a batch; the moment /admin/subtitles
             # grew a Run-now button, every dev-machine run failed.
             #

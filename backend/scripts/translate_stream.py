@@ -39,8 +39,9 @@ import time
 # `%(default)s`, so the help text cannot drift from the value.
 # `tools/local_translate.py` IMPORTS it from here rather than carrying a copy -
 # this module has only stdlib imports at top level, so that costs nothing and
-# removes a "keep the two equal" burden. (MODEL_RANK still has three hand-synced
-# copies; that predates this and is documented in backend/CLAUDE.md.)
+# removes a "keep the two equal" burden. (MODEL_RANK has ONE definition per
+# language - here and subtitleReport.ts - and test_run_verdict.py asserts that
+# no script redefines it.)
 #
 # 10, not 5: yt-dlp's own `-t sleep` preset waits a random 10-20 s before each
 # download (README, checked 2026-09-20 against the raw text). 5 s was 2-4x more
@@ -232,7 +233,7 @@ _FRIENDLY = {
 #
 # The two thresholds exist so a run is not failed by the normal case - a couple
 # of private or removed trailers - but IS failed when most of it did not happen.
-# Pause before the single 403 retry in `download_audio`. Long enough that we are
+# Pause before the single 403 retry in `download_with_retry`. Long enough that we are
 # not hammering the edge that just refused, short enough to stay inside a run.
 RETRY_403_DELAY_S = 3.0
 
@@ -288,7 +289,7 @@ def ensure_ytdlp_current(say=print, timeout_s: int = 300) -> str:
     Two rules that are easy to break:
       * The version is read OUT OF PROCESS. Importing yt_dlp here would cache
         the old module in sys.modules, and the later `import yt_dlp` inside
-        download_audio would silently keep using it, upgrade or not - the same
+        download_with_retry would silently keep using it, upgrade or not - the same
         trap that makes the backend recycle its daemon after an update.
       * Best-effort. No network, PyPI down, no pip: say so and carry on with
         whatever is installed. A run must never fail to START because of this.
