@@ -80,12 +80,14 @@
     failing: {
       label: 'Failing',
       cls: 'badge-warning',
-      help: 'Some calls are failing, but not enough in a row to call it down yet.',
+      help: 'Calls are failing, but something succeeded recently - a flaky service '
+          + 'mid-burst, not an outage. It turns red once nothing has worked for a while.',
     },
     down: {
       label: 'Down',
       cls: 'badge-error',
-      help: 'Enough consecutive failures to be sure. An email has been sent, once.',
+      help: 'Enough consecutive failures AND nothing has worked for long enough to '
+          + 'be sure. One email goes out at this point, not one per failure.',
     },
     unknown: {
       label: 'Not checked',
