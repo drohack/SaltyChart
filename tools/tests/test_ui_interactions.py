@@ -720,12 +720,41 @@ def test_admin_page(page, backend: str, frontend: str):
         "admin page refused a token for ADMIN_USER_ID"
 
     step(11, "step 3/3: picker populated, and no API key anywhere in the DOM")
-    opts = page.eval_on_selector_all("#jf-user option",
-                                     "els => els.map(e => e.textContent.trim())")
+    # The accounts arrive after the page renders, so reading the options the
+    # instant `#jf-url` appears finds only the default one - which is why the
+    # leak check below almost always ran against a page with no ids on it at
+    # all. Wait for them, bounded, and carry on either way: a genuinely
+    # unconfigured Jellyfin never populates and that is not a failure.
+    read_opts = lambda: page.eval_on_selector_all(
+        "#jf-user option", "els => els.map(e => e.textContent.trim())")
+    opts = read_opts()
+    for _ in range(20):
+        if len(opts) > 1:
+            break
+        page.wait_for_timeout(500)
+        opts = read_opts()
     assert opts, "no playback-account picker rendered"
     # The key is stored server-side and must never reach a browser; a Jellyfin
     # API key is 32 hex characters.
-    leak = re.search(r"\b[0-9a-f]{32}\b", page.content())
+    #
+    # So is a Jellyfin USER id, and the picker must render one per account to
+    # work at all - so a bare 32-hex sweep of the page reports the page doing its
+    # job as a leak. This assertion was wrong in BOTH directions and nobody saw
+    # it, because the two errors hid each other: with Jellyfin unreachable the
+    # picker holds only its default option, no 32-hex string exists, and the
+    # check passes having tested nothing (the step even prints "Jellyfin may be
+    # unconfigured" while doing so). The first run against a reachable server -
+    # 85 accounts, the first id beginning 58ce23ed - failed as a false positive.
+    # Verified at the time against `AppConfig.jellyfinApiKey`: no match.
+    #
+    # So exclude the ids the page legitimately owns, and assert the picker is
+    # really populated, which is what stops the check going vacuous again.
+    ids = [v for v in page.eval_on_selector_all(
+        "#jf-user option", "els => els.map(e => e.value)") if v]
+    html = page.content()
+    for uid in ids:
+        html = html.replace(uid, "")
+    leak = re.search(r"\b[0-9a-f]{32}\b", html)
     assert not leak, f"a 32-hex string resembling the API key is in the DOM: {leak.group()[:8]}..."
     if len(opts) == 1:
         step(11, f"PASS -- picker present with only the default option "
