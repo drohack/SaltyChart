@@ -328,6 +328,31 @@ def ensure_ytdlp_current(say=print, timeout_s: int = 300) -> str:
     return line
 
 
+def should_retry_download(msg: str, attempt: int, max_attempts: int = 2) -> bool:
+    """Is this download failure worth exactly one more try?
+
+    ONE definition, imported by `tools/local_translate.py` rather than copied -
+    the MODEL_RANK lesson. The GPU run has its own `download_audio` (it also
+    returns a video URL for frame grabs), so without sharing the POLICY the two
+    would drift, and the run that actually lost trailers to this would be the
+    one left unfixed.
+
+    Measured: a run failed six trailers with `HTTP Error 403: Forbidden` AFTER
+    extraction had already succeeded, and re-running one minutes later fetched
+    it in full (Firefly Wedding, 14 MB, 79 s). So a 403 is transient and worth
+    retrying once.
+
+    Deliberately narrow, because request volume is what trips YouTube's IP
+    block and that block then prevents verifying anything:
+      * only `forbidden`. A dead video can never succeed, and retrying a bot
+        wall deepens the block that aborting exists to escape.
+      * one extra attempt, so a failing video costs 2 requests, never a loop.
+    """
+    if attempt >= max_attempts:
+        return False
+    return classify_error(msg) == "forbidden"
+
+
 def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
     """Download the worst-quality audio track. Returns (audio_path, duration).
 
@@ -393,7 +418,7 @@ def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
         except Exception as e:                       # noqa: BLE001 - re-raised below
             last_err = e
             msg = str(e)
-            if attempt == 2 or classify_error(msg) != "forbidden":
+            if not should_retry_download(msg, attempt):
                 raise
             time.sleep(RETRY_403_DELAY_S)
     else:                                            # pragma: no cover - loop always breaks or raises

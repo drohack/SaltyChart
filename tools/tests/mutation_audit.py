@@ -508,8 +508,8 @@ MUTATIONS: list[Mutation] = [
         # never succeed. The retry is narrow ON PURPOSE - `forbidden` only, one
         # extra attempt - because request volume is what tripped YouTube's IP
         # block before, and that block then prevents verifying anything.
-        find='            if attempt == 2 or classify_error(msg) != "forbidden":',
-        replace="            if attempt == 2:  # mutation: retry every failure kind",
+        find='    return classify_error(msg) == "forbidden"',
+        replace="    return True  # mutation: retry every failure kind",
         test=T_VERDICT,
         expect="FAIL: a bot wall is not retried",
         guards="doubling the requests made during a bot wall is how a soft "

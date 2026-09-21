@@ -795,7 +795,12 @@ the same measured run (51 of 63 trailers downloaded, 12 failures):
 - **6 were 403s, and they were TRANSIENT** - proven, not assumed: one of them
   (Firefly Wedding) downloaded in full on a retry minutes later, 14 MB, 79 s,
   same yt-dlp and same options. `download_audio` now makes exactly **one** extra
-  attempt after a short pause, and **only** for a `forbidden` kind. A dead video
+  attempt after a short pause, and **only** for a `forbidden` kind. The policy is
+  `should_retry_download` and it has **one definition**: `tools/local_translate.py`
+  keeps its own `download_audio` (it also returns a video URL for frame grabs),
+  so the server-side fix did not reach the GPU run - the very run that lost the
+  six trailers. It imports the policy rather than copying it, and
+  `test_run_verdict.py` asserts the two are the same function object. A dead video
   can never succeed and retrying a bot wall deepens the block that aborting
   exists to escape, so neither is retried - a mutation row guards that direction
   specifically, because it is the one that costs something. A failing video

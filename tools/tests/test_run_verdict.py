@@ -275,6 +275,23 @@ attempts, outcome = _run_download([None])
 check("a clean download still costs exactly one request", attempts == 1 and outcome == "ok",
       f"attempts={attempts} outcome={outcome}")
 
+print("-- one definition: the GPU run shares the retry policy, never copies it --", flush=True)
+
+# `tools/local_translate.py` has its OWN download_audio (it also returns a video
+# URL for frame grabs), so the server-side retry did not reach it - and that is
+# the run which actually lost six trailers to transient 403s. Sharing the POLICY
+# rather than the download is what keeps the two from drifting; this asserts
+# they are the SAME function object, not two that happen to agree today. The
+# MODEL_RANK lesson, applied before it could bite.
+sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
+import local_translate as lt  # noqa: E402
+
+check("local_translate imports should_retry_download rather than reimplementing it",
+      lt.should_retry_download is ts.should_retry_download,
+      f"{lt.should_retry_download!r} vs {ts.should_retry_download!r}")
+check("and the delay with it", lt.RETRY_403_DELAY_S == ts.RETRY_403_DELAY_S,
+      f"{lt.RETRY_403_DELAY_S} vs {ts.RETRY_403_DELAY_S}")
+
 print("-- one definition: tools/ imports the container's phrase list --", flush=True)
 sys.path.insert(0, os.path.join(HERE, ".."))
 import yt_guard as g  # noqa: E402
