@@ -531,6 +531,23 @@ MUTATIONS: list[Mutation] = [
                "download outage gets ignored when it finally arrives",
     ),
     Mutation(
+        name="the red badge ignores the rule the email obeys",
+        path="backend/src/lib/upstreamHealth.ts",
+        # How the quiet window shipped: the ALERT gained it and `stateOf` kept
+        # the streak-alone rule, so /admin/status painted a red Down badge for a
+        # service the system had deliberately decided was fine and mailed
+        # nothing about - skyhook, 66 ok and 16 failures in one evening, all
+        # 500s. Two of this page's five states exist purely so a reader is never
+        # misled; that was the page misleading them, and it contradicted the
+        # guide's own "the page and the email cannot disagree".
+        find="  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {",
+        replace="  if (rec.consecutiveFailures >= brokenAfter) {  /* mutation: badge ignores the window */",
+        test=T_UNIT,
+        expect="the BADGE means what the EMAIL means",
+        guards="a red badge nobody was emailed about sends an admin hunting an "
+               "outage that is not happening",
+    ),
+    Mutation(
         name="a burst of failures is called an outage",
         path="backend/src/lib/upstreamHealth.ts",
         # How it shipped: `crossed: streak === brokenAfter`, with no notion of
@@ -540,7 +557,9 @@ MUTATIONS: list[Mutation] = [
         # and "working again" one minute apart. Raising the threshold 3 -> 6 was
         # tuning; what separates flaky from dead is whether anything succeeded
         # recently.
-        find="  const quiet = !Number.isFinite(sinceOk) || sinceOk >= MIN_OUTAGE_MS;",
+        # Anchored on the ALERT's use of the shared rule; the badge's use is a
+        # separate row, because the two sites failed independently once already.
+        find="  const quiet = noRecentSuccess(rec.lastOkAt, nowIso);",
         replace="  const quiet = true;  /* mutation: a streak is always an outage */",
         test=T_UNIT,
         expect="a burst of failures is not an outage while something just worked",
@@ -892,7 +911,7 @@ MUTATIONS: list[Mutation] = [
         # snapshots answers 400 "already been added". Filed as a failure it stays
         # retryable and is retried on every run for ever - the same infinite loop
         # arriving through the error path instead of the happy one.
-        find="""  if (sonarrValidationMessages(res.body).some((m) => /already\s*(been\s*)?(added|exists)/i.test(m))) {
+        find=r"""  if (sonarrValidationMessages(res.body).some((m) => /already\s*(been\s*)?(added|exists)/i.test(m))) {
     return 'alreadyExists';
   }""",
         replace="  /* mutation: already-exists is just another failure */",
@@ -2402,8 +2421,11 @@ MUTATIONS: list[Mutation] = [
         # one level deeper inside its transaction. Nothing here ever SETS a
         # credential - both admin actions clear one - so the only refusals worth
         # guarding are the two that would leave an account with no route back in.
-        find="    if (target.isAdmin) {",
-        replace="    if (target.isAdmin && !!process.env.MUTATION_OFF) {",
+        # Two-line: `if (target.isAdmin) {` appears twice in this file, and a
+        # bare `str.replace` would mutate BOTH guards at once - passing for a
+        # reason nobody chose. The second line pins the one this row is about.
+        find="    if (target.isAdmin) {\n      return res.status(409).json({",
+        replace="    if (target.isAdmin && !!process.env.MUTATION_OFF) {\n      return res.status(409).json({",
         # `&& !!process.env.MUTATION_OFF` rather than `&& false`: rows aimed at
         # test_account_security compile the backend for real, and TypeScript
         # marks a statically-false branch unreachable - which DISCARDS the
@@ -2711,7 +2733,7 @@ def _describe(m: Mutation) -> str:
     if m.test is T_NEGATIVE:
         return "api negative paths"
     if m.test is T_UI:
-        return f"ui flow {m.flows[0]!r}" if m.flows else "ui, ALL 25 flows"
+        return f"ui flow {m.flows[0]!r}" if m.flows else "ui, ALL flows (no `flows=` on this row)"
     if "test_player.py" in " ".join(m.test):
         steps = m.test[-1] if "--only-steps" in m.test else "all"
         return f"player, steps {steps} (real transcodes)"

@@ -166,7 +166,7 @@ def main():
 
     print(f"Jellyfin smoke test - backend={backend}", flush=True)
 
-    # --------- 1/8  Fixture user (signup first run, login after) ---------
+    # --------- 1/13  Fixture user (signup first run, login after) ---------
     step(1, f"auth as {username}")
     r = requests.post(f"{backend}/api/auth/signup",
                       json={"username": username, "password": password}, timeout=5)
@@ -179,7 +179,7 @@ def main():
     auth = {"Authorization": f"Bearer {token}"}
     step(1, "PASS - got JWT")
 
-    # --------- 2/8  Auth gates ---------
+    # --------- 2/13  Auth gates ---------
     step(2, "unauthenticated /status + /availability - expect 401")
     r = requests.get(f"{backend}/api/jellyfin/status", timeout=5)
     if r.status_code != 401:
@@ -210,7 +210,7 @@ def main():
         fail(2, f"/library/image without token: expected 401, got {r.status_code}")
     step(2, "PASS - all six 401")
 
-    # --------- 3/8  Admin gates ---------
+    # --------- 3/13  Admin gates ---------
     step(3, "config endpoints as non-admin - expect 403 ADMIN_REQUIRED")
     checks = [
         ("GET", "/api/jellyfin/config", None),
@@ -228,7 +228,7 @@ def main():
             fail(3, f"{method} {path}: expected 403 ADMIN_REQUIRED, got {r.status_code} {r.text[:160]}")
     step(3, "PASS - all five admin endpoints gated")
 
-    # --------- 4/8  Status shape ---------
+    # --------- 4/13  Status shape ---------
     step(4, "GET /api/jellyfin/status")
     r = requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=5)
     body = r.json() if r.status_code == 200 else {}
@@ -240,7 +240,7 @@ def main():
     configured = body["configured"]
     step(4, f"PASS - configured={configured}, isAdmin=False")
 
-    # --------- 5/8  Validation + the ?token= paths ---------
+    # --------- 5/13  Validation + the ?token= paths ---------
     step(5, "malformed bodies and query-token gates")
     r = requests.post(f"{backend}/api/jellyfin/availability",
                       headers=auth, json={"mediaId": "nope"}, timeout=5)
@@ -260,12 +260,18 @@ def main():
     step(5, "PASS - 400 on bad body, 401 on every ?token= path")
 
     if not configured:
-        for n in (6, 7, 8):
+        # Every remaining step, derived from TOTAL_STEPS. It used to be the
+        # literal `(6, 7, 8)` with a "5/8 passed" line, from an 8-step era: on
+        # an unconfigured box steps 9-13 printed NOTHING, so a third of the run
+        # was silent and the summary understated the suite by five steps.
+        done = 5
+        for n in range(done + 1, TOTAL_STEPS + 1):
             step(n, "SKIP - Jellyfin not configured (set URL+key on /admin to enable)")
-        print("Jellyfin: 5/8 passed, 3 skipped (unconfigured) - OK", flush=True)
+        print(f"Jellyfin: {done}/{TOTAL_STEPS} passed, {TOTAL_STEPS - done} skipped "
+              "(unconfigured) - OK", flush=True)
         return
 
-    # --------- 6/8  Availability (live Jellyfin) ---------
+    # --------- 6/13  Availability (live Jellyfin) ---------
     season, year = current_season_year()
     step(6, f"availability: nonsense title -> available=false (corpus: {season} {year})")
     r = requests.post(f"{backend}/api/jellyfin/availability", headers=auth,
@@ -341,7 +347,7 @@ def main():
         step(6, f"PASS - availability well-formed; match tiers {tiers['id']} by id, "
                 f"{tiers['title']} by title, {tiers['missing']} missing")
 
-    # --------- 7/8  Stream proxy + no credential in the manifest ---------
+    # --------- 7/13  Stream proxy + no credential in the manifest ---------
     step(7, "stream proxy reaches Jellyfin, and manifests carry no API key")
     r = requests.get(f"{backend}/api/jellyfin/stream/System/Info", headers=auth, timeout=20)
     if r.status_code != 200 or b"ServerName" not in r.content:

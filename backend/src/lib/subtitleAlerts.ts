@@ -16,7 +16,7 @@
  *     from is persisted. The silence check is the one that needs its own stamp
  *     (`silentAlertedAt` in the local-run row) so it fires once per silence.
  *  2. **Verified addresses only.** The root rule for this codebase: an
- *     unverified email must never count for anything. `verifiedAdminEmails` is
+ *     unverified email must never count for anything. `ownerEmail` is
  *     pure so that rule can be watched to fail.
  *  3. **Never throw onto the caller's path, never log the error object.** A
  *     nodemailer error carries `auth.pass`; `mailErrorInfo` is the only thing
@@ -38,17 +38,6 @@ export const SUBJECT_PREFIX = '[SaltyChart] ';
  */
 export const LOCAL_RUN_SILENT_DAYS = 8;
 
-/** Only rows with BOTH an address and a verification stamp. Pure. */
-export function verifiedAdminEmails(
-  rows: Array<{ email: string | null; emailVerifiedAt: Date | string | null }>,
-): string[] {
-  const out: string[] = [];
-  for (const r of rows) {
-    if (!r.email || !r.emailVerifiedAt) continue;
-    out.push(r.email);
-  }
-  return out;
-}
 
 /**
  * Has the Sunday run gone quiet? Pure.

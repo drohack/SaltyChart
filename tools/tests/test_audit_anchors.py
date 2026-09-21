@@ -130,10 +130,64 @@ def main() -> int:
         print(f"Done: all {len(rows)} mutation anchors resolve", flush=True)
 
     rc = check_no_op_rows(rows) or rc
+    rc = check_find_is_unique(rows) or rc
     rc = check_flow_labels(ma, rows) or rc
     rc = check_expect_is_unambiguous(ma, rows) or rc
     rc = check_exploratory_charter(ma.REPO) or rc
     return check_guide_pointers(ma.REPO) or rc
+
+
+def check_find_is_unique(rows) -> int:
+    """A row's `find` must match its file EXACTLY once.
+
+    `mutation_audit` applies a row with `str.replace`, which rewrites EVERY
+    occurrence. A `find` that matches twice therefore mutates a second site
+    nobody chose, and the row's verdict stops being about the guard it names.
+
+    The anchor check above cannot see this - both occurrences resolve fine - and
+    neither can `check_no_op_rows`, because the row does change something. It is
+    the same blind spot `check_expect_is_unambiguous` closes one layer down: a
+    row can be red, resolve cleanly, and still be measuring the wrong thing.
+
+    Found by audit, not by theory: `if (!r.email || !r.emailVerifiedAt) continue;`
+    appeared in both `verifiedAdminEmails` and `ownerEmail`, and the occurrence
+    that mattered was the SECOND one; `if (target.isAdmin) {` matched a 4-space
+    and a 6-space guard in `adminUsers.ts`, because the shorter string is a
+    substring of the longer line. Fix by extending the anchor across two lines
+    until it is unique, never by hoping.
+    """
+    import io as _io
+
+    def _count(path: str, needle: str) -> int:
+        try:
+            return _io.open(path, encoding="utf-8").read().count(needle)
+        except OSError:
+            return -1          # missing file is the anchor check's business
+
+    dupes = []
+    for i, m in enumerate(rows, 1):
+        n = _count(m.path, m.find)
+        if n > 1:
+            dupes.append(f"  [{i}] {m.name}\n      `find` matches {n}x in {m.path}")
+        for j, (find, _) in enumerate(getattr(m, "also", ()) or ()):
+            n = _count(m.path, find)
+            if n > 1:
+                dupes.append(f"  [{i}] {m.name}\n      `also[{j}]` matches {n}x in {m.path}")
+        for j, (path, find, _) in enumerate(getattr(m, "extra", ()) or ()):
+            n = _count(path, find)
+            if n > 1:
+                dupes.append(f"  [{i}] {m.name}\n      `extra[{j}]` matches {n}x in {path}")
+
+    if not dupes:
+        print("Done: every mutation anchor matches exactly once", flush=True)
+        return 0
+    print(f"[anchors] FAIL - {len(dupes)} anchor(s) match more than one place:", flush=True)
+    for d in dupes:
+        print(d, flush=True)
+    print("[anchors] str.replace rewrites ALL of them, so the row mutates code it "
+          "does not name. Extend the anchor across two lines until it is unique.",
+          flush=True)
+    return 1
 
 
 def check_no_op_rows(rows) -> int:

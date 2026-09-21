@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { captureMailer } from './mailer';
-import { verifiedAdminEmails, localRunSilence, alertAdmins, SUBJECT_PREFIX, LOCAL_RUN_SILENT_DAYS, ownerEmail } from './subtitleAlerts';
+import { localRunSilence, alertAdmins, SUBJECT_PREFIX, LOCAL_RUN_SILENT_DAYS, ownerEmail } from './subtitleAlerts';
 
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 3600 * 1000;
@@ -10,12 +10,18 @@ test('an unverified admin address never receives an alert', () => {
   // The root rule: a verified email is what counts, for everything. An admin
   // who typed an address and never confirmed it must not be mailed - the
   // address could be anyone's.
+  // Ids ascend so the verified one is also the LOWEST - `ownerEmail` picks the
+  // first admin by id, and a fixture where the right answer is also the first
+  // row would pass even if the verified-address rule were dropped.
   const rows = [
-    { email: 'ok@example.test', emailVerifiedAt: new Date(NOW - DAY) },
-    { email: 'unverified@example.test', emailVerifiedAt: null },
-    { email: null, emailVerifiedAt: new Date(NOW - DAY) },
+    { id: 2, email: 'unverified@example.test', emailVerifiedAt: null },
+    { id: 3, email: null, emailVerifiedAt: new Date(NOW - DAY) },
+    { id: 4, email: 'ok@example.test', emailVerifiedAt: new Date(NOW - DAY) },
   ];
-  assert.deepEqual(verifiedAdminEmails(rows), ['ok@example.test']);
+  // `verifiedAdminEmails` is gone - it had no production caller, and the rule
+  // it stated is enforced (and tested) on `ownerEmail` below, which is what
+  // `defaultRecipients` actually calls.
+  assert.equal(ownerEmail(rows), 'ok@example.test');
 });
 
 test('alertAdmins sends one mail per verified admin through the injected mailer', async () => {
