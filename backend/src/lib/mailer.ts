@@ -33,6 +33,16 @@ export interface Mailer {
   configured(): boolean;
   /** Human-readable description of where mail goes, for the admin page. */
   describe(): string;
+  /**
+   * Open a connection and authenticate, without sending anything.
+   *
+   * `configured()` only reads env vars, so it answers "are five strings set",
+   * not "can we actually send" - a dead host, a revoked App Password and a
+   * working server all look identical to it. The status page needs the real
+   * answer, because the alerting channel is the one thing that cannot report
+   * its own failure by email. Optional: a substituted mailer need not have it.
+   */
+  verify?(): Promise<void>;
 }
 
 export class SmtpNotConfiguredError extends Error {
@@ -106,6 +116,11 @@ export function smtpMailer(): Mailer {
       if (!cfg.host) return 'not configured';
       return `${cfg.from || cfg.user} via ${cfg.host}:${cfg.port}`;
     },
+    async verify() {
+      // nodemailer's own handshake: connect, TLS, AUTH, then disconnect. It
+      // sends no mail, so it is safe to run on a timer.
+      await transport().verify();
+    },
     async send(mail) {
       const cfg = envConfig();
       await transport().sendMail({
@@ -125,6 +140,9 @@ export function captureMailer(): Mailer & { sent: OutboundMail[] } {
     sent,
     configured: () => true,
     describe: () => 'capture (test)',
+    async verify() {
+      /* a capturing mailer is always reachable - there is no network */
+    },
     async send(mail) {
       sent.push(mail);
     },
