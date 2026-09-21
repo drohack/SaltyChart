@@ -70,6 +70,27 @@ export const BOT_WALL_HOLD_MS = 15 * 60 * 1000;
 export const FAIL_KINDS = ['botwall', 'forbidden', 'unavailable', 'other'] as const;
 export type FailKind = typeof FAIL_KINDS[number];
 
+/**
+ * Does this failure say anything about whether the download PATH works?
+ *
+ * Only `unavailable` does not. A video that no longer exists is a fact about
+ * that video, not about us, so it is not evidence in either direction - it must
+ * neither advance the broken streak nor clear it. Everything else does count:
+ * a 403 on every video is the stale-yt-dlp signature and a bot wall is YouTube
+ * refusing us, which are precisely what the streak exists to catch.
+ *
+ * Measured: SUMMER 2026 failed FIVE trailers back to back - Anpanman, Crayon
+ * Shin-chan, TOMICA and two more - every one `Video unavailable`, against a
+ * BROKEN_AFTER of 3. Without this the batch would mail "the download path is
+ * broken" while that same run downloaded 51 other trailers successfully.
+ *
+ * Pure and exported so the rule is testable and mutable on its own, rather than
+ * buried in a branch inside a function that needs a database.
+ */
+export function countsTowardBroken(kind: FailKind): boolean {
+  return kind !== 'unavailable';
+}
+
 export function normalizeFailKind(k: unknown): FailKind {
   return (FAIL_KINDS as readonly string[]).includes(k as string) ? (k as FailKind) : 'other';
 }
@@ -197,6 +218,29 @@ export async function recordDownloadOk(): Promise<void> {
 export async function recordDownloadFailure(reason: string, kind: unknown = 'other'): Promise<void> {
   const h = await read();
   const k = normalizeFailKind(kind);
+
+  // A video that no longer exists says NOTHING about whether downloading works,
+  // so it neither advances the broken streak nor clears it - it is not evidence
+  // in either direction. Without this, an old season is enough to mail "the
+  // download path is broken" while the path is fine: measured on a real run,
+  // SUMMER 2026 failed five trailers BACK TO BACK (Anpanman, Crayon Shin-chan,
+  // TOMICA and two more), every one of them `Video unavailable`, against a
+  // BROKEN_AFTER of 3. The counters still move, because "how many trailers are
+  // simply gone" is worth seeing on /admin/subtitles; only the alert is spared.
+  //
+  // This is the same rule the upstream quiet window enforces one module over:
+  // count failures, but ask what they MEAN before calling them an outage.
+  if (!countsTowardBroken(k)) {
+    await write({
+      ...h,
+      lastFailAt: new Date().toISOString(),
+      lastFailReason: reason.slice(0, 500),
+      lastFailKind: k,
+      failCount: h.failCount + 1,
+    });
+    return;
+  }
+
   const { next, crossed } = failureTransition(h, reason, k, new Date().toISOString());
   await write(next);
   if (!crossed) return;

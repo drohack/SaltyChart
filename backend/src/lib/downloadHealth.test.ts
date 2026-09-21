@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   holdUntil, looksLikeStaleYtDlp, failureTransition, okTransition, normalizeFailKind,
-  BOT_WALL_HOLD_MS, BROKEN_AFTER, type DownloadHealth,
+  countsTowardBroken, BOT_WALL_HOLD_MS, BROKEN_AFTER, type DownloadHealth,
 } from './downloadHealth';
 
 // Fixed clock: the hold is time-relative and the assertions must not depend on
@@ -98,4 +98,36 @@ test('recovery is announced only when the path was broken', () => {
   assert.equal(r.next.okCount, 1);
   const unlucky = health({ consecutiveFailures: 1 });
   assert.equal(okTransition(unlucky, NOW_ISO).recovered, false);
+});
+
+
+test('a dead video is not evidence that downloading is broken', () => {
+  // Measured on a real run: SUMMER 2026 failed FIVE trailers back to back -
+  // Anpanman, Crayon Shin-chan, TOMICA and two more - every one of them
+  // `Video unavailable`, against a BROKEN_AFTER of 3. Counting those would mail
+  // "the download path is broken" while the path was working perfectly; the
+  // same run downloaded 51 other trailers.
+  //
+  // A video that no longer exists says nothing in EITHER direction, so it must
+  // not advance the streak and must not clear it either. The counter still
+  // moves, because "how many trailers are simply gone" is worth seeing.
+  assert.equal(countsTowardBroken('unavailable'), false);
+  // And it is the ONLY kind spared - written as a sweep so a new FailKind added
+  // later has to make this decision deliberately rather than inherit silence.
+  const spared = (['botwall', 'forbidden', 'unavailable', 'other'] as const)
+    .filter((k) => !countsTowardBroken(k));
+  assert.deepEqual(spared, ['unavailable']);
+});
+
+test('a 403 and a bot wall still count, because both mean the PATH is failing', () => {
+  // The other side of the exclusion: a stale yt-dlp (403 on every video) and a
+  // bot wall are exactly what the streak exists to catch, and sparing them
+  // would turn the alert off entirely.
+  assert.equal(countsTowardBroken('forbidden'), true);
+  assert.equal(countsTowardBroken('botwall'), true);
+  assert.equal(countsTowardBroken('other'), true);
+  // The streak arithmetic itself is unchanged for anything that counts.
+  const a = failureTransition(health({ consecutiveFailures: 2, failCount: 2 }),
+    'HTTP Error 403: Forbidden', 'forbidden', NOW_ISO);
+  assert.equal(a.crossed, true, 'three consecutive 403s is a broken path');
 });
