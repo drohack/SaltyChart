@@ -13,8 +13,13 @@ import {
   retryStateFor,
   planSweep,
   mergeCrossReferencedCandidates,
+  tvdbEvidenceFor,
+  needsResearch,
+  storedChoice,
+  SEARCH_AFFECTING_VERSIONS,
   type RemoteCandidate,
 } from './remoteIdentity';
+import { __setSkyhookFetchForTest, __clearSkyhookCachesForTest } from './skyhookIdentity';
 import { __setMapsForTest } from './anilistTvdbMap';
 import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './episodeMatch';
 
@@ -160,6 +165,189 @@ test('a TVDB season premiere accepts a held sequel the stale library rejected', 
   assert.equal(v.verdict, 'accept',
     'a TVDB season premiere on the entry date must beat stale held episodes');
   assert.equal(v.rung, 'tvdb season premiere 0d');
+});
+
+test('the season premiere is FETCHED for a title-only accept, not only to rescue a rejection', async () => {
+  // The other half of the same fix, and the half that actually reaches PSYREN:
+  // the ladder can only use evidence that exists, and this lookup used to run
+  // ONLY when we held the series and its episodes looked wrong (`rejectShaped`).
+  // A candidate about to accept on title text alone therefore never asked, so
+  // `tvdbSeasonDeltaMs` was null and rung B0 could not fire however well TVDB
+  // knew the date.
+  const asked: string[] = [];
+  __setSkyhookFetchForTest(async (url: string) => {
+    asked.push(url);
+    return { episodes: [{ seasonNumber: 1, episodeNumber: 1, airDate: '2026-10-05' }] };
+  });
+  __clearSkyhookCachesForTest();
+  try {
+    const ev = await tvdbEvidenceFor(
+      undefined,
+      { tvdbId: '471609', tmdbId: null, tmdbKind: null, matchedTitle: 'PSYREN',
+        exact: true, year: null, image: null, premiereDate: null },
+      null,                       // not held - so the rescue path is not what brings us here
+      null,
+      Date.UTC(2026, 9, 5)
+    );
+    assert.ok(asked.length > 0, 'an exact title with no date must ask TVDB for the season premiere');
+    assert.equal(ev.seasonDeltaMs, 0, 'the fetched premiere lands on the entry date');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+test('a sequel whose series date refutes still gets its season premiere fetched', async () => {
+  // The case the first version of this gate missed. A search result carries the
+  // SERIES' first-ever air date, so a second season measures years "off" its own
+  // parent: Aoashi 2nd Season 1,639d, Tokyo Revengers S4 2,013d, Black Clover
+  // 2nd Season 3,597d - each of them 0d from its own TVDB season premiere.
+  // Neither the old condition held: the title is not exact ("Aoashi 2nd Season"
+  // vs "Aoashi") and a date exists, it is simply the wrong one. So 27 of the 33
+  // pending FALL 2026 rows were sequels nothing would ever vindicate.
+  const asked: string[] = [];
+  __setSkyhookFetchForTest(async (url: string) => {
+    asked.push(url);
+    return { episodes: [{ seasonNumber: 2, episodeNumber: 1, airDate: '2026-10-04' }] };
+  });
+  __clearSkyhookCachesForTest();
+  try {
+    const ev = await tvdbEvidenceFor(
+      undefined,
+      { tvdbId: '407840', tmdbId: null, tmdbKind: null, matchedTitle: 'Aoashi',
+        exact: false, year: null, image: null, premiereDate: '2022-04-09' },
+      null,
+      null,
+      Date.UTC(2026, 9, 4)
+    );
+    assert.ok(asked.length > 0, 'a date that refutes must still be checked against the season');
+    assert.equal(ev.seasonDeltaMs, 0, 'season 2 premieres on the entry date');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+test('a TMDB-only candidate is dated through the id cross-walk', async () => {
+  // The third shape of the same gate, and the one that survived the first two
+  // fixes: the season lookup needs a TVDB id, and half the search results carry
+  // only a TMDB one. `completeIdentityIds` cross-walks them - but it runs AFTER
+  // the verdict, so the stored row ended up carrying a TVDB id the ladder was
+  // never allowed to use, which is why this looked like "TVDB does not know".
+  // Measured on FALL 2026: `Kizu darake Seijo yori Houfuku wo Komete Season2`
+  // (premiere 2026-10-02) stored tmdb 293124 alone and sat `remote: unverified`,
+  // while TVDB's season 2 premiere for tvdb 454916 is the same day.
+  const asked: string[] = [];
+  __setSkyhookFetchForTest(async (url: string) => {
+    asked.push(url);
+    return { episodes: [{ seasonNumber: 2, episodeNumber: 1, airDate: '2026-10-02' }] };
+  });
+  __setMapsForTest({ '212144': '454916' }, { '212144': 'tv:293124' });
+  __clearSkyhookCachesForTest();
+  try {
+    const ev = await tvdbEvidenceFor(
+      undefined,
+      { tvdbId: null, tmdbId: '293124', tmdbKind: 'tv',
+        matchedTitle: 'With Vengeance, Sincerely, Your Broken Saintess',
+        exact: false, year: 2025, image: null, premiereDate: '2025-07-10' },
+      null,                       // not held, so nothing else can supply the id
+      null,
+      Date.UTC(2026, 9, 2)
+    );
+    assert.ok(asked.length > 0, 'a TMDB-only candidate must still reach the season lookup');
+    assert.ok(asked.some((u) => u.includes('454916')),
+      'it must ask about the TVDB id the cross-walk names, not some other show');
+    assert.equal(ev.seasonDeltaMs, 0, 'season 2 premieres on the entry date');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+    __setMapsForTest({}, {});
+  }
+});
+
+test('the cross-walk never crosses the film/series namespace', async () => {
+  // TMDB numbers films and shows independently, so id 293124 is a different
+  // work in each namespace. Handing a movie candidate a TV series' seasons
+  // would date it against something it is not - the `[object Object]` trap in
+  // the map parser, one layer up.
+  const asked: string[] = [];
+  __setSkyhookFetchForTest(async (url: string) => {
+    asked.push(url);
+    return { episodes: [{ seasonNumber: 2, episodeNumber: 1, airDate: '2026-10-02' }] };
+  });
+  __setMapsForTest({ '212144': '454916' }, { '212144': 'tv:293124' });
+  __clearSkyhookCachesForTest();
+  try {
+    await tvdbEvidenceFor(
+      undefined,
+      { tvdbId: null, tmdbId: '293124', tmdbKind: 'movie', matchedTitle: 'a film',
+        exact: false, year: 2025, image: null, premiereDate: '2025-07-10' },
+      null,
+      null,
+      Date.UTC(2026, 9, 2)
+    );
+    assert.deepEqual(asked, [], 'a movie id must not borrow a TV series TVDB id');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+    __setMapsForTest({}, {});
+  }
+});
+
+test('a candidate the date already vouches for is NOT re-checked', async () => {
+  // The other side of the gate, and it has to be asserted by counting calls -
+  // an `assert.ok(true)` here would read as coverage while proving nothing.
+  // Rung A has already accepted this one, so an extra request would buy nothing
+  // and it runs against someone else's free service.
+  const asked: string[] = [];
+  __setSkyhookFetchForTest(async (url: string) => {
+    asked.push(url);
+    return { episodes: [] };
+  });
+  __clearSkyhookCachesForTest();
+  try {
+    await tvdbEvidenceFor(
+      undefined,
+      { tvdbId: '407840', tmdbId: null, tmdbKind: null, matchedTitle: 'Aoashi',
+        exact: true, year: null, image: null, premiereDate: '2026-10-04' },
+      null,
+      null,
+      Date.UTC(2026, 9, 4)
+    );
+    assert.deepEqual(asked, [], 'a date within tolerance settles it; do not ask again');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+test('a season premiere outranks matching title text', () => {
+  // PSYREN (FALL 2026): exact title, no candidate premiere date - so the ladder
+  // stopped at `exact title`, a rung no date vouches for, and the row graded
+  // `weak` while TVDB and AniList agreed on 2026-10-05 TO THE DAY. Rung B0 sits
+  // above A2 so the date is taken when it exists.
+  const v = verdictFor({
+    exact: true, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv',
+    premiereDeltaMs: null, tvdbSeasonDeltaMs: 0, tvdbHasUndatedFutureSeason: false,
+  });
+  assert.equal(v.verdict, 'accept');
+  assert.equal(v.rung, 'tvdb season premiere 0d',
+    'a date that agrees must be recorded as the rung, or the row grades weak forever');
+});
+
+test('a season premiere that disagrees never demotes an exact title', () => {
+  // The no-regression property, and it is measured rather than assumed: over 8
+  // aired seasons, ALL 27 known-correct entries whose season premiere lands
+  // outside tolerance are sequels, and every one is a TVDB-vs-AniList modelling
+  // difference - a split cour filed as ONE season puts Part 2 ~182d from its own
+  // Part 1 premiere (Dr. STONE, Uma Musume, Samurai Troopers, Ooi! Tonbo all at
+  // exactly 182). Refuting there would send 16% of correct sequels to review.
+  const v = verdictFor({
+    exact: true, inLibrary: false, deltaMs: null, yearDelta: null, kind: 'tv',
+    premiereDeltaMs: null, tvdbSeasonDeltaMs: 182 * DAY, tvdbHasUndatedFutureSeason: false,
+  });
+  assert.equal(v.verdict, 'accept', 'a split cour must not be demoted by its own Part 1 date');
+  assert.equal(v.rung, 'exact title', 'out of tolerance the rung falls back, it does not refute');
 });
 
 test('an undated future season at TVDB softens a held rejection to review', () => {
@@ -555,4 +743,58 @@ test('the tolerance is far tighter than the gap to a neighbouring season', () =>
   // would match its own previous season.
   assert.ok(AIR_DATE_TOLERANCE_MS < 90 * DAY);
   assert.ok(AIR_DATE_TOLERANCE_MS >= 14 * DAY);
+});
+
+test('a ladder-only version bump re-decides instead of re-searching', () => {
+  // The two operations wearing one name. Re-searching every bump cost 5-7
+  // skyhook calls per row - 300 ms apart, globally - to rediscover an id
+  // already stored on that row: 2.47 s/row, ~30 min for a 725-row drain.
+  // With no search-affecting version declared, nothing needs a fresh search.
+  assert.deepEqual([...SEARCH_AFFECTING_VERSIONS], []);
+  assert.equal(needsResearch(1), false);
+  assert.equal(needsResearch(null), false);
+});
+
+test('a version that changed candidate discovery DOES force a fresh search', () => {
+  // The safety direction: declaring a version here must make older rows search
+  // again, or a ranking fix silently leaves every stored row on its stale pick -
+  // the Echo failure that re-grading exists to prevent.
+  const affected = [4];
+  const needs = (v: number) => affected.some((a) => v < a);
+  assert.equal(needs(3), true, 'a row below the affected version re-searches');
+  assert.equal(needs(4), false, 'a row at or past it does not');
+});
+
+test('the stored choice keeps `exact`, because the ladder branches on it', () => {
+  // The reason this is recovered from the stored candidate rather than rebuilt
+  // from the row's ids: a synthesised `exact: false` would quietly re-decide an
+  // exact-title accept as something else.
+  const ex = {
+    tvdbId: '471609', tmdbId: null, tmdbKind: null,
+    candidates: [
+      { tvdbId: '999', tmdbId: null, tmdbKind: null, matchedTitle: 'Other', exact: false, year: null },
+      { tvdbId: '471609', tmdbId: null, tmdbKind: null, matchedTitle: 'PSYREN', exact: true, year: 2026 },
+    ],
+  } as any;
+  const got = storedChoice(ex);
+  assert.equal(got?.exact, true);
+  assert.equal(got?.matchedTitle, 'PSYREN');
+  assert.equal(got?.image, null, 'a row stored before posters must normalise to null, not undefined');
+  assert.equal(got?.premiereDate, null);
+});
+
+test('a TMDB choice matches on id AND kind', () => {
+  // TMDB numbers films and shows independently, so the id alone is ambiguous.
+  const base = { tvdbId: null, tmdbId: '123', candidates: [
+    { tvdbId: null, tmdbId: '123', tmdbKind: 'movie', matchedTitle: 'A film', exact: true, year: null },
+  ] } as any;
+  assert.equal(storedChoice({ ...base, tmdbKind: 'movie' })?.matchedTitle, 'A film');
+  assert.equal(storedChoice({ ...base, tmdbKind: 'tv' }), null, 'same number, different kind, different work');
+});
+
+test('an unrecoverable stored choice returns null so the caller re-searches', () => {
+  // Never guess. A row whose candidates do not contain its own id cannot be
+  // re-decided honestly, and falling back to a real search is the safe half.
+  assert.equal(storedChoice({ tvdbId: '1', tmdbId: null, tmdbKind: null, candidates: [] } as any), null);
+  assert.equal(storedChoice({ tvdbId: null, tmdbId: null, tmdbKind: null, candidates: [] } as any), null);
 });

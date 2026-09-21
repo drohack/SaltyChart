@@ -375,8 +375,28 @@ export function rawIdentityOverride(anilistId: number): Identity | null {
  * History, so a reader can tell what a stamp means:
  *   1 - first stamped resolver: air-date ladder, premiere-date ranking outside
  *       tolerance, cross-provider candidate merge on an id reference.
+ *   2 - the TVDB season premiere is consulted BEFORE accepting on title text,
+ *       and is now fetched for that shape rather than only to rescue a
+ *       rejection. Every row stamped 1 that reads `remote: exact title` is a
+ *       candidate to become `remote: tvdb season premiere Nd`, i.e. weak ->
+ *       dateVerified. Audit behind it: tools/audit_premiere_dates.py.
+ *   3 - that fetch also covers a candidate whose date REFUTES, which is what a
+ *       SEQUEL always looks like: a search result carries the series' first-ever
+ *       air date, so season 2 measures years "off" its own parent. Measured on
+ *       FALL 2026 - 27 of 33 pending rows were sequels, and Aoashi 2nd Season /
+ *       Tokyo Revengers S4 / Black Clover 2nd Season sat 1,639d / 2,013d /
+ *       3,597d from the series date while landing 0d from their own season
+ *       premiere. Rows stamped 2 that are pending sequels re-decide under this.
+ *   4 - that fetch also reaches a TMDB-ONLY candidate, by cross-walking its
+ *       TMDB id to a TVDB one through the community map. Until then the season
+ *       rung was gated on the candidate already carrying a TVDB id, so half the
+ *       search results could never be dated by it - the id was filled in by
+ *       `completeIdentityIds` afterwards, which made the row look as though it
+ *       had been available. Measured on FALL 2026: `Kizu darake Seijo yori
+ *       Houfuku wo Komete Season2` sat `unverified` while TVDB's season 2
+ *       premiere matched its AniList premiere to the day.
  */
-export const RESOLVER_VERSION = 1;
+export const RESOLVER_VERSION = 4;
 
 /**
  * Did a DATE vouch for this resolver id, as opposed to title text or a year?
@@ -427,6 +447,71 @@ export type MatchGrade =
   | 'viewerPick'
   | 'weak'
   | 'none';
+
+/**
+ * 31 days - the same gap as `AIR_DATE_TOLERANCE_MS`. Correct matches land 0-31d
+ * from the entry's premiere and wrong ones 62d and out, with nothing between.
+ */
+export const CANDIDATE_TOLERANCE_MS = 31 * 86_400_000;
+
+/**
+ * Did the entry's own premiere date SEPARATE a multi-candidate row?
+ *
+ * `/admin/matching` queues every row carrying more than one candidate, and that
+ * rule is right for the case it was written for - Echo's three candidates are
+ * all titled "Echo" and are three different films. But it also fired on rows a
+ * date had already settled TO THE DAY, so the reviewer's queue filled with
+ * Confirm clicks on matches nothing disputed: 142 of the 170 premiere-date-rung
+ * multi-candidate rows stored here, measured 2026-09-21.
+ *
+ * It lives HERE, beside `matchGrade`, for the reason that function does: the
+ * page asked the same question and a correctness rule with two copies is one
+ * that can disagree with itself. The page renders this verdict; it never
+ * computes one.
+ *
+ * Three conditions, each excluding a case that measurement found:
+ *
+ *  - EXACTLY ONE candidate inside tolerance. 21 rows have two or more, which is
+ *    the date failing to discriminate - precisely the reviews worth having.
+ *  - NO undated sibling. 7 rows have one, among them `Cyborg 009: Nemesis`,
+ *    which exists twice in TVDB with one copy undated. Nothing proves the two
+ *    are the same show, which is why `mergeCrossReferencedCandidates` refuses
+ *    to merge them either; settling it here would undo that decision by a side
+ *    door.
+ *  - the STORED PICK is that candidate. 1 of the 146 otherwise-separable rows
+ *    had stored a refuted one, and settling it would pin a match the date
+ *    actively disagrees with.
+ *
+ * Two shapes are left alone BY CONSTRUCTION rather than by a special case, and
+ * both matter. Echo's nearest candidate is 46 days out, so nothing lands inside
+ * and the row stays queued. And a row accepted on the TVDB *season* premiere
+ * carries that evidence in the season date, not in any candidate's own
+ * `premiereDate` - so no candidate reads as inside and this returns false. That
+ * rung was not measured for this rule and must not be settled on evidence this
+ * function cannot see.
+ */
+export function dateSettlesCandidates(
+  candidates: Array<{ tvdbId?: string | null; tmdbId?: string | null; premiereDate?: string | null }>
+    | null | undefined,
+  airDateMs: number | null | undefined,
+  stored: { tvdbId?: string | null; tmdbId?: string | null }
+): boolean {
+  const cands = candidates ?? [];
+  if (cands.length <= 1 || airDateMs == null) return false;
+  let winner: { tvdbId?: string | null; tmdbId?: string | null } | null = null;
+  for (const c of cands) {
+    const prem = c.premiereDate ? Date.parse(c.premiereDate) : NaN;
+    // An undated sibling settles nothing: "we do not know when it aired" is not
+    // evidence against it, and reading it as such is the `unknown` mistake.
+    if (!Number.isFinite(prem)) return false;
+    if (Math.abs(prem - airDateMs) > CANDIDATE_TOLERANCE_MS) continue;
+    if (winner) return false;
+    winner = c;
+  }
+  if (!winner) return false;
+  return (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)
+    || (!!stored.tmdbId && winner.tmdbId === stored.tmdbId);
+}
 
 export function matchGrade(identity: Identity): MatchGrade {
   if (identity.confirmed) return 'confirmed';

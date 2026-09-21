@@ -1,4 +1,5 @@
 import prisma from '../db';
+import { recordUpstream } from './upstreamHealth';
 
 // ---------------------------------------------------------------------------
 // AniList -> TVDB / TMDB id map.
@@ -83,9 +84,14 @@ async function fetchPairs(etag?: string | null): Promise<Pairs | typeof UNCHANGE
     });
     if (res.status === 304) {
       console.log(`[anime-ids] map unchanged upstream (304 in ${Date.now() - started}ms)`);
+      // "Unchanged" is a successful conversation, not a failed one.
+      void recordUpstream('animeIdMap', true);
       return UNCHANGED;
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      void recordUpstream('animeIdMap', false, { reason: `HTTP ${res.status}`, status: res.status });
+      throw new Error(`HTTP ${res.status}`);
+    }
     _etag = res.headers.get('etag');
     const rows = (await res.json()) as any[];
     console.log(`[anime-ids] map downloaded in ${Date.now() - started}ms`);

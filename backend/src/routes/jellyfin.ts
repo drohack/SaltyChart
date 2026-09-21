@@ -6,6 +6,7 @@ import https from 'https';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import prisma from '../db';
+import { recordUpstream } from '../lib/upstreamHealth';
 import { requireAuth, requireAdmin, ADMIN_USER_ID, AuthRequest } from '../middleware/auth';
 import {
   classifyMatch,
@@ -36,6 +37,7 @@ import {
 import {
   resolveIdentity,
   isDateVerified,
+  dateSettlesCandidates,
   isIdConfident,
   rawIdentityOverride,
   identityReady,
@@ -187,6 +189,12 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
   // on a miss row records.
   const years: Record<string, unknown> =
     req.body?.years && typeof req.body.years === 'object' ? req.body.years : {};
+  // Day-precision premieres, mediaId -> epoch ms. `years` above cannot serve
+  // here: `dateSettlesCandidates` measures a 31-DAY gap, and a year is 365 days
+  // of slack - it would settle rows the real date refutes. Absent is honest
+  // (nothing settles); a page that sends neither loses only the optimisation.
+  const datesFor: Record<string, unknown> =
+    req.body?.dates && typeof req.body.dates === 'object' ? req.body.dates : {};
   // Titles feed the match tier below; without them the title tier can't be
   // evaluated, so the tier is reported as null rather than guessed at.
   const titlesFor: Record<string, unknown> =
@@ -275,6 +283,17 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
         ? ident.candidates.map((c) => (c.year != null ? c : { ...c, year: yearFor(c) }))
         : ident?.candidates ?? null,
       tier: tierFor(id),
+      // Whether the entry's premiere date SEPARATED a multi-candidate row, so
+      // /admin/matching can stop queueing a match nothing disputes. Decided
+      // here, next to `tier` and `retry`, because the page asked the same
+      // question and a correctness rule with two copies can disagree with
+      // itself - the `matchGrade` lesson. The page renders this; it does not
+      // recompute it.
+      settledByDate: dateSettlesCandidates(
+        ident?.candidates ?? null,
+        Number(datesFor[String(id)]) || null,
+        { tvdbId: ident?.tvdbId ?? null, tmdbId: ident?.tmdbId ?? null },
+      ),
       // A row with no ids and no human decision is what the sweep still owes
       // an answer for - say where it stands (eligible / cooldown / retired).
       // Settled rows get null, not 'eligible': there is nothing to retry.
@@ -1008,6 +1027,10 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
     }
 
     if (!series) {
+      // The full library read - the call availability, the player and the
+      // matcher all stand on. Recorded as the Jellyfin signal; the TMDB remote
+      // search is graded separately in remoteIdentity.ts, because "Jellyfin is
+      // up but its metadata provider is down" is a different outage.
       const { data } = await getItemsApi(api).getItems(
         {
           includeItemTypes: [BaseItemKind.Series],
@@ -1031,7 +1054,18 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
   })();
 
   try {
-    return await _libraryInFlight;
+    const out = await _libraryInFlight;
+    void recordUpstream('jellyfin', true);
+    return out;
+  } catch (err: any) {
+    // The library read is the call availability, the player and the matcher all
+    // stand on, so its failure is the honest passive signal for Jellyfin. The
+    // 15-minute probe is the backstop for a server nobody has used today.
+    void recordUpstream('jellyfin', false, {
+      reason: jellyfinErrorInfo(err),
+      status: err?.response?.status ?? null,
+    });
+    throw err;
   } finally {
     _libraryInFlight = null;
   }

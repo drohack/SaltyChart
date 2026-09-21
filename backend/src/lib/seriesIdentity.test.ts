@@ -7,6 +7,7 @@ import {
   needsRegrade,
   isDateVerified,
   matchGrade,
+  dateSettlesCandidates,
   isIdConfident,
   RESOLVER_VERSION,
   mergeIdentityPatch,
@@ -274,4 +275,96 @@ test('a human confirmation outranks everything, and a rejection counts as knowle
     'no id at all grades as none');
   assert.equal(isIdConfident(ident({ source: 'none', tvdbId: null })), false,
     'knowing nothing is not confidence');
+});
+
+
+const DAY = 86_400_000;
+const ENTRY = Date.UTC(2026, 9, 4);
+const c = (tvdbId: string | null, premiereDate: string | null, tmdbId: string | null = null) =>
+  ({ tvdbId, tmdbId, premiereDate });
+
+test('the date settles a row only when it separates the candidates', () => {
+  // The whole point: one candidate on the entry's day, the other refuted by
+  // years. 142 of 170 premiere-date-rung multi-candidate rows look like this,
+  // and every one was a Confirm click on a match nothing disputed.
+  assert.equal(
+    dateSettlesCandidates([c('1', '2026-10-04'), c('2', '2019-01-05')], ENTRY, { tvdbId: '1' }),
+    true,
+  );
+});
+
+test('two candidates inside tolerance are exactly the review worth having', () => {
+  // The date failed to discriminate - 21 stored rows are in this state. Settling
+  // them would be choosing by search-result order, which is what the air-date
+  // evidence exists to stop doing.
+  assert.equal(
+    dateSettlesCandidates([c('1', '2026-10-04'), c('2', '2026-10-11')], ENTRY, { tvdbId: '1' }),
+    false,
+  );
+});
+
+test('an undated sibling settles nothing - the Cyborg 009: Nemesis shape', () => {
+  // That series exists TWICE in TVDB with one copy undated, and nothing proves
+  // the two are the same show - which is why mergeCrossReferencedCandidates
+  // refuses to merge them. Settling the row here would undo that by a side door.
+  // "We do not know when it aired" is not evidence against it.
+  assert.equal(
+    dateSettlesCandidates([c('1', '2026-10-04'), c('2', null)], ENTRY, { tvdbId: '1' }),
+    false,
+  );
+});
+
+test('a stored pick the date REFUTES is never settled, however clean the separation', () => {
+  // 1 of the 146 otherwise-separable rows stored a refuted candidate. Without
+  // this check the rule would pin a match its own evidence disagrees with -
+  // and it would look settled, which is worse than looking unverified.
+  assert.equal(
+    dateSettlesCandidates([c('1', '2026-10-04'), c('2', '2019-01-05')], ENTRY, { tvdbId: '2' }),
+    false,
+  );
+});
+
+test('the Echo shape stays queued, because nothing lands inside tolerance', () => {
+  // Echo premiered 2026-07-19; its candidates are all titled "Echo" and are
+  // three different films, the nearest 46 days away. The queue rule exists for
+  // this row and must keep working - asserted, not assumed.
+  assert.equal(
+    dateSettlesCandidates(
+      [c('1', '2026-09-03'), c('2', '2023-10-13'), c('3', '2021-05-02')],
+      Date.UTC(2026, 6, 19), { tvdbId: '1' }),
+    false,
+  );
+});
+
+test('the season-premiere rung is left alone by construction', () => {
+  // Its evidence is the SEASON date, which lives nowhere in a candidate's own
+  // premiereDate - so no candidate reads as inside and the row stays queued.
+  // Deliberate: that rung was never measured for this rule.
+  assert.equal(
+    dateSettlesCandidates([c('1', '2019-01-05'), c('2', '2016-04-02')], ENTRY, { tvdbId: '1' }),
+    false,
+  );
+});
+
+test('tolerance is the 31-day gap, not a rounder number', () => {
+  const inside = new Date(ENTRY + 31 * DAY).toISOString().slice(0, 10);
+  const outside = new Date(ENTRY + 32 * DAY).toISOString().slice(0, 10);
+  assert.equal(dateSettlesCandidates([c('1', inside), c('2', '2019-01-05')], ENTRY, { tvdbId: '1' }), true);
+  assert.equal(dateSettlesCandidates([c('1', outside), c('2', '2019-01-05')], ENTRY, { tvdbId: '1' }), false);
+});
+
+test('a single candidate and a dateless entry are outside this rule', () => {
+  assert.equal(dateSettlesCandidates([c('1', '2026-10-04')], ENTRY, { tvdbId: '1' }), false);
+  assert.equal(dateSettlesCandidates([c('1', '2026-10-04'), c('2', '2019-01-05')], null, { tvdbId: '1' }), false);
+  assert.equal(dateSettlesCandidates(null, ENTRY, { tvdbId: '1' }), false);
+});
+
+test('the pick may be identified by its TMDB id alone', () => {
+  // Roughly half of every search's results are TMDB-only, so requiring a TVDB
+  // id to recognise the stored pick would silently exclude them.
+  assert.equal(
+    dateSettlesCandidates(
+      [c(null, '2026-10-04', '55'), c(null, '2019-01-05', '66')], ENTRY, { tmdbId: '55' }),
+    true,
+  );
 });

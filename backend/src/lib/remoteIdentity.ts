@@ -2,9 +2,12 @@ import type { Api } from '@jellyfin/sdk';
 import { getTvShowsApi } from '@jellyfin/sdk/lib/utils/api/tv-shows-api';
 import { getItemLookupApi } from '@jellyfin/sdk/lib/utils/api/item-lookup-api';
 import prisma from '../db';
+import { recordUpstream } from './upstreamHealth';
 import { normalizeTitle, classifyMatch, MatchableSeries } from './animeMatch';
 import { closestDatedEpisode, AIR_DATE_TOLERANCE_MS, anilistDateToMs } from './episodeMatch';
 import {
+  RESOLVER_VERSION,
+  type RemoteChoice,
   needsRemoteLookup,
   needsRegrade,
   setIdentityOverride,
@@ -158,19 +161,45 @@ export function verdictFor(input: {
   if (input.exact && p != null && p <= AIR_DATE_TOLERANCE_MS) {
     return { verdict: 'accept', rung: `premiere date ${days(p)}d` };
   }
-  // A2: an exact title with no date on either side - today's rung A, unchanged.
+  // B0: TVDB's schedule has a season premiering on the entry's date. Checked
+  // BEFORE the held-library rung on purpose - for a season nobody has grabbed
+  // yet, held episodes are stale by construction and would reject the show's
+  // own parent (Ranma S3, Punirunes 2/3, Chibi Godzilla S3, all measured).
+  //
+  // It is ALSO above A2, which is newer and is the point of this ordering: an
+  // exact title with no candidate date used to stop here at `exact title`, a
+  // rung no date vouches for, while TVDB knew the day. PSYREN and Sirotan were
+  // auto-add candidates on title text alone while AniList and TVDB agreed on
+  // their air date TO THE DAY. Audited over the 8 aired seasons FALL 2024 ->
+  // SUMMER 2026, against the 515 entries the Fribb map independently pairs
+  // (tools/audit_premiere_dates.py, 2026-09-20):
+  //
+  //   first seasons   345/345 known inside 31d - 100%, 298 of them exact to
+  //                   the day, and NOT ONE outside tolerance
+  //   sequels         140/167 (83.8%)
+  //
+  // The 27 sequels it does not vouch for are a TVDB-vs-AniList modelling
+  // difference, never a wrong match: TVDB files a split cour as ONE season, so
+  // Part 2 measures ~182d off its own Part 1 premiere (Dr. STONE, Uma Musume,
+  // Samurai Troopers and Ooi! Tonbo all land on exactly 182), and movies and
+  // specials hang off the parent series record. **So this rung may only ever
+  // UPGRADE**: out of tolerance it declines to fire and A2 below still accepts
+  // on the title, leaving those 27 exactly as they are today. Letting it refute
+  // would send 16% of correct sequels to review and buy nothing measurable.
+  //
+  // Use the SEASON premiere, never the series' `firstAired`: on the same
+  // corpus the series date is inside tolerance for only 13.2% of sequels, 118
+  // of them past a YEAR off (Natsume Yuujinchou Shichi by 5,937 days).
+  if (input.tvdbSeasonDeltaMs != null && input.tvdbSeasonDeltaMs <= AIR_DATE_TOLERANCE_MS) {
+    return { verdict: 'accept', rung: `tvdb season premiere ${days(input.tvdbSeasonDeltaMs)}d` };
+  }
+  // A2: an exact title with no date on either side, and no season premiere to
+  // vouch for it either - accept, but no date said so, so it grades `weak`.
   // An exact title the date REFUTES falls through: "Echo" (2023) at 1,012d was
   // accepted on text alone, and "cocoon" at 523d shows why the fall-through
   // ends in queue rather than reject - that one is the correct film, TMDB just
   // dates the theatrical release where AniList dates the broadcast.
   if (input.exact && p == null) return { verdict: 'accept', rung: 'exact title' };
-  // B0: TVDB's schedule has a season premiering on the entry's date. Checked
-  // BEFORE the held-library rung on purpose - for a season nobody has grabbed
-  // yet, held episodes are stale by construction and would reject the show's
-  // own parent (Ranma S3, Punirunes 2/3, Chibi Godzilla S3, all measured).
-  if (input.tvdbSeasonDeltaMs != null && input.tvdbSeasonDeltaMs <= AIR_DATE_TOLERANCE_MS) {
-    return { verdict: 'accept', rung: `tvdb season premiere ${days(input.tvdbSeasonDeltaMs)}d` };
-  }
   // B/C: we hold it, so the entry's own episode is datable - and it decides.
   // Above the premiere rungs on purpose: a held sequel's SERIES premiere is
   // years off (Bananya), but its episode lands within a day. The one soften:
@@ -280,7 +309,17 @@ async function searchOne(
             { timeout: 30_000 }
           );
     results = data ?? [];
-  } catch {
+    // Graded as TMDB rather than Jellyfin: this reaches TMDB *through*
+    // Jellyfin, and "Jellyfin is up but its metadata provider is failing" was
+    // invisible precisely because the two were never told apart.
+    void recordUpstream('tmdb', true);
+  } catch (err: any) {
+    // This `catch { return [] }` had no log at all - a dead provider, an
+    // expired key and "TMDB genuinely has no such title" were one value.
+    void recordUpstream('tmdb', false, {
+      reason: err?.message ?? String(err),
+      status: err?.response?.status ?? null,
+    });
     return [];
   }
 
@@ -397,6 +436,79 @@ export interface RemoteResult {
 export interface TvdbEvidence {
   seasonDeltaMs: number | null;
   undatedFutureSeason: boolean;
+}
+
+/**
+ * Which `RESOLVER_VERSION` bumps changed how candidates are FOUND or RANKED.
+ *
+ * Two different operations wear the name "re-grade", and telling them apart is
+ * worth ~7x the requests:
+ *
+ *  - **re-decide** - the ladder changed, but the candidates already stored are
+ *    still the right ones. The row's id is in the database; all that is needed
+ *    is to run the ladder again, plus the one (memoised) show fetch its date
+ *    rungs want. Versions 2 and 3 were both this.
+ *  - **re-search** - discovery or ranking changed, so the stored candidates may
+ *    no longer contain the right answer. This one genuinely has to search
+ *    again. It is why re-grading exists at all: Echo kept offering its 2023
+ *    namesake until its row was re-resolved, because a ranking fix only helps
+ *    if you rank again.
+ *
+ * Before this list existed every bump re-searched, which meant 5-7 skyhook
+ * calls per row - each one paced 300 ms apart, globally - to rediscover an id
+ * already stored on that very row. Measured: 2.47 s/row, ~30 min for a 725-row
+ * drain, almost all of it waiting on requests whose answer we had.
+ *
+ * **Add the new version number here when you change `searchOne`, `pickCandidate`
+ * or `mergeCrossReferencedCandidates`.** Leaving it out means stored rows keep
+ * a stale PICK - the exact failure `RESOLVER_VERSION` exists to prevent - so
+ * when in doubt, add it: a slow re-grade is recoverable, a wrong one is not.
+ */
+export const SEARCH_AFFECTING_VERSIONS: readonly number[] = [];
+
+/** Does a row at this version need a fresh search, or only a re-decide? */
+export function needsResearch(storedVersion: number | null | undefined): boolean {
+  const v = storedVersion ?? 0;
+  return SEARCH_AFFECTING_VERSIONS.some((affected) => v < affected);
+}
+
+/**
+ * The candidate this row already settled on, recovered from its stored list.
+ *
+ * `exact` is the reason this must come from the stored candidate rather than be
+ * rebuilt from the row's ids: the ladder branches on it, and a synthesised
+ * `exact: false` would quietly re-decide an exact-title accept as something
+ * else. When no stored candidate matches the stored ids we cannot know it, so
+ * the caller falls back to a real search rather than guessing.
+ */
+export function storedChoice(ex: {
+  tvdbId?: string | null; tmdbId?: string | null; tmdbKind?: string | null;
+  candidates?: RemoteChoice[] | null;
+}): RemoteCandidate | null {
+  const cands = ex.candidates ?? [];
+  if (!ex.tvdbId && !ex.tmdbId) return null;
+  const match = cands.find((c) => {
+    if (ex.tvdbId && c.tvdbId && String(c.tvdbId) === String(ex.tvdbId)) return true;
+    if (ex.tmdbId && c.tmdbId && String(c.tmdbId) === String(ex.tmdbId)) {
+      return (c.tmdbKind ?? null) === (ex.tmdbKind ?? null);
+    }
+    return false;
+  });
+  if (!match) return null;
+  // A stored row predates `image`/`premiereDate` in some cases; normalise the
+  // optionals rather than let `undefined` reach the ladder, where
+  // `premiereDate: undefined` and `premiereDate: null` would read alike but
+  // only one of them is what the row actually recorded.
+  return {
+    tvdbId: match.tvdbId ?? null,
+    tmdbId: match.tmdbId ?? null,
+    tmdbKind: match.tmdbKind ?? null,
+    matchedTitle: match.matchedTitle,
+    exact: match.exact,
+    year: match.year ?? null,
+    image: match.image ?? null,
+    premiereDate: match.premiereDate ?? null,
+  };
 }
 
 /**
@@ -1046,7 +1158,7 @@ async function saveSweepStatus(s: SweepStatus): Promise<void> {
  * schedule changes a verdict (see hasUndatedFutureSeason in skyhookIdentity).
  * Memoised inside skyhookEpisodes, degrades to nothing.
  */
-async function tvdbEvidenceFor(
+export async function tvdbEvidenceFor(
   fromResolver: Map<string, TvdbEvidence> | undefined,
   hit: RemoteCandidate,
   inLib: MatchableSeries | undefined | null,
@@ -1056,8 +1168,48 @@ async function tvdbEvidenceFor(
   const own = fromResolver?.get(hit.tvdbId ?? '');
   if (own) return own;
   const rejectShaped = inLib && deltaMs != null && deltaMs > AIR_DATE_TOLERANCE_MS;
-  const tvdbId = hit.tvdbId ?? (inLib?.tvdbId ? String(inLib.tvdbId) : null);
-  if (!rejectShaped || !tvdbId || airDateMs == null) {
+  // The second shape, and the reason this lookup is not only a rescue: NOTHING
+  // HAS DATED THIS CANDIDATE YET, so the ladder is about to decide it on title
+  // text or on a date that cannot be right.
+  //
+  // Two cases, and the second was missed at first:
+  //
+  //  - no date at all -> the ladder accepts on title text alone (rung A2) and
+  //    the row grades `weak`. PSYREN and Sirotan reached the Sonarr auto-add
+  //    that way while TVDB agreed with AniList to the day.
+  //
+  //  - a date that REFUTES -> almost always a SEQUEL, because the date a search
+  //    result carries is the SERIES' first-ever air date, which for a second
+  //    season is season 1's. Measured on FALL 2026: Aoashi 2nd Season 1,639d
+  //    "off", Tokyo Revengers S4 2,013d, Black Clover 2nd Season 3,597d - and
+  //    every one of them lands **0 days** off its own TVDB season premiere.
+  //    27 of the 33 pending rows in that season were sequels failing this way.
+  //
+  // So the condition is "no date has vouched for this yet", not "no date
+  // exists". A candidate the premiere date already vouches for needs nothing.
+  //
+  // Bounded: one extra call per unsettled candidate, on the sweep only (this is
+  // never on a viewer's request path), and skyhookEpisodes paces every caller
+  // through the module's own 300 ms gate.
+  const pDelta = premiereDelta(hit.premiereDate, airDateMs);
+  const dateAlreadyVouches = pDelta != null && pDelta <= AIR_DATE_TOLERANCE_MS;
+  const needsSeasonDate = !dateAlreadyVouches;
+  // A TMDB-only candidate is not a show without a TVDB season - it is one
+  // whose TVDB id nobody has looked up yet. `completeIdentityIds` does exactly
+  // this cross-walk, but it runs AFTER the verdict, so the season rung could
+  // never fire for a TMDB-only hit however well TVDB knew the answer, and the
+  // id then appeared on the stored row as if it had been available all along.
+  // Measured on FALL 2026: `Kizu darake Seijo yori Houfuku wo Komete Season2`
+  // (premiere 2026-10-02) stored tmdb 293124 alone; TVDB's season 2 premiere
+  // for the show that id cross-walks to is 2026-10-02 - the same day - while
+  // the row sat `remote: unverified` in the review queue. The cross-walk is an
+  // in-memory join on a map already loaded, so this costs no request.
+  const tvdbId =
+    hit.tvdbId
+    ?? (inLib?.tvdbId ? String(inLib.tvdbId) : null)
+    ?? crosswalkIds({ tmdbId: hit.tmdbId, tmdbKind: hit.tmdbKind })?.tvdbId
+    ?? null;
+  if ((!rejectShaped && !needsSeasonDate) || !tvdbId || airDateMs == null) {
     return { seasonDeltaMs: null, undatedFutureSeason: false };
   }
   const eps = await skyhookEpisodes(tvdbId);
@@ -1134,6 +1286,20 @@ export async function regradeStoredRows(
   let promoted = 0;
   let flagged = 0;
   let stamped = 0;
+  let reusedCount = 0;
+
+  // A drain is minutes to an hour of work and it used to log NOTHING until it
+  // finished - so "is it still going?" had no answer short of querying the
+  // database by hand, and the only line on screen was an unrelated 15-minute
+  // timer. Every line carries its own position, because a progress line that
+  // cannot say where it is in the run is not a progress line.
+  const due = stored.filter((r) => (r.resolverVersion ?? 0) < RESOLVER_VERSION).length;
+  if (due > 0) {
+    console.log(`[identity] re-grade starting: ${due} row(s) below resolver v${RESOLVER_VERSION}` +
+                (max === Infinity ? ' (drain - no cap)' : `, up to ${max} this run`));
+  }
+  const PROGRESS_EVERY = 25;
+
   for (const row of stored) {
     if (regraded >= max) break;
     const ex = rawIdentityOverride(row.anilistId);
@@ -1156,12 +1322,26 @@ export async function regradeStoredRows(
       stamped++;
       continue;
     }
-    const found = await resolveRemoteIdentity(api, entry);
+    // Re-decide from what is already stored when the bump did not change how
+    // candidates are found or ranked - see SEARCH_AFFECTING_VERSIONS. Falls back
+    // to a real search whenever the stored choice cannot be recovered, so a
+    // sparse or malformed row is never decided on a guess.
+    const reuse = !needsResearch(ex.resolverVersion) ? storedChoice(ex) : null;
+    const found = reuse ? null : await resolveRemoteIdentity(api, entry);
     regraded++;
-    await new Promise((r) => setTimeout(r, PACE_MS));
-    const hit = found?.chosen ?? null;
-    if (!found || !hit) {
-      // The search finds nothing today; keep what's stored, stamped.
+    if (regraded % PROGRESS_EVERY === 0) {
+      console.log(`[identity] re-grade ${regraded}/${Math.min(due, max)} - ` +
+                  `${promoted} promoted, ${flagged} flagged, ${stamped} stamped` +
+                  (reusedCount ? `, ${reusedCount} without re-searching` : ''));
+    }
+    // The inter-row pace is for the SEARCH. A re-decide makes at most one
+    // (memoised) show request, so it does not need to be throttled like one.
+    if (!reuse) await new Promise((r) => setTimeout(r, PACE_MS));
+    if (reuse) reusedCount++;
+    const hit = reuse ?? found?.chosen ?? null;
+    if (!hit) {
+      // Nothing to decide with - the search found nothing today, or the row had
+      // no recoverable stored choice. Keep what's stored, stamped.
       await setIdentityOverride(mergeIdentityPatch(ex, {
         anilistId: row.anilistId,
         tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
@@ -1175,7 +1355,7 @@ export async function regradeStoredRows(
       (hit.tvdbId ? byTvdb.get(hit.tvdbId) : undefined) ??
       (hit.tmdbId && hit.tmdbKind === 'tv' ? byTmdb.get(hit.tmdbId) : undefined);
     const deltaMs = await episodeDeltaMs(api, inLib, entry.airDateMs);
-    const tvdb = await tvdbEvidenceFor(found.tvdbEvidence, hit, inLib, deltaMs, entry.airDateMs ?? null);
+    const tvdb = await tvdbEvidenceFor(found?.tvdbEvidence, hit, inLib, deltaMs, entry.airDateMs ?? null);
     const yearDelta =
       hit.year != null && entry.year != null ? Math.abs(hit.year - entry.year) : null;
     const { verdict, rung } = verdictFor({
@@ -1192,7 +1372,10 @@ export async function regradeStoredRows(
       anilistId: row.anilistId,
       tvdbId: full.tvdbId, tmdbId: full.tmdbId, tmdbKind: full.tmdbKind,
       matchedTitle: hit.matchedTitle,
-      candidates: found.candidates,
+      // On a re-decide there is no new search, so the stored list stands - and
+      // must be written back, or re-deciding would erase the candidates the
+      // review picker offers.
+      candidates: found?.candidates ?? cands.map((c) => ({ ...c, premiereDate: c.premiereDate ?? null })),
       year: hit.year ?? ex.year,
       pending: nowPending,
       note: verdict === 'accept' && rung ? `remote: ${rung}` : 'remote: unverified',
@@ -1518,8 +1701,20 @@ export async function runRemoteIdentitySweep(
       return;
     }
 
+    if (batch.length > 0) {
+      console.log(`[identity] lookups starting: ${batch.length} entr${batch.length === 1 ? 'y' : 'ies'}` +
+                  ' with no stored id (a real search each - no fast path exists for these)');
+    }
     for (const q of batch) {
       looked++;
+      // Same reasoning as the re-grade's progress: this pass is the SLOW one
+      // (every row is a fresh search, ~2.5 s), it can run for many minutes, and
+      // until now it printed nothing at all until it finished - so the sweep
+      // looked dead exactly when it was doing the most work.
+      if (looked % 25 === 0) {
+        console.log(`[identity] lookups ${looked}/${batch.length} - ` +
+                    `${accepted} accepted, ${queued} queued, ${rejected} rejected`);
+      }
       const found = await resolveRemoteIdentity(api, q);
       const hit = found?.chosen ?? null;
       if (found && hit) {
