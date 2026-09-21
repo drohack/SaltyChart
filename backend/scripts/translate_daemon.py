@@ -174,6 +174,21 @@ def handle_check(rid: str, video_id: str):
 
 
 def main():
+    # Show titles carry characters cp1252 cannot encode - a Cyrillic "o" in
+    # `Jyuou Mujin Dandivine` is what found this - and Python on Windows encodes
+    # REDIRECTED stdout as cp1252, not UTF-8. The backend always spawns this
+    # through a pipe, so one such title raised UnicodeEncodeError and killed the
+    # whole run. `errors='replace'` is the backstop: a console that cannot
+    # represent a glyph should mangle one title, never lose the run.
+    #
+    # Every script in tools/ already did this; none of the three in
+    # backend/scripts/ did, which is exactly backwards - these are the ones
+    # something else always pipes.
+    import sys as _sys
+    if hasattr(_sys.stdout, 'reconfigure'):
+        _sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(_sys.stderr, 'reconfigure'):
+        _sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     # Be a good neighbour to Plex (shares the server) - yield CPU under contention.
     # Best-effort; only meaningful on Linux (the Unraid host).
     try:

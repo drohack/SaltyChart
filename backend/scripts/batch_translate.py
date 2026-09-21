@@ -338,7 +338,31 @@ def is_cached(video_id: str, conn: sqlite3.Connection, min_model: str = "medium"
 # Main
 # ---------------------------------------------------------------------------
 
+# Prisma's schema directory, and the base a relative DATABASE_URL resolves
+# against. Derived from this file rather than hardcoded, so it is right in the
+# image (/app/scripts -> /app/prisma) and in the repo (backend/scripts ->
+# backend/prisma) without either knowing about the other.
+SCHEMA_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prisma")
+)
+
+
 def main():
+    # Show titles carry characters cp1252 cannot encode - a Cyrillic "o" in
+    # `Jyuou Mujin Dandivine` is what found this - and Python on Windows encodes
+    # REDIRECTED stdout as cp1252, not UTF-8. The backend always spawns this
+    # through a pipe, so one such title raised UnicodeEncodeError and killed the
+    # whole run. `errors='replace'` is the backstop: a console that cannot
+    # represent a glyph should mangle one title, never lose the run.
+    #
+    # Every script in tools/ already did this; none of the three in
+    # backend/scripts/ did, which is exactly backwards - these are the ones
+    # something else always pipes.
+    import sys as _sys
+    if hasattr(_sys.stdout, 'reconfigure'):
+        _sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(_sys.stderr, 'reconfigure'):
+        _sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description="Batch pre-translate anime trailers")
     parser.add_argument("--season", type=str, help="Season: WINTER, SPRING, SUMMER, FALL")
     parser.add_argument("--year", type=int, help="Year (e.g. 2026)")
@@ -372,12 +396,26 @@ def main():
         db_url = os.environ.get("DATABASE_URL", "")
         if db_url.startswith("file:"):
             raw = db_url[5:]
-            # Prisma resolves relative paths from the schema directory (/app/prisma/)
+            # Prisma resolves a relative DATABASE_URL from the SCHEMA directory,
+            # so that is what a relative path has to be joined to.
+            #
+            # That base was hardcoded to `/app/prisma` - the container's layout -
+            # which is right in production and cannot be right anywhere else. The
+            # stock dev `DATABASE_URL` is `file:./prisma/data.db`, so off the
+            # container it resolved to `/app/prisma/prisma/data.db` and the run
+            # died with "unable to open database file". It stayed hidden because
+            # nothing on screen could start a batch; the moment /admin/subtitles
+            # grew a Run-now button, every dev-machine run failed.
+            #
+            # Deriving it from this file's own location is correct in BOTH: the
+            # script sits at <base>/scripts/ and the schema at <base>/prisma/,
+            # in the image (/app/scripts, /app/prisma) and in the repo
+            # (backend/scripts, backend/prisma) alike.
             if not os.path.isabs(raw):
-                raw = os.path.join("/app/prisma", raw)
+                raw = os.path.join(SCHEMA_DIR, raw)
             db_path = os.path.normpath(raw)
         else:
-            db_path = "/app/prisma/prisma/data.db"
+            db_path = os.path.join(SCHEMA_DIR, "prisma", "data.db")
 
     print(f"[batch] Seasons: {', '.join(f'{s} {y}' for s, y in seasons_to_process)}")
     print(f"[batch] Database: {db_path}")

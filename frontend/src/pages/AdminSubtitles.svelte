@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { authToken } from '../stores/auth';
   import { apiJson, apiFetch, QUICK, ApiError } from '../lib/remote';
   import AdminShell from '../components/AdminShell.svelte';
@@ -444,6 +444,91 @@
     return `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? 'am' : 'pm'}`;
   }
 
+  // ---------------------------------------------------------------- Run now
+  //
+  // The trigger existed from the start (`POST /api/translate/batch`, admin-only,
+  // with a 409 guard shared with the auto-scheduler) and nothing on screen ever
+  // reached it, so starting a run meant curl. The page showed the schedule, the
+  // live tail and the last run's exit code - everything except the button.
+  //
+  // It runs the SERVER batch, which is the `medium` model on CPU. It is not and
+  // cannot be the champion: `large-v3-split` is Demucs + large-v3 + qwen3.5:9b
+  // on a GPU, and the container has neither the hardware nor the models. Saying
+  // so on the button matters, because a run that silently produced a lower rank
+  // than the Sunday job is exactly the confusion the modelName ladder exists to
+  // prevent.
+  let startingBatch = false;
+  let batchDryRun = false;
+  let batchNotice = '';
+  let batchError = '';
+  let livePoll: ReturnType<typeof setInterval> | null = null;
+
+  function stopLivePoll() {
+    if (livePoll) clearInterval(livePoll);
+    livePoll = null;
+  }
+  onDestroy(stopLivePoll);
+
+  /**
+   * Follow the run until it stops. The report already carries `schedule.live`
+   * (running, season, and the log tail), so this re-reads the same payload the
+   * page is built from rather than introducing a second source that could
+   * disagree with it.
+   */
+  function followBatch() {
+    stopLivePoll();
+    const startedAt = Date.now();
+    livePoll = setInterval(async () => {
+      // A batch is minutes, not hours; stop following rather than polling for
+      // ever if something wedges. The next manual reload still shows the truth.
+      if (Date.now() - startedAt > 90 * 60_000) return stopLivePoll();
+      await load();
+      if (!report?.schedule?.live?.running) stopLivePoll();
+    }, 5_000);
+  }
+
+  async function runBatchNow() {
+    startingBatch = true;
+    batchNotice = '';
+    batchError = '';
+    try {
+      const body: Record<string, unknown> = { dryRun: batchDryRun };
+      // Only pin a season when the admin has actually chosen one. With the
+      // scope on "default" the script covers the displayed season, which is
+      // what the schedule card above describes.
+      if (scopeSeason) {
+        body.season = scopeSeason;
+        body.year = scopeYear;
+      }
+      const res = await apiFetch('/api/translate/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify(body),
+      }, { timeoutMs: QUICK, retries: 0, label: 'subtitle-batch-start' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        batchNotice = batchDryRun
+          ? 'Dry run started - it lists what it would do and translates nothing.'
+          : 'Batch started.';
+        await load();
+        followBatch();
+      } else if (data?.code === 'BATCH_RUNNING') {
+        // Not an error the admin caused: the scheduler may have started one.
+        batchNotice = 'A batch is already running - following that one instead.';
+        await load();
+        followBatch();
+      } else {
+        batchError = data?.error ?? 'Could not start the batch.';
+      }
+    } catch (e) {
+      batchError = (e as ApiError)?.unreachable
+        ? "Couldn't reach the backend - nothing was started."
+        : 'Could not start the batch.';
+    } finally {
+      startingBatch = false;
+    }
+  }
+
   onMount(load);
 </script>
 
@@ -620,6 +705,48 @@
                 {report.schedule.wednesday.daysBeforeSeason}-day threshold. The job is
                 waiting on purpose, not broken.
               </p>
+            {/if}
+
+            <div class="flex flex-wrap items-center gap-2 pt-1" data-batch-controls>
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                data-run-batch
+                disabled={startingBatch || report.schedule.live.running}
+                on:click={runBatchNow}
+              >
+                {#if startingBatch}
+                  <span class="loading loading-spinner loading-xs"></span> Starting...
+                {:else if report.schedule.live.running}
+                  Running...
+                {:else}
+                  Run now (medium)
+                {/if}
+              </button>
+              <label class="label cursor-pointer gap-2 py-0">
+                <input type="checkbox" class="checkbox checkbox-sm" data-batch-dry-run
+                  bind:checked={batchDryRun} disabled={startingBatch || report.schedule.live.running} />
+                <span class="label-text text-sm">Dry run</span>
+              </label>
+              <span class="text-xs opacity-70">
+                {#if scopeSeason}
+                  covers {scopeSeason} {scopeYear}
+                {:else}
+                  covers the displayed season
+                {/if}
+                - no time cutoff when started by hand
+              </span>
+            </div>
+            <p class="text-xs opacity-60">
+              This is the server's <code>medium</code> run. The champion
+              <code>large-v3-split</code> needs a GPU, Demucs and Ollama, so it only
+              runs on the machine with them - see the card beside this one.
+            </p>
+            {#if batchNotice}
+              <p class="text-sm text-success" data-batch-notice>{batchNotice}</p>
+            {/if}
+            {#if batchError}
+              <p class="text-sm text-error" data-batch-error>{batchError}</p>
             {/if}
 
             {#if report.schedule.live.running}
