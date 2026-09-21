@@ -1443,6 +1443,16 @@ def main():
             print()
             continue
 
+        # Per season, and before the branch: only the legacy fallback below used
+        # to set this, while the `if bot_blocked` check after the branch reads it
+        # for BOTH paths. So a phased run - the normal, champion path - died with
+        # `UnboundLocalError: cannot access local variable 'bot_blocked'` at the
+        # end of its FIRST season, every time. It survived only when Ollama
+        # failed to start and the legacy path ran, which is why it went unseen.
+        # The phased path aborts by raising BotBlockError instead, so here this
+        # stays False and the check below is simply a no-op for it.
+        bot_blocked = False
+
         if split_enabled and ollama_ready:
             # Phased split run (VRAM-optimal: one model resident at a time)
             items = [{"vid": s["trailer"]["id"], "title": get_title(s), "media_id": s["id"]}
@@ -1466,7 +1476,6 @@ def main():
             translated = 0
             errors = 0
             dl_delay = getattr(args, "download_delay", DOWNLOAD_DELAY_DEFAULT) or 0.0
-            bot_blocked = False
             for i, (show, reason) in enumerate(uncached):
                 vid = show["trailer"]["id"]
                 title = get_title(show)
