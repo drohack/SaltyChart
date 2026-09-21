@@ -73,7 +73,9 @@ import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import adminUsersRouter from './routes/adminUsers';
 import optionsRouter from './routes/options';
-import translateRouter, { startBatch, batchStatus } from './routes/translate';
+import translateRouter, { startBatch, batchStatus, recycleTranslateDaemon, checkLocalRunSilence } from './routes/translate';
+import statusRouter from './routes/status';
+import { runDueProbes } from './lib/upstreamProbes';
 import jellyfinRouter from './routes/jellyfin';
 import sonarrRouter, { runSonarrSnapshot, runScheduledPush } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
@@ -84,6 +86,7 @@ import {
   BATCH_SCHEDULER_HOUR_END,
 } from './lib/batchSchedule';
 import { loadIdentityOverrides } from './lib/seriesIdentity';
+import { runScheduledYtDlpUpdate } from './lib/ytdlpUpdate';
 import { ADMIN_USER_ID } from './middleware/auth';
 import { ensureSetupCode } from './lib/setupCode';
 import { getJellyfinConfig, triggerSweep } from './routes/jellyfin';
@@ -724,6 +727,9 @@ ensureDatabaseSchema().then(() => {
   // throughout, and deliberately separate from the public /api/users, which is
   // an unauthenticated username autocomplete.
   app.use('/api/admin/users', adminUsersRouter);
+  // Admin-only, and deliberately NOT /api/health: that one says this process
+  // is alive, this one says whether everything it depends on is answering.
+  app.use('/api/status', statusRouter);
   // User-specific UI preferences
   app.use('/api/options', optionsRouter);
   // Note: /api/translate and /api/jellyfin are registered before compression()
@@ -843,6 +849,58 @@ ensureDatabaseSchema().then(() => {
     };
     setTimeout(() => void sonarrPush(), 720_000).unref();
     setInterval(() => void sonarrPush(), 24 * 60 * 60 * 1000).unref();
+
+    // Keep yt-dlp current. The reasoning is in lib/ytdlpUpdate.ts; the short
+    // version is that YouTube breaks old copies on its own schedule, not on our
+    // deploy schedule, and the breakage hides behind SubtitleCache.
+    //
+    // Delayed 5 minutes rather than run at boot: a restart is exactly when
+    // viewers are most likely to be waiting on something, and this competes for
+    // the same CPU. It is never awaited by anything on a request path.
+    const ytDlpUpdate = () => runScheduledYtDlpUpdate(recycleTranslateDaemon);
+    setTimeout(() => void ytDlpUpdate(), 300_000).unref();
+    setInterval(() => void ytDlpUpdate(), 24 * 60 * 60 * 1000).unref();
+
+    // Has the Sunday GPU run gone quiet? Reasoning at checkLocalRunSilence.
+    // Ten minutes after boot, then daily; one log line every time.
+    setTimeout(() => void checkLocalRunSilence(), 600_000).unref();
+    setInterval(() => void checkLocalRunSilence(), 24 * 60 * 60 * 1000).unref();
+
+    // Are the upstream services still answering? The SWEEP runs every 15
+    // minutes, but each service decides for itself whether it is due - a
+    // third-party API is checked daily, because that is the rate at which an
+    // API actually changes, while Jellyfin and Sonarr are our own boxes and are
+    // checked every 15. A service that has just failed is re-checked in minutes
+    // instead, so a real breakage is confirmed and mailed the same hour rather
+    // than taking `brokenAfter` days. Reasoning at CONFIRM_RETRY_MS.
+    //
+    // Last of the boot jobs at 15 min: nothing waits on it, and it should not
+    // compete with the library warm or the identity sweep for a cold start.
+    // Log when it DID something, and otherwise only every few hours.
+    //
+    // "A scheduled job that is silent unless it acts is indistinguishable from
+    // one that never ran" is the rule the daily jobs follow, and it is right for
+    // them - but this fires every 15 minutes, and most firings have nothing to
+    // do because a third-party probe is only due daily. Applied literally it
+    // printed `0 run ... 7 not due` four times an hour and became the only thing
+    // visible in the log, drowning the identity sweep it sits next to. The
+    // heartbeat keeps silence unambiguous without that.
+    const PROBE_HEARTBEAT_MS = 6 * 60 * 60 * 1000;
+    let lastProbeLog = 0;
+    const probeSweep = async () => {
+      try {
+        const summary = await runDueProbes();
+        const didSomething = !summary.includes(': 0 run');
+        if (didSomething || Date.now() - lastProbeLog >= PROBE_HEARTBEAT_MS) {
+          console.log(summary);
+          lastProbeLog = Date.now();
+        }
+      } catch (err: any) {
+        console.warn(`[upstream] probe sweep failed: ${err?.message ?? err}`);
+      }
+    };
+    setTimeout(() => void probeSweep(), 900_000).unref();
+    setInterval(() => void probeSweep(), 15 * 60 * 1000).unref();
   });
 
   // ----------------------------------------------------------------------------

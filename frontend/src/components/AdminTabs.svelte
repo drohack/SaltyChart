@@ -6,7 +6,7 @@
    * that is what `App.svelte`'s router listens to - a plain `<a href>` would
    * full-page reload and drop the lazily-loaded chunk cache.
    */
-  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles' | 'users';
+  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles' | 'users' | 'status';
 
   const TABS: { key: typeof current; label: string; path: string }[] = [
     { key: 'connection', label: 'Connection', path: '/admin' },
@@ -23,6 +23,10 @@
     // Users asks a fourth question: not identity, scope or production, but
     // *access* - who can sign in, and who can administer.
     { key: 'users', label: 'Users', path: '/admin/users' },
+    // Status asks the question none of the others can: are the services this
+    // site is built on still answering us? Last, because it is the one tab you
+    // open when something is wrong rather than as part of a routine.
+    { key: 'status', label: 'Status', path: '/admin/status' },
   ];
 
   function go(path: string) {

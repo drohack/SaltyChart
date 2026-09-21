@@ -28,7 +28,7 @@
    * the **first-run claim** (no admin exists at all) and the **nag** (you are an
    * admin with no verified email, so you have no way back into your own account).
    */
-  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles' | 'users';
+  export let current: 'connection' | 'matching' | 'sonarr' | 'subtitles' | 'users' | 'status';
 
   /**
    * `$isAdmin !== false` and not `=== true`: the store is tri-state, and

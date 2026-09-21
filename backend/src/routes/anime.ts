@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import axios from 'axios';
+import { recordUpstream } from '../lib/upstreamHealth';
 import { setTimeout as delay } from 'timers/promises';
 import prisma from '../db';
 import { LRUCache } from 'lru-cache';
@@ -156,8 +157,20 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
     // guess at a value we are already being told.
     recordBudget(readBudget(response.headers as Record<string, unknown>));
 
-    if (response.status === 200) return response.data?.data?.Page ?? {};
-    if (response.status !== 429) throw new UpstreamError(response.status);
+    if (response.status === 200) {
+      void recordUpstream('anilist', true);
+      return response.data?.data?.Page ?? {};
+    }
+    if (response.status !== 429) {
+      void recordUpstream('anilist', false, {
+        reason: `AniList answered ${response.status}`,
+        status: response.status,
+      });
+      throw new UpstreamError(response.status);
+    }
+    // A 429 is AniList working normally under a shared IP budget - the backoff
+    // below handles it. Recording it as an outage would make the page red every
+    // busy evening and teach the reader to ignore it.
 
     attempt++;
     const { waitMs, source } = backoffFor(response.headers as Record<string, unknown>, attempt);
@@ -212,6 +225,42 @@ const MAX_SEASON_PAGES = 20;
  * that actually tracks the filtered result set. `hasNextPage` is deliberately
  * not consulted: it is true on page 1 of a 113-entry season and stays true.
  */
+/**
+ * Is AniList answering us?
+ *
+ * Deliberately routed through `fetchAniListPage`, the same function a viewer's
+ * season load uses - same headers, same budget recording, same 429 handling. A
+ * probe that built its own request would grade a program we do not ship, which
+ * is how skyhook's outage hid behind a `curl` that worked.
+ *
+ * Costs ONE request a day. The earlier decision not to probe this at all rested
+ * on "the ~30/min budget is shared", which does not survive the arithmetic: the
+ * budget is ~43,200 requests a day and this is 0.002% of it. The real reason it
+ * needs a probe is the opposite of the one assumed - AniList is called *only*
+ * from the `/api/anime` route, never on a timer, so on a quiet server nothing
+ * would ever report and the row would sit at "not checked" for ever.
+ */
+export async function pingAniList(): Promise<{ ok: boolean; reason?: string; skipped?: string }> {
+  try {
+    // `media` is required, not decoration: AniList answers 400 "No field
+    // provided" for a Page that selects only pageInfo, which is exactly what
+    // the first version of this probe did - it reported AniList down while
+    // AniList was fine. Verified against the live API 2026-09-20; the response
+    // carries X-RateLimit-Remaining like any other call, so the budget tracker
+    // sees this request too.
+    await fetchAniListPage(
+      'query ($page: Int) { Page(page: $page, perPage: 1) { pageInfo { total } media(id: 1) { id } } }',
+      {}, 1);
+    return { ok: true };
+  } catch (err: any) {
+    // A 429 that exhausts the retries means AniList IS talking to us and is
+    // rate-limiting, which is normal operation under a shared IP - not an
+    // outage, and not something to paint red every busy evening.
+    if (err instanceof RateLimitedError) return { ok: true, skipped: 'rate-limited right now, which means it is answering' };
+    return { ok: false, reason: err?.message ?? String(err) };
+  }
+}
+
 async function fetchSeasonFromAniList(query: string, baseVariables: Record<string, unknown>): Promise<any[]> {
   const perPage = Number(baseVariables.perPage) || 50;
   const allMedia: any[] = [];

@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { recordUpstream } from './upstreamHealth';
 import prisma from '../db';
 
 // ---------------------------------------------------------------------------
@@ -216,11 +217,29 @@ export function sonarrErrorInfo(err: any): string {
  * Nothing here is ever on a viewer's request path.
  */
 function sonarrAxios(cfg: SonarrConfig): AxiosInstance {
-  return axios.create({
+  const client = axios.create({
     baseURL: cfg.url,
     timeout: 15_000,
     headers: { 'X-Api-Key': cfg.apiKey, Accept: 'application/json' },
   });
+  // One interceptor covers every call in this file. Most of them already
+  // degrade to `null` or `{ ok: false }` so their callers can carry on, which
+  // is right - but it also means an unreachable Sonarr leaves no trace anywhere
+  // an admin looks. This is that trace.
+  client.interceptors.response.use(
+    (res) => {
+      void recordUpstream('sonarr', true);
+      return res;
+    },
+    (err) => {
+      void recordUpstream('sonarr', false, {
+        reason: sonarrErrorInfo(err),
+        status: err?.response?.status ?? null,
+      });
+      return Promise.reject(err);
+    },
+  );
+  return client;
 }
 
 /**

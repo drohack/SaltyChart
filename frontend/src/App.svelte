@@ -11,6 +11,7 @@
   let AdminSonarr: any;
   let AdminSubtitles: any;
   let AdminUsers: any;
+  let AdminStatus: any;
 
 import { authToken, userName } from './stores/auth';
 import { isAdmin } from './stores/jellyfin';
@@ -97,6 +98,9 @@ $: {
       case '/admin/users':
         AdminUsers = AdminUsers || (await import('./pages/AdminUsers.svelte')).default;
         return AdminUsers;
+      case '/admin/status':
+        AdminStatus = AdminStatus || (await import('./pages/AdminStatus.svelte')).default;
+        return AdminStatus;
       default:
         Home = Home || (await import('./pages/Home.svelte')).default;
         return Home;
