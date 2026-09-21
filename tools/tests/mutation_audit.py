@@ -711,6 +711,86 @@ MUTATIONS: list[Mutation] = [
                "the only thing that notices when it and the matcher drift apart",
     ),
     Mutation(
+        name="reordering My List silently does nothing",
+        path="frontend/src/components/WatchListSidebar.svelte",
+        # The app's core action, and until this flow existed every test SEEDED an
+        # order over the API and only read it back - so a drag that moved nothing
+        # would have been invisible. `move()` returning early is the whole bug:
+        # no error, no request, and the row snaps back as if the drag missed.
+        find="    if (from === to || from < 0 || from >= list.length) return;",
+        replace="    if (from === to || from < 0 || from >= list.length || true) return;  /* mutation */",
+        flows=("my list reorder",),
+        test=T_UI,
+        expect="on screen the order is",
+        guards="reordering is the one thing this app is for; nothing else in the "
+               "suite performs the drag a user performs",
+    ),
+    Mutation(
+        name="a nickname is dropped on the way to the server",
+        path="frontend/src/pages/Home.svelte",
+        # Saving a nickname re-PUTs the WHOLE list, so dropping the field still
+        # returns 200 and still renders correctly until the page is reloaded -
+        # the shape that hides best. Asserting on the request body is the only
+        # way to see it at the moment it happens.
+        find="    const payload = watchList.map(({ mediaId, customName, watchedAt }) => ({ mediaId, customName, watchedAt }));",
+        replace="    const payload = watchList.map(({ mediaId, watchedAt }) => ({ mediaId, watchedAt }));  /* mutation */",
+        flows=("nicknames set and shown",),
+        test=T_UI,
+        expect="customName was dropped on the way out",
+        guards="nicknames are the only user-authored text in the product, and the "
+               "write is a whole-list replace that succeeds either way",
+    ),
+    Mutation(
+        name="the last admin can be demoted from the page",
+        path="frontend/src/pages/AdminUsers.svelte",
+        # The backend still refuses (LAST_ADMIN), so this cannot actually lock
+        # anyone out - which is exactly why it would go unnoticed. What it
+        # destroys is the page's promise that a disabled control with a reason
+        # beats an error after the click.
+        # No trailing `/* mutation */` here, unlike the rows that edit a
+        # `<script>` block: inside an element's attribute list Svelte is parsing
+        # MARKUP, not JS, so a comment there is a syntax error. The component
+        # then fails to compile, the page renders nothing, and the row "fails"
+        # on a missing-selector timeout without ever exercising the guard.
+        find="                    disabled={busy[row.id] || adminCount <= 1}",
+        replace="                    disabled={busy[row.id]}",
+        flows=("admin users page",),
+        test=T_UI,
+        expect="the only admin could be demoted",
+        guards="the admin floor is the one mis-click that cannot be undone from "
+               "inside the app; the UI is meant to prevent it being attempted",
+    ),
+    Mutation(
+        name="Compare's share can no longer resolve toJpeg",
+        path="frontend/src/pages/Compare.svelte",
+        # The same mutation the Home share row uses, on the OTHER share function.
+        # CLAUDE.md names both as brittle and says to verify them by hand; only
+        # `shareMyList` was ever automated, so this half failed silently inside
+        # its own try/catch with nothing watching.
+        find="      const toJpeg = (mod.toJpeg ?? mod.default?.toJpeg) as (",
+        replace="      const toJpeg = (mod.nope ?? mod.default?.nope) as (  /* mutation */",
+        flows=("compare share image",),
+        test=T_UI,
+        expect="Compare share produced nothing",
+        guards="Share fails silently by construction; the Compare half was the "
+               "untested one of a pair the docs call brittle",
+    ),
+    Mutation(
+        name="a coded account is offered the open reset form",
+        path="frontend/src/pages/ResetPassword.svelte",
+        # The server still refuses with CODE_REQUIRED, so nothing is actually
+        # reset - but the page would be inviting anyone who knows a username to
+        # try, and reporting the refusal as an error on a form that can never
+        # succeed. That is the dead end this step exists to prevent.
+        find="      if (data.codeRequired) {",
+        replace="      if (false && data.codeRequired) {  /* mutation */",
+        flows=("password reset journey",),
+        test=T_UI,
+        expect="a coded account was handed the open reset form",
+        guards="the reset page is the whole recovery path for a locked-out user, "
+               "and no test loaded it at all before this flow",
+    ),
+    Mutation(
         name="fullscreen is gated on YouTube CC again",
         path="frontend/src/components/AnimeGridTranslate.svelte",
         # The regression this session shipped and an audit caught: the fullscreen
@@ -769,6 +849,37 @@ MUTATIONS: list[Mutation] = [
         expect="CC toggle did nothing in fullscreen",
         guards="a control that is visible but inert is the exact bug this session "
                "shipped twice; visibility assertions are blind to it",
+    ),
+    Mutation(
+        name="the rank write matches nothing",
+        path="backend/src/routes/list.ts",
+        # `PATCH /rank` answers {ok:true} whether or not it updated a row, so a
+        # `where` that matches nothing is invisible from the response, from the
+        # network tab, and from the screen - the page has already moved the row
+        # locally. Only reading the ranks back can see it, which is why the flow
+        # does not stop at asserting the request.
+        find="      where: { userId: req.userId!, season, year: numericYear, mediaId, watched: true },",
+        replace="      where: { userId: req.userId!, season, year: numericYear, mediaId: -1, watched: true },  // mutation",
+        flows=("watched rank reorder",),
+        test=T_UI,
+        expect="watchedRank did not move",
+        guards="a write that reports success and changes nothing is the worst "
+               "shape of bug this codebase has; the route cannot report it",
+    ),
+    Mutation(
+        name="a wobbling service is called Down again",
+        path="backend/src/lib/upstreamHealth.ts",
+        # Restores the bug this session fixed, from the page's side: skyhook
+        # failing 16 of 66 calls in an evening while plainly working painted a
+        # red Down badge and sent no email, so the page contradicted its own
+        # alert. The route test cannot see it - only a rendered badge can.
+        find="  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {",
+        replace="  if (rec.consecutiveFailures >= brokenAfter) {  // mutation",
+        flows=("admin status badges",),
+        test=T_UI,
+        expect="reads state 'down', expected 'failing'",
+        guards="Down and Failing are the difference between 'go look now' and "
+               "'it is coping'; the page and the alert must never disagree",
     ),
     Mutation(
         name="the YouTube guard goes back to substring matching",
