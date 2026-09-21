@@ -780,6 +780,31 @@ stale-yt-dlp hint (`looksLikeStaleYtDlp(reason, kind)`) hangs only on a
 `forbidden` kind - a challenge can arrive as a 403 whose body says "confirm you
 are not a bot", and a bare regex on the text would offer the wrong remedy.
 
+**A dead video is not evidence, and a 403 is worth one retry.** Both come from
+the same measured run (51 of 63 trailers downloaded, 12 failures):
+
+- **6 were videos that no longer exist** - old trailers taken down. Five of them
+  failed BACK TO BACK in SUMMER 2026 against a `BROKEN_AFTER` of 3, so the batch
+  would have mailed *the download path is broken* while that same run fetched 51
+  others. `countsTowardBroken` (pure, mutation-guarded) spares `unavailable` from
+  the streak - it neither advances nor clears it, because a video that no longer
+  exists is a fact about that video, not about us. The counters still move, so
+  "how many trailers are simply gone" stays visible on /admin/subtitles. Same
+  discipline as the upstream quiet window one section up: count failures, but ask
+  what they MEAN before calling them an outage.
+- **6 were 403s, and they were TRANSIENT** - proven, not assumed: one of them
+  (Firefly Wedding) downloaded in full on a retry minutes later, 14 MB, 79 s,
+  same yt-dlp and same options. `download_audio` now makes exactly **one** extra
+  attempt after a short pause, and **only** for a `forbidden` kind. A dead video
+  can never succeed and retrying a bot wall deepens the block that aborting
+  exists to escape, so neither is retried - a mutation row guards that direction
+  specifically, because it is the one that costs something. A failing video
+  therefore costs 2 requests, never a loop.
+
+Note this does NOT weaken the stale-yt-dlp signal: that failure is total by
+mechanism - an unranged whole-file GET is refused for every video - so it
+produces consecutive 403s across the whole run and still crosses the streak.
+
 **Crossing that line also mails the admins** (`lib/subtitleAlerts.ts`): once
 when the path breaks, once when it recovers, once per failed Wednesday batch
 exit (`persistBatchRun`, any non-zero or signal exit), once per failed Sunday

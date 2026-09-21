@@ -500,6 +500,37 @@ MUTATIONS: list[Mutation] = [
                "looks like a dead button rather than an error",
     ),
     Mutation(
+        name="a bot wall is retried instead of aborting",
+        path="backend/scripts/translate_stream.py",
+        # The dangerous direction of the 403 retry, which is the one worth
+        # guarding: retrying a bot wall deepens the exact block that aborting
+        # exists to escape, and retrying a dead video spends a request that can
+        # never succeed. The retry is narrow ON PURPOSE - `forbidden` only, one
+        # extra attempt - because request volume is what tripped YouTube's IP
+        # block before, and that block then prevents verifying anything.
+        find='            if attempt == 2 or classify_error(msg) != "forbidden":',
+        replace="            if attempt == 2:  # mutation: retry every failure kind",
+        test=T_VERDICT,
+        expect="FAIL: a bot wall is not retried",
+        guards="doubling the requests made during a bot wall is how a soft "
+               "block becomes a hard one",
+    ),
+    Mutation(
+        name="a dead video counts as the download path breaking",
+        path="backend/src/lib/downloadHealth.ts",
+        # Measured on a real run: SUMMER 2026 failed FIVE trailers back to back,
+        # every one `Video unavailable` - old trailers taken down - against a
+        # BROKEN_AFTER of 3. That would mail "the download path is broken" while
+        # the same run downloaded 51 other trailers. A video that no longer
+        # exists is a fact about that video, not about us.
+        find="  return kind !== 'unavailable';",
+        replace="  return true;  /* mutation: a dead video breaks the path */",
+        test=T_UNIT,
+        expect="a dead video is not evidence that downloading is broken",
+        guards="an old season is enough to cry wolf, which is how a real "
+               "download outage gets ignored when it finally arrives",
+    ),
+    Mutation(
         name="a burst of failures is called an outage",
         path="backend/src/lib/upstreamHealth.ts",
         # How it shipped: `crossed: streak === brokenAfter`, with no notion of
