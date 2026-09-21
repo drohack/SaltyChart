@@ -143,13 +143,55 @@ def test_b_youtube_cc(page):
 
 def test_c_whisper_overlay(page):
     p = "[2/3 PathC-Whisper]"
-    print(f"{p} step 1/2: opening trailer (no English CC) - Whisper translation expected", flush=True)
+    print(f"{p} step 1/4: opening trailer (no English CC) - Whisper translation expected", flush=True)
     click_trailer(page, VIDEO_WHISPER)
     page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
-    print(f"{p} step 2/2: polling for overlay text (up to 10s)", flush=True)
+    print(f"{p} step 2/4: polling for overlay text (up to 10s)", flush=True)
     overlay_text = wait_for_overlay_text(page, max_wait_ms=10_000)
     assert overlay_text, "no overlay text rendered within 10s"
-    print(f"{p} PASS - overlay rendered: \"{overlay_text[:60]}\"", flush=True)
+
+    # Path B enters fullscreen too, but on a YouTube-CC trailer - which by
+    # definition has no cue of OURS to lose, so it cannot see this. This is the
+    # trailer whose subtitles we render, and fullscreen is where they went
+    # missing repeatedly: only the fullscreen element receives pointer input, so
+    # if the IFRAME wins the takeover the cue is never painted and our controls
+    # sit above it visible and dead.
+    print(f"{p} step 3/4: fullscreen must keep OUR cue on screen", flush=True)
+    page.locator('button[title="Fullscreen"]').first.click()
+    page.wait_for_timeout(800)
+    fs_el = page.evaluate("document.fullscreenElement ? document.fullscreenElement.className : ''")
+    assert "sc-player" in fs_el, f"wrapper did not take fullscreen on the Whisper path: {fs_el!r}"
+    assert wait_for_overlay_text(page, max_wait_ms=8_000),         "our subtitle cue was not rendered at all in fullscreen"
+    # `find_overlay` asks whether the cue is in the DOM, and `text_content()`
+    # answers yes for a `display:none` node - a mutation that hid the whole cue
+    # layer under `:fullscreen` SURVIVED a presence-only check here. Shown and
+    # present are different questions, so ask the second one explicitly.
+    cue = page.locator('.sc-subtitle').filter(has_text=re.compile(r".+")).first
+    assert cue.is_visible(), "our subtitle cue disappeared in fullscreen"
+
+    # Visibility is NOT the question. The buttons were on screen and dead once,
+    # and both a screenshot and `elementFromPoint` called that a pass - only a
+    # click that changes something can tell the two apart. So assert the effect.
+    print(f"{p} step 4/4: and our CC toggle must still work there, not just show", flush=True)
+    page.locator('button[title="Hide subtitles"]').first.click()
+    page.wait_for_timeout(1200)
+    # Assert on the state the button owns, not on the cue being absent right now:
+    # cues have natural gaps between segments, so a single sample can find no
+    # text while the toggle did nothing at all. An inert-handler mutation
+    # SURVIVED that check for exactly this reason, then failed 30s later on an
+    # unrelated locator - red, and proving nothing about the toggle.
+    assert page.locator('button[title="Show subtitles"]').count() == 1,         "CC toggle did nothing in fullscreen - painted but not clickable"
+    assert find_overlay(page) is None, "cue still rendering after the toggle in fullscreen"
+    page.locator('button[title="Show subtitles"]').first.click()
+    assert wait_for_overlay_text(page, max_wait_ms=8_000),         "cue did not come back after re-enabling in fullscreen"
+
+    # Leave exactly the state Path D expects: modal open, subtitles on, windowed.
+    page.locator('button[title="Exit fullscreen"]').first.click()
+    page.wait_for_timeout(600)
+    assert not page.evaluate("!!document.fullscreenElement"), "still fullscreen after the exit button"
+    assert page.locator('iframe[src*="youtube"]').count() == 1, "leaving fullscreen closed the modal"
+    print(f"{p} PASS - overlay rendered, survived fullscreen, toggle live there: "
+          f"\"{overlay_text[:50]}\"", flush=True)
 
 
 def test_d_cc_toggle(page, backend: str):

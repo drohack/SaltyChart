@@ -718,19 +718,57 @@ MUTATIONS: list[Mutation] = [
         # gone from the iframe that left YouTube-CC trailers with no fullscreen
         # at all. An inline style reproduces exactly that for the same viewers.
         #
+        # The control is now an INVISIBLE COVER over YouTube's own fullscreen
+        # button rather than a drawn one, so the anchor moved to the line that
+        # positions it. The invariant is unchanged and so is the mutant: hide it
+        # when YouTube has CC, and those viewers lose fullscreen entirely -
+        # ours does nothing and theirs fullscreens the iframe, where our cues
+        # and controls cannot be clicked.
+        #
         # NOT `hidden={hasEnglishSubs}`, which was tried first and SURVIVED: the
         # UA stylesheet's `[hidden] { display: none }` loses to Tailwind's
         # `.flex { display: flex }` on the button itself, so the attribute was
         # set and the button stayed on screen. A mutant has to be watched fail.
-        find="""            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >""",
-        replace="""            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            style={hasEnglishSubs ? 'display:none' : ''}
-          >""",
+        find='        style="right: 24px; bottom: 80px;"',
+        replace='        style="right: 24px; bottom: 80px; {hasEnglishSubs ? \'display:none\' : \'\'}"',
         test=T_SUBS,
         expect="FAIL [B] - fullscreen button missing",
         guards="fullscreen is player chrome, not a subtitle control; Path A is the "
                "path with the most trailers on it and the one nothing else exercises",
+    ),
+    Mutation(
+        name="our cue is not painted while fullscreen",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        # The half Path B structurally cannot see: its trailer has YouTube CC, so
+        # there is no cue of ours to lose. On the Whisper path the cue IS ours,
+        # and this is where it vanished repeatedly - the iframe winning the
+        # fullscreen takeover leaves it unpainted, because only the fullscreen
+        # element is rendered. Hiding the layer under `:fullscreen` reproduces
+        # exactly what a viewer saw, and nothing else in the suite notices.
+        find="  .sc-player:fullscreen iframe {",
+        replace="  .sc-player:fullscreen .sc-cue-layer { display: none; }\n"
+                "  .sc-player:fullscreen iframe {",
+        test=T_SUBS,
+        expect="our subtitle cue disappeared in fullscreen",
+        guards="subtitles surviving fullscreen is the whole point of the takeover; "
+               "windowed rendering passing says nothing about the fullscreen case",
+    ),
+    Mutation(
+        name="the CC toggle goes dead while fullscreen",
+        path="frontend/src/components/AnimeGridTranslate.svelte",
+        # The failure that cost the most to find, because every cheap check calls
+        # it a pass: with YouTube's iframe fullscreen our controls were painted
+        # above it and took no input, and BOTH a screenshot and
+        # `document.elementFromPoint` reported them fine. Only clicking and
+        # watching the cue move tells the two apart - so the mutant is a handler
+        # that runs and does nothing, not a hidden or covered button.
+        find="              subtitlesVisible = !subtitlesVisible;",
+        replace="              if (isFullscreen) return;\n"
+                "              subtitlesVisible = !subtitlesVisible;",
+        test=T_SUBS,
+        expect="CC toggle did nothing in fullscreen",
+        guards="a control that is visible but inert is the exact bug this session "
+               "shipped twice; visibility assertions are blind to it",
     ),
     Mutation(
         name="the YouTube guard goes back to substring matching",
