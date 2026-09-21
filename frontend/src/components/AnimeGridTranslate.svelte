@@ -75,6 +75,69 @@ $: _currentLang = $options.titleLanguage;
   let controlsVisible = true;
   let controlsFadeTimer: number | null = null;
 
+  // -- Fullscreen ------------------------------------------------------
+  // We fullscreen OUR wrapper, never the iframe.
+  //
+  // A fullscreen element is the root of what the browser renders - everything
+  // outside its subtree is simply not drawn. The trailer's subtitles and the CC
+  // controls are siblings of the <iframe>, so letting YouTube's own button take
+  // the iframe fullscreen left the viewer watching an untranslated video with
+  // no way to get the subtitles, or the controls, back. Fullscreening the
+  // wrapper keeps the iframe, the overlay and the controls in one subtree.
+  //
+  // That is also why the iframe no longer carries `allowfullscreen`: without
+  // it, YouTube's player hides its own fullscreen button, so there is exactly
+  // one control and it is ours. (JellyfinPlayerModal solves the same problem by
+  // re-parenting its overlay into the player element - not an option here,
+  // since a cross-origin iframe has no DOM we can append to.)
+  let playerWrap: HTMLDivElement | null = null;
+  let isFullscreen = false;
+  // -- Subtitle scaling -------------------------------------------------
+  // The prefs are plain pixels, which silently means "pixels at whatever size
+  // the player happened to be when they were chosen". That is a 1080p desktop
+  // modal, so on a phone the same 28px sat on a player a quarter of the width
+  // and 92px from the bottom of a 214px-tall box was nearly half way up it.
+  //
+  // So scale against the width the defaults were calibrated at. The two
+  // quantities need DIFFERENT treatment, which is the whole trick here:
+  //
+  //  * position is pure geometry - "a tenth of the way up" is a tenth at every
+  //    size, so it scales proportionally with no floor at all.
+  //  * font size is legibility, not geometry. Scaled proportionally, a phone
+  //    would get 7px text. It keeps a floor, which deliberately makes the text
+  //    relatively larger on a small player - the same thing every video player
+  //    does, and the reason subtitles stay readable on a phone.
+  let playerWidth = 0;
+  // A 1080p desktop at `xl:w-4/5` - the case the current defaults look right in.
+  const SUBTITLE_REF_WIDTH = 1536;
+  $: subRatio = playerWidth > 0 ? playerWidth / SUBTITLE_REF_WIDTH : 1;
+  $: subPosScale = subRatio;
+  $: subFontScale = Math.min(1.15, Math.max(0.52, subRatio));
+  // Narrow players get more of their width: a fixed 80% wraps a line that would
+  // have fitted, and a two-line subtitle on a short player eats the picture.
+  $: subMaxWidth = playerWidth > 0 && playerWidth < 700 ? 94 : playerWidth < 1100 ? 88 : 80;
+
+  function onFullscreenChange() {
+    isFullscreen = !!document.fullscreenElement;
+    // Fullscreen entry/exit is a deliberate action, so re-arm the fade rather
+    // than leaving the controls hidden at the moment the layout just changed.
+    showControls();
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else if (playerWrap) {
+        await playerWrap.requestFullscreen();
+      }
+    } catch (err) {
+      // Denied (iOS Safari on <div>, or a permissions policy). Playback is
+      // unaffected, so this must never surface as an error to the viewer.
+      console.warn('[player] fullscreen request rejected:', err);
+    }
+  }
+
   function showControls() {
     controlsVisible = true;
     if (controlsFadeTimer) clearTimeout(controlsFadeTimer);
@@ -185,6 +248,18 @@ $: _currentLang = $options.titleLanguage;
   let translationError: string | null = null;
   let _translationErrorTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * A refusal during a bot-wall hold carries `holdUntil`. "Try again later" is
+   * not something a person can act on; "in about 12 min" is. Anything without
+   * a usable future time passes through unchanged.
+   */
+  function withHoldHint(msg: string, holdUntil?: string): string {
+    if (!holdUntil) return msg;
+    const ms = Date.parse(holdUntil) - Date.now();
+    if (!(ms > 0)) return msg;
+    return `${msg} (about ${Math.max(1, Math.ceil(ms / 60000))} min)`;
+  }
+
   function showTranslationError(msg: string) {
     translationError = msg;
     if (_translationErrorTimer) clearTimeout(_translationErrorTimer);
@@ -235,7 +310,7 @@ $: _currentLang = $options.titleLanguage;
           // `translationLoading`, which this very line clears. The viewer saw a
           // trailer with no subtitles and no way to tell that from a trailer
           // that simply has none. Surface it briefly, without blocking playback.
-          showTranslationError(data.error);
+          showTranslationError(withHoldHint(data.error, data.holdUntil));
           stopTranslation();
           return;
         }
@@ -325,7 +400,10 @@ $: _currentLang = $options.titleLanguage;
    * bound to mark-watched.
    */
   function handleWindowKey(e: KeyboardEvent) {
-    if (modal && e.key === 'Escape') closeModal();
+    // In fullscreen, Escape is the browser's own "leave fullscreen" gesture.
+    // Closing the modal on it too would take the trailer away when the viewer
+    // asked only to come back out of fullscreen.
+    if (modal && e.key === 'Escape' && !document.fullscreenElement) closeModal();
   }
 
   function closeModal() {
@@ -347,6 +425,10 @@ $: _currentLang = $options.titleLanguage;
     if (controlsFadeTimer) clearTimeout(controlsFadeTimer);
     controlsFadeTimer = null;
     window.removeEventListener('message', onMessage);
+    // Leaving the page fullscreen while the element that owns it is being
+    // unmounted would strand the browser in fullscreen on a closed modal.
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    isFullscreen = false;
   }
 
   // ------------------------------------------------------------------
@@ -647,6 +729,10 @@ const dispatch = createEventDispatcher();
 <!-- Must be top-level: <svelte:window> can't sit inside a block. The handler
      itself checks whether the trailer modal is open. -->
 <svelte:window on:keydown={handleWindowKey} />
+<!-- `fullscreenchange` fires on the element and bubbles to the document, and it
+     is the only way to learn that the viewer left fullscreen with Escape or the
+     browser's own chrome rather than our button. -->
+<svelte:document on:fullscreenchange={onFullscreenChange} />
 
 <!-- grid of horizontal cards -->
 <!-- Responsive grid: 1 column, 2 columns at >=1122px, 3 columns at >=1732px -->
@@ -855,8 +941,11 @@ const dispatch = createEventDispatcher();
   >
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
-      class="relative w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video"
+      bind:this={playerWrap}
+      bind:clientWidth={playerWidth}
+      class="sc-player relative w-[95%] md:w-5/6 lg:w-4/5 xl:w-4/5 aspect-video"
       on:mouseenter={showControls}
+      on:mousemove={showControls}
     >
       <!-- The only close affordance used to be clicking the backdrop, which is
            a thin strip on a phone and invisible as an affordance anywhere. -->
@@ -871,15 +960,24 @@ const dispatch = createEventDispatcher();
         class="w-full h-full rounded"
         src={`https://www.youtube.com/embed/${modal}?enablejsapi=1&cc_load_policy=0&cc_lang_pref=en&hl=en&autoplay=${$options.videoAutoplay ? 1 : 0}`}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-        allowfullscreen
         on:load={onIframeLoad}
       />
 
-      <!-- Translation controls - spinner + CC toggle side by side.
-           `translationError` is in the condition because the error handler
-           clears `translationLoading`, so without it the cluster unmounts at
-           exactly the moment there is something to say. -->
-      {#if translationLoading || translating || translationError}
+      <!-- Player chrome: status chip + CC toggle + settings, then fullscreen.
+           The cluster is ALWAYS mounted; fading with `controlsVisible` is the
+           only thing that should ever hide it. It used to be gated on
+           `translationLoading || translating || translationError`, which had it
+           UNMOUNT itself: a failed translation clears the first two and the error
+           clears itself after 6 s, so every button - including the CC toggle
+           that turns subtitles back on - disappeared for good.
+
+           Only the SUBTITLE controls are gated, on `hasEnglishSubs`: when YouTube
+           has its own English CC we render no subtitles of ours, so a toggle and
+           a settings gear for them would be controls over nothing. Fullscreen is
+           not a subtitle control and sits outside that gate - the iframe carries
+           no `allowfullscreen`, so this button is the ONLY way to fullscreen a
+           trailer, and the first version of this block wrapped it in the gate
+           and took fullscreen away from every YouTube-CC trailer. -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           class="absolute top-12 right-2 flex items-center gap-2 z-10"
@@ -890,6 +988,7 @@ const dispatch = createEventDispatcher();
           class:opacity-100={controlsVisible || (translationLoading && subtitlesVisible && checkResolved) || (translationError && subtitlesVisible)}
           style="transition: opacity 0.75s ease-out; {controlsVisible ? 'transition-duration: 0s;' : ''}"
         >
+          {#if !hasEnglishSubs}
           {#if translationLoading && subtitlesVisible && checkResolved}
             <div class="flex items-center gap-2 bg-black/60 text-white text-sm px-3 py-1.5 rounded">
               <span class="loading loading-spinner loading-sm"></span>
@@ -937,8 +1036,25 @@ const dispatch = createEventDispatcher();
               <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/>
             </svg>
           </button>
+          {/if}
+          <!-- Fullscreen. Ours, because YouTube's would take only the iframe
+               and leave the subtitles behind - see the `playerWrap` comment.
+               Outside the CC gate on purpose (see the block comment above). -->
+          <button
+            class="flex items-center gap-1 bg-black/60 text-white text-sm px-2 py-1.5 rounded hover:bg-black/80 transition-colors"
+            on:click|stopPropagation={toggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+              {#if isFullscreen}
+                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
+              {:else}
+                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+              {/if}
+            </svg>
+          </button>
         </div>
-      {/if}
 
       <!-- Subtitle settings panel -->
       {#if subtitleSettingsOpen}
@@ -952,19 +1068,34 @@ const dispatch = createEventDispatcher();
 
       <!-- Subtitle overlay -->
       {#if translating && $options.subtitlePrefs.enabled && subtitlesVisible && currentSubtitle}
+        <!-- Two elements, and the outer one is load-bearing.
+             The cue used to centre itself with `absolute left-1/2
+             -translate-x-1/2`. That centres it, but an absolutely positioned
+             box shrink-to-fits against the space from its `left` edge to the
+             containing block's edge - so anchoring at 50% capped the cue at
+             HALF the player, whatever `max-width` said. Every cue longer than
+             that wrapped early, which is why the text never spread across the
+             picture. A full-width row that centres its child gives the cue the
+             whole width to shrink-to-fit against, and `max-width` finally
+             means what it says. -->
         <div
-          class="absolute left-1/2 -translate-x-1/2 max-w-[80%] px-1.5 py-0.5 rounded pointer-events-none text-center z-10"
-          style="
-            bottom: {$options.subtitlePrefs.position}px;
-            font-size: {$options.subtitlePrefs.fontSize}px;
-            font-family: '{$options.subtitlePrefs.fontFamily}', sans-serif;
-            color: {$options.subtitlePrefs.textColor};
-            background: rgba({hexToRgb($options.subtitlePrefs.bgColor)}, {$options.subtitlePrefs.bgOpacity / 100});
-            {textBorderStyle($options.subtitlePrefs.textBorder)}
-          "
+          class="absolute left-0 right-0 flex justify-center pointer-events-none z-10"
+          style="bottom: {$options.subtitlePrefs.position * subPosScale}px;"
           transition:fade={{ duration: 150 }}
         >
-          {currentSubtitle}
+          <div
+            class="sc-subtitle px-1.5 py-0.5 rounded text-center"
+            style="
+              max-width: {subMaxWidth}%;
+              font-size: {$options.subtitlePrefs.fontSize * subFontScale}px;
+              font-family: '{$options.subtitlePrefs.fontFamily}', sans-serif;
+              color: {$options.subtitlePrefs.textColor};
+              background: rgba({hexToRgb($options.subtitlePrefs.bgColor)}, {$options.subtitlePrefs.bgOpacity / 100});
+              {textBorderStyle($options.subtitlePrefs.textBorder)}
+            "
+          >
+            {currentSubtitle}
+          </div>
         </div>
       {/if}
     </div>
@@ -980,3 +1111,47 @@ const dispatch = createEventDispatcher();
     {toastMessage}
   </div>
 {/if}
+
+<style>
+  /* Fullscreen: the wrapper is the fullscreen element (never the iframe - see
+     the `playerWrap` comment), so it has to stop being a 4/5-width 16:9 box and
+     become the screen. Without this it keeps its aspect-ratio and sits as a
+     small rectangle on a black field. */
+  .sc-player:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    max-width: 100vw;
+    max-height: 100vh;
+    aspect-ratio: auto;
+    background: #000;
+  }
+  /* The iframe fills it; YouTube letterboxes inside its own player, so the
+     picture keeps its shape without us computing it. */
+  .sc-player:fullscreen iframe {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  /* Trailer audio is loud, stylised and often music-backed, so the text sits on
+     moving artwork rather than a calm frame. The default weight read as thin
+     and washed out against it - particularly once scaled down on a phone, where
+     the soft blurred shadow of the `medium` border blurs a 15px glyph into the
+     picture. A heavier face plus a tight dark halo keeps the glyph edges hard
+     at any size; the viewer's own `textBorder` choice still layers on top. */
+  .sc-subtitle {
+    font-weight: 650;
+    line-height: 1.25;
+    /* Rendered under the pref's own text-shadow, so a `none` border is still
+       legible and a `heavy` one still wins. */
+    paint-order: stroke fill;
+    -webkit-text-stroke: 0.5px rgba(0, 0, 0, 0.55);
+    /* NOT `text-wrap: balance`. It was tried, and on a phone it split a cue
+       that fitted on one line into two even halves using 50% of the available
+       width - prettier as a paragraph, worse as a subtitle, and the direct
+       cause of the "doesn't spread horizontally enough" complaint. A subtitle
+       should fill its line and only then wrap. `wrap` is the normal
+       fill-then-wrap behaviour; a long cue still wraps inside `max-width`. */
+    text-wrap: wrap;
+  }
+</style>
