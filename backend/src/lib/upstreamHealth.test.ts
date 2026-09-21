@@ -4,6 +4,7 @@ import {
   EMPTY_RECORD,
   MIN_OUTAGE_MS,
   UPSTREAMS,
+  noRecentSuccess,
   failureTransition,
   okTransition,
   stateOf,
@@ -150,15 +151,15 @@ test('a service nobody has checked reads unknown, never ok', () => {
   // The single most load-bearing rule on the status page. "We have not asked"
   // rendered as green is how skyhook stayed invisible for weeks; the same
   // mistake as an unreachable Sonarr reading "0 still to add".
-  assert.equal(stateOf(rec(), 3), 'unknown');
-  assert.notEqual(stateOf(rec(), 3), 'ok');
+  assert.equal(stateOf(rec(), 3, NOW), 'unknown');
+  assert.notEqual(stateOf(rec(), 3, NOW), 'ok');
 });
 
 test('an unconfigured service is not a broken one', () => {
   // Sonarr with no URL saved is a deliberate state. A reader who cannot tell
   // "switched off" from "broken" goes hunting a bug that is not there.
-  assert.equal(stateOf(rec({ lastCheckedAt: NOW, lastSkipped: 'no Sonarr server configured' }), 3), 'notConfigured');
-  assert.equal(stateOf(rec({ lastCheckedAt: NOW }), 3), 'ok');
+  assert.equal(stateOf(rec({ lastCheckedAt: NOW, lastSkipped: 'no Sonarr server configured' }), 3, NOW), 'notConfigured');
+  assert.equal(stateOf(rec({ lastCheckedAt: NOW }), 3, NOW), 'ok');
 });
 
 test('a real result clears a stale "not configured"', () => {
@@ -170,9 +171,9 @@ test('a real result clears a stale "not configured"', () => {
 });
 
 test('states ladder from ok through failing to down', () => {
-  assert.equal(stateOf(rec({ lastCheckedAt: NOW }), 3), 'ok');
-  assert.equal(stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 1 }), 3), 'failing');
-  assert.equal(stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 3 }), 3), 'down');
+  assert.equal(stateOf(rec({ lastCheckedAt: NOW }), 3, NOW), 'ok');
+  assert.equal(stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 1 }), 3, NOW), 'failing');
+  assert.equal(stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 3 }), 3, NOW), 'down');
 });
 
 test('a failure records the status code, because 400 and 500 mean different things', () => {
@@ -234,4 +235,55 @@ test('the SMTP row says out loud that it cannot mail about itself', () => {
   // The page has to carry that, or its silence reads as health.
   const smtp = upstreamById('smtp');
   assert.match(smtp?.impact ?? '', /ALERTS|alert/i);
+});
+
+
+test('the BADGE means what the EMAIL means - a long streak is not red on its own', () => {
+  // The disagreement this closes: the alert gained a quiet window and `stateOf`
+  // kept the streak-alone rule, so skyhook - 66 ok and 16 failures in one
+  // evening, all 500s, while working perfectly - painted a red Down badge for a
+  // service the system had deliberately decided was fine and sent no mail about.
+  // Two of this page's five states exist purely so a reader is never misled;
+  // this was the page misleading them.
+  const justWorked = new Date(Date.parse(NOW) - 1_000).toISOString();
+  assert.equal(
+    stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 9, lastOkAt: justWorked }), 3, NOW),
+    'failing',
+    'something succeeded a second ago - that is a flaky upstream, not an outage',
+  );
+
+  const stale = new Date(Date.parse(NOW) - MIN_OUTAGE_MS - 1_000).toISOString();
+  assert.equal(
+    stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 3, lastOkAt: stale }), 3, NOW),
+    'down',
+    'nothing has worked for the whole window - that is an outage, and it is red',
+  );
+
+  // A service that has never answered stays red: "no record of it ever working"
+  // must not read as "it worked recently".
+  assert.equal(
+    stateOf(rec({ lastCheckedAt: NOW, consecutiveFailures: 3 }), 3, NOW),
+    'down',
+  );
+});
+
+test('the badge and the alert are driven by ONE quiet rule, not two copies', () => {
+  // `noRecentSuccess` is the single definition. Asserting the pieces agree is
+  // weaker than asserting there is only one piece, so this pins the function
+  // both callers use rather than re-deriving the arithmetic.
+  const justWorked = new Date(Date.parse(NOW) - 1_000).toISOString();
+  const stale = new Date(Date.parse(NOW) - MIN_OUTAGE_MS - 1_000).toISOString();
+
+  assert.equal(noRecentSuccess(justWorked, NOW), false);
+  assert.equal(noRecentSuccess(stale, NOW), true);
+  assert.equal(noRecentSuccess(null, NOW), true, 'never succeeded counts as quiet');
+
+  // And the two callers really do move together.
+  for (const lastOkAt of [justWorked, stale, null]) {
+    const r = rec({ lastCheckedAt: NOW, consecutiveFailures: 3, lastOkAt });
+    const badgeSaysDown = stateOf(r, 3, NOW) === 'down';
+    const alertWouldFire = failureTransition(r, 'boom', 500, NOW, 3).crossed;
+    assert.equal(badgeSaysDown, alertWouldFire,
+      `badge and alert disagree for lastOkAt=${lastOkAt}`);
+  }
 });

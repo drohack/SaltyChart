@@ -68,6 +68,10 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
     const [records, settings] = await Promise.all([readAll(), readAlertSettings()]);
     const yt = await youtubeRecord();
 
+    // One instant for every row: `stateOf` is now time-dependent, and grading
+    // two services in the same response against different clocks would be a
+    // quiet way for the page to disagree with itself.
+    const now = new Date().toISOString();
     const services = UPSTREAMS.map((spec) => {
       const rec = spec.recordSource === 'downloadHealth'
         ? yt
@@ -83,7 +87,7 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
         probed: !spec.passiveOnly && !!PROBES[spec.id],
         passiveOnly: !!spec.passiveOnly,
         alertsEnabled: alertsEnabledFor(settings, spec.id),
-        state: stateOf(rec, spec.brokenAfter),
+        state: stateOf(rec, spec.brokenAfter, now),
         ...rec,
       };
     });

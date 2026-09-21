@@ -284,6 +284,26 @@ export function upstreamById(id: string): UpstreamSpec | undefined {
  */
 export const MIN_OUTAGE_MS = 10 * 60_000;
 
+/**
+ * Has nothing succeeded recently enough for a failure streak to mean an outage?
+ *
+ * The single definition of "quiet", used by BOTH the alert (`failureTransition`)
+ * and the badge (`stateOf`). It was inlined in the alert only, and the badge
+ * kept the old streak-alone rule - so a service could render a red **Down**
+ * while the system had deliberately decided it was not an outage and sent
+ * nothing. That is the disagreement `/admin/status` exists to prevent: two of
+ * its five states are there purely so a reader is never misled.
+ *
+ * `lastOkAt == null` counts as quiet. A service with no record of ever working
+ * is exactly the one worth hearing about, and treating "never succeeded" as
+ * "succeeded recently" is the same mistake as reading `unknown` as healthy.
+ */
+export function noRecentSuccess(lastOkAt: string | null, nowIso: string): boolean {
+  if (!lastOkAt) return true;
+  const since = Date.parse(nowIso) - Date.parse(lastOkAt);
+  return !Number.isFinite(since) || since >= MIN_OUTAGE_MS;
+}
+
 export function failureTransition(
   rec: UpstreamRecord,
   reason: string,
@@ -296,8 +316,7 @@ export function failureTransition(
   // upstream mid-burst, not an outage - see MIN_OUTAGE_MS. No success ever
   // recorded counts as "not recently": a service that has never answered is
   // exactly the one worth hearing about.
-  const sinceOk = rec.lastOkAt ? Date.parse(nowIso) - Date.parse(rec.lastOkAt) : Infinity;
-  const quiet = !Number.isFinite(sinceOk) || sinceOk >= MIN_OUTAGE_MS;
+  const quiet = noRecentSuccess(rec.lastOkAt, nowIso);
   // `>=` and a stored flag rather than `=== brokenAfter`, because the two
   // conditions can now become true in either order: the streak may reach the
   // threshold while a success is still recent, and the window opens later. The
@@ -351,10 +370,20 @@ export type UpstreamState = 'ok' | 'failing' | 'down' | 'unknown' | 'notConfigur
  * render as healthy - and `notConfigured` means nobody set the service up,
  * which is a deliberate state and not a fault.
  */
-export function stateOf(rec: UpstreamRecord, brokenAfter: number): UpstreamState {
+export function stateOf(
+  rec: UpstreamRecord,
+  brokenAfter: number,
+  nowIso: string,
+): UpstreamState {
   if (rec.lastSkipped) return 'notConfigured';
   if (!rec.lastCheckedAt) return 'unknown';
-  if (rec.consecutiveFailures >= brokenAfter) return 'down';
+  // `down` means what the ALERT means by it, not merely "the streak is long".
+  // Without the quiet window here, skyhook answering 66 calls and failing 16
+  // in one evening - 19.5%, all 500s, while working - painted a red badge for
+  // a service nothing was wrong with, and the page contradicted its own email.
+  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {
+    return 'down';
+  }
   if (rec.consecutiveFailures > 0) return 'failing';
   return 'ok';
 }
