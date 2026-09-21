@@ -21,6 +21,50 @@ const DAY = 24 * 60 * 60 * 1000;
  * had collapsed to "Re".
  */
 
+test('a failed show lookup is not cached as "this show has no episodes"', async () => {
+  // The bug this guards is the expensive half of a real outage: skyhook began
+  // answering 400 to axios's default User-Agent, the bare catch turned every
+  // failure into an empty result, and THE EMPTY RESULT WAS CACHED - so one bad
+  // request killed that series' date evidence for the life of the process, and
+  // "could not ask" was indistinguishable from "no schedule exists".
+  let calls = 0;
+  __setSkyhookFetchForTest(async () => {
+    calls++;
+    if (calls === 1) throw Object.assign(new Error('Request failed with status code 400'),
+                                         { response: { status: 400 } });
+    return { episodes: [{ seasonNumber: 1, episodeNumber: 1, airDate: '2026-10-05' }], tmdbId: '297903' };
+  });
+  __clearSkyhookCachesForTest();
+  try {
+    const first = await skyhookEpisodes('471609');
+    assert.equal(first.length, 0, 'a failed lookup yields nothing, as before');
+    const second = await skyhookEpisodes('471609');
+    assert.equal(second.length, 1,
+      'the retry must reach the network - a failure that gets cached is permanent');
+    assert.equal(calls, 2, 'the second call must not have been served from cache');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+test('a successful show lookup IS cached - the sweep asks about one parent repeatedly', async () => {
+  let calls = 0;
+  __setSkyhookFetchForTest(async () => {
+    calls++;
+    return { episodes: [{ seasonNumber: 1, episodeNumber: 1, airDate: '2026-10-05' }], tmdbId: null };
+  });
+  __clearSkyhookCachesForTest();
+  try {
+    await skyhookEpisodes('471609');
+    await skyhookEpisodes('471609');
+    assert.equal(calls, 1, 'a hit must be memoised, or a sweep bursts a free service');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
 test('titleRelated: a collapsed base must not relate - the Re:Born case', () => {
   // base_title("Re:Zero kara Hajimeru ...") strips at the colon and leaves
   // "Re". Without a length floor that prefix-relates to every Re-titled work.

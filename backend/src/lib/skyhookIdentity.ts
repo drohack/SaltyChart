@@ -20,6 +20,7 @@
 //      if skyhook dies, resolution falls back to the Jellyfin/TMDB path.
 // ---------------------------------------------------------------------------
 import axios from 'axios';
+import { recordUpstream } from './upstreamHealth';
 import { normalizeTitle } from './animeMatch';
 
 export interface SkyhookSeries {
@@ -39,6 +40,21 @@ const BASE = 'https://skyhook.sonarr.tv/v1/tvdb';
 const TIMEOUT_MS = 15_000;
 const PACE_MS = 300;
 
+/**
+ * skyhook **rejects axios's default `User-Agent` with a 400** (measured
+ * 2026-09-20: `axios/1.x` and an empty UA both 400; `curl/8.0`, `Sonarr/4.0`
+ * and this string all 200 on the same URL, same second). It is someone else's
+ * free service and naming the caller is the polite thing to do anyway.
+ *
+ * This was not a hypothetical. Every skyhook request was failing, the bare
+ * `catch` below turned each one into an empty result, and the empty result was
+ * CACHED - so the whole TVDB evidence tier was silently dead: rung B0 could
+ * never fire, `hasUndatedFutureSeason` was always false, and the cross-provider
+ * candidate merge never had a `tmdbId` to merge on. Nothing failed loudly
+ * because "no episodes" and "could not ask" were the same value.
+ */
+const USER_AGENT = 'SaltyChart/1.0 (+https://github.com/drohack/SaltyChart)';
+
 type Fetcher = (url: string) => Promise<any>;
 
 let _lastCall = 0;
@@ -48,8 +64,23 @@ const defaultFetch: Fetcher = async (url) => {
   const wait = _lastCall + PACE_MS - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   _lastCall = Date.now();
-  const { data } = await axios.get(url, { timeout: TIMEOUT_MS });
-  return data;
+  try {
+    const { data } = await axios.get(url, {
+      timeout: TIMEOUT_MS,
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+    });
+    // Recorded HERE, at the transport, not in the callers: both of them catch
+    // and degrade to an empty result, which is precisely how a 100% failure
+    // rate looked like "this show has no schedule" for weeks.
+    void recordUpstream('skyhook', true);
+    return data;
+  } catch (err: any) {
+    void recordUpstream('skyhook', false, {
+      reason: err?.message ?? String(err),
+      status: err?.response?.status ?? null,
+    });
+    throw err;
+  }
 };
 
 let _fetch: Fetcher = defaultFetch;
@@ -75,8 +106,18 @@ export interface SkyhookShow {
 
 /** Per series, memoised - a sweep run asks about the same parent repeatedly. */
 const _showCache = new Map<string, SkyhookShow>();
+/**
+ * Per search term, memoised for the same reason the shows are - and it matters
+ * more than it looks. `baseTitles` strips season markers before searching, so
+ * every sequel in a franchise searches the identical term: a drain over a few
+ * hundred rows asked skyhook for "Black Clover" and its like again and again,
+ * each one a fresh round trip 300 ms behind the last. The shows were cached
+ * from the start and the searches simply never were.
+ */
+const _searchCache = new Map<string, SkyhookSeries[]>();
 export function __clearSkyhookCachesForTest(): void {
   _showCache.clear();
+  _searchCache.clear();
 }
 
 function dateStr(v: unknown): string | null {
@@ -84,6 +125,9 @@ function dateStr(v: unknown): string | null {
 }
 
 export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
+  const key = term.trim().toLowerCase();
+  const cached = _searchCache.get(key);
+  if (cached) return cached;
   try {
     const data = await _fetch(`${BASE}/search/en/?term=${encodeURIComponent(term)}`);
     if (!Array.isArray(data)) return [];
@@ -97,8 +141,17 @@ export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
         firstAired: dateStr(r?.firstAired),
       });
     }
+    // Only a successful search is cached. A failure must stay retryable for the
+    // same reason it does for shows: one 400 becoming permanent is how the
+    // whole TVDB tier went quiet.
+    _searchCache.set(key, out);
     return out;
-  } catch {
+  } catch (err: any) {
+    // Same rule as skyhookShow: an unreachable search is not an empty one.
+    console.warn(
+      `[skyhook] search ${JSON.stringify(term)} failed ` +
+      `(${err?.response?.status ?? err?.code ?? err?.message})`
+    );
     return [];
   }
 }
@@ -107,6 +160,11 @@ export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
   const hit = _showCache.get(tvdbId);
   if (hit) return hit;
   let show: SkyhookShow = { episodes: [], tmdbId: null };
+  // A FAILED lookup is never cached and never silent. Both halves matter: the
+  // cache turned one 400 into a permanent "this show has no episodes" for the
+  // life of the process, and the silence is why a dead evidence tier looked
+  // exactly like a catalogue of shows that happen to have no schedule.
+  let failed = false;
   try {
     const data = await _fetch(`${BASE}/shows/en/${encodeURIComponent(tvdbId)}`);
     const raw = data?.episodes;
@@ -120,10 +178,15 @@ export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
           }))
       : [];
     show = { episodes: eps, tmdbId: data?.tmdbId != null ? String(data.tmdbId) : null };
-  } catch {
+  } catch (err: any) {
+    failed = true;
     show = { episodes: [], tmdbId: null };
+    console.warn(
+      `[skyhook] show ${tvdbId} lookup failed (${err?.response?.status ?? err?.code ?? err?.message}) - ` +
+      'TVDB date evidence is unavailable for this entry'
+    );
   }
-  _showCache.set(tvdbId, show);
+  if (!failed) _showCache.set(tvdbId, show);
   return show;
 }
 
