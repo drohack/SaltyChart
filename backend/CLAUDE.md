@@ -799,8 +799,13 @@ the same measured run (51 of 63 trailers downloaded, 12 failures):
   `should_retry_download` and it has **one definition**: `tools/local_translate.py`
   keeps its own `download_audio` (it also returns a video URL for frame grabs),
   so the server-side fix did not reach the GPU run - the very run that lost the
-  six trailers. It imports the policy rather than copying it, and
-  `test_run_verdict.py` asserts the two are the same function object. A dead video
+  six trailers. What is shared is the RETRY (`download_with_retry`), imported by
+  both; what is not shared is the `ydl_opts`, because those differ for measured
+  reasons - the server takes `worstaudio` since Whisper resamples to 16 kHz
+  anyway, while the GPU run takes `bestaudio` because Demucs benchmarked worse
+  on low-quality input, and only it carries cookies and its own request pacing.
+  `test_run_verdict.py` asserts the two hold the same function object **and**
+  that no second copy of the loop has reappeared. A dead video
   can never succeed and retrying a bot wall deepens the block that aborting
   exists to escape, so neither is retried - a mutation row guards that direction
   specifically, because it is the one that costs something. A failing video

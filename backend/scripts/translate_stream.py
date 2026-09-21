@@ -353,6 +353,37 @@ def should_retry_download(msg: str, attempt: int, max_attempts: int = 2) -> bool
     return classify_error(msg) == "forbidden"
 
 
+def download_with_retry(ydl_opts: dict, video_id: str):
+    """Run yt-dlp for one video, with a single retry for a transient 403.
+
+    Returns yt-dlp's `info` dict. The CALLER owns `ydl_opts`, because the two
+    download paths differ for measured reasons and merging them would be wrong:
+    the server takes `worstaudio` (Whisper resamples to 16 kHz anyway) while the
+    GPU run takes `bestaudio` because Demucs separates full-band audio and
+    benchmarked worse on low-quality input, and only the GPU run carries cookies
+    and its own request pacing.
+
+    What is NOT different is what to do when a download fails, so that lives
+    here once. Before this the loop was duplicated character-for-character in
+    both files - the shape that put three copies of MODEL_RANK out of step.
+    """
+    import yt_dlp
+
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}", download=True
+                )
+        except Exception as e:                       # noqa: BLE001 - re-raised below
+            last_err = e
+            if not should_retry_download(str(e), attempt):
+                raise
+            time.sleep(RETRY_403_DELAY_S)
+    raise last_err                                   # pragma: no cover - loop returns or raises
+
+
 def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
     """Download the worst-quality audio track. Returns (audio_path, duration).
 
@@ -363,8 +394,6 @@ def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
                  straight from it via extract_chunk(), so the upfront full-file WAV
                  conversion (wasted work for chunked streaming) is avoided entirely.
     """
-    import yt_dlp
-
     ydl_opts = {
         "format": "worstaudio",
         "quiet": True,
@@ -406,23 +435,8 @@ def download_audio(video_id: str, tmpdir: str, as_wav: bool = True):
     #   * a short pause first, since an immediate retry to the edge that just
     #     refused is the least likely to work and the most likely to look like
     #     hammering.
-    last_err = None
-    for attempt in (1, 2):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(
-                    f"https://www.youtube.com/watch?v={video_id}", download=True
-                )
-                duration = info.get("duration", 120)
-            break
-        except Exception as e:                       # noqa: BLE001 - re-raised below
-            last_err = e
-            msg = str(e)
-            if not should_retry_download(msg, attempt):
-                raise
-            time.sleep(RETRY_403_DELAY_S)
-    else:                                            # pragma: no cover - loop always breaks or raises
-        raise last_err
+    info = download_with_retry(ydl_opts, video_id)
+    duration = info.get("duration", 120)
 
     # Locate the produced file (extension depends on as_wav / source format).
     for name in os.listdir(tmpdir):

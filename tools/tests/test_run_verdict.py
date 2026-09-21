@@ -286,11 +286,15 @@ print("-- one definition: the GPU run shares the retry policy, never copies it -
 sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
 import local_translate as lt  # noqa: E402
 
-check("local_translate imports should_retry_download rather than reimplementing it",
-      lt.should_retry_download is ts.should_retry_download,
-      f"{lt.should_retry_download!r} vs {ts.should_retry_download!r}")
-check("and the delay with it", lt.RETRY_403_DELAY_S == ts.RETRY_403_DELAY_S,
-      f"{lt.RETRY_403_DELAY_S} vs {ts.RETRY_403_DELAY_S}")
+check("local_translate imports download_with_retry rather than reimplementing it",
+      lt.download_with_retry is ts.download_with_retry,
+      f"{lt.download_with_retry!r} vs {ts.download_with_retry!r}")
+# The loop itself must exist in exactly ONE place. A copy that merely agrees
+# today is the shape that put three MODEL_RANK tables out of step.
+import re as _re  # noqa: E402
+_lt_src = io.open(os.path.join(HERE, "..", "local_translate.py"), encoding="utf-8").read()
+check("and does not keep a second copy of the loop",
+      "for attempt in (1, 2):" not in _lt_src, "a duplicate retry loop is back in local_translate.py")
 
 print("-- one definition: tools/ imports the container's phrase list --", flush=True)
 sys.path.insert(0, os.path.join(HERE, ".."))

@@ -117,7 +117,7 @@ import bench_pipeline as bp
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "scripts"))
 from translate_stream import (DOWNLOAD_DELAY_DEFAULT, is_bot_block, classify_error,  # noqa: E402
                               run_verdict, ensure_ytdlp_current, MODEL_RANK,
-                              should_retry_download, RETRY_403_DELAY_S)
+                              download_with_retry)
 
 # Run-wide tallies for the exit verdict - see run_verdict. Per-season counters
 # were printed and discarded, which is how four Sunday runs with ~46 of 49
@@ -336,8 +336,6 @@ def download_audio(video_id: str, tmpdir: str):
     Returns (audio_path, duration, video_url).  video_url is the direct URL
     to the highest-quality <=720p video stream (used by burned-in detection
     to avoid a redundant yt-dlp call)."""
-    import yt_dlp
-
     full_audio = os.path.join(tmpdir, "full.wav")
     ydl_opts = {
         # bestaudio: Demucs vocal separation needs full-band audio (separating
@@ -367,22 +365,11 @@ def download_audio(video_id: str, tmpdir: str):
     # `should_retry_download` is imported, not reimplemented, so the two cannot
     # drift. This run is the one that lost six trailers to 403s, and its own
     # `download_audio` meant the server-side fix did not reach it.
-    last_err = None
-    for attempt in (1, 2):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(
-                    f"https://www.youtube.com/watch?v={video_id}", download=True
-                )
-                duration = info.get("duration", 120)
-            break
-        except Exception as e:                       # noqa: BLE001 - re-raised below
-            last_err = e
-            if not should_retry_download(str(e), attempt):
-                raise
-            time.sleep(RETRY_403_DELAY_S)
-    else:                                            # pragma: no cover
-        raise last_err
+    # The retry lives in translate_stream, once - see download_with_retry. The
+    # OPTIONS above stay local, because bestaudio, cookies and the request
+    # pacing are this run's own decisions and the server's are different.
+    info = download_with_retry(ydl_opts, video_id)
+    duration = info.get("duration", 120)
 
     # Extract direct video URL for frame extraction (avoids second yt-dlp call)
     video_url = None
