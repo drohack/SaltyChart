@@ -462,9 +462,19 @@ sharing columns, then one table of trailers per season. What lives nowhere else:
 
 The trigger had existed from the beginning - `POST /api/translate/batch`, admin
 only, with a 409 guard shared with the auto-scheduler and a `batch/status`
-endpoint for progress - and **nothing on screen ever reached it**, so starting a
-run meant curl. The page rendered the schedule, the live tail and the last run's
-exit code: everything except the button.
+endpoint for progress - but the only control for it lived in the **gear/Options
+modal**, under "Subtitle Pre-Translation", which is a surprising home for a job
+that translates a season: that modal is otherwise entirely per-viewer
+preferences (theme, title language, autoplay). The page that is actually ABOUT
+the subtitle pipeline rendered the schedule, the live tail and the last run's
+exit code - everything except the button.
+
+**There is now exactly one control, and that is the point.** The Options-modal
+block was removed rather than left beside this one: two buttons calling one
+endpoint drift, and these two already had. The old one sent a raw `fetch` with
+no timeout or retry, carried its own season dropdown that could disagree with
+whatever the reader was looking at, reported a 409 "already running" as an
+*error* rather than following the run, and never said which model it would use.
 
 It says **"Run now (medium)"** on purpose. The server is CPU-only and its image
 carries `small` and `medium`; the champion `large-v3-split` is Demucs +

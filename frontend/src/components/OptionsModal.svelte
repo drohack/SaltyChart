@@ -2,10 +2,8 @@
   import { options } from '../stores/options';
   import type { Theme, TitleLanguage } from '../stores/options';
   import { authToken } from '../stores/auth';
-  import { seasonYear, type Season } from '../stores/season';
   import { createEventDispatcher, onDestroy, tick } from 'svelte';
 
-  const SEASONS: Season[] = ['WINTER', 'SPRING', 'SUMMER', 'FALL'];
 
   const themeOptions: { value: Theme; label: string }[] = [
     { value: 'LIGHT', label: 'Light' },
@@ -53,116 +51,6 @@
     window.removeEventListener('keydown', handleKey);
     window.removeEventListener('sc:open-account', onOpenAccount);
   });
-
-  // -- Batch translation (admin only) ---------------------------------
-  let batchRunning = false;
-  let batchMessage = '';
-  let batchIsAdmin: boolean | null = null; // null = not checked yet
-  let batchSeason: Season = $seasonYear.season;
-  let batchYear: number = $seasonYear.year;
-
-  async function checkBatchStatus() {
-    if (!$authToken) return;
-    try {
-      const res = await fetch('/api/translate/batch/status', {
-        headers: { Authorization: `Bearer ${$authToken}` },
-      });
-      if (res.status === 403) {
-        batchIsAdmin = false;
-        return;
-      }
-      batchIsAdmin = true;
-      const data = await res.json();
-      batchRunning = data.running;
-      if (data.running) {
-        batchMessage = `Running since ${new Date(data.startedAt).toLocaleTimeString()}`;
-      }
-    } catch {}
-  }
-
-  // Check admin status and sync season when modal first opens
-  let lastOpenState = false;
-  $: if (open && !lastOpenState) {
-    lastOpenState = true;
-    batchSeason = $seasonYear.season;
-    batchYear = $seasonYear.year;
-    if ($authToken && batchIsAdmin === null) {
-      checkBatchStatus();
-    }
-    if ($authToken) loadAccount();
-    // Arriving via the Account link on /admin/users - open straight to it, or
-    // the trip lands you on a preferences form with no sign of what you came
-    // for. Consumed on read so a later manual open is not forced open too.
-    if (accountRequested) {
-      accountOpen = true;
-      accountRequested = false;
-    }
-  }
-  $: if (!open) {
-    lastOpenState = false;
-  }
-
-  async function startBatch(dryRun = false) {
-    if (!$authToken) return;
-    batchMessage = dryRun ? 'Checking trailers...' : 'Starting batch...';
-    batchRunning = true;
-    try {
-      const res = await fetch('/api/translate/batch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${$authToken}`,
-        },
-        body: JSON.stringify({ dryRun, season: batchSeason, year: batchYear }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        batchMessage = data.error;
-        batchRunning = false;
-      } else {
-        batchMessage = dryRun ? 'Fetching anime list...' : 'Batch started, fetching anime list...';
-        // Poll quickly - dry runs finish in seconds
-        pollBatchStatus();
-      }
-    } catch (e) {
-      batchMessage = 'Failed to start batch';
-      batchRunning = false;
-    }
-  }
-
-  async function pollBatchStatus() {
-    if (!$authToken) return;
-    try {
-      const res = await fetch('/api/translate/batch/status', {
-        headers: { Authorization: `Bearer ${$authToken}` },
-      });
-      const data = await res.json();
-      batchRunning = data.running;
-      const logLines: string[] = data.log || [];
-      if (data.running) {
-        const meaningful = [...logLines].reverse().find((l: string) => l.trim() && !l.startsWith('  [SKIP]'));
-        batchMessage = meaningful || 'Running...';
-        setTimeout(pollBatchStatus, 1500);
-      } else if (logLines.length > 0) {
-        // Build a useful completion summary
-        const needsLine = logLines.find((l: string) => l.includes('trailers need translation'));
-        const completeLine = logLines.find((l: string) => l.includes('Complete:'));
-        const nothingLine = logLines.find((l: string) => l.includes('Nothing to translate') || l.includes('already cached. Done'));
-        const isDryRun = logLines.some((l: string) => l.includes('DRY RUN'));
-
-        if (isDryRun) {
-          const trailerLines = logLines.filter((l: string) => /^\s{2}\S/.test(l) && !l.startsWith('  [SKIP]'));
-          batchMessage = needsLine
-            ? `${needsLine.trim()} (${trailerLines.length} to translate)`
-            : `Dry run complete: ${trailerLines.length} trailers`;
-        } else {
-          batchMessage = completeLine?.trim() || nothingLine?.trim() || 'Done';
-        }
-      } else {
-        batchMessage = 'Done';
-      }
-    } catch {}
-  }
 
   // -------------------------------------------------------------------------
   // Account: the recovery address, and changing your password.
@@ -562,52 +450,6 @@
           {/if}
           </div>
         </details>
-      {/if}
-
-      <!-- Batch translation (admin only) -->
-      {#if $authToken && batchIsAdmin}
-        <div class="divider"></div>
-        <div class="form-control mb-4">
-          <div class="label"><span class="label-text font-semibold">Subtitle Pre-Translation</span></div>
-          <p class="text-sm text-base-content/60 mb-2">
-            Batch translate trailers using a higher quality model.
-          </p>
-          <div class="flex items-center gap-2 mb-2">
-            <select class="select select-bordered select-sm" bind:value={batchSeason} disabled={batchRunning}>
-              {#each SEASONS as s}
-                <option value={s}>{s}</option>
-              {/each}
-            </select>
-            <input
-              type="number"
-              class="input input-bordered input-sm w-24"
-              bind:value={batchYear}
-              disabled={batchRunning}
-              min={2020}
-              max={2030}
-              data-bwignore
-            />
-          </div>
-          <div class="flex gap-2">
-            <button
-              class="btn btn-sm btn-neutral"
-              disabled={batchRunning}
-              on:click={() => startBatch(true)}
-            >
-              Dry Run
-            </button>
-            <button
-              class="btn btn-sm btn-primary"
-              disabled={batchRunning}
-              on:click={() => startBatch(false)}
-            >
-              {batchRunning ? 'Running...' : 'Start Batch'}
-            </button>
-          </div>
-          {#if batchMessage}
-            <p class="text-sm mt-2 text-base-content/70">{batchMessage}</p>
-          {/if}
-        </div>
       {/if}
 
       <div class="modal-action">
