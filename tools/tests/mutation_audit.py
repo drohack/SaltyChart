@@ -1260,8 +1260,8 @@ MUTATIONS: list[Mutation] = [
         # once we had looked and failed, our empty row answered first, forever.
         # Nothing observable goes wrong - the system just silently stops
         # improving, which is why it needs a test rather than a reader.
-        find="  if (override && !isBookkeeping) return override;",
-        replace="  if (override) return override; /* mutation */",
+        find="  if (override && !isBookkeeping) {",
+        replace="  if (override) { /* mutation */",
         test=T_UNIT,
         expect="shadow the community map",
         guards="identity quietly stops improving as the upstream map fills in",
@@ -1483,6 +1483,54 @@ MUTATIONS: list[Mutation] = [
         expect="a tvdb id must pick up its tmdb sibling from the map",
         guards="pasted ids and picked results carry only the id space they "
                "arrived in - corrections quietly lose their redundancy",
+    ),
+    Mutation(
+        name="the id map refresh comes due after the alarm that watches it",
+        path="backend/src/lib/anilistTvdbMap.ts",
+        # The 2026-09-22 alert. /admin/status calls the map broken at 48h, and
+        # this threshold decides when a boot bothers to refresh - the only
+        # chance a deploy-on-push server gets, since every restart resets the
+        # 24h timer in index.ts. Put it back above the alarm and the two clocks
+        # stop overlapping: nothing refreshes the stamp and the alert stays lit
+        # while upstream answers 200 throughout. Nothing else can see this -
+        # each piece is correct alone, and no integration test waits 48h.
+        find="export const REFRESH_AFTER_MS = 12 * 60 * 60 * 1000;",
+        replace="export const REFRESH_AFTER_MS = 7 * 24 * 60 * 60 * 1000; /* mutation */",
+        test=T_UNIT,
+        expect="a refresh must come due",
+        guards="a refresh threshold above MAP_STALE_MS, which guarantees the "
+               "id-map alert fires and never clears on a server that restarts "
+               "more often than daily",
+    ),
+    Mutation(
+        name="map corroboration is ignored, so a looked-up entry ranks below an unlooked one",
+        path="backend/src/lib/seriesIdentity.ts",
+        # The 2026-09-22 gate failure. A stored resolver row shadows the
+        # community map, so without this rung an entry the map ALSO names grades
+        # `weak` - strictly worse than the same entry with no row at all, which
+        # would fall through and grade `map`. That is how an unverified row
+        # reached the Sonarr auto-add list.
+        find="    if (identity.mapCorroborated) return 'map';",
+        replace="    /* mutation: corroboration ignored */",
+        test=T_UNIT,
+        expect="two independent sources naming one id is stronger evidence",
+        guards="looking an entry up making it look less certain than never "
+               "having looked, and weak rows reaching the Sonarr auto-add list",
+    ),
+    Mutation(
+        name="any map entry counts as corroboration, even one naming a different series",
+        path="backend/src/lib/seriesIdentity.ts",
+        # The dangerous direction, and the reason the check compares ids rather
+        # than asking whether the map knows the entry. IGPX's map id (80391) no
+        # longer resolves upstream at all while the resolver's (73011) matches
+        # the premiere to a day - so a map entry that DISAGREES is a dispute the
+        # review queue must keep, never a reason to call the row settled.
+        find="      tvdbIdForAnilist(anilistId) === override.tvdbId",
+        replace="      tvdbIdForAnilist(anilistId) !== null /* mutation: presence, not agreement */",
+        test=T_UNIT,
+        expect="an id the map CONTRADICTS is disputed, not corroborated",
+        guards="a disputed id being blessed as map-grade and auto-added, which "
+               "is the one direction that costs a wrong series",
     ),
     Mutation(
         name="a title-text remote accept is invisible to review again",
@@ -1962,8 +2010,8 @@ MUTATIONS: list[Mutation] = [
         # Same line as "a recorded miss shadows the community map", mutated the
         # other way: that row makes the override win too often, this one stops
         # it winning at all.
-        find="  if (override && !isBookkeeping) return override;",
-        replace="  /* mutation: overrides ignored */",
+        find="  if (override && !isBookkeeping) {",
+        replace="  if (override && !isBookkeeping && Number.isNaN(1)) { /* mutation: ignored */",
         test=T_JELLYFIN,
         expect="a correction saved on",
         guards="the admin page appears to save a correction that never takes "

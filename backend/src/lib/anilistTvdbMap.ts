@@ -28,8 +28,53 @@ const SOURCE_URL =
 const MAP_KEY = 'anilistTvdbMap';
 const TMDB_MAP_KEY = 'anilistTmdbMap';
 const FETCHED_AT_KEY = 'anilistTvdbMapAt';
-const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // weekly is plenty; entries only get added
+/**
+ * The ETag that the stored pairs were fetched with.
+ *
+ * Persisted for the same reason every other cache in `AppConfig` is: the
+ * load it avoids is CAUSED by restarts. `_etag` alone is in-process, so it is
+ * null on every boot and a boot refresh downloaded the whole 7.5 MB - and
+ * since boot is now the refresh that actually fires on a deploy-on-push
+ * server, that was the only refresh anyone was paying for.
+ */
+const ETAG_KEY = 'anilistTvdbMapEtag';
 const FETCH_TIMEOUT_MS = 60_000;
+
+/**
+ * How old the stored copy may get before a refresh is due.
+ *
+ * NOT a free choice, which is the whole reason it carries a comment.
+ * `/admin/status` calls this map broken once the stored stamp reaches
+ * `MAP_STALE_MS` (48h, `upstreamProbes.ts`), so any threshold above that
+ * guarantees the alarm fires before a refresh is even due.
+ *
+ * It was 7 days, and on 2026-09-22 that is exactly what happened. The only
+ * thing that refreshes the stamp on a running server is the 24h `setInterval`
+ * in `index.ts`, which every restart resets - and a deploy-on-push server
+ * restarts far more often than daily (nine deploys on 2026-09-21 alone), so the
+ * timer never once reached 24h. Boot could not repair it either, because a
+ * refresh was not due for another five days. Upstream was answering 200
+ * throughout; nothing was broken except the relationship between two numbers.
+ *
+ * Worst-case staleness is this threshold PLUS one restart interval, since a
+ * boot that finds the copy still inside the window deliberately leaves it
+ * alone. 12h keeps that sum at 36h for a server restarting daily, inside the
+ * 48h alarm with room to spare. The cost of being wrong in this direction is
+ * one conditional request answered 304 in a few hundred bytes.
+ */
+export const REFRESH_AFTER_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Is the stored copy due a refresh?
+ *
+ * Pure, so the relationship between this clock and the one `/admin/status`
+ * alarms on is testable without a clock, a network or a database. Those two
+ * clocks drifting apart IS the bug above; a unit test is the only thing that
+ * can see it, because every piece behaves correctly in isolation.
+ */
+export function refreshDue(fetchedAt: number, now: number): boolean {
+  return now - fetchedAt > REFRESH_AFTER_MS;
+}
 
 /** anilistId -> tvdbId. Empty until loaded; never null, so callers need no guard. */
 let _map: Record<string, string> = {};
@@ -44,7 +89,8 @@ let _map: Record<string, string> = {};
 let _tmdb: Record<string, string> = {};
 let _loaded = false;
 let _inFlight: Promise<void> | null = null;
-/** Last upstream ETag, so the weekly check can be a 304 instead of 7.5 MB. */
+/** Last upstream ETag, so a due check can be a 304 instead of 7.5 MB. Seeded
+ *  from `ETAG_KEY` on the first load, so a restart does not forget it. */
 let _etag: string | null = null;
 
 export interface TmdbRef {
@@ -77,7 +123,8 @@ async function fetchPairs(etag?: string | null): Promise<Pairs | typeof UNCHANGE
   const started = Date.now();
   try {
     // Conditional request: this file is 7.5 MB and changes only when entries are
-    // added, so most weekly checks should cost a 304 and a few hundred bytes.
+    // added, so most due checks should cost a 304 and a few hundred bytes.
+    // That cheapness is what makes REFRESH_AFTER_MS affordable at 12h.
     const res = await fetch(SOURCE_URL, {
       signal: ac.signal,
       headers: etag ? { 'If-None-Match': etag } : {},
@@ -89,12 +136,20 @@ async function fetchPairs(etag?: string | null): Promise<Pairs | typeof UNCHANGE
       return UNCHANGED;
     }
     if (!res.ok) {
-      void recordUpstream('animeIdMap', false, { reason: `HTTP ${res.status}`, status: res.status });
-      throw new Error(`HTTP ${res.status}`);
+      // Carries the status so the single `catch` below can report it. Recording
+      // here as well would count one failure twice against `brokenAfter: 2`,
+      // which would mail an outage on the first bad response.
+      const err: any = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
     _etag = res.headers.get('etag');
     const rows = (await res.json()) as any[];
     console.log(`[anime-ids] map downloaded in ${Date.now() - started}ms`);
+    // Symmetric with the 304 above: a full download is the other way this
+    // conversation succeeds, and recording it is what lets a recovery be
+    // announced at the moment it happens rather than at tomorrow's probe.
+    void recordUpstream('animeIdMap', true);
     const tvdb: Record<string, string> = {};
     const tmdb: Record<string, string> = {};
     for (const r of rows) {
@@ -112,18 +167,26 @@ async function fetchPairs(etag?: string | null): Promise<Pairs | typeof UNCHANGE
       }
     }
     return { tvdb, tmdb };
+  } catch (err: any) {
+    // Tag it as OURS-vs-THEIRS before it leaves this function. The caller also
+    // reads and writes the database inside the same `try`, and recording a
+    // failed SQLite write as "GitHub is not responding" would send precisely
+    // the misleading alert this whole area exists to stop.
+    if (err && typeof err === 'object') err.upstream = true;
+    throw err;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function readStored(): Promise<{ map: Record<string, string>; tmdb: Record<string, string>; fetchedAt: number }> {
+async function readStored(): Promise<{ map: Record<string, string>; tmdb: Record<string, string>; fetchedAt: number; etag: string | null }> {
   const rows = await prisma.appConfig.findMany({
-    where: { key: { in: [MAP_KEY, TMDB_MAP_KEY, FETCHED_AT_KEY] } },
+    where: { key: { in: [MAP_KEY, TMDB_MAP_KEY, FETCHED_AT_KEY, ETAG_KEY] } },
   });
   const raw = rows.find((r) => r.key === MAP_KEY)?.value;
   const rawTmdb = rows.find((r) => r.key === TMDB_MAP_KEY)?.value;
   const at = Number(rows.find((r) => r.key === FETCHED_AT_KEY)?.value ?? 0);
+  const etag = rows.find((r) => r.key === ETAG_KEY)?.value ?? null;
   const parse = (s?: string) => {
     if (!s) return {};
     try {
@@ -132,11 +195,11 @@ async function readStored(): Promise<{ map: Record<string, string>; tmdb: Record
       return {};
     }
   };
-  if (!raw) return { map: {}, tmdb: {}, fetchedAt: 0 };
+  if (!raw) return { map: {}, tmdb: {}, fetchedAt: 0, etag: null };
   // The TMDB row is newer than the TVDB one, so an existing deployment has the
   // first and not the second. That is a normal state, not a reason to refetch:
-  // it simply means no film resolves until the next weekly refresh.
-  return { map: parse(raw), tmdb: parse(rawTmdb), fetchedAt: at };
+  // it simply means no film resolves until the next refresh.
+  return { map: parse(raw), tmdb: parse(rawTmdb), fetchedAt: at, etag };
 }
 
 /** Mark the stored copy as verified-current without rewriting 7,179 pairs. */
@@ -149,7 +212,7 @@ async function touchFetchedAt(): Promise<void> {
   });
 }
 
-async function store(pairs: Pairs): Promise<void> {
+async function store(pairs: Pairs, etag: string | null): Promise<void> {
   const value = JSON.stringify(pairs.tvdb);
   await prisma.appConfig.upsert({
     where: { key: MAP_KEY },
@@ -167,6 +230,15 @@ async function store(pairs: Pairs): Promise<void> {
     update: { value: String(Date.now()) },
     create: { key: FETCHED_AT_KEY, value: String(Date.now()) },
   });
+  // Written in the same breath as the pairs it describes: an ETag that outlives
+  // the body it was issued for would earn a 304 and leave us serving nothing.
+  if (etag) {
+    await prisma.appConfig.upsert({
+      where: { key: ETAG_KEY },
+      update: { value: etag },
+      create: { key: ETAG_KEY, value: etag },
+    });
+  }
 }
 
 /**
@@ -181,37 +253,54 @@ export async function ensureAnilistTvdbMap(force = false): Promise<void> {
 
   _inFlight = (async () => {
     try {
-      const { map, tmdb, fetchedAt } = await readStored();
-      if (Object.keys(map).length) {
+      const { map, tmdb, fetchedAt, etag } = await readStored();
+      const haveStored = Object.keys(map).length > 0;
+      if (haveStored) {
         _map = map;
         _tmdb = tmdb;
         _loaded = true;
       }
-      const stale = Date.now() - fetchedAt > MAX_AGE_MS;
+      // Only ever send a conditional request when we actually HOLD the body it
+      // would validate. A 304 against an empty map would leave us with nothing
+      // and mark it loaded - a worse outcome than the download it saves.
+      if (!_etag && etag && haveStored) _etag = etag;
+      const stale = refreshDue(fetchedAt, Date.now());
       // An existing deployment has the TVDB row but no TMDB row yet; fetch once
-      // to fill it rather than waiting out the week with films unresolvable.
-      const missingTmdb = Object.keys(map).length > 0 && !Object.keys(tmdb).length;
-      if (force || stale || missingTmdb || !Object.keys(map).length) {
+      // to fill it rather than waiting out the interval with films unresolvable.
+      const missingTmdb = haveStored && !Object.keys(tmdb).length;
+      if (force || stale || missingTmdb || !haveStored) {
         const fresh = await fetchPairs(_etag);
         if (fresh !== UNCHANGED && Object.keys(fresh.tvdb).length) {
           _map = fresh.tvdb;
           _tmdb = fresh.tmdb;
           _loaded = true;
-          await store(fresh);
+          await store(fresh, _etag);
           console.log(
             `[anime-ids] id map refreshed: ${Object.keys(fresh.tvdb).length} TVDB, ` +
               `${Object.keys(fresh.tmdb).length} TMDB pairs`
           );
         } else if (fresh === UNCHANGED) {
           // Nothing new upstream; keep what we have and reset the clock so we
-          // don't re-ask on every request for the rest of the week.
+          // don't re-ask until the next refresh is due.
           _loaded = true;
           await touchFetchedAt();
         }
       }
     } catch (err: any) {
+      const reason = err?.message ?? String(err);
+      // Only a failure that actually came from the request grades the upstream;
+      // a local database error is our problem and must not be reported as
+      // theirs.
+      // Every way this fails funnels through here - an HTTP status, a DNS or
+      // TLS error, the 60s timeout, malformed JSON. Without this the health
+      // record learned nothing from a thrown fetch and the alert could only say
+      // the stamp was old, never why; that ambiguity is what made the
+      // 2026-09-22 alert take a code read rather than a log line to explain.
+      if (err?.upstream) {
+        void recordUpstream('animeIdMap', false, { reason, status: err?.status ?? null });
+      }
       // Degraded, not broken: without the map every match is title-only.
-      console.warn('[anime-ids] could not refresh AniList->TVDB map:', err?.message ?? err);
+      console.warn('[anime-ids] could not refresh AniList->TVDB map:', reason);
       _loaded = true; // don't hammer a failing upstream on every request
     } finally {
       _inFlight = null;

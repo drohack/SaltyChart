@@ -352,6 +352,38 @@ Watch pop-up's correction picker uses. `routes/jellyfin.ts` computed that inline
 until `/admin/sonarr` needed the same answer; a correctness rule with two copies
 is one that can disagree with itself.
 
+**A resolver id the community map independently names grades `map`, not
+`weak`.** A stored row SHADOWS the map - `resolveIdentity` answers from it and
+never consults the map at all - so without this rung an entry we looked up
+graded *worse* than the same entry with no row, whose fallthrough would have
+graded it `map`. That is how `Battle Spirits [Re] ZEKKAI NO KU` reached the
+Sonarr auto-add list as `weak` and failed the deploy gate on 2026-09-22: its
+candidate carried no premiere date and no year, so the resolver accepted it on
+`exact title`, while Fribb had named the same tvdbId all along. Two independent
+sources agreeing is stronger evidence than either alone, never weaker.
+
+`resolveIdentity` sets `Identity.mapCorroborated` and `matchGrade` reads it, so
+the rule keeps one home - only that function sees both the stored row and the
+map. It is **never persisted**: it describes two sources agreeing right now, and
+the map is refreshed on its own schedule.
+
+**Only an identical id counts, and the distinction is load-bearing.** A map
+entry naming a DIFFERENT id is a dispute, not support, and the resolver is
+frequently the one that is right: IGPX (AniList 3270) carries map id `80391`,
+which skyhook no longer resolves at all, against the resolver's `73011` -
+*IGPX: Immortal Grand Prix*, first aired 2005-10-05, a day from the entry's own
+premiere. Correcting the map is what the override table is for, so a
+contradicted row stays `weak` and keeps its place in the review queue. A
+mutation row guards each direction.
+
+Measured over all 1520 stored rows on 2026-09-22: **42 shadow a map answer**, 41
+of them naming the map's own id and 1 contradicting it (IGPX), and exactly **one
+of the 41 graded weak**. The other 1004 rows carry no tvdbId (bookkeeping, which
+cannot shadow) and 473 sit where the map has no id at all - the gap the resolver
+exists to fill. **`RESOLVER_VERSION` is deliberately not bumped**: the grade is
+computed at read time from data already stored, so no stored row decides
+differently and there is nothing for the re-grade pass to do.
+
 The distinctions each came from a real mistake: a map id is unconfirmed by
 construction and still the best thing we have; an **admin** override is settled
 but a **viewer pick** is not (counting it as settled once hid the picker, and
@@ -1085,6 +1117,80 @@ the reason given under the subtitle alerts. **SMTP itself stays in
 Residual gap, stated on the page rather than hidden: with SMTP down, nothing can
 mail to say that mail is down.
 
+### The refresh clock and the alarm clock have to overlap
+
+The id map's own probe makes no request: it reads `anilistTvdbMapAt` and calls
+the map broken once that stamp is `MAP_STALE_MS` (48h) old. So the threshold
+deciding when a refresh is *due* is not independent of it, and on **2026-09-22**
+the two had drifted far enough apart to mail an outage that did not exist -
+raw.githubusercontent.com answered 200 with an ETag throughout.
+
+The trap is that every piece was individually correct:
+
+| clock | value | where |
+|---|---|---|
+| refresh due at | 7 days | `MAX_AGE_MS`, `anilistTvdbMap.ts` |
+| alarm fires at | 48h | `MAP_STALE_MS`, `upstreamProbes.ts` |
+| timer refresh | every 24h of **uptime** | `setInterval`, `index.ts` |
+
+The timer is the only thing that refreshes a running server's stamp, and an
+`.unref()`'d `setInterval` restarts with the process. A deploy-on-push server
+restarts far more often than daily - **nine deploys on 2026-09-21 alone** - so it
+never once reached 24h. Boot was the only other chance and declined it, because
+a refresh was not due for another five days. Between 48h and 7 days sat a hole
+in which nothing refreshed the stamp and the alert could never clear.
+
+**The rule: `REFRESH_AFTER_MS` plus one restart interval must stay under
+`MAP_STALE_MS`.** It is 12h, so a daily-restarting server tops out at 36h
+against a 48h alarm. Being wrong in this direction costs one conditional request
+answered 304 with a zero-byte body (verified 2026-09-22); being wrong in the
+other costs an alert that is on for ever.
+
+**That cheapness had to be built, not assumed.** `_etag` was in-process only, so
+it was null on every boot and a boot refresh downloaded the whole 7.5 MB - and
+boot is precisely the refresh that fires on a deploy-on-push server, so lowering
+the threshold to 12h would have added roughly two full downloads a day against
+someone else's free service rather than two 304s. The ETag is persisted in
+`AppConfig` for the same reason everything else there is: the load it avoids is
+caused by restarts, so an in-memory-only copy is empty exactly when it matters. Both halves are asserted in `anilistTvdbMap.test.ts`, which
+imports the probe's own constant rather than restating it, and a mutation row
+puts the 7 days back. Nothing else can see this: no integration test waits 48h,
+and each constant reads fine on its own.
+
+**The other clocks were audited on 2026-09-22; don't re-derive this.** The
+mismatch above needs a probe that grades a stamp *we* move, and `animeIdMap` is
+the only one - every other probe makes a real request, so no threshold of ours
+can starve it. The wider class is "state a restart resets", and every other boot
+timer in `index.ts` has a `setTimeout` catch-up that runs the work again: the id
+map was the only one whose boot call *declined* it, which is exactly why it was
+the one that broke. Restarts make the others run more often, not less. Two
+places still hold that rate in memory, both known and neither fixed here:
+
+- **`lastBatchDate` (`index.ts`) is a module-local `let`**, and so is
+  `batchStatus.running`. A restart inside the Wednesday 2-4am window after the
+  batch already ran starts a **second** batch that night - a second round of
+  sequential YouTube downloads, which is the volume the bot wall watches.
+  `AppConfig.subtitleBatchStatus` already stores `startedAt`/`finishedAt`, so
+  the guard has a durable source available whenever this is worth closing.
+- **`runScheduledPush` has no daily guard of its own** - the `setInterval` is
+  the only thing making it daily, and it also runs 12 minutes after *every*
+  boot. Nine deploys in a day is nine runs of the one thing here that writes to
+  Sonarr. It is safe (a terminal `SonarrPush` row means nothing is added twice)
+  but the "DAILY, not hourly ... smaller blast radius" rationale at that timer
+  is not actually enforced by anything.
+
+**A thrown fetch records its reason now.** Only the `!res.ok` branch called
+`recordUpstream`, so a DNS failure, a TLS error, the 60s timeout or malformed
+JSON left the health record knowing nothing and the alert could say only that
+the stamp was old. Every failure funnels through the one `catch` instead,
+carrying the status when there was one - that gap is why this took a code read
+to explain rather than a log line. Only errors **tagged by `fetchPairs`** grade
+the upstream, though: the caller reads and writes SQLite inside the same `try`,
+and reporting a failed local write as "GitHub is not responding" would be the
+same misleading alert in a new costume. A full 200 download records success
+symmetrically with the 304 path, so a recovery is announced when it happens
+rather than at the next day's probe.
+
 ### The `MaxListenersExceededWarning` is benign - the measurement
 
 The root guide's rule is "don't re-investigate unless RSS stops being flat".
@@ -1516,9 +1622,15 @@ Tables / columns:
   Holds `jellyfinUrl` / `jellyfinApiKey`, written by the admin `/admin` page
   via `PUT /api/jellyfin/config`, plus `anilistTmdbMap` (AniList -> `tv:N` /
   `movie:N`, the namespace kept because TMDB numbers films and shows
-  independently), `anilistTvdbMap` / `anilistTvdbMapAt`
-  (the cached AniList->TVDB id map, refreshed at boot and daily on a timer,
-  conditionally via `If-None-Match`, never on the request path),
+  independently), `anilistTvdbMap` / `anilistTvdbMapAt` /
+  `anilistTvdbMapEtag`
+  (the cached AniList->TVDB id map, refreshed at boot when the stored stamp is
+  over `REFRESH_AFTER_MS` (12h) old and daily on a timer, conditionally via
+  `If-None-Match`, never on the request path - see *The refresh clock and the
+  alarm clock* below for why that 12h is not a free choice. The ETag is stored
+  **with** the pairs it validates, and is only sent when we actually hold them:
+  a 304 against an empty map would leave us serving nothing and call it
+  loaded),
   `jellyfinLibrary` / `jellyfinLibraryAt` (the match corpus - 2271 series on this
   deployment; the "836" figure elsewhere in this file counts *anime folders*, not
   the library), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched

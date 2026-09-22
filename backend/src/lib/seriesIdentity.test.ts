@@ -368,3 +368,53 @@ test('the pick may be identified by its TMDB id alone', () => {
     true,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Corroboration: a resolver id the community map independently carries.
+//
+// 2026-09-22, found by the deploy gate. `Battle Spirits [Re] ZEKKAI NO KU`
+// reached the Sonarr auto-add list graded `weak`. Its candidate had no premiere
+// date and no year, so the resolver accepted it on `exact title` - a rung no
+// date vouches for - while the community map independently carried the SAME
+// tvdbId. The sharp version of the bug: had the resolver row not existed at
+// all, `resolveIdentity` would have fallen through to the map and graded it
+// `map`, a verified candidate. Looking the entry up made it look WORSE than
+// never having looked, which cannot be right.
+//
+// Measured over all 1520 stored rows that day: 42 shadow a map answer, 41 of
+// them naming the map's own id, and exactly one of those graded weak.
+// ---------------------------------------------------------------------------
+
+test('a resolver id the community map independently carries is not weak', () => {
+  __setMapsForTest({ '187990': '475488' }, {});
+  __setOverridesForTest({
+    187990: { tvdbId: '475488', tmdbId: '316551', tmdbKind: 'tv', source: 'remote',
+              confirmed: false, rejected: false, pending: false,
+              matchedTitle: 'Battle Spirits [Re] ZEKKAI NO KU',
+              candidates: null, note: 'remote: exact title', year: null },
+  });
+  const id = resolveIdentity(187990);
+  assert.equal(matchGrade(id), 'map',
+    'two independent sources naming one id is stronger evidence than either alone');
+  assert.equal(isIdConfident(id), true,
+    'a corroborated id must not offer the correction picker as though it were doubtful');
+});
+
+test('corroboration means the SAME id, not merely that the map has an entry', () => {
+  // The real instance is IGPX (AniList 3270): the map carries tvdb 80391, which
+  // skyhook no longer resolves at all, while the resolver found 73011 -
+  // 'IGPX: Immortal Grand Prix', first aired 2005-10-05, a day from the entry's
+  // own premiere. Correcting the map is what the override table is FOR, so a
+  // contradicted id must stay weak and keep its place in the review queue. The
+  // date rung is omitted here so the check under test is the only thing acting.
+  __setMapsForTest({ '3270': '80391' }, {});
+  __setOverridesForTest({
+    3270: { tvdbId: '73011', tmdbId: null, tmdbKind: null, source: 'remote',
+            confirmed: false, rejected: false, pending: false,
+            matchedTitle: 'IGPX: Immortal Grand Prix',
+            candidates: null, note: 'remote: exact title', year: null },
+  });
+  const id = resolveIdentity(3270);
+  assert.equal(matchGrade(id), 'weak',
+    'an id the map CONTRADICTS is disputed, not corroborated');
+});

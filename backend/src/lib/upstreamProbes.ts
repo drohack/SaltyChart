@@ -62,7 +62,7 @@ const SKYHOOK_PROBE_TERM = 'Frieren';
 
 /** How stale the id map may get before the refresh is considered broken. It is
  *  refreshed daily, so two days means two missed runs, not one slow one. */
-const MAP_STALE_MS = 2 * 24 * 3600 * 1000;
+export const MAP_STALE_MS = 2 * 24 * 3600 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**

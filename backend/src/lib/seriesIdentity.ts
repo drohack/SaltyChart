@@ -70,6 +70,21 @@ export interface Identity {
    * NEW lookups.
    */
   resolverVersion?: number | null;
+  /**
+   * The community map independently names this row's `tvdbId`.
+   *
+   * Set by `resolveIdentity`, never stored - it is a fact about two sources
+   * agreeing *right now*, and the map is refreshed on its own schedule. It
+   * exists because a stored resolver row SHADOWS the map, so without it an
+   * entry we looked up graded WORSE than the same entry with no row at all:
+   * the fallthrough would have graded it `map`, while the row graded `weak`
+   * and carried that into the Sonarr auto-add list.
+   *
+   * Only an identical id counts. A map entry naming a DIFFERENT id is a
+   * contradiction rather than support, and the resolver is frequently the one
+   * that is right - IGPX's map id no longer resolves upstream at all.
+   */
+  mapCorroborated?: boolean;
 }
 
 /** One option the remote lookup returned. Mirrors `RemoteCandidate`. */
@@ -193,7 +208,20 @@ export function resolveIdentity(anilistId: number): Identity {
   // rejection) is a real answer and still wins.
   const isBookkeeping =
     !!override && !override.tvdbId && !override.tmdbId && !override.confirmed && !override.rejected;
-  if (override && !isBookkeeping) return override;
+  if (override && !isBookkeeping) {
+    // Does the map independently agree? See `mapCorroborated` on Identity for
+    // why this is asked here rather than left to the grader: only this function
+    // sees both the stored row and the map, and answering it anywhere else
+    // would give the rule a second home to disagree with.
+    if (
+      override.source === 'remote' &&
+      override.tvdbId &&
+      tvdbIdForAnilist(anilistId) === override.tvdbId
+    ) {
+      return { ...override, mapCorroborated: true };
+    }
+    return override;
+  }
 
   const tvdbId = tvdbIdForAnilist(anilistId);
   const tmdb = tmdbRefForAnilist(anilistId);
@@ -520,7 +548,11 @@ export function matchGrade(identity: Identity): MatchGrade {
   }
   if (identity.source === 'map') return 'map';
   if (identity.source === 'remote') {
-    return isDateVerified(identity.note) ? 'dateVerified' : 'weak';
+    if (isDateVerified(identity.note)) return 'dateVerified';
+    // Two independent sources naming one id is stronger evidence than either
+    // alone, so this is not a weaker answer than the map's own row would be.
+    if (identity.mapCorroborated) return 'map';
+    return 'weak';
   }
   return 'none';
 }
