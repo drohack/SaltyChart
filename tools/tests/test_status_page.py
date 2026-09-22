@@ -184,6 +184,7 @@ def main():
         r = requests.put(f"{BASE}/api/status/alerts", headers=ah, timeout=15, json={
             "masterEnabled": True,
             "perService": {"skyhook": False},
+            "perServiceRecovery": {"jellyfin": True, "tmdb": False},
             "extraRecipients": ["ops@example.com", "not-an-email"],
         })
         check("PUT /alerts is 200", r.status_code == 200, f"got {r.status_code}")
@@ -192,12 +193,28 @@ def main():
         check("a malformed address is dropped rather than stored",
               saved_settings.get("extraRecipients") == ["ops@example.com"],
               repr(saved_settings.get("extraRecipients")))
+        # Recovery is its own switch and defaults OFF - the opposite of the
+        # outage default, deliberately. Only an explicit opt-in is stored, so
+        # `tmdb: False` must leave no trace rather than pinning today's default.
+        check("a recovery opt-in is stored",
+              saved_settings.get("perServiceRecovery", {}).get("jellyfin") is True)
+        check("an explicit recovery opt-OUT is not stored, since off is the default",
+              "tmdb" not in (saved_settings.get("perServiceRecovery") or {}),
+              repr(saved_settings.get("perServiceRecovery")))
         back = requests.get(f"{BASE}/api/status/report", headers=ah, timeout=30).json()
         sky = next((s for s in back.get("services") or [] if s["id"] == "skyhook"), {})
         check("the report shows that service's alerts as off", sky.get("alertsEnabled") is False)
+        check("a service nobody opted in never announces recovery",
+              sky.get("recoveryAlertsEnabled") is False)
+        jf = next((s for s in back.get("services") or [] if s["id"] == "jellyfin"), {})
+        check("the service that was opted in does announce recovery",
+              jf.get("recoveryAlertsEnabled") is True,
+              f"alertsEnabled={jf.get('alertsEnabled')} recovery={jf.get('recoveryAlertsEnabled')}")
 
         print("[6/6] rubbish input is coerced, never a 500", flush=True)
-        for junk in ({"masterEnabled": "yes", "perService": 7, "extraRecipients": "no"}, {}, {"nope": 1}):
+        for junk in ({"masterEnabled": "yes", "perService": 7, "extraRecipients": "no"},
+                     {"perServiceRecovery": 7}, {"perServiceRecovery": {"x": "yes"}},
+                     {}, {"nope": 1}):
             r = requests.put(f"{BASE}/api/status/alerts", headers=ah, json=junk, timeout=15)
             check(f"PUT /alerts survives {json.dumps(junk)[:34]}", r.status_code == 200, f"got {r.status_code}")
     finally:

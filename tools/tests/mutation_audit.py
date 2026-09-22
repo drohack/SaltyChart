@@ -349,8 +349,8 @@ MUTATIONS: list[Mutation] = [
         # Absence must mean ENABLED. If it meant off, every service added to the
         # registry later would arrive silent - the failure this feature exists
         # to end, reintroduced through its own settings file.
-        find="  return settings.perService[id] !== false;",
-        replace="  return settings.perService[id] === true;  /* mutation: absent means off */",
+        find="  if (settings.perService[id] === false) return false;",
+        replace="  if (settings.perService[id] !== true) return false; /* mutation: absent means off */",
         test=T_UNIT,
         expect="a service nobody has configured still alerts",
         guards="a new dependency must alert by default; opting out is a decision "
@@ -1531,6 +1531,38 @@ MUTATIONS: list[Mutation] = [
         expect="an id the map CONTRADICTS is disputed, not corroborated",
         guards="a disputed id being blessed as map-grade and auto-added, which "
                "is the one direction that costs a wrong series",
+    ),
+    Mutation(
+        name="recovery alerts default back to on",
+        path="backend/src/lib/alertSettings.ts",
+        # `perService` treats an absent key as ENABLED, so a service added next
+        # year cannot break silently. Recovery is the deliberate opposite: most
+        # services here keep serving from cache while down, so nothing waits on
+        # the news that one is back, and mail saying what the reader already
+        # knows is what trains them to ignore the sender. Flip the default and
+        # every service starts announcing recovery again.
+        find="  if (kind === 'recovered') return settings.perServiceRecovery[id] === true;",
+        replace="  if (kind === 'recovered') return settings.perServiceRecovery[id] !== false; /* mutation */",
+        test=T_UNIT,
+        expect="an unconfigured service must not announce that it recovered",
+        guards="every service silently opting itself back in to recovery mail",
+    ),
+    Mutation(
+        name="a silenced service can still announce that it recovered",
+        path="backend/src/lib/alertSettings.ts",
+        # Order is the guard. `downAlertedAt` is stamped when the streak crosses
+        # whether or not the mail was actually sent, so asking the recovery
+        # switch first lets a service whose outage alerts are OFF send "working
+        # again" for a break the reader was never told about - worse than either
+        # switch alone, and nothing downstream would catch it.
+        find="""  if (settings.perService[id] === false) return false;
+  if (kind === 'recovered') return settings.perServiceRecovery[id] === true;""",
+        replace="""  if (kind === 'recovered') return settings.perServiceRecovery[id] === true; /* mutation */
+  if (settings.perService[id] === false) return false;""",
+        test=T_UNIT,
+        expect="you cannot be told it is fixed when you were never told it broke",
+        guards="a recovery notice arriving for an outage that was deliberately "
+               "silenced, which reads as the alerting being broken",
     ),
     Mutation(
         name="a title-text remote accept is invisible to review again",

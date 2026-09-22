@@ -25,6 +25,22 @@ export interface AlertSettings {
    * feature exists to end.
    */
   perService: Record<string, boolean>;
+  /**
+   * Per service: may it announce that it RECOVERED?
+   *
+   * **An absent key means disabled** - deliberately the opposite default to
+   * `perService` above, and the asymmetry is the point rather than an
+   * oversight. That rule protects against a real cost: a dependency added next
+   * year breaking silently. Missing a recovery notice costs nothing - you find
+   * out it is fine the next time you look.
+   *
+   * Eight of the nine registered services describe their own outage as some
+   * version of "the cache keeps serving", so nothing is waiting on the news.
+   * Mail that tells the reader what they already know is precisely what trains
+   * them to ignore the sender, which is the failure this feature exists to
+   * avoid, one step round.
+   */
+  perServiceRecovery: Record<string, boolean>;
   /** Addresses beyond the verified admins. */
   extraRecipients: string[];
 }
@@ -32,6 +48,7 @@ export interface AlertSettings {
 export const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   masterEnabled: true,
   perService: {},
+  perServiceRecovery: {},
   extraRecipients: [],
 };
 
@@ -40,10 +57,27 @@ const MAX_EXTRA_RECIPIENTS = 20;
 const MAX_ADDRESS_LEN = 254; // RFC 5321 path limit
 const MAX_SERVICE_KEYS = 50;
 
-/** Is this service allowed to alert? Pure. */
-export function alertsEnabledFor(settings: AlertSettings, id: string): boolean {
+/** Is this service allowed to send this KIND of alert? Pure. */
+export function alertsEnabledFor(
+  settings: AlertSettings,
+  id: string,
+  /**
+   * Required on purpose. The gate itself is pure and unit-tested, but the thing
+   * that can silently go wrong is a CALLER forgetting which kind it is asking
+   * about - and `announce()` is not exported, so no test can watch that. With
+   * no default, omitting it is a compile error instead of a quiet reversion to
+   * mailing every recovery.
+   */
+  kind: 'down' | 'recovered',
+): boolean {
   if (!settings.masterEnabled) return false;
-  return settings.perService[id] !== false;
+  // Outage alerts come first in both senses. A recovery for a service whose
+  // outage alerts are off would be "working again" for something the reader was
+  // never told had broken - `downAlertedAt` is stamped when the streak crosses
+  // whether or not the mail went out, so nothing further down would catch it.
+  if (settings.perService[id] === false) return false;
+  if (kind === 'recovered') return settings.perServiceRecovery[id] === true;
+  return true;
 }
 
 /**
@@ -93,6 +127,16 @@ export function sanitizeSettings(raw: unknown): AlertSettings {
     }
   }
 
+  const perServiceRecovery: Record<string, boolean> = {};
+  const rawRecovery = src.perServiceRecovery;
+  if (rawRecovery && typeof rawRecovery === 'object') {
+    for (const [k, v] of Object.entries(rawRecovery as Record<string, unknown>).slice(0, MAX_SERVICE_KEYS)) {
+      // Mirror of the `perService` rule, inverted: only `true` is worth
+      // storing, because the default here is off.
+      if (v === true) perServiceRecovery[String(k).slice(0, 64)] = true;
+    }
+  }
+
   const extras: string[] = [];
   const rawExtras = src.extraRecipients;
   if (Array.isArray(rawExtras)) {
@@ -112,6 +156,7 @@ export function sanitizeSettings(raw: unknown): AlertSettings {
   return {
     masterEnabled: src.masterEnabled !== false,
     perService,
+    perServiceRecovery,
     extraRecipients: extras,
   };
 }

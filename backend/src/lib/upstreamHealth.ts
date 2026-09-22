@@ -518,8 +518,8 @@ async function announce(
 ): Promise<void> {
   try {
     const settings = await readAlertSettings();
-    if (!alertsEnabledFor(settings, spec.id)) {
-      console.log(`[upstream] alerts are off for ${spec.id}; not mailing "${kind}"`);
+    if (!alertsEnabledFor(settings, spec.id, kind)) {
+      console.log(`[upstream] ${kind} alerts are off for ${spec.id}; not mailing`);
       return;
     }
     // The owner alone by default - not every admin. `resolveRecipients` adds

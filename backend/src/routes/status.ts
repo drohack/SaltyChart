@@ -86,7 +86,9 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
         // anything being wrong - the page has to be able to say so.
         probed: !spec.passiveOnly && !!PROBES[spec.id],
         passiveOnly: !!spec.passiveOnly,
-        alertsEnabled: alertsEnabledFor(settings, spec.id),
+        alertsEnabled: alertsEnabledFor(settings, spec.id, 'down'),
+        // Separate switch, and off unless asked for - see `perServiceRecovery`.
+        recoveryAlertsEnabled: alertsEnabledFor(settings, spec.id, 'recovered'),
         state: stateOf(rec, spec.brokenAfter, now),
         ...rec,
       };
@@ -130,9 +132,11 @@ router.put('/alerts', express.json({ limit: '16kb' }), requireAuth, requireAdmin
       const settings = sanitizeSettings(req.body);
       await writeAlertSettings(settings);
       const off = Object.keys(settings.perService).length;
+      const rec = Object.keys(settings.perServiceRecovery).length;
       console.log(
         `[status] alert settings saved: master ${settings.masterEnabled ? 'on' : 'OFF'}, ` +
-        `${off} service(s) silenced, ${settings.extraRecipients.length} extra recipient(s)`,
+        `${off} service(s) silenced, ${rec} announcing recovery, ` +
+        `${settings.extraRecipients.length} extra recipient(s)`,
       );
       res.json({ ok: true, settings });
     } catch (err: any) {

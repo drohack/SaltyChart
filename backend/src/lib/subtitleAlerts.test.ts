@@ -110,7 +110,7 @@ test('the master switch on /admin/status actually stops the mail', () => {
   return alertAdmins('anything', 'body', {
     mailer,
     recipients: async () => ['owner@example.com'],
-    settings: async () => ({ masterEnabled: false, perService: {}, extraRecipients: [] }),
+    settings: async () => ({ masterEnabled: false, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
   }).then((r) => {
     assert.strictEqual(r.sent, 0);
     assert.strictEqual(r.skipped, 'alerts-disabled');
@@ -127,7 +127,7 @@ test('alerts are ON unless somebody switched them off', () => {
   return alertAdmins('the download path is broken', 'body', {
     mailer,
     recipients: async () => ['owner@example.com'],
-    settings: async () => ({ masterEnabled: true, perService: {}, extraRecipients: [] }),
+    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
   }).then((r) => {
     assert.strictEqual(r.sent, 1);
     assert.strictEqual(r.skipped, null);

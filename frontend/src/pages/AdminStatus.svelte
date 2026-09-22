@@ -33,6 +33,7 @@
     probed: boolean;
     passiveOnly: boolean;
     alertsEnabled: boolean;
+    recoveryAlertsEnabled: boolean;
     state: State;
     lastOkAt: string | null;
     lastFailAt: string | null;
@@ -48,6 +49,7 @@
   interface Settings {
     masterEnabled: boolean;
     perService: Record<string, boolean>;
+    perServiceRecovery: Record<string, boolean>;
     extraRecipients: string[];
   }
 
@@ -109,6 +111,8 @@
   // Alert settings, edited locally and saved as a block.
   let masterEnabled = true;
   let silenced: Record<string, boolean> = {};
+  /** Opt-ins for "it is working again". Absent means off - see perServiceRecovery. */
+  let announceRecovery: Record<string, boolean> = {};
   let extraText = '';
   let saving = false;
   let saveMsg = '';
@@ -123,6 +127,7 @@
   function fromSettings(s: Settings) {
     masterEnabled = s.masterEnabled;
     silenced = { ...s.perService };
+    announceRecovery = { ...s.perServiceRecovery };
     extraText = s.extraRecipients.join('\n');
   }
 
@@ -158,10 +163,14 @@
         .filter(Boolean);
       const perService: Record<string, boolean> = {};
       for (const [k, v] of Object.entries(silenced)) if (v === false) perService[k] = false;
+      // Only the opt-ins travel; absence is the default and the server stores
+      // it that way too, so a new service can never arrive already noisy.
+      const perServiceRecovery: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(announceRecovery)) if (v === true) perServiceRecovery[k] = true;
       const res = await apiFetch('/api/status/alerts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({ masterEnabled, perService, extraRecipients }),
+        body: JSON.stringify({ masterEnabled, perService, perServiceRecovery, extraRecipients }),
       }, { timeoutMs: QUICK, label: 'status-alerts-save' });
       const data = await res.json();
       if (res.ok) {
@@ -228,6 +237,10 @@
    */
   function setServiceAlerts(id: string, on: boolean) {
     silenced = { ...silenced, [id]: on };
+  }
+
+  function setServiceRecovery(id: string, on: boolean) {
+    announceRecovery = { ...announceRecovery, [id]: on };
   }
 
   function when(iso: string | null): string {
@@ -425,18 +438,37 @@
 
         <div class="flex flex-col gap-1" class:opacity-50={!masterEnabled}>
           <span class="text-sm opacity-80">Per service</span>
-          {#each rows as s (s.id)}
-            <label class="flex items-center gap-3 cursor-pointer">
+          <div class="grid grid-cols-[1fr_auto_auto] gap-x-5 gap-y-1 items-center">
+            <span></span>
+            <span class="text-xs opacity-60 justify-self-center">Broke</span>
+            <span class="text-xs opacity-60 justify-self-center">Recovered</span>
+            {#each rows as s (s.id)}
+              <span class="text-sm">{s.label}</span>
               <input
                 type="checkbox"
-                class="checkbox checkbox-sm"
+                class="checkbox checkbox-sm justify-self-center"
+                data-alert-service={s.id}
+                aria-label="Email me when {s.label} stops responding"
                 disabled={!masterEnabled}
                 checked={silenced[s.id] !== false}
                 on:change={(e) => setServiceAlerts(s.id, e.currentTarget.checked)}
               />
-              <span class="text-sm">{s.label}</span>
-            </label>
-          {/each}
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm justify-self-center"
+                data-alert-recovery={s.id}
+                aria-label="Email me when {s.label} starts working again"
+                disabled={!masterEnabled || silenced[s.id] === false}
+                checked={announceRecovery[s.id] === true}
+                on:change={(e) => setServiceRecovery(s.id, e.currentTarget.checked)}
+              />
+            {/each}
+          </div>
+          <p class="text-xs opacity-60 mt-1">
+            Recovery emails are off unless you ask for them. Most of these services keep
+            serving from cache while they are down, so there is usually nothing waiting on
+            the news that one is back.
+          </p>
         </div>
 
         <div class="flex flex-col gap-1">

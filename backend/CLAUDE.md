@@ -1110,7 +1110,30 @@ absent per-service key means enabled. The gate turns the switch off around its
 fake verdict and restores it in a `finally`; **per-service toggles do not yet
 reach the subtitle alerts**, only the master switch and the recipient list. **An absent per-service
 key means enabled** - if absence meant off, every service added later would
-arrive silent, which is the failure this whole feature exists to end. Recipients
+arrive silent, which is the failure this whole feature exists to end.
+
+**Recovery mail is a SECOND per-service switch, and its absent key means
+DISABLED.** The asymmetry is the point, not an oversight. The rule above guards
+a real cost - a new dependency breaking silently - while missing a recovery
+notice costs nothing, because you find out it is fine the next time you look.
+Eight of the nine registered services describe their own outage as some version
+of *the cache keeps serving*, so nothing is waiting on the news that one is
+back; only Jellyfin's impact is "stops working now". Mail that tells the reader
+what they already know is exactly what trains them to ignore the sender, which
+is this feature's own stated failure mode arriving one step round. It was
+requested after the id-map fix mailed a recovery whose cause was the deploy the
+reader had just asked for.
+
+Two rules hold it. **Recovery is gated on the outage switch as well**, because
+`downAlertedAt` is stamped when the streak crosses whether or not the mail
+actually went out - so without that ordering a silenced service could send
+"working again" for a break nobody was told about, which reads as the alerting
+being broken. And **`alertsEnabledFor` takes its `kind` with no default**: the
+gate is pure and unit-tested, but the thing that silently breaks is a *caller*
+forgetting which kind it is asking about, and `announce()` is not exported for
+any test to watch. A required parameter turns that into a compile error rather
+than a quiet return to mailing every recovery. Three mutation rows guard the
+defaults and the ordering. Recipients
 are the **owner** plus the extras, de-duplicated - not every verified admin, for
 the reason given under the subtitle alerts. **SMTP itself stays in
 `.env`**: a mail password in `AppConfig` is a mail password in every backup.
