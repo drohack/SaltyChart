@@ -131,6 +131,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -2431,6 +2432,32 @@ def _appconfig_backup() -> dict:
         c.close()
 
 
+# Deliberately in the system temp dir, not the repo: a stray file in the
+# working tree is one `git add -A` away from being committed.
+HEALTH_RESCUE = Path(tempfile.gettempdir()) / "saltychart-upstream-health-rescue.json"
+
+
+def _appconfig_rescue() -> None:
+    """Put back what a KILLED previous run left injected.
+
+    The `finally` below handles a failed assertion. It does not handle the
+    process being killed, and what survives that is a synthetic `down` on a
+    service that is fine - a red badge on the real admin page, sitting there
+    until the next scheduled probe happens to overwrite it. So the values are
+    written to disk BEFORE the DB is touched, and this puts them back.
+    """
+    if not HEALTH_RESCUE.exists():
+        return
+    try:
+        saved = json.loads(HEALTH_RESCUE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        HEALTH_RESCUE.unlink(missing_ok=True)
+        return
+    _appconfig_restore(saved)
+    HEALTH_RESCUE.unlink(missing_ok=True)
+    print("  recovered AppConfig health rows left by a killed run", flush=True)
+
+
 def _appconfig_restore(saved: dict) -> None:
     c = sqlite3.connect(HEALTH_DB)
     try:
@@ -2464,7 +2491,12 @@ def test_admin_status_badges(page, backend: str, frontend: str):
         step(34, "SKIP - could not sign an admin token (node or backend/.env missing)")
         return
 
+    _appconfig_rescue()
     saved = _appconfig_backup()
+    try:
+        HEALTH_RESCUE.write_text(json.dumps(saved), encoding="utf-8")
+    except OSError:
+        pass          # the `finally` still covers every non-fatal path
     try:
         step(34, "step 2/4: injecting one service per state")
         now = time.time()
@@ -2522,6 +2554,7 @@ def test_admin_status_badges(page, backend: str, frontend: str):
         step(34, f"PASS - 5 states rendered distinctly, {len(order)} rows sorted worst-first")
     finally:
         _appconfig_restore(saved)
+        HEALTH_RESCUE.unlink(missing_ok=True)
 
 
 def test_compare_share_image(page, backend: str, frontend: str):
