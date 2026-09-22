@@ -236,9 +236,31 @@ def main():
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 
 
+def _backend_is_up() -> bool:
+    """Ask, rather than assume, before naming a cause."""
+    base = "http://localhost:3000"
+    for i, a in enumerate(sys.argv):
+        if a == "--backend" and i + 1 < len(sys.argv):
+            base = sys.argv[i + 1]
+        elif a.startswith("--backend="):
+            base = a.split("=", 1)[1]
+    try:
+        return requests.get(f"{base}/api/health", timeout=10).status_code == 200
+    except requests.RequestException:
+        return False
+
+
 if __name__ == "__main__":
     try:
         main()
     except requests.RequestException as e:
-        print(f"\nFAIL - backend unreachable: {e}", flush=True)
+        # "unreachable" was this handler's GUESS, not an observation - it
+        # catches every RequestException, so one slow call mid-run reported the
+        # server as down while it was serving other checks fine. That sent a
+        # session looking for an outage that did not exist.
+        if _backend_is_up():
+            print(f"\nFAIL - a request timed out, but the backend is UP: "
+                  f"a busy box, not an outage. {e}", flush=True)
+        else:
+            print(f"\nFAIL - backend unreachable: {e}", flush=True)
         sys.exit(1)

@@ -275,8 +275,23 @@ def main():
     second_ms = (time.time() - t0) * 1000
     if r.status_code != 200:
         fail(12, f"second call failed: {r.status_code}")
-    if second_ms > 200:
-        fail(12, f"second call too slow ({second_ms:.0f}ms) - cache not used")
+    # 200 ms was calibrated on an idle box and fails inside the gate's parallel
+    # phase, where every call is slower: 279 ms once, while the same check run
+    # on its own measured 20 ms -> 4 ms. The invariant is "this did not go to
+    # AniList", and a cold AniList fetch is measured in SECONDS, so the bar is
+    # scaled by what this machine can currently do rather than by a number from
+    # a quiet one. /api/health is the cheapest route there is, so it reads as a
+    # load gauge; on an idle box this is still the old 200 ms.
+    t0 = time.time()
+    try:
+        requests.get(f"{backend}/api/health", timeout=10)
+        health_ms = (time.time() - t0) * 1000
+    except requests.RequestException:
+        health_ms = 10.0
+    limit = max(200.0, health_ms * 20)
+    if second_ms > limit:
+        fail(12, f"second call too slow ({second_ms:.0f}ms, bar {limit:.0f}ms at "
+                 f"{health_ms:.0f}ms health) - cache not used")
     step(12, f"PASS - cache hit: {first_ms:.0f}ms -> {second_ms:.0f}ms")
 
     # --------- 13/13  /api/users endpoint (Compare username picker) ---------
@@ -360,9 +375,31 @@ def main():
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 
 
+def _backend_is_up() -> bool:
+    """Ask, rather than assume, before naming a cause."""
+    base = "http://localhost:3000"
+    for i, a in enumerate(sys.argv):
+        if a == "--backend" and i + 1 < len(sys.argv):
+            base = sys.argv[i + 1]
+        elif a.startswith("--backend="):
+            base = a.split("=", 1)[1]
+    try:
+        return requests.get(f"{base}/api/health", timeout=10).status_code == 200
+    except requests.RequestException:
+        return False
+
+
 if __name__ == "__main__":
     try:
         main()
     except requests.RequestException as e:
-        print(f"\nFAIL - backend unreachable: {e}", flush=True)
+        # "unreachable" was this handler's GUESS, not an observation - it
+        # catches every RequestException, so one slow call mid-run reported the
+        # server as down while it was serving other checks fine. That sent a
+        # session looking for an outage that did not exist.
+        if _backend_is_up():
+            print(f"\nFAIL - a request timed out, but the backend is UP: "
+                  f"a busy box, not an outage. {e}", flush=True)
+        else:
+            print(f"\nFAIL - backend unreachable: {e}", flush=True)
         sys.exit(1)

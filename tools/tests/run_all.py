@@ -17,6 +17,7 @@ Prerequisites:
 """
 import argparse
 import concurrent.futures
+import os
 import subprocess
 import sys
 import time
@@ -217,10 +218,50 @@ def main():
     print(f"  backend={args.backend} frontend={args.frontend}\n", flush=True)
 
     # -- Parallel phase --------------------------------------------------------
+    # The dev backend is single-threaded, and this phase used to submit every
+    # check at once - four of which spawn their own multi-core builds (`tsc`,
+    # `vite build`, `svelte-check`, and account security's `npm run build`). On
+    # a 16-core box that starved the very server the API checks were talking
+    # to: three of them failed with a 5 s read timeout while the backend was
+    # healthy and answered in 2 ms as soon as the phase finished. Measured over
+    # five gate runs, every parallel-phase failure was this or the equally
+    # load-sensitive cache-latency bar - none was a real defect.
+    #
+    # Two changes, both "stop competing with ourselves": cap the pool at half
+    # the cores, and let the checks that TALK to the dev backend start first so
+    # they are finished before the builds reach full tilt. They are a package -
+    # with a worker per check everything starts at t=0 and the order means
+    # nothing.
+    #
+    # Half the cores, and not more, is the measured setting. There are 6
+    # backend-touching checks and ~5 that spawn a compiler, so the cap has to be
+    # tight enough that the second group waits:
+    #
+    #   workers | API smoke | worst /api/health | outcome
+    #   16      |   13.6 s  | blew the 5 s bar  | failed 3 of 5 runs
+    #   12      |   10.0 s  | 0.51 s            | passed once
+    #    8      | 2.1-6.5 s | 0.46 s            | passed twice
+    #
+    # 12 looks free and is not: its first wave still contains every build, so
+    # the API checks barely improve and it resembles the configuration that
+    # failed far more than the one that did not. At 8 the light checks are done
+    # in seconds and the builds queue behind them.
+    #
+    # The phase duration is deliberately NOT in that table. Two runs of the
+    # identical 8-worker config measured 48.5 s and 25.1 s - the uncapped
+    # baseline was 29.4 s - so it is dominated by run-to-run variance in
+    # `frontend build` and the cap costs nothing measurable. An earlier version
+    # of this comment quoted the 48.5 s as a ~19 s price for the cap, which was
+    # one noisy sample read as a trend. Measured 2026-09-21 on a 16-core box.
+    TALKS_TO_BACKEND = ("season lookahead", "API smoke", "API negative",
+                        "Jellyfin API", "Sonarr list", "candidate sep")
+    parallel_checks.sort(key=lambda c: 0 if c[0] in TALKS_TO_BACKEND else 1)
     n_parallel = len(parallel_checks)
-    print(f"[parallel 1-{n_parallel}/{total}] running {n_parallel} independent checks concurrently...", flush=True)
+    n_workers = min(n_parallel, max(4, (os.cpu_count() or 8) // 2))
+    print(f"[parallel 1-{n_parallel}/{total}] running {n_parallel} independent checks, "
+          f"{n_workers} at a time...", flush=True)
     t0 = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n_parallel) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
         futures = {ex.submit(_capture, lbl, cmd, cwd, to): (lbl, i)
                    for i, (lbl, cmd, cwd, to) in enumerate(parallel_checks, 1)}
         results: dict[int, tuple[str, bool, float, str]] = {}
