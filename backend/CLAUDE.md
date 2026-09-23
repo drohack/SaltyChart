@@ -1214,6 +1214,46 @@ same misleading alert in a new costume. A full 200 download records success
 symmetrically with the 304 path, so a recovery is announced when it happens
 rather than at the next day's probe.
 
+### A dev backend runs no scheduled jobs
+
+`lib/scheduling.ts` is the whole rule: a timer that acts OUTSIDE this process
+only fires when `NODE_ENV === 'production'`. That covers the batch scheduler,
+the Sonarr push, the identity sweep, the Sonarr snapshot, the yt-dlp updater,
+the probe sweep and the Sunday-silence check. The id-map refresh is deliberately
+left alone - it is a conditional GET that costs a 304, it has no side effect
+anywhere, and local matching needs a current map.
+
+**Why it had to become code rather than a habit.** A dev backend is a complete
+copy of the server: same timers, same credentials, same mailer, pointed at a
+real Jellyfin and a real SMTP account. On **2026-09-23** one left running after
+a test run reached the Wednesday 2-4am window, started the real FALL 2026 batch
+from a Windows path under `C:/Users`, watched Python fail to initialise in
+644 ms, and mailed the owner `server subtitle batch failed (exit 3221225794)`
+at 2:21 in the morning.
+
+Nothing was harmed - the process died before it reached YouTube, and the
+guard's budget showed 0 calls - but **the alert was indistinguishable from a
+real production failure**. The only tell was the exit code: 3221225794 is
+0xC0000142, an NTSTATUS (`STATUS_DLL_INIT_FAILED`) that the Linux container
+cannot produce. That is a thin thread to hang a diagnosis on, and it is the
+second time this class has bitten - the deploy gate's fake Sunday verdict
+reaching the owner's real inbox was the first.
+
+**`NODE_ENV === 'production'` and nothing else counts**, which is the opposite
+question the rate limiters ask (`development` or unset). Both fail towards the
+safe side and the safe side differs: for a limiter it is "protect", for a job
+that writes to Sonarr and sends mail it is "don't". A mutation row guards each
+direction, because writing this one the limiter's way round would hand the
+production schedule to any backend with an unexpected `NODE_ENV` - and the
+suite really does boot backends under other values.
+
+**No escape hatch, on purpose.** Every gated job already has a manual trigger a
+human can press - *Run sweep now*, `POST /push`, the Run-now batch button - so
+the timer itself never needs exercising locally. Boot says which mode it is in
+either way (`[scheduler] scheduled jobs ENABLED` / `disabled - not production`),
+because a job that is silent unless it acts is indistinguishable from one that
+never ran.
+
 ### The `MaxListenersExceededWarning` is benign - the measurement
 
 The root guide's rule is "don't re-investigate unless RSS stops being flat".

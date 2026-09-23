@@ -208,6 +208,10 @@ py -3.13 tools/tests/kill_stale.py
 # 1. Backend dev on :3000, frontend dev on :5173 (Vite strictPort=true)
 cd backend && npm run dev   # terminal 1
 cd frontend && npm run dev  # terminal 2
+# A dev backend runs NO scheduled jobs - batch, Sonarr push, sweeps, probes,
+# yt-dlp update and the alert timers are gated on NODE_ENV=production
+# (lib/scheduling.ts). Stop it when you are done anyway; it holds :3000 and
+# writes to the same SQLite file as every other copy.
 
 # 2. Run the suite
 py -3.13 -u tools/tests/run_all.py

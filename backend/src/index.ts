@@ -79,6 +79,7 @@ import { runDueProbes } from './lib/upstreamProbes';
 import jellyfinRouter from './routes/jellyfin';
 import sonarrRouter, { runSonarrSnapshot, runScheduledPush } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
+import { scheduledJobsAllowed } from './lib/scheduling';
 import {
   getNextSeasonInfo,
   BATCH_DAY_OF_WEEK,
@@ -735,8 +736,22 @@ ensureDatabaseSchema().then(() => {
   // Note: /api/translate and /api/jellyfin are registered before compression()
   // middleware (see above)
 
+  // Does this process do the server's work, or is it someone's dev copy? Every
+  // timer below that acts OUTSIDE this process is gated on it - see
+  // `lib/scheduling.ts` for the 2am batch that made the rule necessary.
+  const runScheduledJobs = scheduledJobsAllowed();
+
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
+    // Said out loud at every boot, because a scheduled job that is silent
+    // unless it acts is indistinguishable from one that never ran - and the
+    // whole point here is that in dev they never run.
+    console.log(
+      runScheduledJobs
+        ? '[scheduler] scheduled jobs ENABLED (NODE_ENV=production)'
+        : `[scheduler] scheduled jobs disabled - not production (NODE_ENV=${process.env.NODE_ENV ?? 'unset'}). ` +
+          'Batch, Sonarr push, sweeps, probes, yt-dlp update and alert timers will not fire.',
+    );
     // Warm the AniList->TVDB map after the server is up, never during a
     // request: it's a 7.5MB download and availability lookups must not wait
     // on it. Failure is fine - matching falls back to titles alone.
@@ -789,8 +804,10 @@ ensureDatabaseSchema().then(() => {
         console.warn('[identity] sweep could not start:', err?.message ?? err);
       }
     };
-    setTimeout(() => void sweep(), 90_000).unref();
-    setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void sweep(), 90_000).unref();
+      setInterval(() => void sweep(), 24 * 60 * 60 * 1000).unref();
+    }
 
     // Cache what Sonarr holds, so the push knows what not to add again and the
     // admin page can render without waiting on a 2,324-series, ~15 s read.
@@ -814,8 +831,10 @@ ensureDatabaseSchema().then(() => {
         console.warn('[sonarr] snapshot could not run:', err?.message ?? err);
       }
     };
-    setTimeout(() => void sonarrSnapshot(), 120_000).unref();
-    setInterval(() => void sonarrSnapshot(), 60 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void sonarrSnapshot(), 120_000).unref();
+      setInterval(() => void sonarrSnapshot(), 60 * 60 * 1000).unref();
+    }
 
     // Add whatever is pending. **Does nothing at all unless `sonarrPushEnabled`
     // is true**, which is checked inside `runScheduledPush` rather than here, so
@@ -847,8 +866,10 @@ ensureDatabaseSchema().then(() => {
         console.warn('[sonarr] scheduled push could not run:', err?.message ?? err);
       }
     };
-    setTimeout(() => void sonarrPush(), 720_000).unref();
-    setInterval(() => void sonarrPush(), 24 * 60 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void sonarrPush(), 720_000).unref();
+      setInterval(() => void sonarrPush(), 24 * 60 * 60 * 1000).unref();
+    }
 
     // Keep yt-dlp current. The reasoning is in lib/ytdlpUpdate.ts; the short
     // version is that YouTube breaks old copies on its own schedule, not on our
@@ -858,13 +879,17 @@ ensureDatabaseSchema().then(() => {
     // viewers are most likely to be waiting on something, and this competes for
     // the same CPU. It is never awaited by anything on a request path.
     const ytDlpUpdate = () => runScheduledYtDlpUpdate(recycleTranslateDaemon);
-    setTimeout(() => void ytDlpUpdate(), 300_000).unref();
-    setInterval(() => void ytDlpUpdate(), 24 * 60 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void ytDlpUpdate(), 300_000).unref();
+      setInterval(() => void ytDlpUpdate(), 24 * 60 * 60 * 1000).unref();
+    }
 
     // Has the Sunday GPU run gone quiet? Reasoning at checkLocalRunSilence.
     // Ten minutes after boot, then daily; one log line every time.
-    setTimeout(() => void checkLocalRunSilence(), 600_000).unref();
-    setInterval(() => void checkLocalRunSilence(), 24 * 60 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void checkLocalRunSilence(), 600_000).unref();
+      setInterval(() => void checkLocalRunSilence(), 24 * 60 * 60 * 1000).unref();
+    }
 
     // Are the upstream services still answering? The SWEEP runs every 15
     // minutes, but each service decides for itself whether it is due - a
@@ -899,8 +924,10 @@ ensureDatabaseSchema().then(() => {
         console.warn(`[upstream] probe sweep failed: ${err?.message ?? err}`);
       }
     };
-    setTimeout(() => void probeSweep(), 900_000).unref();
-    setInterval(() => void probeSweep(), 15 * 60 * 1000).unref();
+    if (runScheduledJobs) {
+      setTimeout(() => void probeSweep(), 900_000).unref();
+      setInterval(() => void probeSweep(), 15 * 60 * 1000).unref();
+    }
   });
 
   // ----------------------------------------------------------------------------
@@ -952,9 +979,13 @@ ensureDatabaseSchema().then(() => {
 
   // Run the check immediately on startup (in case server starts during batch window)
   // then hourly after that.
-  setTimeout(checkBatchSchedule, 10_000); // 10s after startup
-  setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
-  console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, within 50 days of the NEXT season; batch covers the displayed season)');
+  // Inside the guard with the timers it describes. Announcing a schedule that
+  // was never registered is the same lie as a switch that does nothing.
+  if (runScheduledJobs) {
+    setTimeout(checkBatchSchedule, 10_000); // 10s after startup
+    setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
+    console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, within 50 days of the NEXT season; batch covers the displayed season)');
+  }
 
   // Graceful shutdown so Prisma disconnects cleanly and no zombie handles.
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];

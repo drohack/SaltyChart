@@ -1565,6 +1565,37 @@ MUTATIONS: list[Mutation] = [
                "silenced, which reads as the alerting being broken",
     ),
     Mutation(
+        name="a dev backend runs the server's scheduled jobs",
+        path="backend/src/lib/scheduling.ts",
+        # 2026-09-23: a dev backend left running after a test run reached the
+        # Wednesday 2-4am window, started the real FALL 2026 batch from a
+        # Windows path, and mailed the owner at 2:21am. Nothing downstream can
+        # catch this - the alert is byte-identical to a real production
+        # failure, and the only tell was an NTSTATUS exit code the Linux
+        # container cannot produce.
+        find="  return env.NODE_ENV === 'production';",
+        replace="  return true; /* mutation: every backend is production */",
+        test=T_UNIT,
+        expect="ts-node-dev is the case that mailed the owner at 2am",
+        guards="someone's desktop doing the server's job on the server's "
+               "schedule - spawning batches, writing to Sonarr, sending mail",
+    ),
+    Mutation(
+        name="anything that is not development counts as production",
+        path="backend/src/lib/scheduling.ts",
+        # The fail-safe direction. The rate limiters ask "is this development or
+        # unset" so an unexpected value keeps the limiter ON; this must ask "is
+        # this production" so an unexpected value keeps the jobs OFF. Copying
+        # the limiter's shape here inverts which side is safe, and the suite
+        # really does boot backends under other NODE_ENV values.
+        find="  return env.NODE_ENV === 'production';",
+        replace="  return env.NODE_ENV !== 'development'; /* mutation: limiter shape */",
+        test=T_UNIT,
+        expect="must not be mistaken for production",
+        guards="a staging or test backend quietly acquiring the production "
+               "schedule because the check was written the limiter's way round",
+    ),
+    Mutation(
         name="a title-text remote accept is invisible to review again",
         path="frontend/src/pages/AdminMatching.svelte",
         # The resolver accepts an exact title without any air date vouching for
