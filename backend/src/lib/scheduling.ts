@@ -28,3 +28,41 @@
 export function scheduledJobsAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.NODE_ENV === 'production';
 }
+
+/**
+ * Local-clock `YYYY-MM-DD`.
+ *
+ * **Local, not UTC**, and that is load-bearing rather than incidental. Every
+ * window gate in this codebase is expressed in local time - the batch
+ * scheduler's own `getDay()` / `getHours()`, and `lib/batchSchedule.ts` makes
+ * the same choice for the same reason. A UTC key against local gates can roll
+ * over in the middle of an open window west of UTC, which hands back exactly
+ * the second run the key exists to prevent.
+ */
+export function localDateKey(d: Date): string {
+  return (
+    `${d.getFullYear()}-` +
+    `${String(d.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(d.getDate()).padStart(2, '0')}`
+  );
+}
+
+/**
+ * Has this job already run on `now`'s local date?
+ *
+ * The durable half of "once per day". Callers keep `lastAt` in `AppConfig` so it
+ * survives the restart that loses an in-memory flag - and a deploy landing
+ * inside the Wednesday 02:00-04:00 batch window is precisely that restart, which
+ * used to start a second night's worth of sequential YouTube downloads.
+ *
+ * **A missing or unparseable stamp reads as "not run"**, so the job still
+ * happens. That is the direction `probeDue` and `parseFetchedAt` already take:
+ * failing the other way would let one corrupt row disable the job silently and
+ * for ever, which is worse than one extra run.
+ */
+export function alreadyRanToday(now: Date, lastAt: string | null | undefined): boolean {
+  if (!lastAt) return false;
+  const then = new Date(lastAt);
+  if (Number.isNaN(then.getTime())) return false;
+  return localDateKey(then) === localDateKey(now);
+}

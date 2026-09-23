@@ -1187,20 +1187,41 @@ can starve it. The wider class is "state a restart resets", and every other boot
 timer in `index.ts` has a `setTimeout` catch-up that runs the work again: the id
 map was the only one whose boot call *declined* it, which is exactly why it was
 the one that broke. Restarts make the others run more often, not less. Two
-places still hold that rate in memory, both known and neither fixed here:
+places held that rate in memory; **both were closed on 2026-09-23** and the
+shared rule now lives in `alreadyRanToday` (`lib/scheduling.ts`), unit-tested
+and guarded by two mutation rows:
 
-- **`lastBatchDate` (`index.ts`) is a module-local `let`**, and so is
-  `batchStatus.running`. A restart inside the Wednesday 2-4am window after the
-  batch already ran starts a **second** batch that night - a second round of
-  sequential YouTube downloads, which is the volume the bot wall watches.
-  `AppConfig.subtitleBatchStatus` already stores `startedAt`/`finishedAt`, so
-  the guard has a durable source available whenever this is worth closing.
-- **`runScheduledPush` has no daily guard of its own** - the `setInterval` is
-  the only thing making it daily, and it also runs 12 minutes after *every*
-  boot. Nine deploys in a day is nine runs of the one thing here that writes to
-  Sonarr. It is safe (a terminal `SonarrPush` row means nothing is added twice)
-  but the "DAILY, not hourly ... smaller blast radius" rationale at that timer
-  is not actually enforced by anything.
+- **The Wednesday batch** kept its "already ran today" answer in a module-local
+  `let` (`lastBatchDate`), and so does `batchStatus.running`. A restart inside
+  the 2-4am window started a **second** batch that night - a second round of
+  sequential YouTube downloads, the volume the bot wall watches. The stamp is
+  now `AppConfig.subtitleBatchStartedAt` and the `let` is gone, so there is one
+  source of truth rather than two.
+
+  **It could not reuse `subtitleBatchStatus`, and that is the part worth
+  keeping.** That row is written from the child's `close` handler, so a backend
+  killed mid-batch never writes it at all - a guard reading it would conclude
+  "no batch today" and start a second one, through the very restart that makes
+  it likely. The stamp therefore goes down **before** the spawn, and the
+  scheduler **refuses to start if the stamp cannot be written**: skipping one
+  Wednesday costs a week's delay on trailers the Sunday GPU run mostly covers,
+  while starting unguarded is the doubled-download case itself. The manual
+  *Run now* button does not stamp - only the scheduler reads or writes this key,
+  and `batchStatus.running` still prevents the two overlapping.
+- **The Sonarr push** consulted no clock at all: the `setInterval` was the only
+  thing making it daily, alongside a run 12 minutes after *every* boot. Nine
+  deploys in a day was nine runs of the one thing here that writes to Sonarr -
+  safe, because a terminal `SonarrPush` row means nothing is added twice, but it
+  silently removed the blast-radius cap the timer's own comment claims. The
+  timer now calls **`runScheduledPushIfDue`**, which stamps
+  `AppConfig.sonarrPushRanAt` and skips a second run the same day.
+
+  **Only a run that got past the gates stamps the day.** Paused, incomplete
+  config, no trusted snapshot yet and missing tags are all usually transient, so
+  a boot at 00:05 that refuses because the hourly snapshot has not landed must
+  not consume the day's single attempt. `runScheduledPush` itself is untouched,
+  so the admin's *Push now* button is never blocked - a human pressing it is not
+  the daily budget, the same reasoning as `planSweep`'s `ignoreCooldown`.
 
 **A thrown fetch records its reason now.** Only the `!res.ok` branch called
 `recordUpstream`, so a DNS failure, a TLS error, the 60s timeout or malformed
@@ -1708,6 +1729,12 @@ Tables / columns:
   *Upstream service status*; one read, one atomic write, no per-service key
   sprawl) and `alertSettings` (the master switch, per-service toggles and extra
   recipients; deliberately NOT the SMTP connection, which stays in `.env`),
+  `subtitleBatchStartedAt` (when a SCHEDULED batch last started, written
+  before the spawn and read by the scheduler's once-a-night guard; separate from
+  the row below because that one is written at the child's exit and so is absent
+  entirely for a run the restart interrupted), `sonarrPushRanAt` (when a
+  scheduled push last got past its gates - a refusal deliberately leaves it
+  untouched, so a transient one does not consume the day),
   `subtitleBatchStatus` (the last completed
   batch translation run - `batchStatus` in `routes/translate.ts` is in-memory and
   a deploy is a restart, which is exactly when someone opens `/admin/subtitles`

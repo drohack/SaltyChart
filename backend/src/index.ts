@@ -73,13 +73,13 @@ import publicListRouter from './routes/publicList';
 import usersRouter from './routes/users';
 import adminUsersRouter from './routes/adminUsers';
 import optionsRouter from './routes/options';
-import translateRouter, { startBatch, batchStatus, recycleTranslateDaemon, checkLocalRunSilence } from './routes/translate';
+import translateRouter, { startBatch, batchStatus, recycleTranslateDaemon, checkLocalRunSilence, recordBatchStarted, readBatchStartedAt } from './routes/translate';
 import statusRouter from './routes/status';
 import { runDueProbes } from './lib/upstreamProbes';
 import jellyfinRouter from './routes/jellyfin';
-import sonarrRouter, { runSonarrSnapshot, runScheduledPush } from './routes/sonarr';
+import sonarrRouter, { runSonarrSnapshot, runScheduledPushIfDue } from './routes/sonarr';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
-import { scheduledJobsAllowed } from './lib/scheduling';
+import { scheduledJobsAllowed, alreadyRanToday } from './lib/scheduling';
 import {
   getNextSeasonInfo,
   BATCH_DAY_OF_WEEK,
@@ -856,11 +856,18 @@ ensureDatabaseSchema().then(() => {
     // you are wondering why nothing appeared in Sonarr.
     const sonarrPush = async () => {
       try {
-        const result = await runScheduledPush();
-        const outcome = !result.ran
-          ? (result.reason ?? 'did not run')
-          : `${result.pushed} added, ${result.failed} failed` +
-            (result.deferred ? `, ${result.deferred} left for the next run` : '');
+        const result = await runScheduledPushIfDue();
+        // Still exactly one line, including the skip. The 12-minute boot run
+        // means this fires on every deploy, so "already ran today" is the
+        // NORMAL answer on a busy day - and a silent skip would make the job
+        // unverifiable again, which is what the one-line rule exists for.
+        const outcome =
+          'skipped' in result
+            ? 'already ran today'
+            : !result.ran
+              ? (result.reason ?? 'did not run')
+              : `${result.pushed} added, ${result.failed} failed` +
+                (result.deferred ? `, ${result.deferred} left for the next run` : '');
         console.log(`[sonarr] scheduled push: ${outcome}`);
       } catch (err: any) {
         console.warn('[sonarr] scheduled push could not run:', err?.message ?? err);
@@ -942,21 +949,15 @@ ensureDatabaseSchema().then(() => {
   // `lib/batchSchedule.ts`, because `/admin/subtitles` describes this schedule
   // and a second copy would eventually name a night the job does not run.
 
-  let lastBatchDate = '';
-
-  function checkBatchSchedule() {
+  async function checkBatchSchedule() {
     const now = new Date();
     const hour = now.getHours();
 
-    // Only start new batches on the right day of week, between 2am-4am
+    // Only start new batches on the right day of week, between 2am-4am.
+    // Deliberately the cheap synchronous gates first: this runs hourly, and
+    // ~167 of the 168 checks in a week stop here without touching the database.
     if (now.getDay() !== BATCH_DAY_OF_WEEK) return;
     if (hour < BATCH_SCHEDULER_HOUR_START || hour >= BATCH_SCHEDULER_HOUR_END) return;
-
-    // Already ran today? Build the key from the same local clock the day/hour
-    // gates above use - mixing a UTC date key with local gates could flip the
-    // key mid-window in a non-UTC zone and allow a second run the same night.
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-    if (lastBatchDate === todayStr) return;
 
     // Batch already running (from the Options modal or a previous scheduler
     // spawn)? startBatch() flips batchStatus.running for BOTH paths, so this
@@ -970,10 +971,33 @@ ensureDatabaseSchema().then(() => {
     const next = getNextSeasonInfo(now);
     if (!next) return;
 
+    // Already ran tonight? This used to be a module-local `let`, which a restart
+    // wiped - so a deploy landing inside the 2-4am window started a SECOND
+    // night's worth of sequential YouTube downloads, the volume the bot wall
+    // watches. The stamp lives in AppConfig now, and `alreadyRanToday` keeps the
+    // local-clock rule in one place (`lib/scheduling.ts`).
+    try {
+      if (alreadyRanToday(now, await readBatchStartedAt())) return;
+    } catch (err: any) {
+      console.warn('[batch-scheduler] could not read the last start, not starting:', err?.message ?? err);
+      return;
+    }
+
+    // Stamp BEFORE spawning, and refuse to start if the stamp cannot be written
+    // - the same order `checkLocalRunSilence` uses. Failing closed is right
+    // here: skipping one Wednesday costs a week's delay on trailers the Sunday
+    // GPU run mostly covers, while starting unguarded is the doubled-download
+    // case this whole guard exists to prevent.
+    try {
+      await recordBatchStarted(now);
+    } catch (err: any) {
+      console.warn('[batch-scheduler] could not record the start, not starting:', err?.message ?? err);
+      return;
+    }
+
     // Start the batch via the shared helper so batchStatus is set (keeps the
     // 409 guard and /batch/status honest). Output is captured into batchStatus.log.
     console.log(`[batch-scheduler] Starting batch for ${next.season} ${next.year} (${next.daysUntil} days until season)`);
-    lastBatchDate = todayStr;
     startBatch(['--cutoff', '10'], { season: next.season, year: next.year });
   }
 
@@ -982,8 +1006,8 @@ ensureDatabaseSchema().then(() => {
   // Inside the guard with the timers it describes. Announcing a schedule that
   // was never registered is the same lie as a switch that does nothing.
   if (runScheduledJobs) {
-    setTimeout(checkBatchSchedule, 10_000); // 10s after startup
-    setInterval(checkBatchSchedule, 60 * 60 * 1000); // every hour
+    setTimeout(() => void checkBatchSchedule(), 10_000); // 10s after startup
+    setInterval(() => void checkBatchSchedule(), 60 * 60 * 1000); // every hour
     console.log('[batch-scheduler] Scheduled hourly check (Wed 2am-4am, within 50 days of the NEXT season; batch covers the displayed season)');
   }
 

@@ -44,6 +44,7 @@ import {
   type Orphan,
 } from '../lib/sonarrPush';
 import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
+import { alreadyRanToday } from '../lib/scheduling';
 
 /**
  * Sonarr auto-add: which new seasonal series should be grabbed, added once each.
@@ -693,10 +694,64 @@ export interface PushRunResult {
   plan: Omit<PushPlan, 'raw' | 'skippedRaw' | 'priorIds'>;
 }
 
+/** When a scheduled push last actually ran. See `runScheduledPushIfDue`. */
+const PUSH_RAN_KEY = 'sonarrPushRanAt';
+
+/** Stamp a scheduled push as having run. Never throws - a lost stamp costs one extra run. */
+async function recordPushRun(now: Date): Promise<void> {
+  const value = now.toISOString();
+  try {
+    await prisma.appConfig.upsert({
+      where: { key: PUSH_RAN_KEY },
+      update: { value },
+      create: { key: PUSH_RAN_KEY, value },
+    });
+  } catch (err: any) {
+    console.warn('[sonarr] could not record the push run:', err?.message ?? err);
+  }
+}
+
+/** When a scheduled push last ran, or null. Never throws. */
+async function readPushRanAt(): Promise<string | null> {
+  try {
+    const row = await prisma.appConfig.findUnique({ where: { key: PUSH_RAN_KEY } });
+    return row?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The DAILY entry point - what the timer in `index.ts` calls.
+ *
+ * `runScheduledPush` below consults no clock at all, so "daily" was enforced
+ * only by the `setInterval` beside it - and that timer is joined by a run 12
+ * minutes after EVERY boot. Every deploy is a boot, so the day nine deploys
+ * shipped, the one thing here that writes to Sonarr ran nine times. Nothing was
+ * ever double-added (a terminal `SonarrPush` row is permanent), but each run may
+ * add up to `DEFAULT_CAP` series and that cap is a blast radius, not a rate
+ * limit. A deploy-heavy day quietly removed the protection.
+ *
+ * **Only a run that got past the gates stamps the day.** A refusal - paused,
+ * incomplete config, no trusted snapshot yet, missing tags - is usually
+ * transient, and a boot at 00:05 that refuses because the hourly snapshot has
+ * not landed must not consume the day's single attempt.
+ *
+ * The admin's *Push now* button deliberately calls `runScheduledPush` directly
+ * and is never blocked by this: a human pressing it is not the daily budget,
+ * the same reasoning as `planSweep`'s `ignoreCooldown`.
+ */
+export async function runScheduledPushIfDue(): Promise<PushRunResult | { skipped: 'ranToday' }> {
+  if (alreadyRanToday(new Date(), await readPushRanAt())) return { skipped: 'ranToday' };
+  const result = await runScheduledPush();
+  if (result.ran) await recordPushRun(new Date());
+  return result;
+}
+
 /**
  * Do the adds. Exported because two callers need it: the daily timer in
- * `index.ts` and the admin's *Push now* button - the same shape as
- * `runSonarrSnapshot`.
+ * `index.ts` (through `runScheduledPushIfDue` above) and the admin's *Push now*
+ * button - the same shape as `runSonarrSnapshot`.
  *
  * **Reads the master switch itself.** The caller must not pre-check it, because
  * then there would be two places that decide whether this writes and only one of

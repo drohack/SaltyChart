@@ -1596,6 +1596,37 @@ MUTATIONS: list[Mutation] = [
                "schedule because the check was written the limiter's way round",
     ),
     Mutation(
+        name="the once-a-day guard stops recognising today",
+        path="backend/src/lib/scheduling.ts",
+        # The durable half of "once per day", shared by the Wednesday batch and
+        # the Sonarr push. Neuter it and both are back to being enforced only by
+        # a timer that every restart resets - which is how a deploy landing in
+        # the 02:00-04:00 window started a second night of sequential YouTube
+        # downloads. Nothing downstream can see it: the batch scheduler is a
+        # non-exported closure and only registers in production.
+        find="  return localDateKey(then) === localDateKey(now);",
+        replace="  return false; /* mutation: nothing ever ran today */",
+        test=T_UNIT,
+        expect="the 02:05 run must still count at the 03:05 check",
+        guards="a restart inside the batch window starting a second batch, and "
+               "the daily Sonarr push running once per deploy instead",
+    ),
+    Mutation(
+        name="the date key stops zero-padding",
+        path="backend/src/lib/scheduling.ts",
+        # The key is compared as a STRING, so `2026-9-5` and `2026-09-05` are
+        # different days to the guard while being the same day to everyone else.
+        # A single-digit month or day would silently let the job run twice for
+        # 8 months of the year - and the window it protects is 2am, where nobody
+        # is watching.
+        find="    `${String(d.getMonth() + 1).padStart(2, '0')}-` +",
+        replace="    `${d.getMonth() + 1}-` + /* mutation: no padding */",
+        test=T_UNIT,
+        expect="a single-digit month and day must pad",
+        guards="a date key that compares unequal to itself across the "
+               "single-digit months, silently disabling both daily guards",
+    ),
+    Mutation(
         name="a title-text remote accept is invisible to review again",
         path="frontend/src/pages/AdminMatching.svelte",
         # The resolver accepts an exact title without any air date vouching for

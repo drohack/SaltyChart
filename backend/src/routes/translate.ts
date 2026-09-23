@@ -955,6 +955,43 @@ async function persistBatchRun(code: number | null): Promise<void> {
   }
 }
 
+/**
+ * When a scheduled batch was last STARTED. Its own key, and not a field on the
+ * row above, for a reason worth keeping.
+ *
+ * `persistBatchRun` writes from the child's `close` handler, so a backend killed
+ * mid-batch never writes anything at all. A once-per-night guard reading that
+ * row would conclude "no batch today" and start a second one - which is the
+ * exact case the guard exists to prevent, arriving through the restart that
+ * makes it most likely. So the stamp goes down BEFORE the spawn, and it stays
+ * separate from `subtitleBatchStatus`, whose shape the admin page renders.
+ */
+const BATCH_STARTED_KEY = 'subtitleBatchStartedAt';
+
+/** Stamp a scheduled batch as started. Throws on a write failure - see the caller. */
+export async function recordBatchStarted(now: Date): Promise<void> {
+  const value = now.toISOString();
+  await prisma.appConfig.upsert({
+    where: { key: BATCH_STARTED_KEY },
+    update: { value },
+    create: { key: BATCH_STARTED_KEY, value },
+  });
+}
+
+/**
+ * When a scheduled batch last started, or null if it never has.
+ *
+ * **Deliberately lets a read failure throw**, unlike its display-only sibling
+ * `readPersistedBatchRun` below. A swallowed error here would return `null`,
+ * which the guard reads as "no batch today" - fail-open, on the one decision
+ * whose whole purpose is not to start a second run. The caller catches and
+ * declines to start instead.
+ */
+export async function readBatchStartedAt(): Promise<string | null> {
+  const row = await prisma.appConfig.findUnique({ where: { key: BATCH_STARTED_KEY } });
+  return row?.value || null;
+}
+
 /** The last completed run, or null. A corrupt row parses to null, never throws. */
 async function readPersistedBatchRun(): Promise<PersistedBatchRun | null> {
   try {
