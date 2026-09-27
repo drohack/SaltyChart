@@ -21,6 +21,7 @@ Requires:
 Exits 0 on all-pass, 1 on any failure.
 """
 import argparse
+import sqlite3
 import re
 import sys
 import time
@@ -29,12 +30,51 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-# Test videos - must exist in SubtitleCache with the right state
-VIDEO_EN_CC      = "-W2vs2etG9o"   # has YouTube English CC (Path A/B). NOTE:
-# must be a trailer in the CURRENT season or its Home button won't render and
-# the test times out - refresh when it ages out (pick one that check-batch
-# reports as an English-CC positive for the current season).
-VIDEO_WHISPER    = "ByOF3FLlAws"   # hasEnglishSubs=0, has cached segments
+# Test videos, chosen at run time by pick_fixtures() from what Home actually
+# renders. They used to be two hardcoded SUMMER 2026 ids with a comment asking
+# for a hand refresh "when it ages out"; on 2026-09-27 Home rolled to FALL 2026,
+# neither button rendered, and all three paths timed out on a click - the gate
+# failing on the calendar, not on the code.
+DB = Path(__file__).resolve().parents[2] / "backend" / "prisma" / "prisma" / "data.db"
+VIDEO_EN_CC = ""     # hasEnglishSubs=1: YouTube English CC (Path B)
+VIDEO_WHISPER = ""   # hasEnglishSubs=0 with cached segments, not burned in (Paths C/D)
+
+
+def rendered_trailer_ids(page) -> list:
+    """Trailer ids with a button on the current page, in page order."""
+    sel = 'button img[src*="i.ytimg.com/vi/"]'
+    page.wait_for_selector(sel, timeout=60_000)
+    ids = []
+    for src in page.eval_on_selector_all(sel, "els => els.map(e => e.getAttribute('src'))"):
+        m = re.search(r"/vi/([\w-]{11})/", src or "")
+        if m and m.group(1) not in ids:
+            ids.append(m.group(1))
+    return ids
+
+
+def pick_fixtures(ids: list) -> tuple:
+    """(en_cc_id, whisper_id) among `ids`, from the local SubtitleCache.
+
+    Read from SQLite rather than /check: /check re-asks YouTube when a negative
+    is stale, and a test run must not spend the YouTube budget. Raises rather
+    than skipping when nothing qualifies - a path with no trailer to open would
+    otherwise pass vacuously.
+    """
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    try:
+        marks = ",".join("?" * len(ids))
+        rows = {r[0]: r[1:] for r in con.execute(
+            f'SELECT "videoId", "hasEnglishSubs", "segments", "hasBurnedInSubs" '
+            f'FROM "SubtitleCache" WHERE "videoId" IN ({marks})', ids)}
+    finally:
+        con.close()
+    en = next((v for v in ids if v in rows and rows[v][0] == 1), None)
+    wh = next((v for v in ids if v in rows and rows[v][0] == 0 and rows[v][1]
+               and len(rows[v][1]) > 2 and not rows[v][2]), None)
+    if not en or not wh:
+        raise RuntimeError(f"no usable fixture among {len(ids)} rendered trailers "
+                           f"(English CC: {en}, Whisper with segments: {wh})")
+    return en, wh
 
 
 def reset_dismiss(backend: str, video_id: str) -> None:
@@ -242,16 +282,25 @@ def main():
     print(f"Subtitle UI regression test", flush=True)
     print(f"  backend={args.backend} frontend={args.frontend}", flush=True)
 
-    # Reset state for the Whisper test video
-    reset_dismiss(args.backend, VIDEO_WHISPER)
-
+    global VIDEO_EN_CC, VIDEO_WHISPER
     failed = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page    = browser.new_page()
         try:
             user = signup_test_user(page, args.frontend)
-            print(f"  signed up as {user}\n", flush=True)
+            print(f"  signed up as {user}", flush=True)
+            try:
+                ids = rendered_trailer_ids(page)
+                VIDEO_EN_CC, VIDEO_WHISPER = pick_fixtures(ids)
+            except Exception as e:
+                print(f"       FAIL [fixtures] - {type(e).__name__}: {e}", flush=True)
+                print("\nDone: 0/3 passed, 3 failed (no fixtures)", flush=True)
+                sys.exit(1)
+            print(f"  fixtures from {len(ids)} rendered trailers: "
+                  f"English CC {VIDEO_EN_CC}, Whisper {VIDEO_WHISPER}\n", flush=True)
+            # Reset state for the Whisper test video
+            reset_dismiss(args.backend, VIDEO_WHISPER)
             for test_fn, label in [
                 (lambda pg: test_b_youtube_cc(pg), "B"),
                 (lambda pg: test_c_whisper_overlay(pg), "C"),
@@ -268,7 +317,8 @@ def main():
         finally:
             browser.close()
             # Cleanup: re-enable subs on test video
-            reset_dismiss(args.backend, VIDEO_WHISPER)
+            if VIDEO_WHISPER:
+                reset_dismiss(args.backend, VIDEO_WHISPER)
 
     # Final line - what the status bar shows after script exit
     if failed:

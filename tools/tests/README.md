@@ -87,14 +87,21 @@ py -3.13 -u tools/tests/test_burned_in_detection.py
 
 ## Test video fixtures
 
-`test_subtitle_paths.py` and `test_burned_in_detection.py` use fixed video IDs
-that must exist in `SubtitleCache` with the expected state:
+`test_subtitle_paths.py` picks its two trailers at run time from what Home
+renders, reading their state from the local `SubtitleCache`: one with
+`hasEnglishSubs=1` (Path B) and one with `hasEnglishSubs=0`, cached Whisper
+segments and no burned-in subs (Paths C/D). It used hardcoded ids until
+2026-09-27, when Home rolled to a season that did not contain them and all
+three paths timed out. If no rendered trailer qualifies it fails with
+`FAIL [fixtures]` rather than skipping.
+
+`test_burned_in_detection.py` still uses fixed video IDs that must exist in
+`SubtitleCache` with the expected state:
 
 | Video ID | Title | State needed |
 |---|---|---|
 | `EsQudPqDOQQ` | Eren the Southpaw | Burned-in subs (used by detection test) |
 | `7ObipYqbOd8` | Sparks of Tomorrow | YouTube English CC, `hasEnglishSubs=1` |
-| `ByOF3FLlAws` | (Tokyo Shinkatsu trailer) | `hasEnglishSubs=0`, cached Whisper segments |
 
 If the local dev DB doesn't have these, populate via the live daemon (open the
 trailer in the app once) or copy rows from the prod DB.
