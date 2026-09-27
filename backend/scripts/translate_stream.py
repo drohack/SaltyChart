@@ -209,7 +209,9 @@ def classify_error(e) -> str:
         return "botwall"
     if "403" in raw and "Forbidden" in raw:
         return "forbidden"
-    if "Video unavailable" in raw or "Private video" in raw:
+    # "This video is not available" is yt-dlp's other wording for the same
+    # thing; it arrived as `other` and made removed trailers look like breakage.
+    if "Video unavailable" in raw or "Private video" in raw or "This video is not available" in raw:
         return "unavailable"
     return "other"
 
@@ -258,14 +260,30 @@ def run_verdict(attempted: int, errors: int, kinds=None, aborted: bool = False):
     """
     kinds = {k: int(v) for k, v in dict(kinds or {}).items() if v}
     breakdown = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])) or "no breakdown"
-    top = max(kinds, key=kinds.get) if kinds else "other"
+    # A removed trailer is a fact about that video, not the download path (the
+    # rule downloadHealth.countsTowardBroken applies to the alert streak), so it
+    # is left out of the ratio on both sides. It has to be: the same removed
+    # trailers fail every week while the cache shrinks what is left to attempt,
+    # so they alone crossed 50% on 2026-09-27 (6 of 11) with nothing broken.
+    gone = kinds.get("unavailable", 0)
+    counted = {k: n for k, n in kinds.items() if k != "unavailable"}
+    top = max(counted, key=counted.get) if counted else "other"
     if aborted:
         return 3, (f"Done: ABORTED on a YouTube bot-challenge - {errors} of {attempted} downloads failed "
                    f"({breakdown}). {_REMEDY['botwall']}")
-    if errors >= RUN_FAIL_MIN and errors > attempted * RUN_FAIL_RATIO:
+    if errors - gone >= RUN_FAIL_MIN and errors - gone > (attempted - gone) * RUN_FAIL_RATIO:
         return 2, (f"Done: FAILED - {errors} of {attempted} downloads failed ({breakdown}). "
                    f"{_REMEDY.get(top, _REMEDY['other'])}")
-    tail = f", {errors} error(s) ({breakdown})" if errors else ""
+    # Not called errors, and deliberately not remembered as dead: a trailer can
+    # be private today and public next week, so every run asks again - one
+    # request per missing trailer per run is the price of noticing.
+    real = errors - gone
+    tail = ""
+    if real:
+        tail += f", {real} error(s) (" + ", ".join(
+            f"{n} {k}" for k, n in sorted(counted.items(), key=lambda kv: -kv[1])) + ")"
+    if gone:
+        tail += f", {gone} not on YouTube (retried next run)"
     return 0, f"Done: OK - {attempted - errors} of {attempted} downloaded{tail}"
 
 

@@ -46,6 +46,29 @@ check("3 failures of 49 (6%) is under the ratio", code == 0, f"code={code}")
 code, line = ts.run_verdict(3, 2, {"forbidden": 2})
 check("2 failures of 3 is under RUN_FAIL_MIN even at 67%", code == 0, f"code={code}")
 
+print("-- a dead trailer is not a failed download --", flush=True)
+# 2026-09-27: the same six removed trailers (Anpanman, Crayon Shin-chan, TOMICA
+# and three more, 10 to 19 failures each in translate.log) failed every Sunday.
+# The cache shrinks what is left to attempt, so 6 of 12 (exactly 50%, OK) became
+# 6 of 11 and the run mailed FAILED with nothing wrong. A removed video says
+# nothing about the download path - the rule countsTowardBroken already applies.
+code, line = ts.run_verdict(11, 6, {"unavailable": 6})
+check("six removed trailers of 11 is not a failed run", code == 0, f"code={code} line={line!r}")
+# Reported, but not as errors: a trailer can be private now and public later,
+# so it is retried every run rather than remembered as dead.
+check("the removed trailers are reported as retried, not as errors",
+      "6 not on YouTube (retried next run)" in line and "error" not in line, line)
+code, line = ts.run_verdict(12, 3, {"unavailable": 2, "forbidden": 1})
+check("a real error beside removed trailers is still called an error",
+      "1 error(s) (1 forbidden)" in line and "2 not on YouTube" in line, line)
+code, line = ts.run_verdict(6, 6, {"unavailable": 6})
+check("a run where every attempt was a removed trailer is not failed", code == 0, f"code={code}")
+code, line = ts.run_verdict(12, 8, {"forbidden": 6, "unavailable": 2})
+check("removed trailers do not hide a real 403 run (6 of 10 counted)", code == 2, f"code={code} line={line!r}")
+code, line = ts.run_verdict(20, 16, {"unavailable": 10, "forbidden": 6})
+check("the remedy comes from a kind that counted, not the removed trailers",
+      code == 2 and "stale yt-dlp" in line, f"code={code} line={line!r}")
+
 print("-- edges of the two thresholds --", flush=True)
 code, _ = ts.run_verdict(4, 3, {"forbidden": 3})
 check("3 of 4 (75%, at RUN_FAIL_MIN) fails", code == 2, f"code={code}")
@@ -64,6 +87,10 @@ check("403 classifies forbidden", ts.classify_error(Exception("HTTP Error 403: F
 check("bot phrase inside a 403 classifies botwall (phrase outranks status)",
       ts.classify_error(Exception("HTTP Error 403: Forbidden. Sign in to confirm you're not a bot")) == "botwall")
 check("private video classifies unavailable", ts.classify_error(Exception("Private video")) == "unavailable")
+# yt-dlp's other wording for a video YouTube will not serve. Four of the six
+# removed trailers on 2026-09-27 said this and were counted as `other`.
+check("'This video is not available' classifies unavailable",
+      ts.classify_error(Exception("ERROR: [youtube] pNYcQTmtyM0: This video is not available")) == "unavailable")
 
 print("-- the CC check has THREE answers, and only two are verdicts --", flush=True)
 # Exception classes named like youtube_transcript_api's, defined here so this

@@ -82,7 +82,8 @@ export type FailKind = typeof FAIL_KINDS[number];
  * refusing us, which are precisely what the streak exists to catch.
  *
  * Measured: SUMMER 2026 failed FIVE trailers back to back - Anpanman, Crayon
- * Shin-chan, TOMICA and two more - every one `Video unavailable`, against a
+ * Shin-chan, TOMICA and two more - every one a removed video (yt-dlp says
+ * `Video unavailable` or `This video is not available`), against a
  * BROKEN_AFTER of 3. Without this the batch would mail "the download path is
  * broken" while that same run downloaded 51 other trailers successfully.
  *
@@ -226,7 +227,8 @@ export async function recordDownloadFailure(reason: string, kind: unknown = 'oth
   // in either direction. Without this, an old season is enough to mail "the
   // download path is broken" while the path is fine: measured on a real run,
   // SUMMER 2026 failed five trailers BACK TO BACK (Anpanman, Crayon Shin-chan,
-  // TOMICA and two more), every one of them `Video unavailable`, against a
+  // TOMICA and two more), every one of them a removed video (`Video
+  // unavailable` or `This video is not available`), against a
   // BROKEN_AFTER of 3. The counters still move, because "how many trailers are
   // simply gone" is worth seeing on /admin/subtitles; only the alert is spared.
   //

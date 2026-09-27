@@ -240,8 +240,8 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 166 rows
-  now (2026-09-21) and unmeasured since.
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 178 rows
+  now (2026-09-27) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
   Windows loses track of it - the process then serves whatever it last compiled

@@ -597,7 +597,15 @@ literally, which is right in production and cannot be right anywhere else.
 imports it) turns the run-wide error count into an exit code: 0, **2 when at
 least `RUN_FAIL_MIN` failures make up more than `RUN_FAIL_RATIO` of attempts**,
 3 on a bot-wall abort - with a final `Done:` line naming the dominant failure
-kind and its remedy (a 403 run says "stale yt-dlp, upgrade it"). Before that,
+kind and its remedy (a 403 run says "stale yt-dlp, upgrade it"). **`unavailable`
+is left out of that ratio on both sides**, and out of the remedy choice, for the
+`countsTowardBroken` reason below: the same removed trailers fail every Sunday
+while the cache shrinks what is left to attempt, so on 2026-09-27 they alone
+went from 6 of 12 (exactly 50%, passed) to 6 of 11 and mailed FAILED with
+nothing broken. They are still shown in the `Done:` line, as `N not on YouTube
+(retried next run)`. **Do not add a "known dead, skip it" memory**: it was
+considered and rejected, because a trailer can be private now and public later,
+and asking again each run (one request per missing trailer) is how we notice. Before that,
 per-season errors were counted, printed and discarded and `main()` fell off the
 end with exit 0 (Sundays 2026-08-23 through 2026-09-20; `tools/logs/translate.log`
 is the record every "four Sundays" mention points at). **Every exit path of
@@ -838,7 +846,10 @@ the same measured run (51 of 63 trailers downloaded, 12 failures):
   others. `countsTowardBroken` (pure, mutation-guarded) spares `unavailable` from
   the streak - it neither advances nor clears it, because a video that no longer
   exists is a fact about that video, not about us. The counters still move, so
-  "how many trailers are simply gone" stays visible on /admin/subtitles. Same
+  "how many trailers are simply gone" stays visible on /admin/subtitles. yt-dlp
+  says it two ways - `Video unavailable` and `This video is not available` -
+  and until 2026-09-27 only the first classified `unavailable`, so most of those
+  five were really counted `other` and advanced the streak anyway. Same
   discipline as the upstream quiet window one section up: count failures, but ask
   what they MEAN before calling them an outage.
 - **6 were 403s, and they were TRANSIENT** - proven, not assumed: one of them

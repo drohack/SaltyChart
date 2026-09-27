@@ -279,12 +279,46 @@ MUTATIONS: list[Mutation] = [
         # The original behaviour, restored: no error count ever fails a run. This
         # is the shape that let four Sunday runs with 46/49 failures report
         # lastResult=0x0 for a month.
-        find="    if errors >= RUN_FAIL_MIN and errors > attempted * RUN_FAIL_RATIO:",
+        find="    if errors - gone >= RUN_FAIL_MIN and errors - gone > (attempted - gone) * RUN_FAIL_RATIO:",
         replace="    if errors > attempted:  # mutation: impossible, so a run can never fail",
         test=T_VERDICT,
         expect="FAIL: 46 of 49 failures is a failed run",
         guards="Task Scheduler and persistBatchRun both read the exit code; a run "
                "that cannot exit non-zero is a run whose failure nobody can see",
+    ),
+    Mutation(
+        name="removed trailers count toward a failed run again",
+        path="backend/scripts/translate_stream.py",
+        # 2026-09-27: the same six removed trailers fail every Sunday while the
+        # cache shrinks what is left to attempt, so they alone crossed 50% (6 of
+        # 11) and mailed FAILED with nothing broken.
+        find='    gone = kinds.get("unavailable", 0)',
+        replace="    gone = 0  # mutation: a removed trailer is a failed download",
+        test=T_VERDICT,
+        expect="FAIL: six removed trailers of 11 is not a failed run",
+        guards="a false FAILED every Sunday is how the real one gets ignored",
+    ),
+    Mutation(
+        name="the failed-run remedy is taken from the removed trailers",
+        path="backend/scripts/translate_stream.py",
+        find='    counted = {k: n for k, n in kinds.items() if k != "unavailable"}',
+        replace="    counted = kinds  # mutation: remedy may say nothing to fix",
+        test=T_VERDICT,
+        expect="FAIL: the remedy comes from a kind that counted",
+        guards="a 403 run mixed with removed trailers would say 'nothing to fix "
+               "here' instead of naming the stale yt-dlp",
+    ),
+    Mutation(
+        name="yt-dlp's 'This video is not available' reads as a real failure",
+        path="backend/scripts/translate_stream.py",
+        # Four of the six removed trailers on 2026-09-27 used this wording and
+        # were counted `other`, which also advanced downloadHealth's streak.
+        find='    if "Video unavailable" in raw or "Private video" in raw or "This video is not available" in raw:',
+        replace='    if "Video unavailable" in raw or "Private video" in raw:  # mutation',
+        test=T_VERDICT,
+        expect="FAIL: 'This video is not available' classifies unavailable",
+        guards="the classifier feeds the verdict, the alert streak and the "
+               "viewer's message; an unrecognised wording lies in all three",
     ),
     Mutation(
         name="the YouTube budget lets one call over the 10-minute cap through",
@@ -519,7 +553,8 @@ MUTATIONS: list[Mutation] = [
         name="a dead video counts as the download path breaking",
         path="backend/src/lib/downloadHealth.ts",
         # Measured on a real run: SUMMER 2026 failed FIVE trailers back to back,
-        # every one `Video unavailable` - old trailers taken down - against a
+        # every one a removed video (`Video unavailable` or `This video is not
+        # available`) - old trailers taken down - against a
         # BROKEN_AFTER of 3. That would mail "the download path is broken" while
         # the same run downloaded 51 other trailers. A video that no longer
         # exists is a fact about that video, not about us.

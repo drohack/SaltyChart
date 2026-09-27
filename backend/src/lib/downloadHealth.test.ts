@@ -104,7 +104,8 @@ test('recovery is announced only when the path was broken', () => {
 test('a dead video is not evidence that downloading is broken', () => {
   // Measured on a real run: SUMMER 2026 failed FIVE trailers back to back -
   // Anpanman, Crayon Shin-chan, TOMICA and two more - every one of them
-  // `Video unavailable`, against a BROKEN_AFTER of 3. Counting those would mail
+  // a removed video (`Video unavailable` / `This video is not available`),
+  // against a BROKEN_AFTER of 3. Counting those would mail
   // "the download path is broken" while the path was working perfectly; the
   // same run downloaded 51 other trailers.
   //
