@@ -850,7 +850,7 @@ the same measured run (51 of 63 trailers downloaded, 12 failures):
   says it two ways - `Video unavailable` and `This video is not available` -
   and until 2026-09-27 only the first classified `unavailable`, so most of those
   five were really counted `other` and advanced the streak anyway. Same
-  discipline as the upstream quiet window one section up: count failures, but ask
+  discipline as the upstream outage window one section up: count failures, but ask
   what they MEAN before calling them an outage.
 - **6 were 403s, and they were TRANSIENT** - proven, not assumed: one of them
   (Firefly Wedding) downloaded in full on a retry minutes later, 14 MB, 79 s,
@@ -1012,7 +1012,7 @@ rows), so `upstreamHealth` covers everything else and `GET /report` composes
 both. The transitions are a threshold-aware twin rather than shared code -
 per-service thresholds are the point - and `upstreamHealth.test.ts` pins what
 must still match (the streak arithmetic) **and the divergence itself**. They no
-longer agree on the mail: this module needs a quiet window, that one watches a
+longer agree on the mail: this module needs a time window, that one watches a
 path whose calls are minutes apart and does not. Asserting a deliberate
 difference is the same discipline `MODEL_RANK` follows, one step on.
 
@@ -1023,21 +1023,35 @@ difference is the same discipline `MODEL_RANK` follows, one step on.
   stored so the page cannot believe it saved an address the server dropped.
 - `POST /probe` - admin; run every due check now.
 
-**A streak is not an outage unless nothing succeeded for `MIN_OUTAGE_MS`
-(10 min).** The first version crossed on `streak === brokenAfter` with no notion
-of time, and skyhook proved that wrong: measured over one evening it answered 66
-calls and failed 16 - a **19.5% failure rate, every one a 500**, while working
-perfectly. The resolver drains at 300 ms a call, so three consecutive failures
-is **0.9 seconds**, and at that rate a few hundred drain calls are near-certain
-to contain such a run. It mailed *not responding* and *working again* one minute
-apart. Raising the threshold (3 -> 6) was the first response and it was tuning,
-not fixing: six in a row is still about two seconds. What separates a flaky
-upstream from a dead one is whether **anything** has succeeded recently, so the
-alert now needs both. A never-successful service counts as quiet - that one is
-worth hearing about. Because the two conditions can become true in either order,
+**A streak is not an outage until it has LASTED its window** - `MIN_OUTAGE_MS`
+(10 min) by default, **2 hours** for skyhook, TMDB and AniList
+(`outageWindowMs`, read only through `outageWindowFor`). The first version
+crossed on `streak === brokenAfter` with no notion of time, and skyhook proved
+that wrong: measured over one evening it answered 66 calls and failed 16 - a
+**19.5% failure rate, every one a 500**, while working perfectly. The resolver
+drains at 300 ms a call, so three consecutive failures is **0.9 seconds**. It
+mailed *not responding* and *working again* one minute apart. Raising the
+threshold (3 -> 6) was tuning, not fixing: six in a row is still about two
+seconds.
+
+**The second version measured the wrong clock.** It asked whether anything had
+succeeded in the last ten minutes, which only catches a burst right after a
+success: skyhook is probed daily, so on an idle server its last success is hours
+old before anything fails. On **2026-09-29** the 2 AM sweep got six 403s in
+about two seconds - skyhook sits behind Cloudflare - and mailed *not
+responding*; the status page showed it answering again within minutes. The
+clock now starts at the **first failure of the streak** (`failingSince`, cleared
+by a success), so "failing for the window" also implies "nothing worked for the
+window" and the old rule is a special case. A probed service is re-checked every
+`CONFIRM_RETRY_MS` while failing, so a genuinely dead one keeps recording
+failures and crosses on its own; the long window costs nothing for services
+whose outage loses one sweep's evidence or serves a stale cache. YouTube's
+window is **0**: `downloadHealth` owns that verdict and its composed record has
+no streak start. Because the streak and the window become true in either order,
 "once" is a stored flag (`downAlertedAt`) rather than an equality, and recovery
 is keyed off that same flag so a recovery mail can never arrive for an outage
-nobody was told about. Three mutation rows guard the three halves.
+nobody was told about. Mutation rows guard the once-rule, the window, the clock
+it is timed by, and the badge using the same rule.
 
 **Five states, and two of them exist only to stop a reader being misled.**
 `stateOf` decides `ok` / `failing` / `down` / `unknown` / `notConfigured` **on

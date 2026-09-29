@@ -399,8 +399,8 @@ MUTATIONS: list[Mutation] = [
         # quiet window arrived: the streak and the window can become true in
         # either order, so an equality can no longer express "exactly one mail".
         # Dropping the flag is the same bug in its new clothes.
-        find="  const crossed = streak >= brokenAfter && quiet && !rec.downAlertedAt;",
-        replace="  const crossed = streak >= brokenAfter && quiet;  /* mutation: mails on every failure */",
+        find="  const crossed = streak >= brokenAfter && lasted && !rec.downAlertedAt;",
+        replace="  const crossed = streak >= brokenAfter && lasted;  /* mutation: mails on every failure */",
         test=T_UNIT,
         expect="the down alert fires once, at the crossing, not on every failure after it",
         guards="an alert that repeats is an alert that gets muted, and a muted "
@@ -575,7 +575,7 @@ MUTATIONS: list[Mutation] = [
         # 500s. Two of this page's five states exist purely so a reader is never
         # misled; that was the page misleading them, and it contradicted the
         # guide's own "the page and the email cannot disagree".
-        find="  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {",
+        find="  if (rec.consecutiveFailures >= brokenAfter && failingLongEnough(streakStartedAt(rec), nowIso, windowMs)) {",
         replace="  if (rec.consecutiveFailures >= brokenAfter) {  /* mutation: badge ignores the window */",
         test=T_UNIT,
         expect="the BADGE means what the EMAIL means",
@@ -594,12 +594,27 @@ MUTATIONS: list[Mutation] = [
         # recently.
         # Anchored on the ALERT's use of the shared rule; the badge's use is a
         # separate row, because the two sites failed independently once already.
-        find="  const quiet = noRecentSuccess(rec.lastOkAt, nowIso);",
-        replace="  const quiet = true;  /* mutation: a streak is always an outage */",
+        find="  const lasted = failingLongEnough(failingSince, nowIso, windowMs);",
+        replace="  const lasted = true;  /* mutation: a streak is always an outage */",
         test=T_UNIT,
         expect="a burst of failures is not an outage while something just worked",
         guards="an alert that cries wolf during every drain is the alert that "
                "gets filtered into a folder nobody opens",
+    ),
+    Mutation(
+        name="the outage clock times from the last success again",
+        path="backend/src/lib/upstreamHealth.ts",
+        # The first window's clock, restored. "Nothing has succeeded for ten
+        # minutes" is already true on an idle server before anything fails,
+        # because skyhook is probed daily - so on 2026-09-29 six 403s in two
+        # seconds mailed "not responding" for a Cloudflare block that lifted
+        # within minutes. Duration must be timed from the start of the streak.
+        find="  const lasted = failingLongEnough(failingSince, nowIso, windowMs);",
+        replace="  const lasted = failingLongEnough(rec.lastOkAt ?? '1970-01-01T00:00:00.000Z', nowIso, windowMs);  /* mutation: the old clock */",
+        test=T_UNIT,
+        expect="a burst is not an outage even when the last success was hours ago",
+        guards="a daily-probed service mails an outage for every few-second block, "
+               "which is the alert that trains its reader to ignore it",
     ),
     Mutation(
         name="recovery is announced for an outage nobody was told about",
@@ -908,7 +923,7 @@ MUTATIONS: list[Mutation] = [
         # failing 16 of 66 calls in an evening while plainly working painted a
         # red Down badge and sent no email, so the page contradicted its own
         # alert. The route test cannot see it - only a rendered badge can.
-        find="  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {",
+        find="  if (rec.consecutiveFailures >= brokenAfter && failingLongEnough(streakStartedAt(rec), nowIso, windowMs)) {",
         replace="  if (rec.consecutiveFailures >= brokenAfter) {  // mutation",
         flows=("admin status badges",),
         test=T_UI,

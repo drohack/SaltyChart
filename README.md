@@ -218,11 +218,14 @@ chronological order; all features listed are live.
 - **/admin/status** - whether the outside services SaltyChart depends on are
   still answering: YouTube, TVDB, TMDB, AniList, the id map, Jellyfin, Sonarr,
   email and PyPI. Each row shows its state, when it last worked, and the exact
-  failure if it is not working. An email goes out once when a service stops
-  responding and once when it recovers - a status code like 400 or 403 usually
-  means the service changed what it accepts rather than that it is offline. The
-  same page turns those alerts on or off, per service, and takes extra
-  recipients; the SMTP connection itself is set on the server.
+  failure if it is not working. An email goes out once a service has been
+  failing continuously for a while - 10 minutes for most, 2 hours for TVDB,
+  TMDB and AniList, so a short block or a burst of errors during a sweep never
+  mails - and, if you opt in per service, once when it recovers. A status code
+  like 400 or 403 means the service is up and refusing us: it changed what it
+  accepts, or it is blocking our address. The same page turns those alerts on
+  or off, per service, and takes extra recipients; the SMTP connection itself
+  is set on the server.
 - **/admin/subtitles** - the state of trailer subtitles: how many trailers we
   have translated and at what quality, which have YouTube captions or burned-in
   subs, when the batch next runs, and a per-trailer table for this season and

@@ -232,7 +232,7 @@ export async function recordDownloadFailure(reason: string, kind: unknown = 'oth
   // BROKEN_AFTER of 3. The counters still move, because "how many trailers are
   // simply gone" is worth seeing on /admin/subtitles; only the alert is spared.
   //
-  // This is the same rule the upstream quiet window enforces one module over:
+  // This is the same rule the upstream outage window enforces one module over:
   // count failures, but ask what they MEAN before calling them an outage.
   if (!countsTowardBroken(k)) {
     await write({

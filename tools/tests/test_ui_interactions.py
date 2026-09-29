@@ -2503,16 +2503,20 @@ def test_admin_status_badges(page, backend: str, frontend: str):
         iso = lambda secs_ago: time.strftime(
             "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - secs_ago))
         # `stateOf` is a pure function of the record, so each of these is exact.
-        # skyhook's `brokenAfter` is 6 and the quiet window is 10 minutes: the
-        # `failing` case below is a streak PAST that threshold with a recent
-        # success, which must still read amber. That pairing is the whole point -
-        # it is the case the badge used to get wrong.
+        # skyhook's `brokenAfter` is 6 and its outage window 2 hours: the
+        # `failing` case below is a streak PAST that threshold that began a
+        # minute ago, which must still read amber however old its last success
+        # is (the 2026-09-29 shape). That pairing is the whole point - it is the
+        # case the badge used to get wrong. tmdb's streak began 3 hours ago,
+        # past its own 2-hour window, so it is red.
         health = {
             "skyhook":  {"consecutiveFailures": 9, "lastCheckedAt": iso(30),
-                         "lastFailAt": iso(30), "lastOkAt": iso(20),
+                         "lastFailAt": iso(30), "failingSince": iso(60),
+                         "lastOkAt": iso(20 * 3600),
                          "lastFailReason": "injected", "lastFailStatus": 500},
             "tmdb":     {"consecutiveFailures": 9, "lastCheckedAt": iso(30),
-                         "lastFailAt": iso(30), "lastOkAt": None,
+                         "lastFailAt": iso(30), "failingSince": iso(3 * 3600),
+                         "lastOkAt": None,
                          "lastFailReason": "injected", "lastFailStatus": 500},
             "sonarr":   {"lastCheckedAt": iso(60), "lastSkipped": "no Sonarr server configured"},
             "anilist":  {"consecutiveFailures": 0, "lastCheckedAt": iso(60), "lastOkAt": iso(60)},

@@ -25,7 +25,7 @@
  * `downloadHealth`'s are module constants pinned by a mutation row;
  * `upstreamHealth.test.ts` pins what must still match (the streak
  * arithmetic) AND the divergence itself, so neither can drift unnoticed. They
- * no longer agree on the mail: this module needs a quiet window, that one
+ * no longer agree on the mail: this module needs a time window, that one
  * watches a path whose calls are minutes apart and does not. Same rule as `MODEL_RANK`.
  */
 import prisma from '../db';
@@ -44,6 +44,12 @@ export interface UpstreamRecord {
    *  changed" tells itself apart from "their server fell over". */
   lastFailStatus: number | null;
   consecutiveFailures: number;
+  /**
+   * When the CURRENT streak began, or null when there is none. This is what
+   * "how long has it been down" is measured from - see `failingLongEnough`.
+   * Records written before it existed fall back to `lastFailAt`.
+   */
+  failingSince: string | null;
   okCount: number;
   failCount: number;
   /** Last time we found out either way, probe or real traffic. */
@@ -58,7 +64,7 @@ export interface UpstreamRecord {
    * When we last MAILED that this service is down, or null.
    *
    * Exists so "announce once" survives a rule that is no longer a single
-   * equality: the streak and the quiet window can become true in either order.
+   * equality: the streak and the outage window can become true in either order.
    * It is also what pairs the recovery mail to an outage we actually reported -
    * keying recovery off the streak instead would announce a recovery from an
    * outage nobody was told about.
@@ -72,6 +78,7 @@ export const EMPTY_RECORD: UpstreamRecord = {
   lastFailReason: null,
   lastFailStatus: null,
   consecutiveFailures: 0,
+  failingSince: null,
   okCount: 0,
   failCount: 0,
   lastCheckedAt: null,
@@ -95,10 +102,15 @@ export interface UpstreamSpec {
   impact: string;
   /**
    * Consecutive failures before this counts as down. NOT sufficient on its own
-   * to mail: `MIN_OUTAGE_MS` must also have passed with no success - see
-   * `noRecentSuccess`.
+   * to mail: the streak must also have lasted `outageWindowMs` - see
+   * `failingLongEnough`.
    */
   brokenAfter: number;
+  /**
+   * How long a streak must last before it is an outage. Defaults to
+   * `MIN_OUTAGE_MS`; read it through `outageWindowFor`, never directly.
+   */
+  outageWindowMs?: number;
   /**
    * No probe on purpose. YouTube is the only one: what breaks there is its
    * tolerance for our requests, so a synthetic probe is the wrong shape - the
@@ -155,6 +167,11 @@ export const UPSTREAMS: UpstreamSpec[] = [
     label: 'YouTube (yt-dlp)',
     impact: 'New trailers cannot be subtitled. Cached ones keep playing, which is why the site looks fine.',
     brokenAfter: 3,
+    // Zero: downloadHealth owns this verdict and has no time window - its calls
+    // are minutes apart, so three in a row already spans time. The composed
+    // record carries no `failingSince`, and a window here would grade the badge
+    // on the age of the LAST failure and paint a broken path amber.
+    outageWindowMs: 0,
     passiveOnly: true,
     recordSource: 'downloadHealth',
     adminPath: '/admin/subtitles',
@@ -176,6 +193,14 @@ export const UPSTREAMS: UpstreamSpec[] = [
     // CONFIRM_RETRY_MS gets there in half an hour. Sporadic 500s at the observed
     // rate reach 3 regularly and 6 almost never.
     brokenAfter: 6,
+    // Two hours, because a burst of 4xx is no more an outage than a burst of
+    // 500s. On 2026-09-29 the 2 AM sweep got six 403s in about two seconds
+    // (skyhook sits behind Cloudflare) and mailed "not responding"; the status
+    // page showed it answering again within minutes. What this service's
+    // failure costs is one sweep's worth of evidence, and the sweep is daily,
+    // so nothing is lost by waiting - while a genuinely dead service keeps
+    // failing its CONFIRM_RETRY_MS re-checks and crosses this on its own.
+    outageWindowMs: 2 * HOUR,
     // Daily. A metadata API changes on a release cadence, not several times a
     // day, so this is the rate the event actually happens at; CONFIRM_RETRY_MS
     // is what keeps the alert fast once something does look wrong.
@@ -184,13 +209,17 @@ export const UPSTREAMS: UpstreamSpec[] = [
     hint: (_reason, status) =>
       status === 400
         ? 'A 400 here has meant a rejected User-Agent before, not a bad request. Check the header in lib/skyhookIdentity.ts.'
-        : null,
+        : status === 403
+          ? 'skyhook sits behind Cloudflare. A 403 has meant a block on our address before (2026-09-29), which lifted by itself.'
+          : null,
   },
   {
     id: 'tmdb',
     label: 'TMDB (via Jellyfin remote search)',
     impact: 'Films and anything skyhook misses stop resolving; the identity sweep finds nothing and says nothing.',
     brokenAfter: 3,
+    // Same as skyhook: only the daily sweep and admin lookups call it, in bursts.
+    outageWindowMs: 2 * HOUR,
     minProbeIntervalMs: DAY,
     adminPath: '/admin/matching',
   },
@@ -201,6 +230,9 @@ export const UPSTREAMS: UpstreamSpec[] = [
     // Higher: AniList answers 429 as normal operation under a shared IP budget,
     // and the existing backoff already handles that without anyone being told.
     brokenAfter: 5,
+    // Cached seasons keep serving through an outage (see `impact`), and cold
+    // fetches arrive as bursts of pages, so a short window catches only bursts.
+    outageWindowMs: 2 * HOUR,
     // Probed daily, and the earlier decision NOT to probe it was wrong on both
     // counts. "A probe competes with the shared ~30/min budget" is 1 request
     // against ~43,200 a day - 0.002%. And "real traffic is frequent enough" is
@@ -266,43 +298,66 @@ export function upstreamById(id: string): UpstreamSpec | undefined {
 // --- Pure transitions --------------------------------------------------------
 
 /**
- * A run of failures only means "down" if NOTHING succeeded for this long.
+ * The default for how long a failure streak must LAST before it is an outage.
  *
  * A streak alone is not an outage, and skyhook proved it: measured over one
  * evening it answered 66 calls and failed 16 - a 19.5% failure rate, every one
  * a 500, while working perfectly well. The resolver drains at 300 ms per call,
- * so three consecutive failures is 0.9 SECONDS, and at that failure rate a few
- * hundred drain calls are near-certain to contain such a run. It mailed "not
- * responding" and "working again" one minute apart.
+ * so three consecutive failures is 0.9 SECONDS. It mailed "not responding" and
+ * "working again" one minute apart. Raising the threshold (3 -> 6) was tuning,
+ * not fixing: six in a row is still about two seconds.
  *
- * Raising the threshold (3 -> 6) was the first response and it was tuning, not
- * fixing: six in a row is still about two seconds. What separates a flaky
- * upstream from a dead one is not how many failures arrive in a burst, it is
- * whether ANY call has succeeded recently. Ten minutes is comfortably longer
- * than any burst inside a drain and comfortably shorter than an outage worth
- * an email - a probed service retries every CONFIRM_RETRY_MS (5 min), so a
- * genuinely dead service clears this in two retries.
+ * The first fix measured the wrong clock. It asked "has anything succeeded in
+ * the last ten minutes?", which catches a burst right AFTER a success and
+ * nothing else: a service probed daily has a last success hours old on an idle
+ * server, so the condition was already true before the first failure arrived,
+ * and on 2026-09-29 six 403s in two seconds mailed an outage that cleared
+ * within minutes. Duration is now measured from the START OF THE STREAK
+ * (`failingSince`), which a success resets - so "failing for ten minutes" also
+ * implies "nothing has worked for ten minutes", and the old rule is a special
+ * case of this one.
+ *
+ * Ten minutes suits our own boxes; services the sweep hammers set a longer
+ * `outageWindowMs`. A probed service is re-checked every CONFIRM_RETRY_MS while
+ * failing, so a genuinely dead one keeps recording failures and crosses.
  */
 export const MIN_OUTAGE_MS = 10 * 60_000;
 
+/** The one place a spec's window is read, so no caller can forget the default. */
+export function outageWindowFor(spec: Pick<UpstreamSpec, 'outageWindowMs'>): number {
+  return spec.outageWindowMs ?? MIN_OUTAGE_MS;
+}
+
 /**
- * Has nothing succeeded recently enough for a failure streak to mean an outage?
- *
- * The single definition of "quiet", used by BOTH the alert (`failureTransition`)
- * and the badge (`stateOf`). It was inlined in the alert only, and the badge
- * kept the old streak-alone rule - so a service could render a red **Down**
- * while the system had deliberately decided it was not an outage and sent
- * nothing. That is the disagreement `/admin/status` exists to prevent: two of
- * its five states are there purely so a reader is never misled.
- *
- * `lastOkAt == null` counts as quiet. A service with no record of ever working
- * is exactly the one worth hearing about, and treating "never succeeded" as
- * "succeeded recently" is the same mistake as reading `unknown` as healthy.
+ * When did the current streak begin? Null when there is no streak. A record
+ * written before `failingSince` existed falls back to `lastFailAt`, which is
+ * LATER than the true start - so an old record errs towards not alerting yet,
+ * and the next failure stamps a real start.
  */
-export function noRecentSuccess(lastOkAt: string | null, nowIso: string): boolean {
-  if (!lastOkAt) return true;
-  const since = Date.parse(nowIso) - Date.parse(lastOkAt);
-  return !Number.isFinite(since) || since >= MIN_OUTAGE_MS;
+export function streakStartedAt(rec: UpstreamRecord): string | null {
+  if (rec.consecutiveFailures <= 0) return null;
+  return rec.failingSince ?? rec.lastFailAt;
+}
+
+/**
+ * Has the current streak lasted long enough to be an outage?
+ *
+ * The single definition, used by BOTH the alert (`failureTransition`) and the
+ * badge (`stateOf`). It was once inlined in the alert only, and the badge kept
+ * a streak-alone rule - so a service rendered a red **Down** while the system
+ * had deliberately decided it was not an outage and sent nothing.
+ *
+ * An unparseable start counts as long enough: a corrupt record must not mute
+ * an alert, the same mistake as reading `unknown` as healthy.
+ */
+export function failingLongEnough(
+  failingSince: string | null,
+  nowIso: string,
+  windowMs: number,
+): boolean {
+  if (!failingSince) return false;
+  const lasted = Date.parse(nowIso) - Date.parse(failingSince);
+  return !Number.isFinite(lasted) || lasted >= windowMs;
 }
 
 export function failureTransition(
@@ -311,18 +366,18 @@ export function failureTransition(
   status: number | null,
   nowIso: string,
   brokenAfter: number,
+  windowMs: number,
 ): { next: UpstreamRecord; crossed: boolean } {
   const streak = rec.consecutiveFailures + 1;
-  // Has anything worked lately? A success moments ago means this is a flaky
-  // upstream mid-burst, not an outage - see MIN_OUTAGE_MS. No success ever
-  // recorded counts as "not recently": a service that has never answered is
-  // exactly the one worth hearing about.
-  const quiet = noRecentSuccess(rec.lastOkAt, nowIso);
+  // How long has it been failing? A burst seconds long is a flaky upstream or
+  // a brief block, not an outage - see MIN_OUTAGE_MS.
+  const failingSince = streakStartedAt(rec) ?? nowIso;
+  const lasted = failingLongEnough(failingSince, nowIso, windowMs);
   // `>=` and a stored flag rather than `=== brokenAfter`, because the two
-  // conditions can now become true in either order: the streak may reach the
-  // threshold while a success is still recent, and the window opens later. The
-  // flag is what keeps it to one mail, and okTransition clears it.
-  const crossed = streak >= brokenAfter && quiet && !rec.downAlertedAt;
+  // conditions become true in either order: the streak reaches the threshold
+  // in seconds, and the window opens later. The flag is what keeps it to one
+  // mail, and okTransition clears it.
+  const crossed = streak >= brokenAfter && lasted && !rec.downAlertedAt;
   return {
     next: {
       ...rec,
@@ -330,6 +385,7 @@ export function failureTransition(
       lastFailReason: reason.slice(0, 500),
       lastFailStatus: status,
       consecutiveFailures: streak,
+      failingSince,
       failCount: rec.failCount + 1,
       lastCheckedAt: nowIso,
       lastSkipped: null,
@@ -341,7 +397,7 @@ export function failureTransition(
 
 /**
  * A success. `recovered` is true only if we ACTUALLY MAILED about this outage -
- * `stateOf` can call a record `down` on the streak while the quiet window kept
+ * `stateOf` can call a record `down` on the streak while the outage window kept
  * the mail back, and announcing a recovery from an outage nobody was told about
  * reads as a first mail that went missing.
  */
@@ -359,6 +415,7 @@ export function okTransition(
       ...rec,
       lastOkAt: nowIso,
       consecutiveFailures: 0,
+      failingSince: null,
       okCount: rec.okCount + 1,
       lastCheckedAt: nowIso,
       lastSkipped: null,
@@ -380,14 +437,15 @@ export function stateOf(
   rec: UpstreamRecord,
   brokenAfter: number,
   nowIso: string,
+  windowMs: number,
 ): UpstreamState {
   if (rec.lastSkipped) return 'notConfigured';
   if (!rec.lastCheckedAt) return 'unknown';
   // `down` means what the ALERT means by it, not merely "the streak is long".
-  // Without the quiet window here, skyhook answering 66 calls and failing 16
-  // in one evening - 19.5%, all 500s, while working - painted a red badge for
-  // a service nothing was wrong with, and the page contradicted its own email.
-  if (rec.consecutiveFailures >= brokenAfter && noRecentSuccess(rec.lastOkAt, nowIso)) {
+  // Without the window here, skyhook answering 66 calls and failing 16 in one
+  // evening - 19.5%, all 500s, while working - painted a red badge for a
+  // service nothing was wrong with, and the page contradicted its own email.
+  if (rec.consecutiveFailures >= brokenAfter && failingLongEnough(streakStartedAt(rec), nowIso, windowMs)) {
     return 'down';
   }
   if (rec.consecutiveFailures > 0) return 'failing';
@@ -477,7 +535,7 @@ export async function recordUpstream(
 
     const reason = detail.reason ?? 'unknown error';
     const status = detail.status ?? null;
-    const { next, crossed } = failureTransition(rec, reason, status, nowIso, spec.brokenAfter);
+    const { next, crossed } = failureTransition(rec, reason, status, nowIso, spec.brokenAfter, outageWindowFor(spec));
     map[id] = next;
     await writeAll(map);
     if (!crossed) return;
@@ -509,6 +567,11 @@ export async function recordSkip(id: string, why: string): Promise<void> {
   }
 }
 
+function minutesSince(iso: string | null): number {
+  const ms = iso ? Date.now() - Date.parse(iso) : NaN;
+  return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 60_000)) : 0;
+}
+
 /** The mail. Respects the alert settings; silent services still record. */
 async function announce(
   spec: UpstreamSpec,
@@ -537,13 +600,14 @@ async function announce(
     const hint = kind === 'down' ? spec.hint?.(after.lastFailReason, after.lastFailStatus) : null;
     const text =
       kind === 'down'
-        ? `${spec.label} has failed ${after.consecutiveFailures} times in a row.\n\n` +
+        ? `${spec.label} has been failing for ${minutesSince(after.failingSince)} minutes ` +
+          `(${after.consecutiveFailures} failures in a row, nothing succeeding in between).\n\n` +
           `${spec.impact}\n\n` +
           `Latest failure${after.lastFailStatus ? ` (HTTP ${after.lastFailStatus})` : ''}: ` +
           `${after.lastFailReason ?? 'unknown'}\n\n` +
           (hint ? `${hint}\n\n` : '') +
-          'A status code like 400 or 403 usually means the service changed what it accepts, ' +
-          'not that it is offline.\n\n' +
+          'A status code like 400 or 403 means the service is up and refusing us - either it ' +
+          'changed what it accepts, or it is blocking our address.\n\n' +
           '/admin/status shows every service and will announce recovery.'
         : `${spec.label} is answering again after ${before.consecutiveFailures} consecutive failures.\n\n` +
           `Last failure was: ${before.lastFailReason ?? 'unknown'}\n\n/admin/status has the details.`;

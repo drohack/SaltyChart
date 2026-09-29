@@ -22,6 +22,7 @@ import prisma from '../db';
 import {
   EMPTY_RECORD,
   UPSTREAMS,
+  outageWindowFor,
   readAll,
   stateOf,
   type UpstreamRecord,
@@ -50,6 +51,9 @@ async function youtubeRecord(): Promise<UpstreamRecord> {
     lastFailReason: h.lastFailReason,
     lastFailStatus: null,
     consecutiveFailures: h.consecutiveFailures,
+    // downloadHealth keeps no streak start; the youtube spec's zero window
+    // means none is needed.
+    failingSince: null,
     okCount: h.okCount,
     failCount: h.failCount,
     lastCheckedAt: h.lastOkAt ?? h.lastFailAt,
@@ -89,7 +93,7 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
         alertsEnabled: alertsEnabledFor(settings, spec.id, 'down'),
         // Separate switch, and off unless asked for - see `perServiceRecovery`.
         recoveryAlertsEnabled: alertsEnabledFor(settings, spec.id, 'recovered'),
-        state: stateOf(rec, spec.brokenAfter, now),
+        state: stateOf(rec, spec.brokenAfter, now, outageWindowFor(spec)),
         ...rec,
       };
     });
