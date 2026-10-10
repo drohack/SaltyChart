@@ -78,6 +78,7 @@ import statusRouter from './routes/status';
 import { runDueProbes } from './lib/upstreamProbes';
 import jellyfinRouter from './routes/jellyfin';
 import sonarrRouter, { runSonarrSnapshot, runScheduledPushIfDue } from './routes/sonarr';
+import { requestLibraryCheck } from './routes/jellyfin';
 import { ensureAnilistTvdbMap } from './lib/anilistTvdbMap';
 import { scheduledJobsAllowed, alreadyRanToday } from './lib/scheduling';
 import {
@@ -872,6 +873,12 @@ ensureDatabaseSchema().then(() => {
       } catch (err: any) {
         console.warn('[sonarr] scheduled push could not run:', err?.message ?? err);
       }
+      // The daily library check rides on the same schedule: it fills the
+      // English column on /admin/sonarr and asks Jellyfin to refresh any series
+      // whose files Sonarr replaced. Once a day is enough - the Refresh Jellyfin
+      // button covers "I just changed something". One line, like the push.
+      const check = requestLibraryCheck('schedule');
+      console.log(`[library] scheduled check: ${check.status}`);
     };
     if (runScheduledJobs) {
       setTimeout(() => void sonarrPush(), 720_000).unref();

@@ -133,6 +133,20 @@ export function classifySonarr(file: SonarrFileLite): SubState {
   return 'none';
 }
 
+/**
+ * Does the file carry an English audio track - a dub?
+ *
+ * Separate from `SubState` on purpose: a dual-audio release with full English
+ * subtitles classifies `fullEng`, and the dub would vanish into that verdict.
+ * The admin page shows subtitles and dubs as two columns.
+ */
+export function hasEnglishAudio(jellyfinStreams: JellyfinStream[] | null, sonarrFile: SonarrFileLite): boolean {
+  if (jellyfinStreams && jellyfinStreams.length) {
+    return jellyfinStreams.some((s) => s.type === 'Audio' && isEnglishCode(s.language));
+  }
+  return (sonarrFile.audioLanguages ?? '').split('/').some((c) => isEnglishCode(c));
+}
+
 /** States a viewer who wants subtitles cannot use. `engAudio` is not one: it plays in English. */
 export const MISSING_STATES: ReadonlySet<SubState> = new Set<SubState>(['none', 'signsOnly']);
 
@@ -155,6 +169,8 @@ export interface SeriesAudit {
   source: 'jellyfin' | 'sonarr';
   episodes: number;
   counts: Record<SubState, number>;
+  /** Episodes whose file carries English audio, whatever their subtitles. */
+  dubbed: number;
   stale: number;
   state: SeriesState;
   /** Every episode that is not plainly fine, in season/episode order. */
@@ -186,6 +202,7 @@ export function auditSeries(
   const problems: ProblemEpisode[] = [];
   let episodes = 0;
   let stale = 0;
+  let dubbed = 0;
 
   const sorted = sonarrEpisodes
     .filter((e) => e.file)
@@ -197,6 +214,9 @@ export function auditSeries(
     const isStale = !!jellyfin && !jf;
     const sub = jf ? classifyJellyfin(jf.streams) : classifySonarr(file);
     counts[sub]++;
+    // Read from the same file the subtitle verdict was: Jellyfin's when it is
+    // current, Sonarr's record of the new file when Jellyfin is stale.
+    if (hasEnglishAudio(jf ? jf.streams : null, file)) dubbed++;
     if (isStale) stale++;
     if (isStale || sub !== 'fullEng') {
       problems.push({
@@ -224,7 +244,25 @@ export function auditSeries(
         ? 'unknown'
         : 'allSubbed';
 
-  return { source: jellyfin ? 'jellyfin' : 'sonarr', episodes, counts, stale, state, problems };
+  return { source: jellyfin ? 'jellyfin' : 'sonarr', episodes, counts, dubbed, stale, state, problems };
+}
+
+/**
+ * The single "English" cell on /admin/sonarr: what the series offers, and
+ * whether every episode on disk has it.
+ *
+ * `ok` = every episode has full English subtitles or English audio. The label
+ * says which (`subs`, `dub`, `subs + dub`) and, when only some episodes do, how
+ * many (`subs 10/12`); `no English` when none do. A signs-only track is not
+ * English, and neither is an episode nobody has analysed yet.
+ */
+export function englishSummary(a: SeriesAudit): { label: string; ok: boolean } {
+  const watchable = a.counts.fullEng + a.counts.engAudio;
+  const parts = [a.counts.fullEng > 0 ? 'subs' : '', a.dubbed > 0 ? 'dub' : ''].filter(Boolean);
+  const ok = a.episodes > 0 && watchable === a.episodes;
+  if (!parts.length) return { label: 'no English', ok: false };
+  const label = parts.join(' + ');
+  return { label: ok ? label : `${label} ${watchable}/${a.episodes}`, ok };
 }
 
 const STATE_ORDER: Record<SeriesState | 'error', number> = {

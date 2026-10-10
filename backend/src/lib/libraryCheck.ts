@@ -24,8 +24,8 @@ import {
 // Sonarr's Connect -> Emby/Jellyfin "Update Library" would fix the first half,
 // and is **deliberately off**: the owner does not want Jellyfin told about every
 // import. This replaces it with something narrower - only series whose files
-// actually changed, only when someone is about to watch (a Randomize visit) or
-// an admin asks.
+// actually changed, once a day on the scheduled job, or when an admin presses
+// Refresh Jellyfin on /admin/sonarr.
 //
 // **What it writes: one Jellyfin `Refresh` per stale series, nothing else.** No
 // Sonarr writes (`sonarrApi.ts` keeps exactly one write verb), no file changes.
@@ -34,22 +34,13 @@ import {
 /** AppConfig key holding the last check. Display-only; nothing decides from it. */
 export const LIBRARY_AUDIT_KEY = 'libraryAudit';
 
-/**
- * A Randomize visit starts at most one check per this interval.
- *
- * A check is ~165 LAN requests and measured 3.6 s over 82 series; a busy page
- * would otherwise fire one per viewer per load. In-memory on purpose: this
- * protects our own LAN services, not AniList, so a restart costing one extra
- * run is fine - unlike the AniList rule, where restarts ARE the load.
- */
-export const VISIT_INTERVAL_MS = 10 * 60_000;
-
 const CONCURRENCY = 4;
 /** After a refresh, how long to watch for Jellyfin to catch up: 8 x 15 s. */
 const POLL_TRIES = 8;
 const POLL_INTERVAL_MS = 15_000;
 
-export type Trigger = 'visit' | 'admin';
+/** `schedule` = the daily job in index.ts; `admin` = the Refresh Jellyfin button. */
+export type Trigger = 'schedule' | 'admin';
 
 /** One series we added, as the last Sonarr snapshot saw it. */
 export interface OurSeries {
@@ -82,6 +73,7 @@ export interface LibraryAudit {
     series: number;
     episodes: number;
     counts: Record<SubState, number>;
+    dubbed: number;
     stale: number;
     seriesStale: number;
     seriesMissing: number;
@@ -122,24 +114,9 @@ export interface LibraryCheckDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/**
- * May a check start now?
- *
- * One at a time always. A visit additionally waits out `VISIT_INTERVAL_MS`
- * since the last start; an admin pressing the button is never the budget - the
- * same reasoning as *Push now* and the sweep's drain.
- */
-export function decideStart(
-  trigger: Trigger,
-  running: boolean,
-  lastStartedAt: number | null,
-  now: number
-): 'start' | 'running' | 'throttled' {
-  if (running) return 'running';
-  if (trigger === 'visit' && lastStartedAt !== null && now - lastStartedAt < VISIT_INTERVAL_MS) {
-    return 'throttled';
-  }
-  return 'start';
+/** May a check start now? One at a time - a second request joins the first. */
+export function decideStart(running: boolean): 'start' | 'running' {
+  return running ? 'running' : 'start';
 }
 
 /**
@@ -157,16 +134,19 @@ export function totalsOf(rows: LibraryRow[]): LibraryAudit['totals'] {
   const counts: Record<SubState, number> = { fullEng: 0, signsOnly: 0, engAudio: 0, none: 0, unknown: 0 };
   let episodes = 0;
   let stale = 0;
+  let dubbed = 0;
   for (const r of rows) {
     if (!r.audit) continue;
     episodes += r.audit.episodes;
     stale += r.audit.stale;
+    dubbed += r.audit.dubbed ?? 0;
     for (const k of Object.keys(counts) as SubState[]) counts[k] += r.audit.counts[k];
   }
   return {
     series: rows.length,
     episodes,
     counts,
+    dubbed,
     stale,
     seriesStale: rows.filter((r) => r.state === 'stale').length,
     seriesMissing: rows.filter((r) => r.state === 'missing').length,
@@ -262,14 +242,13 @@ async function recordFailure(error: string, at: Date): Promise<void> {
 }
 
 let _running = false;
-let _lastStartedAt: number | null = null;
 
 export function libraryCheckRunning(): boolean {
   return _running;
 }
 
 export interface StartResult {
-  status: 'started' | 'running' | 'throttled';
+  status: 'started' | 'running';
   /**
    * Resolves once the audit is stored and any refreshes are REQUESTED - not when
    * Jellyfin has caught up, which is watched in the background for up to two
@@ -279,20 +258,14 @@ export interface StartResult {
 }
 
 /**
- * Start a check if the rules allow one. Never throws and never makes the caller
+ * Start a check unless one is running. Never throws and never makes the caller
  * wait for Jellyfin to finish rescanning.
- *
- * `makeDeps` is only called once a run is actually starting, so a throttled
- * visit costs nothing at all - not even a config read.
  */
 export function startLibraryCheck(trigger: Trigger, makeDeps: () => Promise<LibraryCheckDeps>): StartResult {
-  const now = Date.now();
-  const decision = decideStart(trigger, _running, _lastStartedAt, now);
-  if (decision !== 'start') return { status: decision };
+  if (decideStart(_running) !== 'start') return { status: 'running' };
   // Set synchronously, before the first await, so a second request arriving in
   // the same tick sees it - the same discipline as the identity sweep's guard.
   _running = true;
-  _lastStartedAt = now;
 
   let resolveFirst!: (v: StoredLibraryAudit) => void;
   const firstPass = new Promise<StoredLibraryAudit>((r) => (resolveFirst = r));

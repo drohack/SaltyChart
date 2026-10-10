@@ -117,16 +117,13 @@ uncovered item was something that had simply always worked:
 - nicknames (36): set through the rename dialog and asserted on the request,
   since saving re-PUTs the whole list and a dropped field still returns 200.
 
-Replaced files and subtitle tracks (37-39):
-- opening Randomize starts exactly ONE library check (37) - fire-and-forget,
-  and never per wheel item. The check is what catches Jellyfin up on a file
-  Sonarr replaced; a page that fired it per show would be a scan per visit.
-- the player's subtitle picker (38), imported from the dev server and fed the
+Replaced files and subtitle tracks (37-38):
+- the player's subtitle picker (37), imported from the dev server and fed the
   real track shapes measured on 2026-10-09: SKYANiME flags its only English
   track forced and it is full dialogue (picking nothing played those episodes
   unsubtitled), while a dual-audio release's forced track is signs and must
   lose to the dialogue track beside it.
-- Hide Not English (39) hides exactly the shows that cannot be watched in
+- Hide Not English (38) hides exactly the shows that cannot be watched in
   English here - not in the library, or an episode with no English subtitles or
   audio (`none`, `signsOnly`) - and keeps a dub, an answer without the field,
   `unknown` and `notAired`, with the shown/hidden counts following. Availability is stubbed so every
@@ -155,7 +152,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 39
+TOTAL = 38
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -2767,7 +2764,6 @@ SELECTABLE_FLOWS = {
     "wheel image quota",
     "theme survives signup",
     "sonarr page renders",
-    "randomize library check",
     "subtitle track picker",
     "hide not english",
     "subtitle batch button",
@@ -2942,66 +2938,23 @@ def test_sonarr_page_renders(page, frontend: str):
     else:
         assert "would add 0" not in text.lower(),             ("the page reported 0 additions while Sonarr had never been read - "
              "'couldn't ask' must never render as 'nothing to do'")
-    step(28, "step 5/5: the subtitle section matches the stored check, never 0 for 'not checked'")
-    lib = page.evaluate("""() => fetch('/api/sonarr/report', {
+    step(28, "step 5/5: the English column shows what the last check found, and only that")
+    rep = page.evaluate("""() => fetch('/api/sonarr/report', {
         headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
-    }).then(r => r.json()).then(d => d.library)""")
-    section = page.query_selector("[data-lib-section]")
-    assert section, "the subtitle section is missing from /admin/sonarr"
-    headline = page.get_attribute("[data-lib-headline]", "data-lib-headline")
-    if lib.get("last") is None:
-        # Asserted the other way too below, so this branch is not the only one.
-        assert headline == "never", (
-            f"no check has ever run, yet the headline is {headline!r} - 'not checked' must "
-            f"never render as a count of zero problems")
-        lib_note = "never checked"
-    else:
-        assert headline == "checked", f"a stored check exists but the headline is {headline!r}"
-        rows_api = lib["last"]["rows"]
-        problem_api = [r for r in rows_api if r["state"] != "allSubbed"]
-        shown = page.evaluate("""() => [...document.querySelectorAll('tr[data-lib-row]')]
-            .map(r => r.getAttribute('data-lib-state'))""")
-        assert len(shown) == len(problem_api), (
-            f"{len(problem_api)} series need attention but {len(shown)} rows render")
-        assert "allSubbed" not in shown, "a fully subbed series rendered among the problem rows"
-        fine = page.evaluate("document.querySelectorAll('li[data-lib-row]').length")
-        assert fine == len(rows_api) - len(problem_api), (
-            f"{len(rows_api) - len(problem_api)} fully subbed series but {fine} listed")
-        lib_note = f"{len(problem_api)} problem rows, {fine} fully subbed"
+    }).then(r => r.json())""")
+    assert not page.query_selector("[data-lib-section]"), (
+        "the old subtitle section is back - the English column replaced it")
+    want = [r["english"]["label"] for r in rep["proposed"] + rep["rejected"] if r.get("english")]
+    cells = page.evaluate("""() => [...document.querySelectorAll('td[data-english]')]
+        .map(c => c.textContent.trim()).filter(Boolean)""")
+    assert sorted(cells) == sorted(want), (
+        f"the English column shows {len(cells)} filled cells but the report carries {len(want)}: "
+        f"{sorted(set(cells) ^ set(want))[:4]}")
+    assert page.query_selector("[data-lib-check]"), "the Refresh Jellyfin button is missing"
+    lib_note = f"{len(cells)} English cells"
     rows = page.evaluate("document.querySelectorAll('tbody tr').length")
     step(28, f"PASS - {rows} rows, one column layout, no clipping or wrapped badges, "
              f"headline honest (observed={observed}); subtitles: {lib_note}")
-
-
-def test_randomize_library_check(page, frontend: str, token: str):
-    """Opening Randomize starts exactly one library check, and does not wait on it.
-
-    The check catches Jellyfin up on files Sonarr replaced (`/library/check`,
-    routes/jellyfin.ts). It is the owner's chosen trigger in place of Sonarr's
-    per-import notification, so the page must ask ONCE per load - a version
-    that fired per wheel item would turn every visit into a scan request per
-    show, which is the churn that trigger was chosen to avoid.
-    """
-    step(37, "step 1/2: loading /random as a signed-in user")
-    page.goto(frontend)
-    page.evaluate("t => localStorage.setItem('token', t)", token)
-    page.goto(f"{frontend}/random")
-    page.wait_for_timeout(6000)
-    step(37, "step 2/2: counting library-check requests")
-    hits = page.evaluate("""() => performance.getEntriesByType('resource')
-        .filter(e => e.name.includes('/api/jellyfin/library/check'))
-        .map(e => e.responseStatus)""")
-    configured = page.evaluate("""() => fetch('/api/jellyfin/status', {
-        headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
-    }).then(r => r.json()).then(d => d.configured)""")
-    if not configured:
-        assert not hits, f"Jellyfin is not configured, yet the page asked for a library check: {hits}"
-        step(37, "PASS - Jellyfin not configured, no check requested")
-        return
-    assert len(hits) == 1, (
-        f"one Randomize load sent {len(hits)} library-check requests - it must be exactly one")
-    assert hits[0] == 202, f"the library check answered {hits[0]}, expected 202"
-    step(37, "PASS - exactly one library check, answered 202")
 
 
 ENGLISH_VERDICTS = [
@@ -3026,7 +2979,7 @@ def test_hide_not_english(page, backend: str, frontend: str, token: str):
     an answer missing the field, `unknown` and `notAired`, the "never act on
     couldn't-ask" rule every bulk hide here obeys.
     """
-    step(39, "step 1/3: seeding eight shows, one per verdict kind")
+    step(38, "step 1/3: seeding eight shows, one per verdict kind")
     ids = season_ids(backend, len(ENGLISH_VERDICTS))
     seed_list(backend, token, ids)
     verdicts = {m: dict(v, matchedBy="id", itemId=f"item{m}", mediaSourceId=f"item{m}")
@@ -3055,13 +3008,13 @@ def test_hide_not_english(page, backend: str, frontend: str, token: str):
         counts = page.inner_text("[data-unwatched-counts]")
         assert counts == f"{len(ids)} shown, 0 hidden", f"counts before hiding read {counts!r}"
 
-        step(39, "step 2/3: pressing Hide Not English")
+        step(38, "step 2/3: pressing Hide Not English")
         page.click("[data-hide-not-english]")
         page.wait_for_function(
             "() => document.querySelector('[data-hide-not-english]').disabled", timeout=20_000)
         page.wait_for_timeout(1000)
 
-        step(39, "step 3/3: the server's hidden set, and the counts")
+        step(38, "step 3/3: the server's hidden set, and the counts")
         rows = requests.get(f"{backend}/api/list", timeout=15,
                             headers={"Authorization": f"Bearer {token}"},
                             params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
@@ -3075,7 +3028,7 @@ def test_hide_not_english(page, backend: str, frontend: str, token: str):
         counts = page.inner_text("[data-unwatched-counts]")
         expect = f"{len(ids) - len(want_hidden)} shown, {len(want_hidden)} hidden"
         assert counts == expect, f"the counts read {counts!r} after hiding, expected {expect!r}"
-        step(39, f"PASS - hid {len(want_hidden)} of {len(ids)} (none, signsOnly, not in library); "
+        step(38, f"PASS - hid {len(want_hidden)} of {len(ids)} (none, signsOnly, not in library); "
                  f"counts {counts!r}")
     finally:
         page.unroute(AVAILABILITY_ROUTE)
@@ -3087,7 +3040,7 @@ def test_subtitle_track_picker(page, frontend: str):
     Imported straight from the dev server, so this runs the shipped function,
     not a copy of it. Each case is a release this library actually holds.
     """
-    step(38, "step 1/1: defaultSubtitleIndex over real release shapes")
+    step(37, "step 1/1: defaultSubtitleIndex over real release shapes")
     page.goto(frontend)
     got = page.evaluate("""async () => {
         const m = await import('/src/lib/jellyfinPrewarm.ts');
@@ -3111,7 +3064,7 @@ def test_subtitle_track_picker(page, frontend: str):
         f"the dual-audio shape picked {got['dualAudio']} - the forced track there is signs for the "
         f"dub and must lose to the dialogue track")
     assert got["cicak"] == 2, f"the CicakRumah shape picked {got['cicak']}"
-    step(38, "PASS - forced-but-full English is used; signs lose to dialogue")
+    step(37, "PASS - forced-but-full English is used; signs lose to dialogue")
 
 
 def main():
@@ -3183,7 +3136,6 @@ def main():
                 ("admin status badges", lambda: test_admin_status_badges(page, args.backend, frontend)),
                 ("compare share image", lambda: test_compare_share_image(page, args.backend, frontend)),
                 ("nicknames set and shown", lambda: test_nicknames_set_and_shown(page, args.backend, frontend, token_a)),
-                ("randomize library check", lambda: test_randomize_library_check(page, frontend, token_a)),
                 ("subtitle track picker", lambda: test_subtitle_track_picker(page, frontend)),
                 ("hide not english",    lambda: test_hide_not_english(page, args.backend, frontend, token_a)),
             ]

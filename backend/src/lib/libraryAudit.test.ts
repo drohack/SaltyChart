@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   auditSeries,
+  englishSummary,
   classifyJellyfin,
   classifySonarr,
   fileName,
@@ -10,7 +11,7 @@ import {
   type SonarrEpisodeLite,
   type JellyfinEpisodeLite,
 } from './libraryAudit';
-import { decideStart, seriesToRefresh, totalsOf, VISIT_INTERVAL_MS, type LibraryRow } from './libraryCheck';
+import { decideStart, seriesToRefresh, totalsOf, type LibraryRow } from './libraryCheck';
 
 // Assertion messages are written as stories on purpose: they become the
 // `expect` substrings mutation_audit.py matches on.
@@ -186,17 +187,31 @@ test('series state: missing beats unknown, and unknown is never allSubbed', () =
   assert.equal(signs.counts.signsOnly, 1);
 });
 
-test('a Randomize visit starts at most one check per interval; an admin is never throttled', () => {
-  const t0 = 1_000_000;
-  assert.equal(decideStart('visit', false, null, t0), 'start');
-  assert.equal(
-    decideStart('visit', false, t0, t0 + VISIT_INTERVAL_MS - 1),
-    'throttled',
-    'a second visit inside the interval started another check'
+test('only one check runs at a time', () => {
+  assert.equal(decideStart(false), 'start');
+  assert.equal(decideStart(true), 'running', 'two checks ran at once');
+});
+
+test('the English cell: green only when every episode has subs or a dub', () => {
+  const ENG_AUDIO: JellyfinStream = { type: 'Audio', language: 'eng' };
+  const two = (b: JellyfinStream[]) =>
+    auditSeries([ep(1, '/m/a.mkv'), ep(2, '/m/b.mkv')], [jf('/d/a.mkv'), jf('/d/b.mkv', b)]);
+  assert.deepEqual(englishSummary(two([VIDEO, JPN_AUDIO, sub('')])), { label: 'subs', ok: true });
+  assert.deepEqual(englishSummary(two([VIDEO, JPN_AUDIO, ENG_AUDIO, sub('')])), { label: 'subs + dub', ok: true });
+  assert.deepEqual(
+    englishSummary(two([VIDEO, JPN_AUDIO])),
+    { label: 'subs 1/2', ok: false },
+    'a series with a raw episode read as fully English'
   );
-  assert.equal(decideStart('visit', false, t0, t0 + VISIT_INTERVAL_MS), 'start');
-  assert.equal(decideStart('admin', false, t0, t0 + 1), 'start', 'the admin button was throttled');
-  assert.equal(decideStart('admin', true, t0, t0 + 1), 'running', 'two checks ran at once');
+  assert.deepEqual(
+    englishSummary(two([VIDEO, JPN_AUDIO, sub('Forced', { isForced: true })])),
+    { label: 'subs 1/2', ok: false },
+    'a signs-only episode counted as English in the column'
+  );
+  const raws = auditSeries([ep(1, '/m/a.mkv')], [jf('/d/a.mkv', [VIDEO, JPN_AUDIO])]);
+  assert.deepEqual(englishSummary(raws), { label: 'no English', ok: false });
+  const dubOnly = auditSeries([ep(1, '/m/a.mkv')], [jf('/d/a.mkv', [VIDEO, ENG_AUDIO])]);
+  assert.deepEqual(englishSummary(dubOnly), { label: 'dub', ok: true });
 });
 
 const row = (title: string, state: LibraryRow['state'], jellyfinId: string | null): LibraryRow => ({
@@ -221,6 +236,25 @@ test('only stale series Jellyfin holds are refreshed', () => {
     ['Stale'],
     'a series whose files did not change was refreshed - that is a library scan by another name'
   );
+});
+
+test('dubs are counted on their own, whatever the subtitles say', () => {
+  const ENG_AUDIO: JellyfinStream = { type: 'Audio', language: 'eng' };
+  const audit = auditSeries(
+    [ep(1, '/m/a.mkv'), ep(2, '/m/b.mkv'), ep(3, '/m/c.mkv')],
+    [
+      jf('/d/a.mkv', [VIDEO, JPN_AUDIO, ENG_AUDIO, sub('')]), // dual audio, subbed
+      jf('/d/b.mkv', [VIDEO, JPN_AUDIO, sub('')]),             // subbed, no dub
+      jf('/d/c.mkv', [VIDEO, ENG_AUDIO]),                      // dub only
+    ]
+  );
+  assert.equal(audit.dubbed, 2, 'a dual-audio release with full subtitles lost its dub in the count');
+  assert.equal(audit.counts.fullEng, 2);
+  const fromSonarr = auditSeries(
+    [{ ...ep(1, '/m/a.mkv'), file: { path: '/m/a.mkv', releaseGroup: null, quality: null, audioLanguages: 'jpn/eng', subtitles: 'eng' } }],
+    null
+  );
+  assert.equal(fromSonarr.dubbed, 1, "Sonarr's audio codes must count a dub when Jellyfin cannot be matched");
 });
 
 test('totals add up across rows and count Sonarr-only rows as unmatched', () => {

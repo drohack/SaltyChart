@@ -49,6 +49,7 @@ import {
 import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
 import { alreadyRanToday } from '../lib/scheduling';
 import { readLibraryAudit, libraryCheckRunning } from '../lib/libraryCheck';
+import { englishSummary } from '../lib/libraryAudit';
 import { requestLibraryCheck } from './jellyfin';
 
 /**
@@ -185,10 +186,17 @@ interface SnapshotStatus {
   orphans?: Orphan[];
   /**
    * The marker-tagged series themselves, for the library check
-   * (`lib/libraryCheck.ts`): it can be started by a Randomize visit, so it must
-   * not pull the 2,400-series library to find out which ones are ours.
+   * (`lib/libraryCheck.ts`), so it never has to pull the 2,400-series library
+   * to find out which ones are ours.
    */
   ours?: OurSeriesSnapshot[];
+  /**
+   * Held series the current/next season's entries point at that we did NOT
+   * add - sequels and hand-added shows. Audited too, so the English column on
+   * /admin/sonarr covers every row Sonarr holds, not only marker-tagged ones.
+   * Never used to decide ownership; that stays the marker's job.
+   */
+  seasonHeld?: OurSeriesSnapshot[];
   /** Quality profiles, so the report can name the configured one and say whether it upgrades. */
   profiles?: SonarrQualityProfile[];
 }
@@ -474,6 +482,23 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
                     qualityProfileId: s.qualityProfileId ?? null,
                     episodeFileCount: s.episodeFileCount ?? 0,
                   })),
+          seasonHeld: (() => {
+            const want = new Set<number>(assembled.items.map((i) => i.tvdbId));
+            for (const r of assembled.rejected) {
+              const id = typeof r.entry?.id === 'number' ? Number(resolveIdentity(r.entry.id).tvdbId) : NaN;
+              if (Number.isInteger(id) && id > 0) want.add(id);
+            }
+            return snapshot.series
+              .filter((s) => want.has(s.tvdbId) && (markerId === null || !s.tags.includes(markerId)))
+              .map((s) => ({
+                sonarrId: s.id,
+                tvdbId: s.tvdbId,
+                title: s.title,
+                titleSlug: s.titleSlug ?? null,
+                qualityProfileId: s.qualityProfileId ?? null,
+                episodeFileCount: s.episodeFileCount ?? 0,
+              }));
+          })(),
           ...(profiles ? { profiles } : {}),
           taggedAnyCount: allTagIds.length
             ? snapshot.series.filter((s) => s.tags.some((t) => allTagIds.includes(t))).length
@@ -952,6 +977,14 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
     const status = await readSnapshotStatus();
     const published = await pushEnabled();
     const library = await readLibraryAudit();
+    // tvdbId -> the one English cell, from the last library check. Rows Sonarr
+    // does not hold (or that no check has seen yet) get null and render blank.
+    const englishBy = new Map<number, { label: string; ok: boolean }>();
+    for (const r of library.last?.rows ?? []) {
+      if (r.audit && r.audit.episodes > 0) englishBy.set(r.tvdbId, englishSummary(r.audit));
+    }
+    const english = (tvdbId: number | null | undefined) =>
+      (tvdbId != null && englishBy.get(Number(tvdbId))) || null;
     const profile = status?.profiles?.find((p) => p.id === cfg?.qualityProfileId) ?? null;
 
     // Read what the last snapshot observed - this path makes NO Sonarr calls.
@@ -1038,10 +1071,15 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       sonarr: { observed, held: heldIds.size, excluded: excludedIds.size, at: status?.at ?? null },
       seasons: a.perSeason,
       withinDays: DEFAULT_WITHIN_DAYS,
-      proposed: a.items.map((i) => ({ ...describeProposed(i, a.entries), state: state(i.tvdbId) })),
+      proposed: a.items.map((i) => ({
+        ...describeProposed(i, a.entries),
+        state: state(i.tvdbId),
+        english: english(i.tvdbId),
+      })),
       rejected: a.rejected.map((r) => ({
         ...describe(r.entry),
         reason: r.reason,
+        english: english(describe(r.entry).tvdbId),
         // Only the sequel rejections carry this; everything else gets null and
         // the page renders nothing rather than an empty label.
         parent: r.reason === 'notFirstSeason' ? describeParent(r.entry, heldIds) : null,
@@ -1128,8 +1166,8 @@ router.put('/enabled', requireAuth, requireAdmin, async (req, res) => {
 });
 
 /**
- * Run the library check now: audit English subtitles across the series we
- * added, and ask Jellyfin to refresh any whose files Sonarr has replaced.
+ * The Refresh Jellyfin button: run the library check now - fill the English
+ * column, and ask Jellyfin to rescan any series whose files Sonarr replaced.
  *
  * Waits for the first pass (audit stored, refreshes requested) but not for
  * Jellyfin to finish rescanning, which is watched in the background and lands

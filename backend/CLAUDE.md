@@ -147,14 +147,6 @@ Routes (contracts here; each guard's story is commented at its code):
   cache kept handing out the dead id - a hard reload did not help. The pop-up
   now notices `ITEM_GONE` on its prewarm, re-asks with `fresh: true`, and points
   Watch at the new episode before anyone presses it.
-- `POST /library/check` - **viewer-gated** (JWT, no admin), the second
-  exception after `/library/search`. Starts the library check (see *The library
-  check* under the Sonarr section) and returns `202 { status: started | running
-  | throttled }` at once. Randomize calls it on load, logged-in only. A visit
-  starts at most one run per `VISIT_INTERVAL_MS` (10 min); what a viewer can
-  cause is bounded to one ~165-request LAN read plus a Jellyfin `Refresh` of
-  series whose files genuinely changed - never a Sonarr write, never a
-  full-library scan.
 - `GET  /stream/*` - GET-only streaming proxy (JWT header or `?token=`).
   Forwards `Range`, destroys upstream on client disconnect. **Manifests are
   buffered and refused if they contain a credential** - Jellyfin embeds the
@@ -309,11 +301,18 @@ do not own. `lib/sonarrPush.ts` holds this argument at the code.
   was caught in a browser, not by any test). Also carries `library` (the cached
   library check: `last` null means never checked, never zero problems) and
   `config.qualityProfileName` / `qualityProfileUpgrades`, named from the
-  snapshot's cached profile list - still no Sonarr call on a page load.
-- `POST /library/check` - admin; runs the library check now, bypassing the
-  visit throttle, and answers once the audit is stored and any refreshes are
+  snapshot's cached profile list - still no Sonarr call on a page load. Every
+  proposed and rejected row carries `english: { label, ok } | null`
+  (`englishSummary`): `subs` / `dub` / `subs + dub` / `no English`, with a
+  `watchable/episodes` count when only some episodes have English; null when
+  the last check did not see that tvdbId. For a sequel row the count covers
+  every episode Sonarr holds for the series, earlier seasons included.
+- `POST /library/check` - admin; the **Refresh Jellyfin** button. Runs the
+  library check now and answers once the audit is stored and any refreshes are
   requested (Jellyfin catching up is watched in the background). Takes a
-  snapshot first when the stored one predates the `ours` field.
+  snapshot first when the stored one predates the `ours` field. The same check
+  runs daily from `index.ts`, on the Sonarr push timer (so also once ~12 min
+  after each boot); there is no other trigger.
 - `PUT /enabled` - admin; the master switch, **`sonarrPushEnabled`, default
   off**. Deliberately a new key rather than a rename of the list era's
   `sonarrListEnabled`: reusing it would have inherited an existing `true` and
@@ -549,8 +548,8 @@ warns when one is chosen.
 ### The library check - English subtitles, and Jellyfin catching up
 
 `lib/libraryCheck.ts` (I/O, deps injected) over `lib/libraryAudit.ts` (pure, the
-rules). One pass over every **marker-tagged** series with files, from the
-snapshot's cached `ours` list:
+rules). One pass over every series in scope (below), from the snapshot's cached
+`ours` + `seasonHeld` lists:
 
 1. Sonarr `GET /api/v3/episode?seriesId=&includeEpisodeFile=true` - one call per
    series answers both "which episode" and "what is in the file". A read; the
@@ -584,10 +583,15 @@ snapshot's cached `ours` list:
 
 **Why SaltyChart does this instead of Sonarr's Connect -> Emby/Jellyfin "Update
 Library"**: it is deliberately OFF - the owner does not want Jellyfin told about
-every import. This is narrower: only series whose files changed, only when
-someone opens Randomize (throttled to one run per 10 min, `POST
-/api/jellyfin/library/check`) or an admin presses Check now. Measured cost
-2026-10-09: 82 series, ~165 LAN requests, 1-4 s.
+every import. This is narrower: only series whose files changed, once a day on
+the scheduled job or when an admin presses **Refresh Jellyfin**. Measured cost
+2026-10-09: 82 series, ~165 LAN requests, 1-4 s. (A Randomize-visit trigger
+existed briefly and was dropped at the owner's request - daily is enough.)
+
+**Scope**: the marker-tagged series with files, plus `seasonHeld` - held
+series the current and next season's entries point at that we did not add
+(sequels, hand-added shows) - so the English column covers every row Sonarr
+holds. 99 series on 2026-10-10.
 
 Baseline that day (after the fixes): 685 episodes, 641 full English, 1
 signs-only, 1 English audio, 42 none, 0 stale, 0 unmatched once the library was

@@ -408,19 +408,6 @@ $: _lang = $options.titleLanguage;
     showPlayer = true;
   }
 
-  // Catch the library up on files Sonarr has replaced - see `/library/check`
-  // in routes/jellyfin.ts. Fire-and-forget and logged-in only: the server
-  // throttles it to one check per ten minutes, and the wheel never waits on it.
-  let libraryCheckAsked = false;
-  $: if ($mediaConfigured && $authToken && !libraryCheckAsked) {
-    libraryCheckAsked = true;
-    apiFetch(
-      '/api/jellyfin/library/check',
-      { method: 'POST', headers: { Authorization: `Bearer ${$authToken}` } },
-      { label: 'randomize/library-check', timeoutMs: QUICK, retries: 0 }
-    ).catch(() => console.warn('[randomize] library check request failed'));
-  }
-
   /** The player chunk is fetched early - its weight and why are on `warmPlayerAssets` below. */
   let playerModalPromise: Promise<any> | null = null;
 

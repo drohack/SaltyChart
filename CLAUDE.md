@@ -240,7 +240,7 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 192 rows
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 191 rows
   now (2026-10-09) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
@@ -302,8 +302,7 @@ reading the server's CPU from the mirrored syslog.
   row is served stale while a background refresh runs** - only a never-fetched
   season blocks on AniList.
 - `/api/jellyfin` - availability, playback, streaming; contracts in
-  `backend/CLAUDE.md`. `POST /library/check` is **viewer-gated**: Randomize
-  starts the library check (throttled, refreshes only stale series).
+  `backend/CLAUDE.md`.
 - `/api/sonarr` - the Sonarr auto-add. **Admin-only throughout** (there is no
   public route; the Custom List that needed one is gone), and the **only place
   in this codebase that writes to Sonarr**. It must never trigger a cold AniList
@@ -767,7 +766,7 @@ pip install youtube-transcript-api     # without it no CC check reaches a
   (`Get-CimInstance Win32_Process -Filter "Name='node.exe'"`), not just the port.
 - Segments 500 or a dead itemId right after a Sonarr upgrade: Jellyfin still
   names the deleted file, or rescanned it under a new id. The library check
-  (`/admin/sonarr` -> Check now) fixes both; Sonarr's "Update Library" is off
+  (`/admin/sonarr` -> Refresh Jellyfin; also daily) fixes both; Sonarr's "Update Library" is off
   on purpose.
 - If the backend starts but every request returns 500, `DATABASE_URL` is
   missing. The server now exits with `[FATAL]` on startup if it's not set.

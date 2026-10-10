@@ -217,15 +217,15 @@ chronological order; all features listed are live.
 - **/admin/matching** - review and correct how AniList entries were matched to
   your library. A correction is remembered permanently.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
-  done, with a *Add now* button and a pause switch. It also lists which of the
-  series SaltyChart added have **English subtitles**, episode by episode: no
-  subs, signs-and-songs only, or English audio only, read from Jellyfin's own
-  subtitle tracks, with each series linked to Sonarr to find a better release.
-  The same check spots episodes Sonarr has replaced that Jellyfin has not picked
-  up yet (they cannot play until it does) and asks Jellyfin to refresh just those
-  series. It runs when someone opens Randomize (at most every 10 minutes) or
-  when an admin presses *Check now*. Sonarr's own "Update Library" connection
-  can stay off.
+  done, with a *Add now* button and a pause switch. An **English** column on
+  every show Sonarr holds says whether it has English subtitles, a dub, or both
+  - green when every episode does, red (with a count) when some or none do - read
+  from Jellyfin's own tracks, so a signs-only track does not count. **Refresh
+  Jellyfin** (top of the page) is for after you change a series in Sonarr: it
+  finds episodes Sonarr replaced that Jellyfin has not picked up yet (they cannot
+  play until it does), asks Jellyfin to rescan just those series, and updates the
+  column. It also runs once a day on its own, so Sonarr's "Update Library"
+  connection can stay off.
 - **Replaced episodes heal themselves in the player.** When Sonarr upgrades a
   file, Jellyfin gives the episode a new id; the Randomize pop-up notices and
   points *Watch* at the new one instead of opening a black player. Series whose

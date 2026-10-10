@@ -444,7 +444,8 @@ export async function sonarrEpisodesWithFiles(
 export const SONARR_SNAPSHOT_KEY = 'sonarrSnapshotStatus';
 
 /**
- * The series we added, as the last snapshot recorded them - marker-tagged only.
+ * The series the library check audits, as the last snapshot recorded them: the
+ * marker-tagged ones we added, plus held series the current seasons point at.
  *
  * Read from the cache rather than Sonarr because `/api/v3/series` is the whole
  * library (2,400 series) and the library check can be started by a page visit.
@@ -457,7 +458,11 @@ export async function readSnapshotOurs(): Promise<OurSeriesSnapshot[] | null> {
   if (!row?.value) return null;
   try {
     const parsed = JSON.parse(row.value);
-    return Array.isArray(parsed?.ours) ? (parsed.ours as OurSeriesSnapshot[]) : null;
+    if (!Array.isArray(parsed?.ours)) return null;
+    // Ours plus the season's held series we did not add (`seasonHeld`), so the
+    // English column covers every row Sonarr holds. Deduped by Sonarr id.
+    const all = [...(parsed.ours as OurSeriesSnapshot[]), ...((parsed.seasonHeld ?? []) as OurSeriesSnapshot[])];
+    return [...new Map(all.map((s) => [s.sonarrId, s])).values()];
   } catch {
     return null;
   }

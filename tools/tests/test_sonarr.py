@@ -571,18 +571,24 @@ def library_check_step(backend: str, auth: dict) -> None:
             continue
         if sum(a["counts"][k] for k in SUB_STATES) != a["episodes"]:
             fail(10, f"{r['title']!r}: subtitle counts do not sum to its episodes")
+        if not 0 <= a.get("dubbed", 0) <= a["episodes"]:
+            fail(10, f"{r['title']!r}: {a.get('dubbed')} dubbed of {a['episodes']} episodes")
         if sum(1 for p in a["problems"] if p["sub"] == "none") != a["counts"]["none"]:
             fail(10, f"{r['title']!r}: a no-subs episode is missing from its problem list")
+    if totals.get("dubbed") != sum(r["audit"].get("dubbed", 0) for r in audited):
+        fail(10, "totals.dubbed is not the sum of the rows")
     if totals["seriesMissing"] != sum(1 for r in rows if r["state"] == "missing"):
         fail(10, "totals.seriesMissing disagrees with the rows")
 
-    # Scope: exactly the marker-tagged series with files, as the snapshot saw them.
-    ours = (rep.get("snapshot") or {}).get("ours")
-    if isinstance(ours, list):
-        want = {o["sonarrId"] for o in ours if o.get("episodeFileCount", 0) > 0}
+    # Scope: the marker-tagged series with files plus the season's held series
+    # we did not add (`seasonHeld`), as the snapshot saw them - nothing else.
+    snapshot = rep.get("snapshot") or {}
+    if isinstance(snapshot.get("ours"), list):
+        scope = snapshot["ours"] + (snapshot.get("seasonHeld") or [])
+        want = {o["sonarrId"] for o in scope if o.get("episodeFileCount", 0) > 0}
         got = {r["sonarrId"] for r in rows}
         if want != got:
-            fail(10, f"audited {len(got)} series, the snapshot lists {len(want)} of ours with "
+            fail(10, f"audited {len(got)} series, the snapshot scope has {len(want)} with "
                      f"files - scope drifted (extra {sorted(got - want)[:5]}, missing "
                      f"{sorted(want - got)[:5]})")
 

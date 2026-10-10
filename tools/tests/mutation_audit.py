@@ -2884,17 +2884,6 @@ MUTATIONS: list[Mutation] = [
         guards="every Randomize visit asks Jellyfin to rescan every series we added",
     ),
     Mutation(
-        name="a Randomize visit is never throttled",
-        path=BACKEND_LIBCHECK,
-        find="  if (trigger === 'visit' && lastStartedAt !== null && now - lastStartedAt < VISIT_INTERVAL_MS) {",
-        # Written so it still type-checks: `false && ...` is a TS error, which
-        # failed the whole test file for the wrong reason on its first run.
-        replace="  if (trigger === 'visit' && lastStartedAt !== null && now - lastStartedAt < 0) { /* mutation */",
-        test=T_UNIT,
-        expect="a second visit inside the interval started another check",
-        guards="every Randomize load runs a ~165-request check against Sonarr and Jellyfin",
-    ),
-    Mutation(
         name="the library check is scoped on any applied tag instead of the marker",
         path=BACKEND_SONARR_ROUTE,
         # `anime` is applied too and sits on 692 series, most of which we never
@@ -2926,15 +2915,6 @@ MUTATIONS: list[Mutation] = [
         guards="a replaced episode stays unplayable for an hour behind a misleading error",
     ),
     Mutation(
-        name="the library check is callable without signing in",
-        path=BACKEND_JF,
-        find="router.post('/library/check', jellyfinLimiter, requireAuth, (_req, res) => {",
-        replace="router.post('/library/check', jellyfinLimiter, (_req, res) => {",
-        test=T_JELLYFIN,
-        expect="/library/check without token",
-        guards="anyone on the internet can make the server ask Jellyfin to refresh series",
-    ),
-    Mutation(
         name="the player skips a forced English track even when it is the only one",
         path=PREWARM,
         # SKYANiME's only English track is flagged forced and is full dialogue;
@@ -2945,16 +2925,6 @@ MUTATIONS: list[Mutation] = [
         flows=("subtitle track picker",),
         expect="skipping it plays the episode with no subtitles",
         guards="SKYANiME episodes play without subtitles in the SaltyChart player",
-    ),
-    Mutation(
-        name="opening Randomize never starts the library check",
-        path=RANDOMIZE,
-        find="  $: if ($mediaConfigured && $authToken && !libraryCheckAsked) {",
-        replace="  $: if (false && $mediaConfigured && $authToken && !libraryCheckAsked) {",
-        test=T_UI,
-        flows=("randomize library check",),
-        expect="it must be exactly one",
-        guards="replaced files are only picked up by Jellyfin's 12-hour scan",
     ),
     Mutation(
         name="Hide Not English also hides dubs, unknowns and verdicts without the field",
@@ -2988,6 +2958,30 @@ MUTATIONS: list[Mutation] = [
         test=T_JELLYFIN,
         expect="every fresh verdict must say what its episode offers an English speaker",
         guards="Hide Not English silently does nothing - every verdict reads as unknown",
+    ),
+    Mutation(
+        name="dubs are only counted on episodes with no subtitles",
+        path=BACKEND_LIBAUDIT,
+        # The tempting shortcut - reuse the subtitle verdict - loses every dub on
+        # a dual-audio release with full subtitles, which is exactly what the
+        # Anime Dual Audio profile grabs. The Dub column would read 0 for them.
+        find="    if (hasEnglishAudio(jf ? jf.streams : null, file)) dubbed++;",
+        replace="    if (sub === 'engAudio') dubbed++; /* mutation */",
+        test=T_UNIT,
+        expect="a dual-audio release with full subtitles lost its dub in the count",
+        guards="the English dub column on /admin/sonarr reads 0 for every dual-audio release",
+    ),
+    Mutation(
+        name="the English column counts a signs-only episode as English",
+        path=BACKEND_LIBAUDIT,
+        # Green must mean every episode can be watched in English. A forced
+        # signs track for a dub is not that, and counting it paints a series
+        # with a raw-subbed episode green on /admin/sonarr.
+        find="  const watchable = a.counts.fullEng + a.counts.engAudio;",
+        replace="  const watchable = a.counts.fullEng + a.counts.engAudio + a.counts.signsOnly; /* mutation */",
+        test=T_UNIT,
+        expect="a signs-only episode counted as English in the column",
+        guards="series with signs-only episodes show green in the English column",
     ),
 ]
 

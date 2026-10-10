@@ -1665,29 +1665,13 @@ async function libraryCheckDeps(): Promise<LibraryCheckDeps> {
   return { ours, readSonarrEpisodes: (id) => sonarrEpisodesWithFiles(sonarr, id), jellyfin };
 }
 
-/** Start a library check. Shared by the viewer route below and the admin route in `routes/sonarr.ts`. */
+/**
+ * Start a library check: the daily job in index.ts, and the admin's Refresh
+ * Jellyfin button (`POST /api/sonarr/library/check`).
+ */
 export function requestLibraryCheck(trigger: Trigger) {
   return startLibraryCheck(trigger, libraryCheckDeps);
 }
-
-/**
- * Catch Jellyfin up on files Sonarr has replaced - started by a Randomize visit.
- *
- * VIEWER-GATED on purpose (`requireAuth`, no `requireAdmin`), the second such
- * exception after `/library/search`. The owner chose this trigger over
- * Sonarr's per-import "Update Library" notification: a check when someone is
- * about to watch, at most once per `VISIT_INTERVAL_MS`, refreshing ONLY series
- * whose Jellyfin paths no longer match Sonarr's files. What a viewer can cause
- * is therefore bounded to one ~165-request LAN check per ten minutes plus a
- * Jellyfin `Refresh` of series that are genuinely broken - never a write to
- * Sonarr and never a full-library scan.
- *
- * Returns 202 immediately; the page never waits on it.
- */
-router.post('/library/check', jellyfinLimiter, requireAuth, (_req, res) => {
-  const { status } = requestLibraryCheck('visit');
-  res.status(202).json({ status });
-});
 
 /**
  * Search the held library so a viewer can correct a wrong match.
