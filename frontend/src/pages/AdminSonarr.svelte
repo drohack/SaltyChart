@@ -139,6 +139,56 @@
     lastAttemptAt: string | null;
     lastError: string | null;
   };
+  /** What one episode offers an English speaker - `lib/libraryAudit.ts` decides it. */
+  type SubState = 'fullEng' | 'signsOnly' | 'engAudio' | 'none' | 'unknown';
+  type LibProblem = {
+    season: number;
+    episode: number;
+    title: string;
+    sub: SubState;
+    stale: boolean;
+    releaseGroup: string | null;
+    quality: string | null;
+    audio: string | null;
+  };
+  type LibRow = {
+    sonarrId: number;
+    tvdbId: number;
+    title: string;
+    titleSlug: string | null;
+    qualityProfileId: number | null;
+    jellyfinId: string | null;
+    state: 'stale' | 'missing' | 'unknown' | 'allSubbed' | 'error';
+    error?: string;
+    audit?: {
+      source: 'jellyfin' | 'sonarr';
+      episodes: number;
+      counts: Record<SubState, number>;
+      stale: number;
+      problems: LibProblem[];
+    };
+  };
+  type LibraryAudit = {
+    at: string;
+    trigger: 'visit' | 'admin';
+    rows: LibRow[];
+    totals: {
+      series: number;
+      episodes: number;
+      counts: Record<SubState, number>;
+      stale: number;
+      seriesStale: number;
+      seriesMissing: number;
+      unmatched: number;
+      errors: number;
+    };
+    refresh: {
+      requested: { jellyfinId: string; title: string }[];
+      failed: { jellyfinId: string; title: string; error: string }[];
+      settled: boolean;
+      stillStale: string[];
+    } | null;
+  };
   type Report = {
     published: boolean;
     config: {
@@ -149,6 +199,10 @@
       taggedOfOurs: number;
       rootFolderPath: string;
       qualityProfileId: number;
+      qualityProfileName: string | null;
+      /** False is the setting that let raws stick. Null until a snapshot recorded the profiles. */
+      qualityProfileUpgrades: boolean | null;
+      profiles: { id: number; name: string; upgradeAllowed: boolean }[];
       seriesType: string;
       /** Setup steps still outstanding. Non-empty means a push cannot run. */
       problems: string[];
@@ -175,6 +229,13 @@
     pushes: Push[];
     orphans: { tvdbId: number; title: string; anilistId: number; nowTvdbId: number }[];
     counts: { proposed: number; rejected: Record<string, number> };
+    /** `last: null` is "never checked" - never render it as zero problems. */
+    library: {
+      last: LibraryAudit | null;
+      lastError: string | null;
+      lastAttemptAt: string | null;
+      running: boolean;
+    };
   };
 
   /** What a `POST /push` came back with. Rendered as a notice, not stored. */
@@ -265,6 +326,45 @@
       notice = 'That did not go through. Nothing was changed.';
     } finally {
       busy = '';
+    }
+  }
+
+  /**
+   * Run the library check now, then follow any Jellyfin refresh it asked for.
+   *
+   * The server answers once the audit is stored and refreshes are requested;
+   * whether Jellyfin actually caught up lands up to two minutes later, so the
+   * page re-reads the report until the refresh settles rather than leaving a
+   * "watching..." line on screen forever.
+   */
+  async function checkLibraryNow() {
+    busy = 'library';
+    notice = '';
+    try {
+      const r = await apiJson<Report['library'] & { status: string }>(
+        '/api/sonarr/library/check',
+        { method: 'POST', headers: auth },
+        { timeoutMs: 90_000, retries: 0, label: 'sonarr-library-check' }
+      );
+      if (r.status === 'running') {
+        notice = 'A check is already running - its results will appear here shortly.';
+      } else if (r.lastError) {
+        notice = `The check failed: ${r.lastError}`;
+      } else {
+        const n = r.last?.refresh?.requested.length ?? 0;
+        notice = n
+          ? `Checked. Asked Jellyfin to refresh ${n} series; watching for it to catch up.`
+          : 'Checked.';
+      }
+      await load();
+    } catch {
+      notice = 'The library check could not run.';
+    } finally {
+      busy = '';
+    }
+    for (let i = 0; i < 9 && report?.library.last?.refresh && !report.library.last.refresh.settled; i++) {
+      await new Promise((r) => setTimeout(r, 20_000));
+      await load();
     }
   }
 
@@ -420,6 +520,81 @@
    */
   const ATTENTION = new Set(['lookupFailed', 'failed']);
   $: needsAttention = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status));
+
+  // -- English subtitles in what we added (the library check) --------------
+  $: lib = report?.library ?? null;
+  $: libRows = lib?.last?.rows ?? [];
+  /** Fully subbed series fold away behind a count; everything else is a row someone can act on. */
+  $: libProblemRows = libRows.filter((r) => r.state !== 'allSubbed');
+  $: libFineRows = libRows.filter((r) => r.state === 'allSubbed');
+  $: libMissingEpisodes = lib?.last ? lib.last.totals.counts.none + lib.last.totals.counts.signsOnly : 0;
+  $: profileById = new Map((report?.config.profiles ?? []).map((p) => [p.id, p]));
+
+  const LIB_STATE: Record<LibRow['state'], { label: string; cls: string; title: string }> = {
+    stale: {
+      label: 'Jellyfin out of date',
+      cls: 'badge-warning',
+      title:
+        'Sonarr replaced or added a file Jellyfin has not picked up yet, so that episode cannot play. ' +
+        'Check now asks Jellyfin to refresh just this series.',
+    },
+    missing: {
+      label: 'missing subs',
+      cls: 'badge-error',
+      title:
+        'At least one episode has no English subtitle track, or only a signs-and-songs one. Under ' +
+        'Anime Dual Audio, Sonarr replaces it only when a dual-audio release turns up.',
+    },
+    error: {
+      label: "couldn't check",
+      cls: 'badge-error badge-outline',
+      title: 'Sonarr did not answer for this series, so nothing is known - not "fine".',
+    },
+    unknown: {
+      label: 'not analysed',
+      cls: 'badge-outline',
+      title: 'No media info yet for at least one file. Not counted as subbed.',
+    },
+    allSubbed: {
+      label: 'all subbed',
+      cls: 'badge-success badge-outline',
+      title: 'Every episode on disk has a full English subtitle track.',
+    },
+  };
+
+  const SUB_LABEL: Record<SubState, string> = {
+    none: 'no subs',
+    signsOnly: 'signs only',
+    engAudio: 'English audio, no subs',
+    unknown: 'not analysed',
+    fullEng: 'subbed',
+  };
+
+  function problemText(p: LibProblem): string {
+    const ep = `S${String(p.season).padStart(2, '0')}E${String(p.episode).padStart(2, '0')}`;
+    const what = p.stale ? 'Jellyfin out of date' : SUB_LABEL[p.sub];
+    return `${ep} ${what}${p.releaseGroup ? ` (${p.releaseGroup})` : ''}`;
+  }
+
+  function ago(iso: string): string {
+    const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const h = Math.round(mins / 60);
+    return h < 48 ? `${h} h ago` : new Date(iso).toLocaleDateString();
+  }
+
+  function profileNote(id: number | null): { name: string; warn: boolean; title: string } | null {
+    const prof = id != null ? profileById.get(id) : undefined;
+    if (!prof) return null;
+    if (!prof.upgradeAllowed) {
+      return { name: prof.name, warn: true, title: 'This profile never replaces a file, so a raw stays raw.' };
+    }
+    if (report && prof.id !== report.config.qualityProfileId) {
+      return { name: prof.name, warn: true, title: 'Not the profile new series are added with.' };
+    }
+    return { name: prof.name, warn: false, title: '' };
+  }
   $: pushesSorted = [
     ...needsAttention,
     ...(report?.pushes ?? []).filter((p) => !ATTENTION.has(p.status)),
@@ -987,6 +1162,145 @@
           </div>
         </details>
       {/each}
+    </div>
+
+    <!-- English subtitles in what we added, and whether Jellyfin has caught
+         up with Sonarr. A different question from the rest of this page (what
+         is ABOUT to be added): this is the health of what already was. The
+         verdicts come from lib/libraryAudit.ts and are never recomputed here. -->
+    <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3" data-lib-section>
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="font-semibold">English subtitles in what we added</h2>
+        <button
+          class="btn btn-sm btn-outline normal-case ml-auto"
+          data-lib-check
+          title="Reads every series we added from Sonarr and Jellyfin, and asks Jellyfin to refresh any series whose files Sonarr has replaced."
+          on:click={checkLibraryNow}
+          disabled={busy === 'library' || !!lib?.running}
+        >
+          {busy === 'library' || lib?.running ? 'Checking...' : 'Check now'}
+        </button>
+      </div>
+
+      {#if !lib?.last}
+        <!-- Never "0 missing": no check has run, which is not the same thing. -->
+        <p class="text-sm opacity-70 mt-1" data-lib-headline="never">
+          {#if lib?.lastError}
+            Not checked successfully yet: <span class="text-error">{lib.lastError}</span>
+          {:else}
+            Not checked yet. It runs when someone opens Randomize (at most every 10 minutes), or
+            press Check now.
+          {/if}
+        </p>
+      {:else}
+        <p class="text-sm mt-1" data-lib-headline="checked">
+          <b class:text-error={libMissingEpisodes > 0}>{libMissingEpisodes}</b>
+          {libMissingEpisodes === 1 ? 'episode' : 'episodes'} without English subtitles across
+          <b>{lib.last.totals.seriesMissing}</b> series{#if lib.last.totals.seriesStale},
+            <b class="text-warning">{lib.last.totals.seriesStale}</b> out of date in Jellyfin{/if}{#if lib.last.totals.errors},
+            <b class="text-error">{lib.last.totals.errors}</b> could not be checked{/if}.
+          <span class="opacity-60">
+            {libFineRows.length} of {lib.last.totals.series} fully subbed - checked {ago(lib.last.at)}
+            {lib.last.trigger === 'visit' ? 'by a Randomize visit' : 'by an admin'}.
+          </span>
+        </p>
+        {#if lib.lastError}
+          <p class="text-sm text-warning mt-1">
+            The latest check failed ({lib.lastError}); showing the one before it.
+          </p>
+        {/if}
+        {#if lib.last.refresh}
+          <p class="text-sm mt-1" data-lib-refresh={lib.last.refresh.settled ? 'settled' : 'watching'}>
+            {#if !lib.last.refresh.settled}
+              <span class="loading loading-spinner loading-xs align-middle"></span>
+              Asked Jellyfin to refresh {lib.last.refresh.requested.length} series - watching for it to
+              catch up (up to two minutes).
+            {:else if lib.last.refresh.stillStale.length}
+              <span class="text-error">
+                Jellyfin is still out of date after a refresh for {lib.last.refresh.stillStale.join(', ')}.
+                Run a library scan in Jellyfin.
+              </span>
+            {:else if lib.last.refresh.requested.length}
+              Jellyfin caught up on {lib.last.refresh.requested.map((r) => r.title).join(', ')}.
+            {/if}
+            {#if lib.last.refresh.failed.length}
+              <span class="text-error">
+                Could not ask Jellyfin to refresh {lib.last.refresh.failed.map((r) => r.title).join(', ')}.
+              </span>
+            {/if}
+          </p>
+        {/if}
+        <p class="text-[11px] opacity-40 mt-1">
+          From Jellyfin's subtitle tracks, which name signs-only tracks; Sonarr's language codes
+          cannot, and are used only where Jellyfin has no series with that TVDB id. Under Anime Dual
+          Audio, Sonarr replaces a file with no English subtitles only when a dual-audio release
+          turns up.
+        </p>
+
+        {#if libProblemRows.length}
+          <div class="overflow-x-auto mt-2">
+            <table class="table table-sm w-full">
+              <thead>
+                <tr class="opacity-60 text-xs">
+                  <th>State</th><th>Series</th><th>Profile</th><th>Subbed</th><th>Episodes to look at</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each libProblemRows as r (r.sonarrId)}
+                  {@const prof = profileNote(r.qualityProfileId)}
+                  <tr data-lib-row={r.sonarrId} data-lib-state={r.state}>
+                    <td>
+                      <span class="badge badge-sm whitespace-nowrap {LIB_STATE[r.state].cls}" title={LIB_STATE[r.state].title}>
+                        {LIB_STATE[r.state].label}
+                      </span>
+                    </td>
+                    <td>
+                      {#if r.titleSlug && report.config.url}
+                        <a class="link" href="{report.config.url}/series/{r.titleSlug}" target="_blank" rel="noreferrer"
+                           title="Open in Sonarr, where Interactive Search can find a subbed release">{r.title}</a>
+                      {:else}
+                        {r.title}
+                      {/if}
+                      {#if r.audit?.source === 'sonarr'}
+                        <span class="text-xs opacity-50"
+                              title="No Jellyfin series carries this TVDB id, so this comes from Sonarr's language codes, which cannot tell a signs-only track from full subtitles.">(Sonarr codes)</span>
+                      {/if}
+                    </td>
+                    <td class="whitespace-nowrap">
+                      {#if prof}
+                        <span class:text-warning={prof.warn} title={prof.title}>{prof.name}</span>
+                      {:else}
+                        <span class="opacity-50">-</span>
+                      {/if}
+                    </td>
+                    <td class="whitespace-nowrap tabular-nums">
+                      {#if r.audit}{r.audit.counts.fullEng}/{r.audit.episodes}{:else}-{/if}
+                    </td>
+                    <td class="text-xs">
+                      {#if r.error}<span class="text-error">{r.error}</span>{/if}
+                      {#each r.audit?.problems ?? [] as p, i (i)}
+                        <span class="whitespace-nowrap {p.stale ? 'text-warning' : p.sub === 'engAudio' || p.sub === 'unknown' ? 'opacity-60' : ''}">{problemText(p)}</span>{#if i < (r.audit?.problems.length ?? 0) - 1}<span class="opacity-40">, </span>{/if}
+                      {/each}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+        {#if libFineRows.length}
+          <details class="mt-2">
+            <summary class="cursor-pointer text-sm opacity-70">{libFineRows.length} fully subbed</summary>
+            <ul class="text-sm mt-1 columns-1 md:columns-2 xl:columns-3">
+              {#each libFineRows as r (r.sonarrId)}
+                <li data-lib-row={r.sonarrId} data-lib-state={r.state}>
+                  {r.title} <span class="opacity-50 tabular-nums">{r.audit?.episodes ?? 0} ep</span>
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+      {/if}
     </div>
 
     {#if report.pushes.length}

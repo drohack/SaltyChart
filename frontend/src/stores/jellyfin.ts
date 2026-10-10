@@ -31,6 +31,12 @@ export interface MediaAvailability {
   /** Matched library title - shown in the UI so a bad match is visible. */
   libraryTitle?: string;
   /**
+   * What the episode Watch plays offers an English speaker - the backend's
+   * `classifyJellyfin`. Absent on verdicts cached before the field existed,
+   * which must read as "don't know", never as "not English".
+   */
+  english?: 'fullEng' | 'signsOnly' | 'engAudio' | 'none' | 'unknown';
+  /**
    * How the match was made. `id` is an AniList->TVDB->library id chain and is
    * exact; `title` is fuzzy string matching, which has produced a real false
    * positive (a 2026 entry matching a 2004 series of similar name). The UI
@@ -236,6 +242,19 @@ export function checkAvailability(
 
   _inFlight.set(mediaId, promise);
   return promise;
+}
+
+/**
+ * Drop this session's cached answer for one show.
+ *
+ * For an answer that has gone wrong under us: its episode was replaced in the
+ * library and Jellyfin gave the new file a new item id (`ITEM_GONE`). Without
+ * this the session cache - which has no expiry - keeps offering the dead id
+ * until a reload, and a reload alone was not enough while the server's own
+ * hour-long cache still held it.
+ */
+export function forgetAvailability(mediaId: number): void {
+  _availabilityCache.delete(mediaId);
 }
 
 /** Server cap, mirrored so we chunk rather than get a 400. */

@@ -46,6 +46,12 @@ Coverage, and the trap each step was added for:
   a pasted `tvdb:<held id>` must come back NAMED from the library and
   cross-walked to its TMDB sibling. Unnamed, the lookup is the old raw id box
   with more steps - watched to fail exactly that way.
+- Step 14 covers a file Sonarr replaced. Jellyfin mints a NEW item id when it
+  rescans one, so `/playback` for the old id must answer 404 `ITEM_GONE` - not
+  the 502 "unreachable" it used to, which sent the reader looking for an
+  outage while the dead id stayed cached. And the Randomize-triggered library
+  check (`POST /library/check`) must be viewer-callable but throttled: a second
+  call inside ten minutes may not start another run.
 
 Usage:
   py -3.13 -u tools/tests/test_jellyfin.py [--backend http://localhost:3000]
@@ -53,7 +59,7 @@ Usage:
 Exits 0 if all steps pass (or the configured-only steps were skipped),
 1 on any failure. Each progress line is self-contained per the global
 CLAUDE.md convention:
-  [k/13 Jellyfin] step name - detail
+  [k/14 Jellyfin] step name - detail
 """
 import argparse
 import atexit
@@ -64,7 +70,7 @@ from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 13
+TOTAL_STEPS = 14
 
 
 def step(n: int, msg: str) -> None:
@@ -208,7 +214,12 @@ def main():
     r = requests.get(f"{backend}/api/jellyfin/library/image/abcdef0123456789", timeout=5)
     if r.status_code != 401:
         fail(2, f"/library/image without token: expected 401, got {r.status_code}")
-    step(2, "PASS - all six 401")
+    # The library check can ask Jellyfin to refresh series - a write, however
+    # narrow. Viewer-gated, never anonymous.
+    r = requests.post(f"{backend}/api/jellyfin/library/check", timeout=5)
+    if r.status_code != 401:
+        fail(2, f"/library/check without token: expected 401, got {r.status_code}")
+    step(2, "PASS - all seven 401")
 
     # --------- 3/13  Admin gates ---------
     step(3, "config endpoints as non-admin - expect 403 ADMIN_REQUIRED")
@@ -334,6 +345,12 @@ def main():
                            timeout=90).json()
         if av.get("unknown"):
             continue
+        # Randomize's "Hide Not English" reads this field; a fresh verdict for a
+        # held show without it would make the button silently do nothing.
+        if av.get("available") and av.get("english") not in (
+                "fullEng", "signsOnly", "engAudio", "none", "unknown"):
+            fail(6, f"available=true but english is {av.get('english')!r} - every fresh "
+                    f"verdict must say what its episode offers an English speaker")
         tiers[av["matchedBy"] if av.get("available") else "missing"] += 1
     matched = tiers["id"] + tiers["title"]
     if not matched:
@@ -821,6 +838,31 @@ def main():
                      f"{target['title'][:40]!r} as an unconfirmed viewer row, and undid it")
         finally:
             requests.delete(f"{backend}/api/jellyfin/identity/{mid}", headers=ah, timeout=15)
+
+    # --------- 14/14  A replaced file, and the library check's throttle ---------
+    step(14, "a dead item id is ITEM_GONE, and the library check is throttled")
+    # Well-formed, and not an item: what a cached id looks like after Jellyfin
+    # rescans a file Sonarr replaced (PANDOROBO S01E01, 2026-10-09).
+    dead = "0000000000000000000000000000dead"
+    r = requests.get(f"{backend}/api/jellyfin/playback/{dead}?quality=auto",
+                     headers=auth, timeout=30)
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    if r.status_code != 404 or body.get("code") != "ITEM_GONE":
+        fail(14, f"/playback for an item Jellyfin no longer has returned {r.status_code} "
+                 f"{r.text[:160]} - expected 404 ITEM_GONE. Reporting it as an outage "
+                 f"keeps the dead id cached and the player black.")
+    first = requests.post(f"{backend}/api/jellyfin/library/check", headers=auth, timeout=30)
+    second = requests.post(f"{backend}/api/jellyfin/library/check", headers=auth, timeout=30)
+    if first.status_code != 202 or second.status_code != 202:
+        fail(14, f"the viewer library check answered {first.status_code}/{second.status_code} "
+                 f"- a signed-in viewer must be able to start it (202)")
+    s1, s2 = first.json().get("status"), second.json().get("status")
+    if s1 not in ("started", "running", "throttled"):
+        fail(14, f"unexpected first status {s1!r}")
+    if s2 not in ("running", "throttled"):
+        fail(14, f"a second visit right after the first returned {s2!r} - the ten-minute "
+                 f"throttle is not holding, so every Randomize load would start a check")
+    step(14, f"PASS - dead id is ITEM_GONE; library check {s1} then {s2}")
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
 

@@ -104,7 +104,7 @@
     ok: boolean;
     error?: string;
     rootFolders?: { path: string }[];
-    qualityProfiles?: { id: number; name: string }[];
+    qualityProfiles?: { id: number; name: string; upgradeAllowed?: boolean }[];
     missingTags?: string[];
   } | null = null;
   let snOptionsLoading = false;
@@ -183,6 +183,8 @@
    */
   $: snFoldersReady = !!snOptions?.ok && !!snOptions.rootFolders?.length;
   $: snProfilesReady = !!snOptions?.ok && !!snOptions.qualityProfiles?.length;
+  $: snNoUpgrades =
+    snOptions?.qualityProfiles?.find((p) => p.id === snQualityProfileId)?.upgradeAllowed === false;
 
   onMount(() => {
     void loadConfig();
@@ -568,7 +570,7 @@
             >
               <option value={0}>{snOptionsLoading ? 'Loading...' : 'Choose a profile'}</option>
               {#each snOptions?.qualityProfiles ?? [] as p (p.id)}
-                <option value={p.id}>{p.name}</option>
+                <option value={p.id}>{p.name}{p.upgradeAllowed === false ? ' (no upgrades)' : ''}</option>
               {/each}
             </select>
             {#if snOptionsLoading}
@@ -582,6 +584,15 @@
               {:else if snOptions && !snOptions.ok}
                 {snOptions.error} Press <b>Test Connection</b> once the URL and key are right - the
                 folder and profile lists fill in from Sonarr itself.
+              {:else if snNoUpgrades}
+                <!-- The configuration that let raws stick: the auto-add sent a
+                     no-upgrade profile until 2026-10-09, so a raw ToonsHub
+                     release that arrived first could never be replaced by the
+                     subbed one that came after it. -->
+                <span class="text-warning">
+                  This profile never replaces a file, so whatever Sonarr grabs first is permanent - a
+                  release with no English subtitles stays that way.
+                </span>
               {:else}
                 Applied to every series we add. Changing it later does not touch what is already
                 there.

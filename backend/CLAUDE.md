@@ -103,11 +103,21 @@ Routes (contracts here; each guard's story is commented at its code):
   library + the entry's season's first episode (season parsed from
   "Nth Season"/「第N期」; missing season = unavailable). Returns `{ available,
   seriesId, itemId, mediaSourceId, episodeTitle, seasonNumber, episodeNumber,
-  libraryTitle, matchedBy }`. The series list is cached 1 h and served
+  libraryTitle, matchedBy, english }`. `english` is what the episode Watch plays
+  offers an English speaker (`fullEng` / `signsOnly` / `engAudio` / `none` /
+  `unknown`, `classifyJellyfin`), read from the media source `finishEpisode`
+  already fetches - no extra request. It drives Randomize's Hide Not English;
+  verdicts cached before it existed lack it and read as unknown until expiry. The series list is cached 1 h and served
   stale-while-revalidate (`getSeriesLibraryFresh` is the blocking variant for
   `fresh: true` callers). **`Fields=ProviderIds,OriginalTitle` is mandatory**
   on that query or Jellyfin returns `ProviderIds: null`, silently disabling
-  the id tier. Per-mediaId cache 1 h positives / 10 min negatives, persisted
+  the id tier. **So is `userId` (the playback account, `libraryUserId()`)**:
+  without one Jellyfin's listing omitted 17 real series (2,343 vs 2,359,
+  2026-10-09 - Wandance, My Awkward Senpai and 15 more from one batch), and
+  each read "not in the library" while held with files. The one item only the
+  user-less listing returned was a Maintainerr collection. The batch route
+  ignores `fresh` and serves cached negatives for 10 minutes - a diagnostic
+  that needs a live answer must use this single route. Per-mediaId cache 1 h positives / 10 min negatives, persisted
   to `AppConfig.jellyfinAvailability`. `fresh: true` bypasses the cache and
   re-resolves (library refetch throttled to one per 30 s - per-negative
   refetches once stampeded); it exists because a cache that survives restarts
@@ -128,6 +138,23 @@ Routes (contracts here; each guard's story is commented at its code):
   library"; every consumer must refuse to hide on it.
 - `GET  /playback/:itemId` - one call: `playSessionId`, `mediaSourceId`,
   subtitle streams (with the file's own flags + codec), font attachments.
+  **A Jellyfin 404 answers 404 `ITEM_GONE`**, and drops every cached
+  availability verdict carrying that itemId. Jellyfin derives item ids from the
+  file path, so when Sonarr replaces a file and Jellyfin rescans, the episode
+  returns under a NEW id (PANDOROBO S01E01, 2026-10-09: 605851d7... ->
+  0c176725..., old item gone). This route used to call that 502 "Jellyfin
+  unreachable", while the hour-long server cache and the browser's session
+  cache kept handing out the dead id - a hard reload did not help. The pop-up
+  now notices `ITEM_GONE` on its prewarm, re-asks with `fresh: true`, and points
+  Watch at the new episode before anyone presses it.
+- `POST /library/check` - **viewer-gated** (JWT, no admin), the second
+  exception after `/library/search`. Starts the library check (see *The library
+  check* under the Sonarr section) and returns `202 { status: started | running
+  | throttled }` at once. Randomize calls it on load, logged-in only. A visit
+  starts at most one run per `VISIT_INTERVAL_MS` (10 min); what a viewer can
+  cause is bounded to one ~165-request LAN read plus a Jellyfin `Refresh` of
+  series whose files genuinely changed - never a Sonarr write, never a
+  full-library scan.
 - `GET  /stream/*` - GET-only streaming proxy (JWT header or `?token=`).
   Forwards `Range`, destroys upstream on client disconnect. **Manifests are
   buffered and refused if they contain a credential** - Jellyfin embeds the
@@ -279,13 +306,22 @@ do not own. `lib/sonarrPush.ts` holds this argument at the code.
   candidate side with `sonarr.observed: false`, because an outage is exactly when
   someone opens the page. The UI must not collapse `unknown` into zero:
   "couldn't ask" is not "nothing to do" (the headline did exactly that once and
-  was caught in a browser, not by any test).
+  was caught in a browser, not by any test). Also carries `library` (the cached
+  library check: `last` null means never checked, never zero problems) and
+  `config.qualityProfileName` / `qualityProfileUpgrades`, named from the
+  snapshot's cached profile list - still no Sonarr call on a page load.
+- `POST /library/check` - admin; runs the library check now, bypassing the
+  visit throttle, and answers once the audit is stored and any refreshes are
+  requested (Jellyfin catching up is watched in the background). Takes a
+  snapshot first when the stored one predates the `ours` field.
 - `PUT /enabled` - admin; the master switch, **`sonarrPushEnabled`, default
   off**. Deliberately a new key rather than a rename of the list era's
   `sonarrListEnabled`: reusing it would have inherited an existing `true` and
   turned a list that merely *offered* series into a job that *adds* them, on the
   first restart after deploy, with nobody having chosen that.
-- `POST /snapshot` - admin; caches what Sonarr holds. `GET/PUT /config`,
+- `POST /snapshot` - admin; caches what Sonarr holds, including `ours` (the
+  marker-tagged series with their Sonarr ids, so the library check never pulls
+  the 2,400-series library) and `profiles` (with `upgradeAllowed`). `GET/PUT /config`,
   `GET /config/options` (root folders, quality profiles and tags for the setup
   dropdowns), `POST /config/test`, `POST`/`DELETE /include` - admin.
 - **Reads `SeasonCache` only, and never calls `startColdFetch()`.** It serves a
@@ -480,7 +516,7 @@ should be deleted - it would keep re-adding whatever it last read.
 |---|---|---|
 | URL + API key | Sonarr -> Settings -> General -> API Key | the same key does the lookup and the add |
 | Root folder | the anime share | must match one of Sonarr's own paths exactly; a dropdown for that reason |
-| Quality profile | the anime profile | applied to every series we add |
+| Quality profile | **Anime Dual Audio (720p)** | applied to every series we add; **must allow upgrades** (see below) |
 | Series type | Standard | how releases are matched to episodes; Anime enables absolute numbering |
 | Tags | `anime, saltychart` | **must already exist in Sonarr**; all are applied to every add |
 | Marker tag | `saltychart` | the one that means *we* added it, and what Maintainerr scopes on; always applied |
@@ -496,6 +532,66 @@ deployment on purpose: `addOptions.monitor: 'firstSeason'` (the Seerr
 **A quality profile invalidates the size estimate.** The 0.38 GB median comes
 from the current mixed-quality library, so under a 720p-only profile the page
 reads high. The page says so; re-measure rather than quietly trusting it.
+
+**The profile must allow upgrades, and even then it is not the whole fix.** Until
+2026-10-09 the auto-add sent "Prefer Smaller (At least 720p)", which has
+`upgradeAllowed: false`: whatever Sonarr grabbed first was permanent, and for new
+seasonal shows that was often a raw (`ToonsHub ... YT/NHK WEB-DL JPN`, `MeGusta
+HDTV`) with no subtitle tracks at all, while the subbed release arrived an hour
+later and was ignored. "Anime Dual Audio (720p)" upgrades - but its
+`minUpgradeFormatScore` is 1600, so a raw (score 0) is replaced only by a
+dual-audio release, never by SubsPlease (400). A show that never gets a dub keeps
+its raw. Measured that day: **30 of the 43 unsubbed files were already on the
+dual-audio profile.** Tuning that is Sonarr configuration; seeing it is what the
+library check below is for. The `/admin` dropdown marks no-upgrade profiles and
+warns when one is chosen.
+
+### The library check - English subtitles, and Jellyfin catching up
+
+`lib/libraryCheck.ts` (I/O, deps injected) over `lib/libraryAudit.ts` (pure, the
+rules). One pass over every **marker-tagged** series with files, from the
+snapshot's cached `ours` list:
+
+1. Sonarr `GET /api/v3/episode?seriesId=&includeEpisodeFile=true` - one call per
+   series answers both "which episode" and "what is in the file". A read; the
+   one-write-verb boundary is untouched.
+2. Jellyfin `/Shows/{id}/Episodes?Fields=Path,MediaStreams`, the series found by
+   TVDB id in the cached library (refetched once when one of ours is missing -
+   the stale-while-revalidate copy lags new series).
+3. Each episode is classified `fullEng` / `signsOnly` / `engAudio` / `none` /
+   `unknown`, from **Jellyfin's** tracks: both sources publish language codes,
+   only Jellyfin publishes track titles and `IsForced`, and that difference was
+   measured - **the forced flag is not decisive**: SKYANiME flags its only
+   English track forced and it is full dialogue (346 lines on Iron Wok Jan
+   S01E06, as many as the Arabic beside it). Forced counts as signs-only only in
+   a file with English audio, where it carries the signs for a dub. Sonarr's codes
+   are the fallback for a series Jellyfin cannot be matched to, labelled so on
+   screen. `unknown` is never counted as subbed.
+4. **Stale** = Sonarr's current file name is not among Jellyfin's paths for that
+   series. A file-NAME rule, never episode numbers: the first version compared
+   per episode and flagged dozens of healthy series, because a multi-episode file
+   is one Jellyfin item and the two orderings differ. With the name rule, 69
+   recently imported series measured zero stale - the truth.
+5. Stale series, and only those, get one Jellyfin `Refresh` (Default modes:
+   "Scan for new and updated files", nothing replaced). The check then polls up to
+   8 x 15 s for Jellyfin's paths to match, and only THEN drops cached
+   availability pointing into the series - dropping it the moment we ask lets the
+   next viewer re-cache the old item for another hour. Series still stale after
+   the window are named on the page (`refresh.stillStale`). **Whether a series
+   refresh really picks up a replaced file is from Jellyfin forum reports, not
+   docs** - the poll exists so the page reports what happened instead of
+   assuming it.
+
+**Why SaltyChart does this instead of Sonarr's Connect -> Emby/Jellyfin "Update
+Library"**: it is deliberately OFF - the owner does not want Jellyfin told about
+every import. This is narrower: only series whose files changed, only when
+someone opens Randomize (throttled to one run per 10 min, `POST
+/api/jellyfin/library/check`) or an admin presses Check now. Measured cost
+2026-10-09: 82 series, ~165 LAN requests, 1-4 s.
+
+Baseline that day (after the fixes): 685 episodes, 641 full English, 1
+signs-only, 1 English audio, 42 none, 0 stale, 0 unmatched once the library was
+listed as the playback account.
 
 **Tags come from the import list's configuration, not our payload**, so one list
 means one tag set. Set `saltychart` on the import list and Maintainerr can scope
@@ -1740,9 +1836,15 @@ Tables / columns:
   **with** the pairs it validates, and is only sent when we actually hold them:
   a 304 against an empty map would leave us serving nothing and call it
   loaded),
-  `jellyfinLibrary` / `jellyfinLibraryAt` (the match corpus - 2271 series on this
-  deployment; the "836" figure elsewhere in this file counts *anime folders*, not
-  the library), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched
+  `jellyfinLibrary` / `jellyfinLibraryAt` (the match corpus - 2,359 series on this
+  deployment, measured 2026-10-09 **as the playback account**: a listing sent
+  without `userId` returned 2,343 and silently omitted 17 real shows, every one
+  reported "not in the library"; the "836" figure elsewhere in this file counts
+  *anime folders*, not the library), `libraryAudit` (the last library check -
+  English subtitles across the series we added and which ones Jellyfin had out of
+  date; display-only, persisted so `/admin/sonarr` can show it without asking
+  Sonarr or Jellyfin on a page load - see *The library check* under the Sonarr
+  section), `jellyfinFilmIndex` (TMDB film id -> item, so a film is never fuzzy-matched
   against TV series), and
   `anilistRateLimit` / `anilistBackoff` (the last observed AniList budget, and
   per-season cooldowns after a 429), `subtitleDownloadHealth` (is the trailer

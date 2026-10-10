@@ -124,6 +124,10 @@ BACKEND_MIDDLEWARE = "backend/src/middleware/auth.ts"
 PLAYER = "frontend/src/components/JellyfinPlayerModal.svelte"
 ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 ADMIN_SONARR = "frontend/src/pages/AdminSonarr.svelte"
+BACKEND_LIBAUDIT = "backend/src/lib/libraryAudit.ts"
+BACKEND_LIBCHECK = "backend/src/lib/libraryCheck.ts"
+PREWARM = "frontend/src/lib/jellyfinPrewarm.ts"
+RANDOMIZE = "frontend/src/pages/Randomize.svelte"
 
 PY = ["py", "-3.13", "-u"]
 T_JELLYFIN = PY + [str(TESTS / "test_jellyfin.py")]
@@ -2830,6 +2834,160 @@ MUTATIONS: list[Mutation] = [
         expect="wrong-guess cap was still accepted",
         guards="a six-digit reset code is brute-forced against a single issued "
                "code instead of costing a fresh request every five guesses",
+    ),
+    # --- the library check: subtitle audit + Jellyfin catch-up (2026-10-09) ---
+    Mutation(
+        name="a signs-only English track counts as full subtitles",
+        path=BACKEND_LIBAUDIT,
+        # The audit exists to find raws. A file whose only English track is the
+        # forced signs track for a dub has no dialogue subtitles at all, and
+        # counting it as subbed hides it from the one page that looks.
+        find="  if (english.some((s) => !isSignsOnly(s, englishAudio))) return 'fullEng';",
+        replace="  if (english.length) return 'fullEng'; /* mutation: any English track is subbed */",
+        test=T_UNIT,
+        expect="a forced-only English track was counted as full subtitles",
+        guards="episodes with only signs-and-songs subtitles read as subbed on /admin/sonarr",
+    ),
+    Mutation(
+        name="the forced flag alone makes a track signs-only",
+        path=BACKEND_LIBAUDIT,
+        # SKYANiME flags its only English track forced and it is full dialogue
+        # (346 lines on Iron Wok Jan S01E06). Trusting the flag reported 11 fully
+        # subbed episodes as signs-only on the first live run.
+        find="  return !!s.isForced && fileHasEnglishAudio;",
+        replace="  return !!s.isForced; /* mutation: the flag is decisive */",
+        test=T_UNIT,
+        expect="the flag alone is not signs-only",
+        guards="fully subbed SKYANiME episodes are reported as missing subtitles",
+    ),
+    Mutation(
+        name="a file Sonarr replaced is never reported stale",
+        path=BACKEND_LIBAUDIT,
+        # Stale is what drives the Jellyfin refresh. Without it the PANDOROBO
+        # case - Jellyfin naming a file Sonarr deleted - reads as healthy and
+        # every segment keeps 500ing until Jellyfin's own 12-hour scan.
+        find="    const isStale = !!jellyfin && !jf;",
+        replace="    const isStale = false; /* mutation: never stale */",
+        test=T_UNIT,
+        expect="the PANDOROBO case",
+        guards="a replaced episode stays unplayable and nothing asks Jellyfin to refresh it",
+    ),
+    Mutation(
+        name="the library check refreshes every series, not just stale ones",
+        path=BACKEND_LIBCHECK,
+        # The owner turned down Sonarr's per-import Jellyfin notification as too
+        # much churn. Refreshing every series on every check is that, multiplied.
+        find="    .filter((r) => r.state === 'stale' && r.jellyfinId)",
+        replace="    .filter((r) => !!r.jellyfinId) /* mutation: refresh everything */",
+        test=T_UNIT,
+        expect="a library scan by another name",
+        guards="every Randomize visit asks Jellyfin to rescan every series we added",
+    ),
+    Mutation(
+        name="a Randomize visit is never throttled",
+        path=BACKEND_LIBCHECK,
+        find="  if (trigger === 'visit' && lastStartedAt !== null && now - lastStartedAt < VISIT_INTERVAL_MS) {",
+        # Written so it still type-checks: `false && ...` is a TS error, which
+        # failed the whole test file for the wrong reason on its first run.
+        replace="  if (trigger === 'visit' && lastStartedAt !== null && now - lastStartedAt < 0) { /* mutation */",
+        test=T_UNIT,
+        expect="a second visit inside the interval started another check",
+        guards="every Randomize load runs a ~165-request check against Sonarr and Jellyfin",
+    ),
+    Mutation(
+        name="the library check is scoped on any applied tag instead of the marker",
+        path=BACKEND_SONARR_ROUTE,
+        # `anime` is applied too and sits on 692 series, most of which we never
+        # added. The check would audit, and refresh, someone else's library.
+        find="""          ours:
+            markerId === null
+              ? []
+              : snapshot.series
+                  .filter((s) => s.tags.includes(markerId))""",
+        replace="""          ours:
+            markerId === null
+              ? []
+              : snapshot.series
+                  .filter((s) => s.tags.some((t) => allTagIds.includes(t))) /* mutation */""",
+        test=T_SONARR,
+        expect="the library check's scope drifted from the marker",
+        guards="the subtitle audit and the Jellyfin refresh cover the whole `anime` library",
+    ),
+    Mutation(
+        name="a dead Jellyfin item id is reported as an outage",
+        path=BACKEND_JF,
+        # Jellyfin mints a new id when it rescans a replaced file. Calling the
+        # 404 "unreachable" kept the dead id cached for an hour and the player
+        # black, with a message pointing at the wrong problem.
+        find="    if (err?.response?.status === 404) {\n      const dropped",
+        replace="    if (false) {\n      const dropped",
+        test=T_JELLYFIN,
+        expect="expected 404 ITEM_GONE",
+        guards="a replaced episode stays unplayable for an hour behind a misleading error",
+    ),
+    Mutation(
+        name="the library check is callable without signing in",
+        path=BACKEND_JF,
+        find="router.post('/library/check', jellyfinLimiter, requireAuth, (_req, res) => {",
+        replace="router.post('/library/check', jellyfinLimiter, (_req, res) => {",
+        test=T_JELLYFIN,
+        expect="/library/check without token",
+        guards="anyone on the internet can make the server ask Jellyfin to refresh series",
+    ),
+    Mutation(
+        name="the player skips a forced English track even when it is the only one",
+        path=PREWARM,
+        # SKYANiME's only English track is flagged forced and is full dialogue;
+        # excluding it played those episodes with no subtitles at all.
+        find="    ? unforcedEnglish.length ? unforcedEnglish : english",
+        replace="    ? unforcedEnglish /* mutation: forced is never used */",
+        test=T_UI,
+        flows=("subtitle track picker",),
+        expect="skipping it plays the episode with no subtitles",
+        guards="SKYANiME episodes play without subtitles in the SaltyChart player",
+    ),
+    Mutation(
+        name="opening Randomize never starts the library check",
+        path=RANDOMIZE,
+        find="  $: if ($mediaConfigured && $authToken && !libraryCheckAsked) {",
+        replace="  $: if (false && $mediaConfigured && $authToken && !libraryCheckAsked) {",
+        test=T_UI,
+        flows=("randomize library check",),
+        expect="it must be exactly one",
+        guards="replaced files are only picked up by Jellyfin's 12-hour scan",
+    ),
+    Mutation(
+        name="Hide Not English also hides dubs, unknowns and verdicts without the field",
+        path=RANDOMIZE,
+        # The dangerous direction: anything short of full subtitles hides. That
+        # takes English-dubbed shows off the wheel and, worse, every show whose
+        # verdict predates the field or could not be asked - the "never act on
+        # couldn't-ask" rule broken through a new door.
+        find="    return info.english === 'none' || info.english === 'signsOnly';",
+        replace="    return info.english !== 'fullEng'; /* mutation */",
+        test=T_UI,
+        flows=("hide not english",),
+        expect="only none/signsOnly or not-in-library may hide",
+        guards="Hide Not English empties the wheel of dubs and of every show it has no answer for",
+    ),
+    Mutation(
+        name="the Unwatched hidden count counts the shown ones",
+        path=RANDOMIZE,
+        find="  $: unwatchedHiddenCount = unwatchedDetailed.filter((it) => it.hidden).length;",
+        replace="  $: unwatchedHiddenCount = unwatchedDetailed.filter((it) => !it.hidden).length;",
+        test=T_UI,
+        flows=("hide not english",),
+        expect="counts before hiding read",
+        guards="the shown/hidden counts beside Unwatched lie about what the wheel holds",
+    ),
+    Mutation(
+        name="availability verdicts stop saying whether the episode is English",
+        path=BACKEND_JF,
+        find="      english: episode.english,\n      episodeTitle: episode.title,",
+        replace="      episodeTitle: episode.title,",
+        test=T_JELLYFIN,
+        expect="every fresh verdict must say what its episode offers an English speaker",
+        guards="Hide Not English silently does nothing - every verdict reads as unknown",
     ),
 ]
 

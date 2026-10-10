@@ -5,6 +5,7 @@
   import {
     api,
     defaultSubtitleIndex,
+    isItemGone,
     castReady,
     loadVideoJs,
     playbackInfo,
@@ -297,6 +298,8 @@
   let everProgressed = false;
   let recovering = false;
   let recoveries = 0;
+  /** Why the player could not start, when it could not. Rendered over the video. */
+  let failure: '' | 'gone' | 'error' = '';
   /** Enough attempts to survive a wedged session, few enough to never loop. */
   const MAX_RECOVERIES = 2;
   const STALL_MS = 10_000;
@@ -646,7 +649,13 @@
     // be baked into the stream, so the request we actually play is the second.
     const probe = await playbackInfo(itemId, mediaSourceId, { quality });
     if (!probe) {
-      console.warn('[player] playback info failed');
+      // Say so on screen. This used to be a console line and a player that
+      // stayed black forever, which looked exactly like a slow first segment.
+      failure = isItemGone(itemId) ? 'gone' : 'error';
+      console.warn(`[player] playback info failed (${failure})`);
+      // The opener can look the show up again and reopen on the new item -
+      // this component only knows the dead id it was given.
+      if (failure === 'gone') dispatch('itemGone');
       return;
     }
     subStreams = probe.subtitles;
@@ -744,7 +753,7 @@
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={videoEl} class="video-js vjs-big-play-centered w-full" playsinline></video>
 
-      {#if !playbackStarted && !stalled}
+      {#if !playbackStarted && !stalled && !failure}
         <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-white">
           <span class="loading loading-spinner loading-lg"></span>
           <span class="text-xs opacity-70">Starting playback...</span>
@@ -763,7 +772,23 @@
       {#if stalled}
         <div class="absolute inset-x-0 bottom-16 z-20 flex justify-center">
           <div class="rounded bg-error/90 px-3 py-1 text-sm text-error-content">
-            Playback stalled - try closing and reopening.
+            <!-- A stall that never recovers is, in practice, usually a file
+                 Sonarr replaced that Jellyfin has not rescanned: every segment
+                 500s because the file it names is gone. -->
+            Playback stalled. If this episode was just replaced, the library is still catching up -
+            close and try again in a minute.
+          </div>
+        </div>
+      {/if}
+
+      {#if failure}
+        <div class="absolute inset-0 z-20 flex items-center justify-center p-4" data-player-failure={failure}>
+          <div class="rounded bg-error/90 px-3 py-2 text-sm text-error-content text-center max-w-md">
+            {#if failure === 'gone'}
+              This episode was replaced in the library. Looking it up again...
+            {:else}
+              Couldn't reach the media server to start this episode. Close and try again.
+            {/if}
           </div>
         </div>
       {/if}

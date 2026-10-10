@@ -64,6 +64,11 @@ import { getLibraryStructureApi } from '@jellyfin/sdk/lib/utils/api/library-stru
 import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api';
 import { getTvShowsApi } from '@jellyfin/sdk/lib/utils/api/tv-shows-api';
 import { getUserApi } from '@jellyfin/sdk/lib/utils/api/user-api';
+import { getItemRefreshApi } from '@jellyfin/sdk/lib/utils/api/item-refresh-api';
+import { MetadataRefreshMode } from '@jellyfin/sdk/lib/generated-client/models/metadata-refresh-mode';
+import { getSonarrConfig, sonarrEpisodesWithFiles, readSnapshotOurs } from '../lib/sonarrApi';
+import { startLibraryCheck, type LibraryCheckDeps, type Trigger } from '../lib/libraryCheck';
+import { classifyJellyfin, type SubState } from '../lib/libraryAudit';
 import type { BaseItemDto } from '@jellyfin/sdk/lib/generated-client/models/base-item-dto';
 import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-item-kind';
 import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-fields';
@@ -927,10 +932,28 @@ async function savePersistedLibrary(series: JfSeries[], total: number, at: numbe
 // The film index lives in lib/jellyfinFilmIndex.ts - an id index, never a
 // matchable corpus. Imported above; warmed at boot in index.ts.
 
+/**
+ * The account every library listing is made AS - the playback account.
+ *
+ * **A listing without a user silently omits series.** Measured 2026-10-09:
+ * 2,343 series without `userId`, 2,359 with the playback account's - 17 real
+ * shows (all from one 2025 batch, Wandance and My Awkward Senpai among them)
+ * that the user-less query never returns, so the Watch button called every one
+ * of them "not in the library" while Jellyfin held them with files. The one
+ * item only the user-less query returned was a Maintainerr collection, not a
+ * show. Listing as the account that will actually play the episode is right in
+ * both directions: it is exactly what that account can open.
+ */
+async function libraryUserId(): Promise<string | undefined> {
+  const cfg = await getJellyfinConfig();
+  return (cfg && (await jellyfinUserId(cfg))) || undefined;
+}
+
 /** Series count only - no items serialised, so it is cheap to ask often. */
 async function countSeries(api: Api): Promise<number | null> {
   const { data } = await getItemsApi(api).getItems(
     {
+      userId: await libraryUserId(),
       includeItemTypes: [BaseItemKind.Series],
       recursive: true,
       limit: 0,
@@ -1001,6 +1024,7 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
         if (count != null && count === cached.total) {
           const { data } = await getItemsApi(api).getItems(
             {
+              userId: await libraryUserId(),
               includeItemTypes: [BaseItemKind.Series],
               recursive: true,
               fields: SERIES_FIELDS,
@@ -1033,6 +1057,7 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
       // up but its metadata provider is down" is a different outage.
       const { data } = await getItemsApi(api).getItems(
         {
+          userId: await libraryUserId(),
           includeItemTypes: [BaseItemKind.Series],
           recursive: true,
           fields: SERIES_FIELDS,
@@ -1162,19 +1187,35 @@ async function finishEpisode(api: Api, ep: any) {
   // playback. One file probe per matched show, where asking the episode list
   // for MediaSources was one per episode.
   let mediaSourceId = String(ep.Id);
+  // What this episode offers an English speaker, for Randomize's "Hide Not
+  // English". Free: the media source this call already fetches carries its
+  // streams. The rules are `classifyJellyfin` - the same ones /admin/sonarr's
+  // audit uses, so the two can never disagree about one file. `unknown` when
+  // the probe failed, which no bulk action may treat as "not English".
+  let english: SubState = 'unknown';
   try {
     const { data: one } = await getItemsApi(api).getItems(
       { ids: [String(ep.Id)], fields: [ItemFields.MediaSources] },
       { timeout: 30_000 }
     );
-    const src = one.Items?.[0]?.MediaSources?.[0]?.Id;
-    if (src) mediaSourceId = String(src);
+    const source = one.Items?.[0]?.MediaSources?.[0];
+    if (source?.Id) mediaSourceId = String(source.Id);
+    english = classifyJellyfin(
+      (source?.MediaStreams ?? []).map((m) => ({
+        type: String(m.Type ?? ''),
+        language: m.Language ?? null,
+        title: m.Title ?? null,
+        displayTitle: m.DisplayTitle ?? null,
+        isForced: !!m.IsForced,
+      }))
+    );
   } catch {
     /* fall back to the item id, as the previous code did on an empty list */
   }
   return {
     itemId: String(ep.Id),
     mediaSourceId,
+    english,
     title: String(ep.Name ?? ''),
     seasonNumber: ep.ParentIndexNumber ?? null,
     episodeNumber: ep.IndexNumber ?? null,
@@ -1274,6 +1315,29 @@ onIdentityChanged((id) => {
   availabilityCache.delete(id);
   persistMapSoon(AVAILABILITY_KEY, availabilitySnapshot);
 });
+
+/**
+ * Drop every cached verdict matching `pred`, in memory AND on disk.
+ *
+ * For the case an identity write does not cover: the library itself changed
+ * under a verdict. Jellyfin derives item ids from the file path, so when Sonarr
+ * replaces a file and Jellyfin rescans, the episode comes back under a NEW id
+ * and every cached `itemId` for it is dead - measured on PANDOROBO S01E01,
+ * 605851d7... -> 0c176725..., with the old item gone. The persist matters for
+ * the same reason as in `onIdentityChanged`: without it a restart restores the
+ * dead id from the blob.
+ */
+function forgetAvailabilityWhere(pred: (data: any) => boolean): number {
+  let n = 0;
+  for (const [id, v] of availabilityCache) {
+    if (pred(v.data)) {
+      availabilityCache.delete(id);
+      n++;
+    }
+  }
+  if (n) persistMapSoon(AVAILABILITY_KEY, availabilitySnapshot);
+  return n;
+}
 
 /**
  * Seed the two in-memory caches from their persisted copies.
@@ -1417,6 +1481,7 @@ async function resolveAvailability(
         seriesId: film.itemId,
         itemId: item.itemId,
         mediaSourceId: item.mediaSourceId,
+        english: item.english,
         // A film has no season or episode; the item itself is what plays.
         episodeTitle: film.title,
         seasonNumber: null,
@@ -1482,6 +1547,10 @@ async function resolveAvailability(
       seriesId: hit.series.id,
       itemId: episode.itemId,
       mediaSourceId: episode.mediaSourceId,
+      // `fullEng` / `signsOnly` / `engAudio` / `none` / `unknown` for the
+      // episode Watch plays. Verdicts cached before this field existed lack it
+      // and read as unknown until they expire (an hour at most).
+      english: episode.english,
       episodeTitle: episode.title,
       seasonNumber: episode.seasonNumber,
       episodeNumber: episode.episodeNumber,
@@ -1522,6 +1591,103 @@ async function resolveAvailability(
     return { available: false, unknown: true };
   }
 }
+
+/**
+ * What the library check needs from this file: the cached series list (for
+ * TVDB -> Jellyfin series id), episode reads, the refresh, and the cache
+ * eviction. Built only when a check actually starts - a throttled visit never
+ * gets here.
+ */
+async function libraryCheckDeps(): Promise<LibraryCheckDeps> {
+  const [sonarr, ours, jfCfg] = await Promise.all([
+    getSonarrConfig(),
+    readSnapshotOurs(),
+    getJellyfinConfig(),
+  ]);
+  if (!sonarr) throw new Error('Sonarr is not configured');
+  let jellyfin: LibraryCheckDeps['jellyfin'] = null;
+  if (jfCfg) {
+    const api = await jellyfinApi(jfCfg);
+    const seriesByTvdb = new Map<string, string>();
+    const index = (list: JfSeries[]) => {
+      seriesByTvdb.clear();
+      for (const s of list) {
+        if (s.tvdbId && !seriesByTvdb.has(String(s.tvdbId))) seriesByTvdb.set(String(s.tvdbId), s.itemId);
+      }
+    };
+    index(await getSeriesLibrary(api));
+    // The cached list is served stale-while-revalidate, so a series Sonarr
+    // added in the last hour is often not in it yet - and an unmatched series
+    // can never be called stale. The first live run reported 29 unmatched
+    // against 17 from a direct read. One forced refetch (~1.1 s for 2,343
+    // series) closes that, and a check runs at most every ten minutes.
+    if ((ours ?? []).some((o) => o.episodeFileCount > 0 && !seriesByTvdb.has(String(o.tvdbId)))) {
+      index(await getSeriesLibrary(api, true));
+    }
+    jellyfin = {
+      seriesByTvdb,
+      async episodes(seriesId) {
+        const { data } = await getTvShowsApi(api).getEpisodes(
+          { seriesId, fields: [ItemFields.Path, ItemFields.MediaStreams], enableImages: false },
+          { timeout: 30_000 }
+        );
+        return (data.Items ?? []).map((e) => ({
+          path: String(e.Path ?? ''),
+          streams: (e.MediaStreams ?? []).map((m) => ({
+            type: String(m.Type ?? ''),
+            language: m.Language ?? null,
+            title: m.Title ?? null,
+            displayTitle: m.DisplayTitle ?? null,
+            isForced: !!m.IsForced,
+          })),
+        }));
+      },
+      // "Scan for new and updated files" in Jellyfin's own refresh dialog:
+      // Default modes, nothing replaced. A FullRefresh would re-download every
+      // image and overwrite metadata someone may have fixed by hand.
+      async refresh(itemId) {
+        await getItemRefreshApi(api).refreshItem(
+          {
+            itemId,
+            metadataRefreshMode: MetadataRefreshMode.Default,
+            imageRefreshMode: MetadataRefreshMode.Default,
+            replaceAllMetadata: false,
+            replaceAllImages: false,
+          },
+          { timeout: 30_000 }
+        );
+      },
+      forget(seriesId) {
+        forgetAvailabilityWhere((d) => d?.seriesId === seriesId);
+      },
+    };
+  }
+  return { ours, readSonarrEpisodes: (id) => sonarrEpisodesWithFiles(sonarr, id), jellyfin };
+}
+
+/** Start a library check. Shared by the viewer route below and the admin route in `routes/sonarr.ts`. */
+export function requestLibraryCheck(trigger: Trigger) {
+  return startLibraryCheck(trigger, libraryCheckDeps);
+}
+
+/**
+ * Catch Jellyfin up on files Sonarr has replaced - started by a Randomize visit.
+ *
+ * VIEWER-GATED on purpose (`requireAuth`, no `requireAdmin`), the second such
+ * exception after `/library/search`. The owner chose this trigger over
+ * Sonarr's per-import "Update Library" notification: a check when someone is
+ * about to watch, at most once per `VISIT_INTERVAL_MS`, refreshing ONLY series
+ * whose Jellyfin paths no longer match Sonarr's files. What a viewer can cause
+ * is therefore bounded to one ~165-request LAN check per ten minutes plus a
+ * Jellyfin `Refresh` of series that are genuinely broken - never a write to
+ * Sonarr and never a full-library scan.
+ *
+ * Returns 202 immediately; the page never waits on it.
+ */
+router.post('/library/check', jellyfinLimiter, requireAuth, (_req, res) => {
+  const { status } = requestLibraryCheck('visit');
+  res.status(202).json({ status });
+});
 
 /**
  * Search the held library so a viewer can correct a wrong match.
@@ -1991,6 +2157,19 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
       sourceBitrate: dims?.bitrate || null,
     });
   } catch (err: any) {
+    // A 404 is Jellyfin saying the item no longer exists - almost always a file
+    // Sonarr replaced and Jellyfin has since rescanned, which mints a new item
+    // id. Reporting that as "unreachable" (it was, until 2026-10-09) sent the
+    // reader looking for an outage while the cached id stayed in place for up
+    // to an hour. Drop it, so the next availability lookup finds the new one.
+    if (err?.response?.status === 404) {
+      const dropped = forgetAvailabilityWhere((d) => d?.itemId === itemId);
+      console.warn(`[jellyfin] item ${itemId} is gone from the library (dropped ${dropped} cached verdict(s))`);
+      return res.status(404).json({
+        error: 'This episode is no longer in the library - it was probably replaced by a newer file',
+        code: 'ITEM_GONE',
+      });
+    }
     console.warn(`[jellyfin] playback info failed for ${itemId}:`, err?.message);
     res.status(502).json({ error: 'Jellyfin unreachable', code: 'UPSTREAM_ERROR' });
   }

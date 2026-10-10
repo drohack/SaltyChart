@@ -28,8 +28,11 @@ import {
   TAGS_DEFAULT,
   MARKER_TAG_DEFAULT,
   withMarker,
+  SONARR_SNAPSHOT_KEY,
   type SonarrConfig,
   type SonarrSnapshot,
+  type SonarrQualityProfile,
+  type OurSeriesSnapshot,
 } from '../lib/sonarrApi';
 import {
   planPushRun,
@@ -45,6 +48,8 @@ import {
 } from '../lib/sonarrPush';
 import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
 import { alreadyRanToday } from '../lib/scheduling';
+import { readLibraryAudit, libraryCheckRunning } from '../lib/libraryCheck';
+import { requestLibraryCheck } from './jellyfin';
 
 /**
  * Sonarr auto-add: which new seasonal series should be grabbed, added once each.
@@ -114,7 +119,7 @@ import { alreadyRanToday } from '../lib/scheduling';
 const router = Router();
 
 /** Where the last snapshot's outcome is persisted, for the admin status line. */
-const SNAPSHOT_KEY = 'sonarrSnapshotStatus';
+const SNAPSHOT_KEY = SONARR_SNAPSHOT_KEY;
 
 /** Master switch: may we actually add series to Sonarr? */
 const PUSH_KEY = 'sonarrPushEnabled';
@@ -178,6 +183,14 @@ interface SnapshotStatus {
   /** How many carry ANY applied tag. Only ever a comparison, never ownership. */
   taggedAnyCount?: number;
   orphans?: Orphan[];
+  /**
+   * The marker-tagged series themselves, for the library check
+   * (`lib/libraryCheck.ts`): it can be started by a Randomize visit, so it must
+   * not pull the 2,400-series library to find out which ones are ours.
+   */
+  ours?: OurSeriesSnapshot[];
+  /** Quality profiles, so the report can name the configured one and say whether it upgrades. */
+  profiles?: SonarrQualityProfile[];
 }
 
 /**
@@ -398,9 +411,10 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
   }
 
   const snapshot: SonarrSnapshot = await fetchSnapshot(cfg);
-  const [assembled, tags] = await Promise.all([
+  const [assembled, tags, profiles] = await Promise.all([
     assemble(seasonsForSonarr(now), now),
     snapshot.ok ? sonarrTags(cfg) : Promise.resolve(null),
+    snapshot.ok ? sonarrQualityProfiles(cfg) : Promise.resolve(null),
   ]);
   // **The marker tag only**, never the whole applied set. `anime` is applied too
   // and sits on 692 series here, so counting any of our tags reported shows the
@@ -444,6 +458,23 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
             markerId === null
               ? []
               : snapshot.series.filter((s) => s.tags.includes(markerId)).map((s) => s.tvdbId),
+          // The MARKER tag again, for the same measured reason as `taggedIds`:
+          // scoping the library check on any applied tag would audit the 692
+          // series carrying `anime`, most of which we never added.
+          ours:
+            markerId === null
+              ? []
+              : snapshot.series
+                  .filter((s) => s.tags.includes(markerId))
+                  .map((s) => ({
+                    sonarrId: s.id,
+                    tvdbId: s.tvdbId,
+                    title: s.title,
+                    titleSlug: s.titleSlug ?? null,
+                    qualityProfileId: s.qualityProfileId ?? null,
+                    episodeFileCount: s.episodeFileCount ?? 0,
+                  })),
+          ...(profiles ? { profiles } : {}),
           taggedAnyCount: allTagIds.length
             ? snapshot.series.filter((s) => s.tags.some((t) => allTagIds.includes(t))).length
             : 0,
@@ -920,6 +951,8 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
     const a = await assemble(override.refs ?? seasonsForSonarr(now), now);
     const status = await readSnapshotStatus();
     const published = await pushEnabled();
+    const library = await readLibraryAudit();
+    const profile = status?.profiles?.find((p) => p.id === cfg?.qualityProfileId) ?? null;
 
     // Read what the last snapshot observed - this path makes NO Sonarr calls.
     // It used to fetch `/api/v3/series` on every page load, which on this
@@ -989,6 +1022,13 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         taggedOfOurs: a.pushes.filter((p) => p.status === 'pushed' && taggedIds.has(p.tvdbId)).length,
         rootFolderPath: cfg?.rootFolderPath ?? '',
         qualityProfileId: cfg?.qualityProfileId ?? 0,
+        // Named from the snapshot's cached profile list, so this makes no
+        // Sonarr call. Null until a snapshot has recorded the profiles.
+        qualityProfileName: profile?.name ?? null,
+        // False is the configuration that let raws stick - see
+        // `SonarrQualityProfile.upgradeAllowed`. The page warns on it.
+        qualityProfileUpgrades: profile ? profile.upgradeAllowed : null,
+        profiles: status?.profiles ?? [],
         seriesType: cfg?.seriesType ?? 'standard',
         // What stops a push before it starts. Shown as setup steps rather than
         // discovered by pressing the button and reading an error.
@@ -1054,6 +1094,10 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         })),
       orphans,
       counts: { proposed: a.items.length, rejected: counts },
+      // The last library check (English subtitles + Jellyfin sync), read from
+      // its cache - this route still makes no Sonarr or Jellyfin calls.
+      // `last: null` means never checked, which the page must not render as 0.
+      library: { ...library, running: libraryCheckRunning() },
     });
   } catch (err) {
     console.error('[sonarr] report failed', err);
@@ -1081,6 +1125,29 @@ router.put('/enabled', requireAuth, requireAdmin, async (req, res) => {
   });
   console.log(`[sonarr] pushing ${enabled ? 'ENABLED' : 'paused'}`);
   return res.json({ enabled });
+});
+
+/**
+ * Run the library check now: audit English subtitles across the series we
+ * added, and ask Jellyfin to refresh any whose files Sonarr has replaced.
+ *
+ * Waits for the first pass (audit stored, refreshes requested) but not for
+ * Jellyfin to finish rescanning, which is watched in the background and lands
+ * in the stored audit within about two minutes. A snapshot written before the
+ * snapshot recorded our series has no list to check, so one is taken first.
+ */
+router.post('/library/check', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const status = await readSnapshotStatus();
+    if (!Array.isArray(status?.ours)) await runSonarrSnapshot();
+    const started = requestLibraryCheck('admin');
+    if (!started.firstPass) return res.status(202).json({ status: started.status });
+    const result = await started.firstPass;
+    return res.json({ status: started.status, ...result });
+  } catch (err) {
+    console.error('[sonarr] library check failed', err);
+    return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+  }
 });
 
 /** Run the snapshot now, rather than waiting for the hourly timer. */

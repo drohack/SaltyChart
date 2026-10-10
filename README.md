@@ -206,7 +206,10 @@ chronological order; all features listed are live.
   **Maintainerr** can scope its cleanup to exactly these shows. SaltyChart
   itself can add but never delete or modify - cleanup stays Maintainerr's job.
 - Set up on **/admin** (Connection): Sonarr URL + API key, then root folder and
-  quality profile picked from what your Sonarr actually offers.
+  quality profile picked from what your Sonarr actually offers. Pick a profile
+  that **allows upgrades** (here, *Anime Dual Audio (720p)*): one that does not
+  keeps whatever arrives first, and for a new show that is often a raw with no
+  English subtitles. The dropdown marks those profiles and warns.
 
 **The admin area (site admin only)**
 - **/admin** - Connection: Jellyfin and Sonarr credentials, tested with one
@@ -214,7 +217,20 @@ chronological order; all features listed are live.
 - **/admin/matching** - review and correct how AniList entries were matched to
   your library. A correction is remembered permanently.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
-  done, with a *Add now* button and a pause switch.
+  done, with a *Add now* button and a pause switch. It also lists which of the
+  series SaltyChart added have **English subtitles**, episode by episode: no
+  subs, signs-and-songs only, or English audio only, read from Jellyfin's own
+  subtitle tracks, with each series linked to Sonarr to find a better release.
+  The same check spots episodes Sonarr has replaced that Jellyfin has not picked
+  up yet (they cannot play until it does) and asks Jellyfin to refresh just those
+  series. It runs when someone opens Randomize (at most every 10 minutes) or
+  when an admin presses *Check now*. Sonarr's own "Update Library" connection
+  can stay off.
+- **Replaced episodes heal themselves in the player.** When Sonarr upgrades a
+  file, Jellyfin gives the episode a new id; the Randomize pop-up notices and
+  points *Watch* at the new one instead of opening a black player. Series whose
+  Jellyfin listing hid them from SaltyChart (17 on this server) now show their
+  Watch button.
 - **/admin/status** - whether the outside services SaltyChart depends on are
   still answering: YouTube, TVDB, TMDB, AniList, the id map, Jellyfin, Sonarr,
   email and PyPI. Each row shows its state, when it last worked, and the exact
@@ -260,6 +276,12 @@ chronological order; all features listed are live.
   weight, up to 2-line clamp).
 
 **Randomize enhancements**
+- The Unwatched list says how many shows are on the wheel and how many are
+  hidden ("12 shown, 4 hidden").
+- **Hide Not English** hides every show you cannot watch in English: ones not
+  in the library (everything **Hide Not in Library** does), plus ones whose
+  episode has no English subtitles (or only a signs-and-songs track) and no
+  English audio. A show it cannot get an answer for is never hidden.
 - "Nicknames from" auto-checks users who have rankings for the current
   season/year (via `GET /api/list/users-with-ratings`), re-running whenever
   season or year changes.

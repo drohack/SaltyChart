@@ -36,8 +36,18 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   ranking via drag-and-drop persists to `WatchList.watchedRank`. Pop-up shows
   other users' nicknames + ranks (nickname endpoints).
 - Hide controls: per-show context menu, plus **Hide All / Show All / Hide Not
-  in Library** (the last only when Jellyfin is configured, using the batch
-  availability cache). Invariants, each with its story commented in
+  in Library / Hide Not English** (the last two only when Jellyfin is
+  configured, using the batch availability cache), and a "N shown, M hidden"
+  count beside the Unwatched heading (`data-unwatched-counts`). **Hide Not
+  English** hides every show that cannot be watched in English here: one the
+  library lacks (so it is a superset of Hide Not in Library, by request) or one
+  whose episode has neither full English subtitles nor English audio - the
+  verdict's `english` field is `none` or `signsOnly`, from the same backend
+  rules as /admin/sonarr's audit. A dub (`engAudio`), `unknown`, `notAired`, or
+  a held show whose verdict predates the field keeps the show (`isNotEnglish`;
+  flow 39 pins all eight kinds). The four buttons sit on two rows
+  (`data-hide-controls`) - on one line the library pair ran off the sidebar.
+  Invariants, each with its story commented in
   `Randomize.svelte` / `stores/jellyfin.ts`:
   * an `unknown` verdict is never acted on - it means "couldn't ask", and one
     slow moment must not empty the wheel;
@@ -87,6 +97,16 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   `checkAvailabilityMany()` (`stores/jellyfin.ts`), which omits any entry it
   couldn't definitely answer - so `?.available === false` refuses to act on
   an unanswered show.
+- **A replaced episode heals before Watch is pressed.** Jellyfin re-ids a file
+  Sonarr replaced, so a cached `itemId` can die while the page is open. The
+  pop-up's prewarm already asks `/playback`; on `ITEM_GONE` (`isItemGone` in
+  `lib/jellyfinPrewarm.ts`) it drops the session's cached answer
+  (`forgetAvailability`), re-asks with `fresh: true` and repoints Watch. If the
+  player itself hits it, it shows a message instead of a black screen and
+  `on:itemGone` reopens it once on the new item.
+- **Opening Randomize starts the library check** (`POST
+  /api/jellyfin/library/check`): logged-in only, fire-and-forget, exactly once
+  per load, throttled server-side to one run per 10 min.
 
 **The trailer player** (the modal in `AnimeGridTranslate.svelte`) - a YouTube
 iframe with our subtitle overlay and CC controls as siblings. Three rules, each
@@ -160,7 +180,11 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the tier is baked into the encode). Subtitle selection prefers a plain
   English dialogue track - `sdh|dubtitle|sign|song` set aside, ASS over SRT,
   the file's `default` flag only breaking ties (releases ship signs-only
-  tracks marked default). **"Off" must be sent as `subtitleStreamIndex=-1`** -
+  tracks marked default). **A forced English track is the fallback, not
+  excluded**: SKYANiME flags its only English track forced and it is full
+  dialogue, so skipping forced tracks played those episodes unsubtitled.
+  `test_ui_interactions` flow 38 pins it on the real track shapes.
+  **"Off" must be sent as `subtitleStreamIndex=-1`** -
   omitting the parameter makes Jellyfin pick a default and burn it back in.
   Quality: auto (the source's own ceiling, from a probe PlaybackInfo), 1080p,
   720p, 480p. A rebuild **stops the session it abandons** - before that,
@@ -374,6 +398,16 @@ for the same reason. What lives nowhere else:
   `on:change` handler splits the value **inside `load()`**, not in a `$:`
   statement - reactive declarations have not flushed when the handler runs, which
   produced `?season=&year=NaN` and a 400.
+- **"English subtitles in what we added"** renders the stored library check
+  (`report.library`) and never recomputes a verdict - the rules are
+  `lib/libraryAudit.ts`. Problem rows first (`stale` > `missing` > `error` >
+  `unknown`), fully subbed series folded behind a count; each title links to the
+  series in Sonarr, where Interactive Search is the fix. `last: null` renders
+  "Not checked yet", never "0 missing". A profile is amber when it never upgrades
+  or is not the one new series are added with. *Check now* follows a requested
+  Jellyfin refresh by re-reading the report every 20 s until it settles, so the
+  "watching" line never sticks. Handles: `data-lib-section`, `data-lib-check`,
+  `data-lib-row` + `data-lib-state`, `data-lib-headline`, `data-lib-refresh`.
 
 **`/admin/subtitles`** - what the trailer subtitle pipeline has actually
 produced. A **third** question again: not identity (`/admin/matching`) and not

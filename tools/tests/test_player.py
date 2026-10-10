@@ -173,9 +173,15 @@ def find_playable(backend: str, auth: dict, season: str, year: int) -> list[dict
                           f"?mediaSourceId={body['mediaSourceId']}", headers=auth,
                           timeout=60).json()
         subs = pb.get("subtitles", [])
+        t = show.get("title") or {}
         found.append({
             "mediaId": show["id"],
-            "title": titles[0],
+            # The title the page DISPLAYS, in getDisplayTitle's default order
+            # (English first). This was `titles[0]` - the romaji - which only
+            # matched while the chosen show's two titles began alike; FALL
+            # 2026's first pick was "Mahou Shoujo Ikusei Keikaku: restart",
+            # shown as "MAGICAL GIRL RAISING PROJECT restart", and step 3 failed.
+            "title": t.get("english") or t.get("romaji") or t.get("native") or titles[0],
             "hasAss": any("ass" in (s.get("codec") or "").lower() for s in subs),
             "subs": len(subs),
         })

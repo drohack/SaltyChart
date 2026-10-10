@@ -53,6 +53,14 @@ Coverage, and the trap each step exists for:
   Sonarr writes one, which is what makes "we added N" sayable at all; a version
   counting held rows instead would report someone's whole library as ours.
 
+- **The library check (step 10) adds up and stays on our series.** Totals
+  must equal the sum of their rows, every row's subtitle counts must sum to its
+  episodes, and the audited set must be exactly the marker-tagged series with
+  files from the snapshot - scoping on any applied tag would audit the 692
+  `anime` series. One series is cross-checked against a direct Jellyfin read:
+  its count of episodes with no English subtitle track and no English audio
+  must match `counts.none`. Skipped (exit 0) when Sonarr is not configured.
+
 **Not covered here, deliberately:** a successful add. It needs write
 credentials and it changes a real library, so it is a manual verification step
 (push one series with `cap: 1`, check it in Sonarr's UI, push again and confirm
@@ -68,11 +76,13 @@ Usage:
 Exits 0 if all steps pass (or the cache-dependent steps were skipped), 1 on any
 failure. Each progress line is self-contained per the global CLAUDE.md
 convention:
-  [k/9 Sonarr] step name - detail
+  [k/10 Sonarr] step name - detail
 """
 import argparse
+import sqlite3
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -102,7 +112,7 @@ def admin_token() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-TOTAL_STEPS = 9
+TOTAL_STEPS = 10
 
 
 def step(n: int, msg: str) -> None:
@@ -160,6 +170,7 @@ def main():
         ("GET", "/api/sonarr/config/options", None),
         ("PUT", "/api/sonarr/config", {}),
         ("POST", "/api/sonarr/config/test", {}),
+        ("POST", "/api/sonarr/library/check", None),
     ]
     for method, path, payload in admin_routes:
         rr = requests.request(method, f"{backend}{path}", json=payload, timeout=30)
@@ -288,7 +299,7 @@ def main():
         # A cold or empty season proves nothing and must not fetch one.
         print(f"Sonarr: SKIPPED at step 6 - {season} {year} is not cached "
               f"(a cold fetch is forbidden here)", flush=True)
-        print(f"Sonarr: 5/{TOTAL_STEPS} passed, 4 skipped - OK", flush=True)
+        print(f"Sonarr: 5/{TOTAL_STEPS} passed, {TOTAL_STEPS - 5} skipped - OK", flush=True)
         return
 
     pinned = requests.get(preview_url, params={"season": season, "year": year},
@@ -471,7 +482,143 @@ def main():
         step(9, f"PASS - {len(rep['proposed'])} graded, 0 weak among candidates, "
                 f"and an unverified include was refused")
 
+    # --------- 10/10  The library check adds up and stays on our series ---------
+    library_check_step(backend, auth)
+
     print(f"Sonarr: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
+
+
+SUB_STATES = ("fullEng", "signsOnly", "engAudio", "none", "unknown")
+ROW_STATES = {"stale", "missing", "unknown", "allSubbed", "error"}
+
+
+def jellyfin_episodes_direct(series_id: str) -> list | None:
+    """A series' episodes straight from Jellyfin, bypassing the backend.
+
+    Reads the URL and key read-only from the local DB, so the cross-check asks
+    Jellyfin what the backend asked rather than trusting the backend's answer.
+    Returns None when that is not possible, and the caller skips the comparison.
+    """
+    db = REPO / "backend" / "prisma" / "prisma" / "data.db"
+    try:
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+        cfg = dict(con.execute(
+            "SELECT key, value FROM AppConfig WHERE key IN ('jellyfinUrl', 'jellyfinApiKey')"
+        ).fetchall())
+        con.close()
+        token = cfg["jellyfinApiKey"]
+        r = requests.get(
+            f"{cfg['jellyfinUrl'].rstrip('/')}/Shows/{series_id}/Episodes",
+            params={"Fields": "Path,MediaStreams", "EnableImages": "false"},
+            headers={"Authorization": f"MediaBrowser Token=\"{token}\""},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json().get("Items", [])
+    except Exception:
+        return None
+
+
+def library_check_step(backend: str, auth: dict) -> None:
+    step(10, "the library check: totals add up, scope is the marker tag")
+    # A fresh snapshot first: it is what records which series are ours, so a
+    # scoping bug there only shows up in a snapshot taken by the code under test.
+    snap = requests.post(f"{backend}/api/sonarr/snapshot", headers=auth, timeout=120).json()
+    if snap.get("error") == "Sonarr is not configured":
+        step(10, "SKIP - Sonarr is not configured")
+        return
+    if snap.get("ok") and isinstance(snap.get("ours"), list):
+        # Two independent computations of the same set: `taggedIds` is the
+        # marker-tag filter that has always existed, `ours` is the new list the
+        # library check reads. The `anime` tag sits on 692 series here, so a
+        # list built from any applied tag would not match.
+        ours_ids = {o["tvdbId"] for o in snap["ours"]}
+        tagged = set(snap.get("taggedIds") or [])
+        if ours_ids != tagged:
+            fail(10, f"the snapshot lists {len(ours_ids)} series as ours but {len(tagged)} carry "
+                     f"the marker tag - the library check's scope drifted from the marker")
+    rr = requests.post(f"{backend}/api/sonarr/library/check", headers=auth, timeout=120)
+    if rr.status_code not in (200, 202):
+        fail(10, f"POST /library/check returned {rr.status_code} {rr.text[:160]}")
+    # A run another caller started is fine - wait for it to land.
+    for _ in range(60):
+        rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=60).json()
+        if not rep["library"]["running"]:
+            break
+        time.sleep(2)
+    lib = rep["library"]
+    last = lib.get("last")
+    if last is None:
+        if lib.get("lastError") and "not configured" in lib["lastError"]:
+            step(10, f"SKIP - {lib['lastError']}")
+            return
+        fail(10, f"no stored audit after a check (lastError={lib.get('lastError')!r})")
+
+    rows, totals = last["rows"], last["totals"]
+    if totals["series"] != len(rows):
+        fail(10, f"totals.series={totals['series']} but {len(rows)} rows")
+    audited = [r for r in rows if r.get("audit")]
+    if totals["episodes"] != sum(r["audit"]["episodes"] for r in audited):
+        fail(10, "totals.episodes is not the sum of the rows")
+    for k in SUB_STATES:
+        if totals["counts"][k] != sum(r["audit"]["counts"][k] for r in audited):
+            fail(10, f"totals.counts.{k} is not the sum of the rows")
+    for r in rows:
+        if r["state"] not in ROW_STATES:
+            fail(10, f"row {r['title']!r} has state {r['state']!r}")
+        a = r.get("audit")
+        if not a:
+            continue
+        if sum(a["counts"][k] for k in SUB_STATES) != a["episodes"]:
+            fail(10, f"{r['title']!r}: subtitle counts do not sum to its episodes")
+        if sum(1 for p in a["problems"] if p["sub"] == "none") != a["counts"]["none"]:
+            fail(10, f"{r['title']!r}: a no-subs episode is missing from its problem list")
+    if totals["seriesMissing"] != sum(1 for r in rows if r["state"] == "missing"):
+        fail(10, "totals.seriesMissing disagrees with the rows")
+
+    # Scope: exactly the marker-tagged series with files, as the snapshot saw them.
+    ours = (rep.get("snapshot") or {}).get("ours")
+    if isinstance(ours, list):
+        want = {o["sonarrId"] for o in ours if o.get("episodeFileCount", 0) > 0}
+        got = {r["sonarrId"] for r in rows}
+        if want != got:
+            fail(10, f"audited {len(got)} series, the snapshot lists {len(want)} of ours with "
+                     f"files - scope drifted (extra {sorted(got - want)[:5]}, missing "
+                     f"{sorted(want - got)[:5]})")
+
+    # One series against Jellyfin directly: "none" means no English subtitle
+    # track and no English audio, which is checkable without the backend's rules.
+    target = next((r for r in audited
+                   if r["audit"]["source"] == "jellyfin" and r["audit"]["stale"] == 0
+                   and r["audit"]["counts"]["none"] > 0 and r.get("jellyfinId")), None)
+    note = "no series to cross-check"
+    if target:
+        eps = jellyfin_episodes_direct(target["jellyfinId"])
+        files = [e for e in (eps or []) if e.get("Path")]
+        if eps is None:
+            note = "Jellyfin not readable directly - cross-check skipped"
+        elif len(files) != target["audit"]["episodes"]:
+            note = (f"{target['title'][:30]!r}: {len(files)} Jellyfin files vs "
+                    f"{target['audit']['episodes']} Sonarr episodes (multi-episode files) - skipped")
+        else:
+            def is_en(code):
+                return (code or "").lower() in ("en", "eng", "english")
+            raw = 0
+            for e in files:
+                streams = e.get("MediaStreams") or []
+                en_sub = any(m.get("Type") == "Subtitle" and (
+                    is_en(m.get("Language")) or "english" in (m.get("Title") or "").lower())
+                    for m in streams)
+                en_audio = any(m.get("Type") == "Audio" and is_en(m.get("Language")) for m in streams)
+                if streams and not en_sub and not en_audio:
+                    raw += 1
+            if raw != target["audit"]["counts"]["none"]:
+                fail(10, f"{target['title']!r}: Jellyfin shows {raw} episodes with no English "
+                         f"track at all, the audit says {target['audit']['counts']['none']}")
+            note = f"{target['title'][:30]!r} matches Jellyfin ({raw} raw)"
+    step(10, f"PASS - {len(rows)} series, {totals['episodes']} episodes, "
+             f"{totals['counts']['none'] + totals['counts']['signsOnly']} without English subs, "
+             f"{totals['seriesStale']} stale; {note}")
 
 
 if __name__ == "__main__":

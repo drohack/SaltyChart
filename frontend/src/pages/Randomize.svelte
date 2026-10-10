@@ -5,10 +5,10 @@ import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
-import { onMount } from 'svelte';
+import { onMount, tick } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
-import { checkAvailability, checkAvailabilityMany, mediaConfigured, libraryStatus, type MediaAvailability } from '../stores/jellyfin';
-import { loadCastSdk, loadVideoJs, prewarm } from '../lib/jellyfinPrewarm';
+import { checkAvailability, checkAvailabilityMany, forgetAvailability, mediaConfigured, libraryStatus, type MediaAvailability } from '../stores/jellyfin';
+import { loadCastSdk, loadVideoJs, prewarm, playbackInfo, isItemGone } from '../lib/jellyfinPrewarm';
 import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
 
 /** Set when a hide/show write failed and the optimistic change was put back. */
@@ -219,6 +219,68 @@ $: _lang = $options.titleLanguage;
   }
 
   /**
+   * Hide every unwatched show that cannot be watched in English here: one the
+   * library does not hold, or one whose episode has neither a full English
+   * subtitle track nor English audio (a signs-and-songs-only track does not
+   * count). The subtitle verdict is the backend's `english` field, from the
+   * same rules as /admin/sonarr's subtitle audit, so the two never disagree.
+   *
+   * A superset of Hide Not in Library, by request: a show you do not have is no
+   * more watchable in English than a raw. Like every bulk hide here it never
+   * acts on an unanswered show - `unknown`, `notAired`, or a held show whose
+   * verdict predates the `english` field all keep the show visible.
+   */
+  let hidingNotEnglish = false;
+
+  async function hideNotEnglish() {
+    if (!$authToken || hidingNotEnglish) return;
+    hidingNotEnglish = true;
+    const forSeason = season;
+    const forYear = year;
+    try {
+      const visible = unwatchedDetailed.filter((it) => !it.hidden);
+      const results = await checkAvailabilityMany(
+        visible.map((it) => ({
+          mediaId: it.id,
+          titles: [
+            it.customName,
+            it.title?.english,
+            it.title?.romaji,
+            it.title?.native,
+          ].filter(Boolean),
+          airing: { status: it.status, startDate: it.startDate },
+        }))
+      );
+      if (season !== forSeason || year !== forYear) return;
+      for (const [id, info] of results) recordEnglish(id, info);
+      const notEnglish = visible.filter((it) => isNotEnglish(results.get(it.id)));
+      if (!notEnglish.length) return;
+
+      watchList = watchList.map((entry) =>
+        notEnglish.some((m) => m.id === entry.mediaId) ? { ...entry, hidden: true } : entry
+      );
+      // Same optimistic-write rule as the other bulk paths.
+      const failed = await writeHidden(notEnglish.map((m) => m.id), true);
+      if (failed.length) revertHidden(failed, false, notEnglish.length);
+    } finally {
+      hidingNotEnglish = false;
+    }
+  }
+
+  /**
+   * Is this a definite "can't watch it in English here"? Yes for a show the
+   * library definitely lacks (the same test as Hide Not in Library, `notAired`
+   * excluded), and for a held show whose episode is explicitly `none` or
+   * `signsOnly`. No for `unknown`, a dub (`engAudio`), and a held show whose
+   * verdict has no `english` field yet - those are "don't know" or "fine".
+   */
+  function isNotEnglish(info: MediaAvailability | undefined): boolean {
+    if (!info || info.unknown || info.notAired) return false;
+    if (info.available === false) return true;
+    return info.english === 'none' || info.english === 'signsOnly';
+  }
+
+  /**
    * Toggle the `hidden` flag for a single item.
    *
    * Optimistic, with the same failure contract as the bulk paths: the write
@@ -279,7 +341,7 @@ $: _lang = $options.titleLanguage;
         // touches the HLS manifest, is jellyfinPrewarm.ts's module header.
         if (info.available && info.itemId && info.mediaSourceId) {
           loadPlayerModal();
-          prewarm(info.itemId, info.mediaSourceId);
+          void warmOrHeal(id, titles as string[], airing, info);
         }
         // Cached "not available" -> re-check live, so a show downloaded a
         // minute ago appears without waiting out the cache TTLs. Skipped for
@@ -295,6 +357,68 @@ $: _lang = $options.titleLanguage;
         }
       })
       .catch(() => {});
+  }
+
+  /**
+   * Prewarm the player, and notice on the way if the episode has been replaced.
+   *
+   * The prewarm already asks for playback info, so a dead item id costs nothing
+   * extra to detect: `playbackInfo` shares its cache entry. When Sonarr upgrades
+   * a file and Jellyfin rescans it, the episode comes back under a NEW item id
+   * (PANDOROBO S01E01, 2026-10-09) - and both the session cache here and the
+   * server's hour-long one kept offering the dead id, so Watch opened a black
+   * player and a hard reload did not help. Healing it while the synopsis is
+   * being read means the viewer never sees it.
+   */
+  async function warmOrHeal(
+    id: number,
+    titles: string[],
+    airing: { status?: string | null; startDate?: any },
+    info: MediaAvailability
+  ): Promise<boolean> {
+    if (!info.itemId || !info.mediaSourceId) return false;
+    prewarm(info.itemId, info.mediaSourceId);
+    const probe = await playbackInfo(info.itemId, info.mediaSourceId, { quality: 'auto' });
+    if (probe || !isItemGone(info.itemId)) return false;
+    forgetAvailability(id);
+    const fresh = await checkAvailability(id, titles, true, airing);
+    if (selected?.id !== id) return false;
+    watchInfo = fresh;
+    if (fresh.available && fresh.itemId && fresh.mediaSourceId && fresh.itemId !== info.itemId) {
+      prewarm(fresh.itemId, fresh.mediaSourceId);
+      return true;
+    }
+    return false;
+  }
+
+  /** The player found its item gone: look the show up again and reopen once on the new one. */
+  async function onItemGone() {
+    if (!selected || !watchInfo) return;
+    const titles = [
+      selected.customName,
+      selected.title?.english,
+      selected.title?.romaji,
+      selected.title?.native,
+    ].filter(Boolean) as string[];
+    const airing = { status: selected.status, startDate: selected.startDate };
+    const healed = await warmOrHeal(selected.id, titles, airing, watchInfo);
+    if (!healed) return; // the player's own message stays up
+    showPlayer = false;
+    await tick();
+    showPlayer = true;
+  }
+
+  // Catch the library up on files Sonarr has replaced - see `/library/check`
+  // in routes/jellyfin.ts. Fire-and-forget and logged-in only: the server
+  // throttles it to one check per ten minutes, and the wheel never waits on it.
+  let libraryCheckAsked = false;
+  $: if ($mediaConfigured && $authToken && !libraryCheckAsked) {
+    libraryCheckAsked = true;
+    apiFetch(
+      '/api/jellyfin/library/check',
+      { method: 'POST', headers: { Authorization: `Bearer ${$authToken}` } },
+      { label: 'randomize/library-check', timeoutMs: QUICK, retries: 0 }
+    ).catch(() => console.warn('[randomize] library check request failed'));
   }
 
   /** The player chunk is fetched early - its weight and why are on `warmPlayerAssets` below. */
@@ -766,6 +890,18 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     libraryAvailability = new Map(libraryAvailability).set(id, available);
   }
 
+  // mediaId -> true when the show is held but can't be watched in English
+  // (see `isNotEnglish`). Absent = not known. Drives Hide Not English's
+  // enabled state, recorded the same plain-function way for the same reason.
+  let notEnglishIds = new Map<number, boolean>();
+
+  function recordEnglish(id: number, info: MediaAvailability) {
+    if (info.unknown || info.notAired) return;
+    const value = isNotEnglish(info);
+    if (notEnglishIds.get(id) === value) return;
+    notEnglishIds = new Map(notEnglishIds).set(id, value);
+  }
+
   /**
    * Extracted from the reactive block below so the Retry button can call it.
    * Previously the only thing that could trigger a lookup was `wheelItems`
@@ -792,6 +928,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
           // Definite answers only - the unknown/notAired invariant is spelled
           // out on the hide path above.
           if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);
+          recordEnglish(mediaId, info);
         }
       })
       .catch(() => {});
@@ -808,6 +945,13 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
   $: hasNonLibraryVisible = unwatchedDetailed.some(
     (it) => !it.hidden && libraryAvailability.get(it.id) === false
   );
+  $: hasNotEnglishVisible = unwatchedDetailed.some(
+    (it) => !it.hidden && notEnglishIds.get(it.id) === true
+  );
+  // Shown beside the Unwatched heading. A list where most rows are dimmed reads
+  // as "the wheel is broken" unless it says how many are hidden on purpose.
+  $: unwatchedHiddenCount = unwatchedDetailed.filter((it) => it.hidden).length;
+  $: unwatchedShownCount = unwatchedDetailed.length - unwatchedHiddenCount;
 
   // (Watched ranking is handled separately - see watchedRank below)
 
@@ -1665,7 +1809,16 @@ $: {
         <div class="mb-4 pr-2">
           <!-- Row 1: Title and Sort -->
           <div class="flex items-center justify-between mb-2">
-            <h3 class="text-lg font-bold text-center md:text-left">Unwatched</h3>
+            <h3 class="text-lg font-bold text-center md:text-left">
+              Unwatched
+              {#if unwatchedDetailed.length}
+                <span
+                  class="text-xs font-normal opacity-60 whitespace-nowrap"
+                  data-unwatched-counts
+                  title="Shown are on the wheel; hidden ones stay in your list but the wheel skips them"
+                >{unwatchedShownCount} shown, {unwatchedHiddenCount} hidden</span>
+              {/if}
+            </h3>
 
             <!-- Hide tab (mobile only) -->
             <button
@@ -1689,9 +1842,12 @@ $: {
             {/if}
           </div>
 
-          <!-- Row 2: Hide/Show All buttons -->
+          <!-- Hide controls, two rows: four buttons on one line ran past the
+               sidebar's width, so the library ones were cut off. Each row
+               wraps rather than clipping if the sidebar is narrower still. -->
           {#if $authToken}
-            <div class="flex items-center gap-2">
+            <div class="flex flex-col gap-1.5" data-hide-controls>
+            <div class="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
@@ -1708,7 +1864,9 @@ $: {
               >
                 Show All
               </button>
-              {#if $mediaConfigured}
+            </div>
+            {#if $mediaConfigured}
+              <div class="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
@@ -1725,14 +1883,35 @@ $: {
                   {#if hidingNonLibrary}<span class="loading loading-spinner loading-xs"></span>{/if}
                   Hide Not in Library
                 </button>
+                <button
+                  type="button"
+                  class="btn btn-xs btn-outline normal-case filter brightness-75 hover:brightness-100"
+                  data-hide-not-english
+                  on:click={hideNotEnglish}
+                  disabled={!hasNotEnglishVisible || hidingNotEnglish}
+                  title={$libraryStatus === 'unreachable'
+                    ? "Can't reach the media server, so nothing is known about subtitles"
+                    : $libraryStatus === 'checking'
+                    ? 'Still checking the library...'
+                    : hasNotEnglishVisible
+                    ? 'Hide shows you cannot watch in English: not in the library, or the episode has no English subtitles and no English audio (a signs-only track does not count)'
+                    : 'Nothing to hide - every shown show is in the library with English subtitles or audio'}
+                >
+                  {#if hidingNotEnglish}<span class="loading loading-spinner loading-xs"></span>{/if}
+                  Hide Not English
+                </button>
+              </div>
+            {/if}
 
-                <!-- Which kind of nothing this is. A disabled button looks the
-                     same whether every show is present or the lookup never
-                     answered, and those were indistinguishable on screen - the
-                     reason a real outage read as normal operation. -->
-                {#if hideWriteError}
-                  <span class="text-xs text-error" data-hide-write-error>{hideWriteError}</span>
-                {/if}
+            <!-- Which kind of nothing this is. A disabled button looks the
+                 same whether every show is present or the lookup never
+                 answered, and those were indistinguishable on screen - the
+                 reason a real outage read as normal operation. The write error
+                 sits outside the library gate: Hide All / Show All can fail too. -->
+            {#if hideWriteError}
+              <span class="text-xs text-error" data-hide-write-error>{hideWriteError}</span>
+            {/if}
+            {#if $mediaConfigured}
                 {#if $libraryStatus === 'checking'}
                   <span class="text-xs opacity-60 flex items-center gap-1" data-library-status="checking">
                     <span class="loading loading-spinner loading-xs"></span>
@@ -2227,6 +2406,7 @@ $: {
       title={selected.customName || getEnglishTitle(selected)}
       episodeTitle={watchInfo.episodeTitle ?? ''}
       on:close={closePlayer}
+      on:itemGone={onItemGone}
     />
   {/if}
 

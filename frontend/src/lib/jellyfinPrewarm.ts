@@ -55,13 +55,23 @@ export function api(path: string): string {
  * libass, positioning and karaoke intact, and this library has episodes whose
  * track *names* are useless ('1', '2', 'final'), so codec and flags are what
  * can be trusted.
+ *
+ * **A forced English track is the fallback, not excluded.** Forced usually
+ * means signs-only, so an unforced English track still wins - but SKYANiME
+ * releases flag their ONLY English track forced and it is full dialogue (346
+ * lines on Iron Wok Jan S01E06, as many as the Arabic beside it, 2026-10-09).
+ * Excluding every forced track played those episodes with no subtitles at all,
+ * and at worst the fallback shows a signs track where nothing was shown before.
  */
 export function defaultSubtitleIndex(subStreams: SubStream[]): number | null {
   const label = (s: SubStream) => `${s.title} ${s.displayTitle}`;
   const english = subStreams.filter(
     (s) => /^en/i.test(s.language) || /english/i.test(label(s))
   );
-  const usable = (english.length ? english : subStreams).filter((s) => !s.isForced);
+  const unforcedEnglish = english.filter((s) => !s.isForced);
+  const usable = english.length
+    ? unforcedEnglish.length ? unforcedEnglish : english
+    : subStreams.filter((s) => !s.isForced);
   if (!usable.length) return null;
   const plain = usable.filter(
     (s) => !s.isHearingImpaired && !/sdh|dubtitle|sign|song/i.test(label(s))
@@ -152,6 +162,21 @@ function remember<T>(cache: Map<string, T>, key: string, make: () => T): T {
 const playbackCache = new Map<string, Promise<PlaybackInfo | null>>();
 
 /**
+ * Item ids the server has called `ITEM_GONE`: Jellyfin no longer has them.
+ *
+ * Jellyfin mints a new item id when it rescans a file Sonarr replaced, so the
+ * id an availability answer carried can die while the page is open. Recorded
+ * here so the pop-up and the player can tell "this episode was replaced" from
+ * "Jellyfin is down" - the two need opposite responses (look it up again vs
+ * wait), and both used to render as the same black player.
+ */
+const goneItems = new Set<string>();
+
+export function isItemGone(itemId: string): boolean {
+  return goneItems.has(itemId);
+}
+
+/**
  * The session id and subtitle tracks - one call, cached.
  *
  * `fresh` is not optional politeness: a cached response carries the
@@ -186,7 +211,13 @@ export function playbackInfo(
       const res = await fetch(api(`/playback/${itemId}?${params}`), {
         headers: { Authorization: `Bearer ${get(authToken)}` },
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        if (res.status === 404) {
+          const body = await res.json().catch(() => null);
+          if (body?.code === 'ITEM_GONE') goneItems.add(itemId);
+        }
+        return null;
+      }
       const info = await res.json();
       return {
         playSessionId: info.playSessionId ?? '',

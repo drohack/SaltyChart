@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { recordUpstream } from './upstreamHealth';
 import prisma from '../db';
+import type { SonarrEpisodeLite } from './libraryAudit';
 
 // ---------------------------------------------------------------------------
 // Sonarr client: every read we need, and exactly one write.
@@ -88,6 +89,11 @@ export interface SonarrSeries {
   /** Tag ids, not labels - resolve them through `sonarrTags()`. */
   tags: number[];
   added?: string;
+  /** Read by the library check, which runs only over series we hold files for. */
+  qualityProfileId?: number;
+  /** Sonarr's own URL segment, so the admin page can link straight to the series. */
+  titleSlug?: string;
+  episodeFileCount?: number;
 }
 
 export interface SonarrExclusion {
@@ -265,6 +271,9 @@ export async function fetchSnapshot(cfg: SonarrConfig): Promise<SonarrSnapshot> 
         tvdbId,
         tags: Array.isArray(s?.tags) ? s.tags.filter((t: unknown) => typeof t === 'number') : [],
         added: typeof s?.added === 'string' ? s.added : undefined,
+        qualityProfileId: Number(s?.qualityProfileId) || undefined,
+        titleSlug: typeof s?.titleSlug === 'string' ? s.titleSlug : undefined,
+        episodeFileCount: Number(s?.statistics?.episodeFileCount) || 0,
       });
     }
     return { ok: true, series };
@@ -335,6 +344,14 @@ export interface SonarrRootFolder {
 export interface SonarrQualityProfile {
   id: number;
   name: string;
+  /**
+   * Whether Sonarr will ever replace a file it already has. **Off means the
+   * first release grabbed is permanent** - which is how raws with no subtitles
+   * stuck: the auto-add sent "Prefer Smaller" (off) until 2026-10-09, and a
+   * ToonsHub raw that arrived first could never be swapped for the subbed
+   * release that came an hour later.
+   */
+  upgradeAllowed: boolean;
 }
 
 /**
@@ -364,12 +381,95 @@ export async function sonarrQualityProfiles(
     const { data } = await sonarrAxios(cfg).get('/api/v3/qualityprofile');
     if (!Array.isArray(data)) return null;
     return data
-      .map((p: any) => ({ id: Number(p?.id), name: String(p?.name ?? '') }))
+      .map((p: any) => ({
+        id: Number(p?.id),
+        name: String(p?.name ?? ''),
+        upgradeAllowed: p?.upgradeAllowed === true,
+      }))
       .filter((p) => Number.isInteger(p.id));
   } catch (err) {
     console.warn('[sonarr] could not read quality profiles:', sonarrErrorInfo(err));
     return null;
   }
+}
+
+/**
+ * Every episode of one series, each with the file Sonarr holds for it.
+ *
+ * `includeEpisodeFile=true` folds the episode-file record into the episode
+ * list, so one call answers both "which episode is this" and "what is in the
+ * file" (verified against v4.0.20.3014). `mediaInfo.subtitles` is a
+ * `/`-separated list of language codes, `''` when the file has no subtitle
+ * tracks at all; a missing `mediaInfo` means Sonarr has not analysed the file,
+ * and is kept distinct as `null` so it can never be read as "no subtitles".
+ *
+ * Null on failure - "could not ask" - never an empty list, which would say the
+ * series has no files.
+ */
+export async function sonarrEpisodesWithFiles(
+  cfg: SonarrConfig,
+  seriesId: number
+): Promise<SonarrEpisodeLite[] | null> {
+  try {
+    const { data } = await sonarrAxios(cfg).get('/api/v3/episode', {
+      params: { seriesId, includeEpisodeFile: true },
+    });
+    if (!Array.isArray(data)) return null;
+    return data.map((e: any) => {
+      const f = e?.hasFile ? e?.episodeFile : null;
+      const mi = f?.mediaInfo;
+      return {
+        seasonNumber: Number(e?.seasonNumber) || 0,
+        episodeNumber: Number(e?.episodeNumber) || 0,
+        title: typeof e?.title === 'string' ? e.title : '',
+        file:
+          f && typeof f.path === 'string'
+            ? {
+                path: f.path,
+                releaseGroup: typeof f.releaseGroup === 'string' ? f.releaseGroup : null,
+                quality: typeof f?.quality?.quality?.name === 'string' ? f.quality.quality.name : null,
+                audioLanguages: mi ? String(mi.audioLanguages ?? '') : null,
+                subtitles: mi ? String(mi.subtitles ?? '') : null,
+              }
+            : null,
+      };
+    });
+  } catch (err) {
+    console.warn(`[sonarr] could not read episodes for series ${seriesId}:`, sonarrErrorInfo(err));
+    return null;
+  }
+}
+
+/** Where `runSonarrSnapshot` persists what it observed. */
+export const SONARR_SNAPSHOT_KEY = 'sonarrSnapshotStatus';
+
+/**
+ * The series we added, as the last snapshot recorded them - marker-tagged only.
+ *
+ * Read from the cache rather than Sonarr because `/api/v3/series` is the whole
+ * library (2,400 series) and the library check can be started by a page visit.
+ * Null when no snapshot has recorded the list yet (one written before the field
+ * existed, or none at all), which the check reports rather than treating as
+ * "we added nothing".
+ */
+export async function readSnapshotOurs(): Promise<OurSeriesSnapshot[] | null> {
+  const row = await prisma.appConfig.findUnique({ where: { key: SONARR_SNAPSHOT_KEY } });
+  if (!row?.value) return null;
+  try {
+    const parsed = JSON.parse(row.value);
+    return Array.isArray(parsed?.ours) ? (parsed.ours as OurSeriesSnapshot[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface OurSeriesSnapshot {
+  sonarrId: number;
+  tvdbId: number;
+  title: string;
+  titleSlug: string | null;
+  qualityProfileId: number | null;
+  episodeFileCount: number;
 }
 
 // --- the add path ----------------------------------------------------------
