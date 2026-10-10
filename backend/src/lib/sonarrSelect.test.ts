@@ -7,6 +7,7 @@ import {
   isFirstSeason,
   isWithinAirWindow,
   usableTvdbId,
+  listRequests,
   DEFAULT_WITHIN_DAYS,
   type SonarrCandidate,
   type SonarrIdentity,
@@ -426,5 +427,55 @@ test('a confident identity needs no acknowledgement', () => {
     out.map((i) => i.tvdbId),
     [100],
     'a settled identity is force-included without ceremony'
+  );
+});
+
+// --- trusted users' lists -------------------------------------------------
+
+const SEQUEL_EDGE = { edges: [{ relationType: 'PREQUEL', node: { id: 9 } }] } as any;
+
+test("a show on a trusted user's list is added even when the rules skip it", () => {
+  const shows = [
+    entry({ id: 1, relations: SEQUEL_EDGE }),          // sequel: the rules drop it
+    entry({ id: 2, format: 'ONA' }),                   // ONA: the rules drop it
+    entry({ id: 3 }),                                  // first season, not listed
+  ];
+  const resolve = mapResolver({ 1: '101', 2: '102', 3: '103' });
+  const forced = listRequests(shows, new Map([[1, 2], [2, 1]]), resolve);
+  const { items } = selectForSonarrDetailed(shows, resolve, NOW, { forceInclude: forced });
+  const byId = new Map(items.map((i) => [i.tvdbId, i]));
+  assert.ok(byId.has(101), 'a listed sequel was not added');
+  assert.ok(byId.has(102), 'a listed ONA was not added');
+  assert.equal(byId.get(101)?.listedBy, 2, 'the list count did not reach the plan');
+  assert.ok(byId.has(103), 'an unlisted first season stopped being added');
+});
+
+test('a listed sequel monitors its newest season, never season 1', () => {
+  const shows = [entry({ id: 1, relations: SEQUEL_EDGE }), entry({ id: 2 })];
+  const resolve = mapResolver({ 1: '101', 2: '102' });
+  const forced = listRequests(shows, new Map([[1, 1], [2, 1]]), resolve);
+  const { items } = selectForSonarrDetailed(shows, resolve, NOW, { forceInclude: forced });
+  assert.equal(
+    items.find((i) => i.tvdbId === 101)?.monitor,
+    'lastSeason',
+    'a listed sequel would download season 1 instead of the season that is airing'
+  );
+  assert.equal(items.find((i) => i.tvdbId === 102)?.monitor, 'firstSeason');
+});
+
+test('a list never adds an unverified match, a film, or a show with no id', () => {
+  const shows = [
+    entry({ id: 1 }),
+    entry({ id: 2, format: 'MOVIE' }),
+    entry({ id: 3 }),
+  ];
+  const resolve = mapResolver({ 1: { tvdbId: '101', pending: true }, 2: '102' });
+  const forced = listRequests(shows, new Map([[1, 3], [2, 3], [3, 3]]), resolve);
+  const { items, rejected } = selectForSonarrDetailed(shows, resolve, NOW, { forceInclude: forced });
+  assert.ok(!items.some((i) => i.tvdbId === 101), 'a listed show with an unverified match was added');
+  assert.ok(!items.some((i) => i.tvdbId === 102), 'a listed film was sent to Sonarr');
+  assert.ok(
+    rejected.some((r) => r.entry.id === 1 && r.reason === 'unverifiedNotAcknowledged'),
+    'the unverified listed show was not reported as such'
   );
 });

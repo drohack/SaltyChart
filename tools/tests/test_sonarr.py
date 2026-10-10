@@ -61,6 +61,12 @@ Coverage, and the trap each step exists for:
   its count of episodes with no English subtitle track and no English audio
   must match `counts.none`. Skipped (exit 0) when Sonarr is not configured.
 
+- **Only trusted accounts' lists add shows (step 11).** A throwaway non-admin
+  account lists a show the rules skip; it must NOT reach the auto-add list. The
+  account is then trusted (`PATCH /api/admin/users/:id/sonarr-trusted`) and the
+  same show must appear, then everything is put back. Signup is open to anyone,
+  so an untrusted list starting downloads is the failure that matters.
+
 **Not covered here, deliberately:** a successful add. It needs write
 credentials and it changes a real library, so it is a manual verification step
 (push one series with `cap: 1`, check it in Sonarr's UI, push again and confirm
@@ -76,7 +82,7 @@ Usage:
 Exits 0 if all steps pass (or the cache-dependent steps were skipped), 1 on any
 failure. Each progress line is self-contained per the global CLAUDE.md
 convention:
-  [k/10 Sonarr] step name - detail
+  [k/11 Sonarr] step name - detail
 """
 import argparse
 import sqlite3
@@ -112,7 +118,7 @@ def admin_token() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-TOTAL_STEPS = 10
+TOTAL_STEPS = 11
 
 
 def step(n: int, msg: str) -> None:
@@ -171,6 +177,7 @@ def main():
         ("PUT", "/api/sonarr/config", {}),
         ("POST", "/api/sonarr/config/test", {}),
         ("POST", "/api/sonarr/library/check", None),
+        ("PATCH", "/api/admin/users/1/sonarr-trusted", {"trusted": True}),
     ]
     for method, path, payload in admin_routes:
         rr = requests.request(method, f"{backend}{path}", json=payload, timeout=30)
@@ -325,6 +332,13 @@ def main():
             continue          # a title we can't line up proves nothing either way
         rels = {(edge or {}).get("relationType")
                 for edge in ((e.get("relations") or {}).get("edges") or [])}
+        # Forced rows - a trusted user's list or an Include click - are MEANT to
+        # bypass these rules; only the selection carries `monitor` for them. Even
+        # forced, a film must never reach Sonarr.
+        if it.get("monitor"):
+            if e.get("format") == "MOVIE":
+                leaked.append(f"{it['title']!r} is a MOVIE forced onto the list")
+            continue
         if e.get("isAdult"):
             leaked.append(f"{it['title']!r} is isAdult")
         if e.get("format") not in ("TV", "TV_SHORT"):
@@ -482,10 +496,68 @@ def main():
         step(9, f"PASS - {len(rep['proposed'])} graded, 0 weak among candidates, "
                 f"and an unverified include was refused")
 
-    # --------- 10/10  The library check adds up and stays on our series ---------
+    # A failure its show has moved past must not be counted as needing attention.
+    open_failures = [p for p in rep["pushes"]
+                     if p["status"] in ("lookupFailed", "failed") and not p.get("superseded")]
+    if rep["history"]["needsAttention"] != len(open_failures):
+        fail(9, f"history.needsAttention is {rep['history']['needsAttention']} but "
+                f"{len(open_failures)} failures are still open - superseded ones are counted")
+
+    # --------- 10/11  The library check adds up and stays on our series ---------
     library_check_step(backend, auth)
 
+    # --------- 11/11  Only trusted accounts' lists add shows ---------
+    trusted_lists_step(backend, auth)
+
     print(f"Sonarr: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
+
+
+def trusted_lists_step(backend: str, auth: dict) -> None:
+    step(11, "a list adds shows only when its account is trusted")
+    rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=60).json()
+    proposed_ids = {p.get("anilistId") for p in rep["proposed"]}
+    # A show the rules skip that nobody trusted has listed, with a settled match.
+    target = next((r for r in rep["rejected"]
+                   if r.get("reason") == "notFirstSeason" and r.get("tvdbId")
+                   and r.get("anilistId") and r["anilistId"] not in proposed_ids
+                   and r.get("grade") in ("map", "confirmed", "dateVerified", "adminOverride")
+                   and r.get("format") != "MOVIE"), None)
+    if target is None:
+        step(11, "SKIP - no rule-skipped show with a settled match to list")
+        return
+    season, year = target.get("season"), target.get("year")
+    username, password = "sonarr_list_fixture", "sonarr_pw_123"
+    r = requests.post(f"{backend}/api/auth/signup", json={"username": username, "password": password}, timeout=10)
+    if r.status_code != 200:
+        r = requests.post(f"{backend}/api/auth/login", json={"username": username, "password": password}, timeout=10)
+    if r.status_code != 200 or not r.json().get("token"):
+        fail(11, f"could not authenticate the fixture account: {r.status_code} {r.text[:160]}")
+    fx = {"Authorization": f"Bearer {r.json()['token']}"}
+    users = requests.get(f"{backend}/api/admin/users", headers=auth, timeout=30).json()["users"]
+    me = next(u for u in users if u["username"] == username)
+    put = lambda items: requests.put(f"{backend}/api/list", headers=fx, timeout=30,
+                                     json={"season": season, "year": year, "items": items})
+
+    def on_list() -> bool:
+        rr = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=60).json()
+        return any(p.get("anilistId") == target["anilistId"] for p in rr["proposed"])
+
+    try:
+        put([{"mediaId": target["anilistId"]}])
+        if on_list():
+            fail(11, f"an untrusted account's list put shows on the auto-add list "
+                     f"({target['title']!r}) - anyone who signs up could start downloads")
+        rr = requests.patch(f"{backend}/api/admin/users/{me['id']}/sonarr-trusted", headers=auth,
+                            json={"trusted": True}, timeout=30)
+        if rr.status_code != 200:
+            fail(11, f"trusting the account failed: {rr.status_code} {rr.text[:160]}")
+        if not on_list():
+            fail(11, f"a trusted account's list did not put {target['title']!r} on the auto-add list")
+    finally:
+        requests.patch(f"{backend}/api/admin/users/{me['id']}/sonarr-trusted", headers=auth,
+                       json={"trusted": False}, timeout=30)
+        put([])
+    step(11, f"PASS - {target['title'][:40]!r} added only once the listing account was trusted")
 
 
 SUB_STATES = ("fullEng", "signsOnly", "engAudio", "none", "unknown")

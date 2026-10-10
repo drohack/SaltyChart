@@ -240,7 +240,7 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 191 rows
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 195 rows
   now (2026-10-09) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
@@ -371,6 +371,8 @@ both bind from outside `backend/`:
   only intended second attempt is a **different** tvdbId arriving from a
   corrected identity. Do not add a "re-add if missing" path; that is the loop
   this design exists to remove.
+- **Only trusted accounts' lists add shows** (admins, or `sonarrTrusted` on
+  /admin/users). Signup is open, so an untrusted list must never start downloads.
 - **The scope filter uses relations; the matcher must not.**
   `lib/sonarrSelect.ts` drops entries with a `PREQUEL`/`PARENT` edge to decide
   *what we auto-add* - this is not licence to reintroduce a relation heuristic

@@ -111,6 +111,10 @@
     gradeNote: string | null;
     /** From the last library check; null when Sonarr does not hold it or no check has seen it. */
     english?: { label: string; ok: boolean } | null;
+    /** Trusted users with this on their list, when that is why it is on the list. */
+    listedBy?: number;
+    /** `lastSeason` = a sequel; Sonarr monitors only the newest season. */
+    monitor?: 'firstSeason' | 'lastSeason';
   };
   type Rejected = {
     anilistId: number | null;
@@ -141,6 +145,8 @@
     attempts: number;
     lastAttemptAt: string | null;
     lastError: string | null;
+    /** A failure its show has moved past (re-matched, or added under another id). */
+    superseded?: boolean;
   };
   /** What one episode offers an English speaker - `lib/libraryAudit.ts` decides it. */
   type SubState = 'fullEng' | 'signsOnly' | 'engAudio' | 'none' | 'unknown';
@@ -193,6 +199,7 @@
       failed: { jellyfinId: string; title: string; error: string }[];
       settled: boolean;
       stillStale: string[];
+      newSeries?: { scanned: string[]; found: string[]; stillMissing: string[]; error?: string };
     } | null;
   };
   type Report = {
@@ -525,7 +532,9 @@
    * successful adds is how a persistent bad id goes unnoticed for a season.
    */
   const ATTENTION = new Set(['lookupFailed', 'failed']);
-  $: needsAttention = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status));
+  // A superseded failure is history, not a to-do: its show was re-matched or
+  // added under another id, so nothing about the old id can be acted on.
+  $: needsAttention = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status) && !p.superseded);
 
   // -- Refresh Jellyfin (the library check) --------------------------------
   // Runs daily on the server's schedule; the button is for "I just changed
@@ -542,7 +551,7 @@
 
   $: pushesSorted = [
     ...needsAttention,
-    ...(report?.pushes ?? []).filter((p) => !ATTENTION.has(p.status)),
+    ...(report?.pushes ?? []).filter((p) => !ATTENTION.has(p.status) || p.superseded),
   ];
 
   /** Premiere as a day number, for sorting and distance maths. Null when undated. */
@@ -834,7 +843,9 @@
           {#if lib?.last}
             Jellyfin checked {ago(lib.last.at)}{#if lib.last.refresh?.requested.length}
               - refreshed {lib.last.refresh.requested.map((x) => x.title).join(', ')}{/if}{#if lib.last.refresh?.stillStale.length}
-              <span class="text-error">- still out of date: {lib.last.refresh.stillStale.join(', ')}</span>{/if}
+              <span class="text-error">- still out of date: {lib.last.refresh.stillStale.join(', ')}</span>{/if}{#if lib.last.refresh?.newSeries?.found.length}
+              - new in Jellyfin: {lib.last.refresh.newSeries.found.join(', ')}{/if}{#if lib.last.refresh?.newSeries?.stillMissing.length}
+              <span class={lib.last.refresh.settled ? 'text-error' : ''}>- {lib.last.refresh.settled ? 'still not in Jellyfin' : 'scanning Jellyfin for'}: {lib.last.refresh.newSeries.stillMissing.join(', ')}</span>{/if}
           {:else if lib?.lastError}
             <span class="text-warning">Jellyfin not checked yet: {lib.lastError}</span>
           {:else}
@@ -950,7 +961,16 @@
                         <img src={p.cover} alt="" class="h-11 w-auto rounded" loading="lazy" />
                       {/if}
                     </td>
-                    <td class="truncate" title={p.title}>{p.title}</td>
+                    <td title={p.title}>
+                      <div class="truncate">{p.title}</div>
+                      <!-- Why it is here when the rules would skip it, and what a
+                           sequel downloads: only its newest season. -->
+                      {#if p.listedBy || p.monitor === 'lastSeason'}
+                        <div class="truncate text-[11px] opacity-60" data-listed={p.listedBy ?? 0}>
+                          {#if p.listedBy}on {p.listedBy} trusted list{p.listedBy === 1 ? '' : 's'}{/if}{#if p.listedBy && p.monitor === 'lastSeason'} - {/if}{#if p.monitor === 'lastSeason'}new season only{/if}
+                        </div>
+                      {/if}
+                    </td>
                     <td class="opacity-60"><ExternalIdLink id={p.tvdbId} /></td>
                     <td class="opacity-60">{p.format ?? '-'}</td>
                     <td class="opacity-60 whitespace-nowrap">
@@ -1156,13 +1176,18 @@
           <ul class="text-sm">
             {#each pushesSorted as p (p.tvdbId)}
               <li class="flex items-center gap-2 py-0.5">
-                <span
-                  class="badge badge-sm whitespace-nowrap {STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.cls ?? 'badge-outline'}"
-                >{STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.label ?? p.status}</span>
+                {#if p.superseded}
+                  <span class="badge badge-sm badge-outline whitespace-nowrap opacity-60"
+                        title="This attempt failed, but the show has since been re-matched or added under another id - nothing to do">replaced</span>
+                {:else}
+                  <span
+                    class="badge badge-sm whitespace-nowrap {STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.cls ?? 'badge-outline'}"
+                  >{STATE[p.status === 'pushed' ? 'pushedAlready' : p.status]?.label ?? p.status}</span>
+                {/if}
                 <span class="flex-1 truncate" title={p.title}>
                   {#if p.title}{p.title}{:else}tvdb <ExternalIdLink id={p.tvdbId} />{/if}
                 </span>
-                {#if p.lastError && (p.status === 'lookupFailed' || p.status === 'failed')}
+                {#if p.lastError && !p.superseded && (p.status === 'lookupFailed' || p.status === 'failed')}
                   <span class="opacity-50 text-xs truncate max-w-[18rem]" title={p.lastError}>
                     {p.lastError}
                   </span>
@@ -1174,7 +1199,7 @@
                       ? new Date(p.lastAttemptAt).toLocaleDateString()
                       : ''}
                 </span>
-                {#if p.status === 'lookupFailed'}
+                {#if p.status === 'lookupFailed' && !p.superseded}
                   <a class="link text-xs whitespace-nowrap" href="/admin/matching">Fix the match</a>
                 {/if}
               </li>

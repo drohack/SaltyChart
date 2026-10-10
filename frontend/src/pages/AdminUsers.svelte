@@ -29,6 +29,9 @@
     email: string | null;
     emailVerified: boolean;
     isAdmin: boolean;
+    /** The stored flag; admins count for Sonarr regardless. */
+    sonarrTrusted: boolean;
+    countsForSonarr: boolean;
     createdAt: string;
     listCount: number;
     needsEmail: boolean;
@@ -116,6 +119,21 @@
       `/api/admin/users/${row.id}`,
       { method: 'PATCH', body: JSON.stringify({ isAdmin }) },
       isAdmin ? `${row.username} is now an admin.` : `${row.username} is no longer an admin.`
+    );
+  }
+
+  /**
+   * Does this account's list add shows to Sonarr? Off by default - signup is
+   * open to anyone, so a list only starts downloads once an admin says so.
+   */
+  function setSonarrTrusted(row: Row, trusted: boolean) {
+    mutate(
+      row.id,
+      `/api/admin/users/${row.id}/sonarr-trusted`,
+      { method: 'PATCH', body: JSON.stringify({ trusted }) },
+      trusted
+        ? `Shows on ${row.username}'s list will now be added to Sonarr.`
+        : `${row.username}'s list no longer adds shows to Sonarr.`
     );
   }
 
@@ -426,6 +444,7 @@
             <!-- "Clear password" / "Clear email", not "Password" / "Email": the
                  data column is already called Email, and two identical headers
                  meaning different things is worse than two long ones. -->
+            <th class="whitespace-nowrap" title="Shows on this account's list for the current and next season are added to Sonarr, even when the auto-add rules would skip them">Adds to Sonarr</th>
             <th class="whitespace-nowrap">Clear password</th>
             <th class="whitespace-nowrap">Clear email</th>
             <th>Delete</th>
@@ -502,6 +521,22 @@
                   >
                     Make admin
                   </button>
+                {/if}
+              </td>
+
+              <td class="whitespace-nowrap" data-sonarr-trusted={row.countsForSonarr ? 'yes' : 'no'}>
+                {#if row.isAdmin}
+                  <span class="text-xs opacity-60" title="Admins' lists always add to Sonarr">always</span>
+                {:else}
+                  <input
+                    type="checkbox"
+                    class="toggle toggle-sm toggle-success"
+                    checked={row.sonarrTrusted}
+                    disabled={busy[row.id]}
+                    aria-label={`Shows on ${row.username}'s list are added to Sonarr`}
+                    data-act="sonarr-trusted"
+                    on:change={(e) => setSonarrTrusted(row, e.currentTarget.checked)}
+                  />
                 {/if}
               </td>
 

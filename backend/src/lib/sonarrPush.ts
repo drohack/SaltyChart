@@ -73,6 +73,8 @@ export interface PushCandidate {
   tvdbId: number;
   anilistId: number | null;
   title: string;
+  /** Passed to Sonarr's add; absent means `firstSeason`. See `SonarrPushItem.monitor`. */
+  monitor?: 'firstSeason' | 'lastSeason';
 }
 
 /**
@@ -175,6 +177,38 @@ export function findOrphans(
     const nowTvdbId = currentIdentity.get(row.anilistId);
     if (nowTvdbId === undefined || nowTvdbId === row.tvdbId) continue;
     out.push({ tvdbId: row.tvdbId, title: row.title, anilistId: row.anilistId, nowTvdbId });
+  }
+  return out;
+}
+
+/**
+ * Failed attempts that no longer need anyone: the tvdbIds of `lookupFailed` /
+ * `failed` rows whose AniList entry has moved on.
+ *
+ * A failed row is keyed on the tvdbId that failed, and nothing ever retries an
+ * id once the entry resolves to a different one - so after a corrected match
+ * the old failure stayed in "need attention" for ever. Seen 2026-10-10: DARK
+ * MACHINE (452665 -> 480909), Uncle's Obsession (470200 -> 480889) and Gensou
+ * Suikoden (460979 -> 482279, already added) all still flagged red.
+ *
+ * Superseded when the entry now resolves to a different tvdbId, or when the
+ * same entry already has a terminal row under another id. A failure whose
+ * entry still resolves to the same id is NOT superseded - that one is real.
+ * `resolve` returns null when nothing is known; that is never a reason to hide.
+ */
+export function supersededFailures(
+  rows: PushRow[],
+  resolve: (anilistId: number) => number | null
+): Set<number> {
+  const out = new Set<number>();
+  const doneFor = new Set(
+    rows.filter((r) => isTerminal(r.status) && r.anilistId !== null).map((r) => r.anilistId as number)
+  );
+  for (const row of rows) {
+    if (isTerminal(row.status) || row.anilistId === null) continue;
+    const now = resolve(row.anilistId);
+    const movedOn = now !== null && now !== row.tvdbId;
+    if (movedOn || doneFor.has(row.anilistId)) out.add(row.tvdbId);
   }
   return out;
 }

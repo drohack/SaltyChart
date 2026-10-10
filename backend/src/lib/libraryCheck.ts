@@ -37,6 +37,11 @@ export const LIBRARY_AUDIT_KEY = 'libraryAudit';
 const CONCURRENCY = 4;
 /** After a refresh, how long to watch for Jellyfin to catch up: 8 x 15 s. */
 const POLL_TRIES = 8;
+/**
+ * A library scan for a brand-new show folder takes longer than one series
+ * refresh, so it gets a longer window: 20 x 15 s = 5 minutes.
+ */
+const NEW_SERIES_POLL_TRIES = 20;
 const POLL_INTERVAL_MS = 15_000;
 
 /** `schedule` = the daily job in index.ts; `admin` = the Refresh Jellyfin button. */
@@ -88,6 +93,11 @@ export interface LibraryAudit {
     settled: boolean;
     /** Requested, watched for the whole poll window, and still stale. */
     stillStale: string[];
+    /**
+     * Shows Sonarr has files for that Jellyfin had no series for at all - a
+     * new folder no scan had reached. The TV libraries were scanned for them.
+     */
+    newSeries?: { scanned: string[]; found: string[]; stillMissing: string[]; error?: string };
   } | null;
 }
 
@@ -110,6 +120,12 @@ export interface LibraryCheckDeps {
     refresh(seriesItemId: string): Promise<void>;
     /** Drop every cached availability verdict pointing into this series. */
     forget(seriesItemId: string): void;
+    /** Scan Jellyfin's TV libraries for new show folders; returns their names. */
+    scanLibraries(): Promise<string[]>;
+    /** Re-read Jellyfin's series list into `seriesByTvdb`. */
+    reindex(): Promise<void>;
+    /** Drop cached "not in the library" verdicts, so a show that just appeared is looked up again. */
+    forgetMissing(): void;
   } | null;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -128,6 +144,24 @@ export function seriesToRefresh(rows: LibraryRow[]): Array<{ jellyfinId: string;
   return rows
     .filter((r) => r.state === 'stale' && r.jellyfinId)
     .map((r) => ({ jellyfinId: r.jellyfinId!, title: r.title }));
+}
+
+/**
+ * Shows Sonarr has files for that Jellyfin has no series for at all.
+ *
+ * Refreshing a series cannot help these - there is no series to refresh. It is
+ * a new folder no library scan has reached yet, and until one does the show is
+ * "not in the library" on Randomize: A Certain Dark Item, 2026-10-10, added to
+ * Sonarr under /media/TV Shows at 05:20 with no Jellyfin series hours later.
+ * Only rows with files on disk count - a show with nothing downloaded is not
+ * missing from Jellyfin, it is missing from disk.
+ */
+export function seriesMissingFromJellyfin(
+  rows: LibraryRow[]
+): Array<{ sonarrId: number; tvdbId: number; title: string }> {
+  return rows
+    .filter((r) => !r.jellyfinId && (r.audit?.episodes ?? 0) > 0)
+    .map((r) => ({ sonarrId: r.sonarrId, tvdbId: r.tvdbId, title: r.title }));
 }
 
 export function totalsOf(rows: LibraryRow[]): LibraryAudit['totals'] {
@@ -295,27 +329,58 @@ export function startLibraryCheck(trigger: Trigger, makeDeps: () => Promise<Libr
           failed.push({ ...t, error: errText(err) });
         }
       }
-      if (requested.length || failed.length) {
+      // A show Jellyfin has never seen cannot be refreshed - it needs a scan of
+      // the library its folder lives in. Only when one exists, so this is not a
+      // scan per check: on a normal day the list is empty.
+      const missing = deps.jellyfin ? seriesMissingFromJellyfin(rows) : [];
+      let scanned: string[] = [];
+      let scanError: string | undefined;
+      if (missing.length) {
+        try {
+          scanned = await deps.jellyfin!.scanLibraries();
+        } catch (err) {
+          scanError = errText(err);
+        }
+      }
+      if (requested.length || failed.length || missing.length) {
         console.log(
           `[library] ${trigger} check: asked Jellyfin to refresh ${requested.length} series` +
-            (failed.length ? `, ${failed.length} refresh request(s) failed` : '')
+            (failed.length ? `, ${failed.length} refresh request(s) failed` : '') +
+            (missing.length
+              ? `; ${missing.length} show(s) not in Jellyfin at all, scanned ${scanned.join(', ') || 'nothing'}` +
+                (scanError ? ` (scan failed: ${scanError})` : '')
+              : '')
         );
       }
 
+      const newSeries = missing.length
+        ? {
+            scanned,
+            found: [] as string[],
+            stillMissing: missing.map((m) => m.title),
+            ...(scanError ? { error: scanError } : {}),
+          }
+        : undefined;
       const audit: LibraryAudit = {
         at: at.toISOString(),
         trigger,
         rows,
         totals: totalsOf(rows),
         refresh:
-          requested.length || failed.length
-            ? { requested, failed, settled: requested.length === 0, stillStale: [] }
+          requested.length || failed.length || missing.length
+            ? {
+                requested,
+                failed,
+                settled: requested.length === 0 && scanned.length === 0,
+                stillStale: [],
+                ...(newSeries ? { newSeries } : {}),
+              }
             : null,
       };
       await writeStored({ last: audit, lastError: null, lastAttemptAt: at.toISOString() });
       resolveFirst(await readStored());
 
-      if (!requested.length) return;
+      if (!requested.length && !scanned.length) return;
 
       // Watch Jellyfin catch up. Cached availability is dropped only once its
       // path matches Sonarr's: dropping it the moment we ask would let the next
@@ -324,8 +389,10 @@ export function startLibraryCheck(trigger: Trigger, makeDeps: () => Promise<Libr
       // backstop for anything still cached when the old item disappears.
       const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
       const pending = new Map(requested.map((t) => [t.jellyfinId, t]));
-      for (let i = 0; i < POLL_TRIES && pending.size; i++) {
+      const pendingNew = new Map(scanned.length ? missing.map((m) => [m.sonarrId, m]) : []);
+      for (let i = 0; i < NEW_SERIES_POLL_TRIES && (pending.size || pendingNew.size); i++) {
         await sleep(POLL_INTERVAL_MS);
+        if (i >= POLL_TRIES) pending.clear(); // the stale window is shorter; what is left stays stale
         for (const [jellyfinId] of [...pending]) {
           const row = rows.find((r) => r.jellyfinId === jellyfinId);
           if (!row) {
@@ -340,18 +407,47 @@ export function startLibraryCheck(trigger: Trigger, makeDeps: () => Promise<Libr
             pending.delete(jellyfinId);
           }
         }
+        if (pendingNew.size) {
+          await deps.jellyfin!.reindex();
+          let foundAny = false;
+          for (const [sonarrId, m] of [...pendingNew]) {
+            if (!deps.jellyfin!.seriesByTvdb.has(String(m.tvdbId))) continue;
+            const row = rows.find((r) => r.sonarrId === sonarrId);
+            const ours1 = ours.find((x) => x.sonarrId === sonarrId);
+            if (row && ours1) {
+              const again = await auditOne(ours1, deps, sonarrById.get(sonarrId) ?? undefined);
+              Object.assign(row, again.row);
+            }
+            newSeries!.found.push(m.title);
+            pendingNew.delete(sonarrId);
+            foundAny = true;
+          }
+          // The show is in the library now, but Randomize was told it is not and
+          // that answer is cached for 10 minutes - drop it so the next look-up
+          // finds the episode.
+          if (foundAny) deps.jellyfin!.forgetMissing();
+        }
       }
       rows.sort(compareRows);
       audit.totals = totalsOf(rows);
+      const stillStale = requested
+        .filter((t) => rows.find((r) => r.jellyfinId === t.jellyfinId)?.audit?.stale)
+        .map((t) => t.title);
+      if (newSeries) newSeries.stillMissing = [...pendingNew.values()].map((m) => m.title);
       audit.refresh = {
         requested,
         failed,
         settled: true,
-        stillStale: [...pending.values()].map((t) => t.title),
+        stillStale,
+        ...(newSeries ? { newSeries } : {}),
       };
-      if (pending.size) {
-        console.warn(
-          `[library] Jellyfin still out of date after refresh for: ${audit.refresh.stillStale.join(', ')}`
+      if (stillStale.length) {
+        console.warn(`[library] Jellyfin still out of date after refresh for: ${stillStale.join(', ')}`);
+      }
+      if (newSeries?.found.length || newSeries?.stillMissing.length) {
+        console.log(
+          `[library] new shows: found ${newSeries.found.join(', ') || 'none'}` +
+            (newSeries.stillMissing.length ? `; still not in Jellyfin: ${newSeries.stillMissing.join(', ')}` : '')
         );
       }
       await writeStored({ last: audit, lastError: null, lastAttemptAt: at.toISOString() });

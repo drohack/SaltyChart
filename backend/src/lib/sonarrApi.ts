@@ -528,7 +528,7 @@ export async function addSeries(
   cfg: SonarrConfig,
   lookup: any,
   tagIds: number[],
-  opts?: { searchForMissingEpisodes?: boolean }
+  opts?: { searchForMissingEpisodes?: boolean; monitor?: 'firstSeason' | 'lastSeason' }
 ): Promise<AddSeriesResult> {
   const payload = {
     ...lookup,
@@ -539,7 +539,8 @@ export async function addSeries(
     monitored: true,
     tags: tagIds,
     addOptions: {
-      monitor: ADD_MONITOR,
+      // `lastSeason` for a sequel - see `SonarrPushItem.monitor`.
+      monitor: opts?.monitor ?? ADD_MONITOR,
       searchForMissingEpisodes: opts?.searchForMissingEpisodes ?? false,
       searchForCutoffUnmetEpisodes: false,
       ignoreEpisodesWithFiles: false,

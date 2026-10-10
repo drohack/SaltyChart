@@ -238,6 +238,12 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
 **`/admin/users`** - who can sign in, and who can administer. A fourth question
 alongside identity, scope and production: *access*. What lives nowhere else:
 
+- **"Adds to Sonarr"** is a per-account toggle (`data-act="sonarr-trusted"`):
+  a trusted account's list puts its shows on the Sonarr auto-add even when the
+  rules skip them. Admins read "always". Off by default because signup is open.
+  On `/admin/sonarr` such rows say "on N trusted lists", and a sequel says "new
+  season only" (it is added monitoring only its newest season).
+
 - **`createdAt` and the list count are columns, not decoration.** Signup is open
   to the internet, so a stranger's account otherwise looks exactly like a
   friend's, and an account with data in it is a different deletion decision from
@@ -381,6 +387,9 @@ for the same reason. What lives nowhere else:
   from our own record, not the live library, so a series you later delete keeps
   saying "added by us" instead of drifting back to "will be added". If it ever
   does drift back, the one-and-done guarantee has broken.
+- **A failure whose show has since been re-matched reads `replaced`**, muted,
+  and is not counted in "need attention" (the backend's `superseded` flag) -
+  otherwise a fixed match left the red badge up for ever.
 - **"Everything we have tried" lists the failures first.** `bad TVDB id` and
   `add failed` both mean nothing was added and both retry, so they are the only
   rows anyone can act on - burying them under a hundred successful adds is how a

@@ -11,7 +11,7 @@ import {
   type SonarrEpisodeLite,
   type JellyfinEpisodeLite,
 } from './libraryAudit';
-import { decideStart, seriesToRefresh, totalsOf, type LibraryRow } from './libraryCheck';
+import { decideStart, seriesMissingFromJellyfin, seriesToRefresh, totalsOf, type LibraryRow } from './libraryCheck';
 
 // Assertion messages are written as stories on purpose: they become the
 // `expect` substrings mutation_audit.py matches on.
@@ -255,6 +255,23 @@ test('dubs are counted on their own, whatever the subtitles say', () => {
     null
   );
   assert.equal(fromSonarr.dubbed, 1, "Sonarr's audio codes must count a dub when Jellyfin cannot be matched");
+});
+
+test('a show with files and no Jellyfin series is missing from Jellyfin', () => {
+  const withFiles = auditSeries([ep(1, '/m/a.mkv')], null);
+  const noFiles = auditSeries([ep(1, null)], null);
+  const held = auditSeries([ep(1, '/m/b.mkv')], [jf('/d/b.mkv')]);
+  const missing = seriesMissingFromJellyfin([
+    { ...row('A Certain Dark Item', withFiles.state, null), audit: withFiles },
+    { ...row('Nothing downloaded', noFiles.state, null), audit: noFiles },
+    { ...row('In Jellyfin', held.state, 'jf1'), audit: held },
+    row('Sonarr did not answer', 'error', null),
+  ]);
+  assert.deepEqual(
+    missing.map((m) => m.title),
+    ['A Certain Dark Item'],
+    'a downloaded show Jellyfin has no series for was not flagged for a library scan'
+  );
 });
 
 test('totals add up across rows and count Sonarr-only rows as unmatched', () => {

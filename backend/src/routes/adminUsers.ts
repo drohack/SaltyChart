@@ -63,6 +63,7 @@ router.get('/', requireAuth, requireAdmin, async (_req, res) => {
         email: true,
         emailVerifiedAt: true,
         isAdmin: true,
+        sonarrTrusted: true,
         createdAt: true,
         _count: { select: { lists: true } },
       },
@@ -76,6 +77,9 @@ router.get('/', requireAuth, requireAdmin, async (_req, res) => {
         email: u.email,
         emailVerified: !!u.emailVerifiedAt,
         isAdmin: u.isAdmin,
+        sonarrTrusted: u.sonarrTrusted,
+        // What the auto-add actually uses: admins always count.
+        countsForSonarr: u.isAdmin || u.sonarrTrusted,
         createdAt: u.createdAt,
         listCount: u._count.lists,
         /** An admin who cannot recover their own account. Rendered as a warning. */
@@ -140,6 +144,31 @@ router.patch('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) =>
     res.status(result.status).json(result.body);
   } catch (err) {
     console.error('[adminUsers] patch failed', err);
+    res.status(500).json({ error: 'Server error', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Does this account's list count for the Sonarr auto-add? `{ trusted: boolean }`.
+ *
+ * A trusted user's list is a request: every show on it for the current or next
+ * season is added to Sonarr even when the auto-add rules would skip it (a
+ * sequel, an ONA). Off by default, and admin-only to change, because signup is
+ * open to the internet - an untrusted list must never start downloads.
+ */
+router.patch('/:id/sonarr-trusted', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  const id = parseId(req.params.id);
+  const { trusted } = req.body as { trusted?: boolean };
+  if (id === null || typeof trusted !== 'boolean') {
+    return res.status(400).json({ error: 'Expected { trusted: boolean }', code: 'BAD_REQUEST' });
+  }
+  try {
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    await prisma.user.update({ where: { id }, data: { sonarrTrusted: trusted } });
+    res.json({ ok: true, sonarrTrusted: trusted, countsForSonarr: target.isAdmin || trusted });
+  } catch (err) {
+    console.error('[adminUsers] sonarr-trusted failed', err);
     res.status(500).json({ error: 'Server error', code: 'SERVER_ERROR' });
   }
 });

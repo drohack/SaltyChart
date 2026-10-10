@@ -2983,6 +2983,50 @@ MUTATIONS: list[Mutation] = [
         expect="a signs-only episode counted as English in the column",
         guards="series with signs-only episodes show green in the English column",
     ),
+    Mutation(
+        name="a failed attempt stays flagged after its show is re-matched",
+        path=BACKEND_SONARR_PUSH,
+        # The bug as it shipped: "need attention" listed three failures for ids
+        # no show used any more, so the badge never cleared after a fix.
+        find="    const movedOn = now !== null && now !== row.tvdbId;",
+        replace="    const movedOn = false; /* mutation */",
+        test=T_UNIT,
+        expect="a failure for an id the entry no longer resolves to still needs attention",
+        guards="need attention on /admin/sonarr never clears after a corrected match",
+    ),
+    Mutation(
+        name="a downloaded show Jellyfin has never seen is not scanned for",
+        path=BACKEND_LIBCHECK,
+        # A new show folder has no Jellyfin series to refresh, so only a library
+        # scan finds it - without one it stays "not in the library" on Randomize
+        # until Jellyfin's 12-hour scan (A Certain Dark Item, 2026-10-10).
+        find="    .filter((r) => !r.jellyfinId && (r.audit?.episodes ?? 0) > 0)",
+        replace="    .filter((r) => !r.jellyfinId && (r.audit?.episodes ?? 0) > 0 && false) /* mutation */",
+        test=T_UNIT,
+        expect="a downloaded show Jellyfin has no series for was not flagged for a library scan",
+        guards="a newly added show stays unplayable on Randomize until Jellyfin's own scan",
+    ),
+    Mutation(
+        name="a listed sequel is added monitoring season 1",
+        path=BACKEND_SONARR,
+        # firstSeason on a "Season 2" entry downloads the wrong season.
+        find="          monitor: isFirstSeason(entry) ? 'firstSeason' : 'lastSeason',",
+        replace="          monitor: 'firstSeason', /* mutation */",
+        test=T_UNIT,
+        expect="a listed sequel would download season 1 instead of the season that is airing",
+        guards="a sequel someone listed downloads its first season instead of the new one",
+    ),
+    Mutation(
+        name="untrusted accounts' lists start Sonarr downloads",
+        path=BACKEND_SONARR_ROUTE,
+        # Signup is open to anyone. Counting every account's list hands strangers
+        # the ability to fill the owner's disk.
+        find="      user: { OR: [{ isAdmin: true }, { sonarrTrusted: true }] },",
+        replace="      /* mutation: every account counts */",
+        test=T_SONARR,
+        expect="an untrusted account's list put shows on the auto-add list",
+        guards="anyone who signs up can make the server download shows",
+    ),
 ]
 
 

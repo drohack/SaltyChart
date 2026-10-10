@@ -226,6 +226,11 @@ chronological order; all features listed are live.
   play until it does), asks Jellyfin to rescan just those series, and updates the
   column. It also runs once a day on its own, so Sonarr's "Update Library"
   connection can stay off.
+- **Lists drive Sonarr too.** Any show on a trusted user's list for the current
+  or next season is added to Sonarr even when the auto-add rules would skip it
+  (a sequel, an ONA) - a sequel downloads only its new season. Trust an account
+  with the **Adds to Sonarr** toggle on /admin/users; admins always count, and
+  new signups never do until you say so.
 - **Replaced episodes heal themselves in the player.** When Sonarr upgrades a
   file, Jellyfin gives the episode a new id; the Randomize pop-up notices and
   points *Watch* at the new one instead of opening a black player. Series whose

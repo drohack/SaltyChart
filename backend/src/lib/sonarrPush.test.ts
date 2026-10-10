@@ -7,6 +7,7 @@ import {
   newlyHeldToRecord,
   findOrphans,
   isTerminal,
+  supersededFailures,
   type PushRow,
   type PushStatus,
   type PushCandidate,
@@ -185,6 +186,29 @@ test('a re-identified series Sonarr no longer holds is not an orphan', () => {
 test('a row with no AniList id cannot be judged an orphan', () => {
   const row = { ...prior(13, 'pushed'), anilistId: null };
   assert.deepEqual(findOrphans([row], new Map([[130, 99]]), new Set([13])), []);
+});
+
+// --- failed attempts that have since been fixed ----------------------------
+
+test('a failed attempt stops needing attention once its entry is re-matched', () => {
+  const row = (tvdbId: number, anilistId: number, status: PushStatus): PushRow => ({
+    ...prior(tvdbId, status),
+    anilistId,
+  });
+  const rows = [
+    row(452665, 1, 'lookupFailed'), // DARK MACHINE: entry now resolves to 480909
+    row(460979, 2, 'lookupFailed'), // Gensou Suikoden: added under 482279 since
+    row(482279, 2, 'pushed'),
+    row(111, 3, 'lookupFailed'),    // still resolves to the same bad id - real
+    row(222, 4, 'failed'),          // nothing known now - never a reason to hide
+  ];
+  const current = new Map<number, number>([[1, 480909], [2, 482279], [3, 111]]);
+  const gone = supersededFailures(rows, (a) => current.get(a) ?? null);
+  assert.ok(gone.has(452665), 'a failure for an id the entry no longer resolves to still needs attention');
+  assert.ok(gone.has(460979), 'a failure stayed flagged after the same entry was added under another id');
+  assert.ok(!gone.has(111), 'a failure whose entry still resolves to that id was hidden - it is real');
+  assert.ok(!gone.has(222), 'an unknown current identity hid a failure');
+  assert.ok(!gone.has(482279), 'a successful push was marked superseded');
 });
 
 // --- reading Sonarr's refusals ---------------------------------------------

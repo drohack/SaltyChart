@@ -219,6 +219,7 @@ async function ensureDatabaseSchema() {
     await addUserColumn('email', `"email" TEXT`);
     await addUserColumn('emailVerifiedAt', `"emailVerifiedAt" DATETIME`);
     await addUserColumn('isAdmin', `"isAdmin" BOOLEAN NOT NULL DEFAULT 0`);
+    await addUserColumn('sonarrTrusted', `"sonarrTrusted" BOOLEAN NOT NULL DEFAULT 0`);
     await addUserColumn('tokenVersion', `"tokenVersion" INTEGER NOT NULL DEFAULT 0`);
 
     await prisma.$executeRawUnsafe(`

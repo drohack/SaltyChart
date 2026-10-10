@@ -33,6 +33,11 @@ model User {
   /// Replaces the `ADMIN_USER_ID` env comparison. Admins are symmetric peers;
   /// the only invariant is that demote/delete never leave zero of them.
   isAdmin         Boolean   @default(false)
+  /// Does this account's list count for the Sonarr auto-add? Every show on a
+  /// trusted user's list for the current/next season is added even when the
+  /// auto-add rules skip it. Off by default because signup is open to anyone;
+  /// admins count whatever this says.
+  sonarrTrusted   Boolean   @default(false)
   /// Bumped on every password change so live JWTs stop working. A token with no
   /// `v` claim reads as 0 - this default - which is what keeps the hand-minted
   /// admin tokens in `tools/` valid.

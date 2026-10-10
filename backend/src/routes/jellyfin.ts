@@ -1660,6 +1660,33 @@ async function libraryCheckDeps(): Promise<LibraryCheckDeps> {
       forget(seriesId) {
         forgetAvailabilityWhere((d) => d?.seriesId === seriesId);
       },
+      // Every TV-type library, because Sonarr's root folders and Jellyfin's
+      // libraries are named differently here (/media/TV Shows vs "TV Shows",
+      // /media/Anime vs "Anime") and a show can be added to either. Default
+      // modes: "Scan for new and updated files", nothing replaced.
+      async scanLibraries() {
+        const { data } = await getLibraryStructureApi(api).getVirtualFolders({ timeout: 30_000 });
+        const tv = (data ?? []).filter((f) => f.CollectionType === 'tvshows' && f.ItemId);
+        for (const f of tv) {
+          await getItemRefreshApi(api).refreshItem(
+            {
+              itemId: String(f.ItemId),
+              metadataRefreshMode: MetadataRefreshMode.Default,
+              imageRefreshMode: MetadataRefreshMode.Default,
+              replaceAllMetadata: false,
+              replaceAllImages: false,
+            },
+            { timeout: 30_000 }
+          );
+        }
+        return tv.map((f) => String(f.Name ?? f.ItemId));
+      },
+      async reindex() {
+        index(await getSeriesLibrary(api, true));
+      },
+      forgetMissing() {
+        forgetAvailabilityWhere((d) => d?.available === false && !d?.unknown);
+      },
     };
   }
   return { ours, readSonarrEpisodes: (id) => sonarrEpisodesWithFiles(sonarr, id), jellyfin };

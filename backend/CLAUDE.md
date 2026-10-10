@@ -462,7 +462,12 @@ which would claim credit for the entire library.
 
 `lookupFailed` and `failed` are the actionable statuses. Both mean nothing was
 added and both are retried, so a row that persists is a real problem: a
-`lookupFailed` is a wrong TVDB id, which is a `/admin/matching` job.
+`lookupFailed` is a wrong TVDB id, which is a `/admin/matching` job. **Except
+once it is superseded** (`supersededFailures`, `superseded: true` on the row):
+the entry now resolves to a different tvdbId, or was added under another one.
+Nothing retries the old id, so without this the failure stayed in "need
+attention" for ever after a fix - three did on 2026-10-10. Superseded rows stay
+in the log, labelled `replaced`, and are not counted.
 
 ### One add per series, and what that replaced
 
@@ -526,7 +531,28 @@ present.
 
 **Monitoring and search are ours to send**, and are not configurable per
 deployment on purpose: `addOptions.monitor: 'firstSeason'` (the Seerr
-`PARTIALLY_AVAILABLE` rule above) and `searchForMissingEpisodes: false`.
+`PARTIALLY_AVAILABLE` rule above) and `searchForMissingEpisodes: false`. **A
+forced sequel is the exception**: an Include or a trusted list on a "Season 2"
+entry is sent `lastSeason` (`SonarrPushItem.monitor`), because `firstSeason`
+would download season 1. (`latestSeason` is deprecated in Sonarr v4; if TVDB
+already lists an announced later season, `lastSeason` monitors that one.)
+
+### Trusted users' lists are requests
+
+Every show on a **trusted** user's list for the current or next season is
+force-included (`listRequests` in `lib/sonarrSelect.ts`, counted by
+`loadTrustedListCounts` in `routes/sonarr.ts`), so a show the rules skip - a
+sequel, an ONA - is still added when someone ranked it. Trusted = an admin, or
+`User.sonarrTrusted` set on `/admin/users` (`PATCH
+/api/admin/users/:id/sonarr-trusted`). **Off by default and admin-only,
+because signup is open to the internet** - an untrusted list must never start
+downloads; `test_sonarr` step 11 and a mutation row guard it. The identity
+guard still applies: a list entry never acknowledges an unverified match, so a
+pending guess is dropped as `unverifiedNotAcknowledged`, never added; MOVIE is
+skipped. A manual Include for the same entry wins over the list. Rows carry
+`listedBy` (how many trusted lists) and the page says so. One add per series
+still holds: a show added once and deleted is not re-added because it is still
+listed.
 
 **A quality profile invalidates the size estimate.** The 0.38 GB median comes
 from the current mixed-quality library, so under a 720p-only profile the page
@@ -1746,7 +1772,10 @@ Auth routes:
 
 `/api/admin/users` (all `requireAuth` + `requireAdmin`): `GET /` (adds
 `createdAt` and a list count - signup is open to the internet, so a stranger's
-account otherwise looks like a friend's), `PATCH /:id` (promote needs a verified
+account otherwise looks like a friend's; also `sonarrTrusted` and
+`countsForSonarr`), `PATCH /:id/sonarr-trusted` (`{ trusted }` - does this
+account's list add shows to Sonarr; see *Trusted users' lists are requests*),
+`PATCH /:id` (promote needs a verified
 email on the **target**, `EMAIL_NOT_VERIFIED`; demote respects the floor,
 `LAST_ADMIN`), `DELETE /:id` (refuses the last admin and refuses self; clears
 lists, settings and codes in one transaction - `WatchList` has no
@@ -1806,7 +1835,9 @@ in sync when adding columns/tables/indexes.
 
 Tables / columns:
 
-- `User` - plus four account-security columns: `email` (nullable, **not
+- `User` - `sonarrTrusted` (default 0: does this account's list add shows to
+  Sonarr; admins count regardless - see *Trusted users' lists are requests*),
+  plus four account-security columns: `email` (nullable, **not
   unique** - a household may share one, and nothing looks a user up by it),
   `emailVerifiedAt` (non-null is the entire protection rule), `isAdmin`
   (default 0; the bootstrap in `ensureDatabaseSchema()` sets it on

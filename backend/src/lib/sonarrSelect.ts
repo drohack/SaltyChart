@@ -26,6 +26,14 @@ import { VALID_SEASONS, type Season } from './validateSeason';
 export interface SonarrPushItem {
   title: string;
   tvdbId: number;
+  /**
+   * What Sonarr monitors on add. Absent = `firstSeason`, the auto-add's rule.
+   * `lastSeason` for a force-included or list-requested SEQUEL: `firstSeason`
+   * on a "Season 2" entry would download season 1 - the wrong season.
+   */
+  monitor?: 'firstSeason' | 'lastSeason';
+  /** How many trusted users have this on their list, when that is why it is here. */
+  listedBy?: number;
 }
 
 /**
@@ -277,6 +285,40 @@ export interface SonarrSelection {
 export interface ForcedInclude {
   tvdbId: number;
   acknowledgedUnverified: boolean;
+  /** Set when this comes from trusted users' lists rather than an Include click. */
+  listedBy?: number;
+}
+
+/**
+ * Trusted users' lists as force-includes: every listed entry in the seasons
+ * being considered, whatever the auto-add rules say.
+ *
+ * The identity guard still applies - the forced branch below drops a pending or
+ * rejected match unless a human acknowledged it, and a list entry never has, so
+ * an unverified guess cannot become a season of the wrong series just because
+ * someone ranked the show. MOVIE is skipped: Sonarr is TV, and a film's id is a
+ * TMDB film id it cannot look up. A manual Include for the same entry wins.
+ */
+export function listRequests(
+  shows: unknown[],
+  listedBy: ReadonlyMap<number, number>,
+  resolve: (anilistId: number) => SonarrIdentity
+): Map<number, ForcedInclude> {
+  const out = new Map<number, ForcedInclude>();
+  for (const raw of Array.isArray(shows) ? shows : []) {
+    const entry = (raw && typeof raw === 'object' ? raw : {}) as SonarrCandidate;
+    if (typeof entry.id !== 'number') continue;
+    const count = listedBy.get(entry.id);
+    if (!count) continue;
+    if (entry.format === 'MOVIE') continue;
+    const tvdbId = Number(resolve(entry.id).tvdbId);
+    out.set(entry.id, {
+      tvdbId: Number.isInteger(tvdbId) && tvdbId > 0 ? tvdbId : 0,
+      acknowledgedUnverified: false,
+      listedBy: count,
+    });
+  }
+  return out;
 }
 
 export interface SelectOptions {
@@ -363,7 +405,12 @@ export function selectForSonarrDetailed(
         drop('duplicateTvdbId');
       } else {
         seen.add(forced.tvdbId);
-        items.push({ title: forcedTitle, tvdbId: forced.tvdbId });
+        items.push({
+          title: forcedTitle,
+          tvdbId: forced.tvdbId,
+          monitor: isFirstSeason(entry) ? 'firstSeason' : 'lastSeason',
+          ...(forced.listedBy ? { listedBy: forced.listedBy } : {}),
+        });
       }
       continue;
     }

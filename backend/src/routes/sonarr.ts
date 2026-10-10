@@ -4,6 +4,7 @@ import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
 import { resolveIdentity, identityReady, matchGrade } from '../lib/seriesIdentity';
 import {
   selectForSonarrDetailed,
+  listRequests,
   seasonsForSonarr,
   DEFAULT_WITHIN_DAYS,
   type SeasonRef,
@@ -39,6 +40,7 @@ import {
   newlyHeldToRecord,
   classifyAddError,
   findOrphans,
+  supersededFailures,
   sonarrValidationMessages,
   type PushRow,
   type PushStatus,
@@ -250,6 +252,30 @@ async function loadIncludes(): Promise<Map<number, ForcedInclude>> {
   );
 }
 
+/**
+ * anilistId -> how many trusted users have it on their list for these seasons.
+ *
+ * Trusted = an admin, or an account with `sonarrTrusted` set on /admin/users.
+ * Off by default for everyone else, because signup is open to the internet and
+ * a stranger's list must never start downloads on the owner's server. Watched
+ * entries count too: someone ranked it, which is the point.
+ */
+async function loadTrustedListCounts(refs: SeasonRef[]): Promise<Map<number, number>> {
+  const rows = await prisma.watchList.findMany({
+    where: {
+      OR: refs.map((r) => ({ season: r.season, year: r.year })),
+      user: { OR: [{ isAdmin: true }, { sonarrTrusted: true }] },
+    },
+    select: { mediaId: true, userId: true },
+  });
+  const users = new Map<number, Set<number>>();
+  for (const r of rows) {
+    if (!users.has(r.mediaId)) users.set(r.mediaId, new Set());
+    users.get(r.mediaId)!.add(r.userId);
+  }
+  return new Map([...users].map(([mediaId, s]) => [mediaId, s.size]));
+}
+
 async function loadPushRows(): Promise<PushRow[]> {
   const rows = await prisma.sonarrPush.findMany();
   return rows.map((r) => ({
@@ -335,7 +361,14 @@ async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
     entries.push(...rows);
   }
 
-  const [forceInclude, pushes] = await Promise.all([loadIncludes(), loadPushRows()]);
+  const [manualIncludes, pushes, listed] = await Promise.all([
+    loadIncludes(),
+    loadPushRows(),
+    loadTrustedListCounts(refs),
+  ]);
+  // Trusted users' lists first, manual Includes over them - an Include is the
+  // more specific decision (it may carry an acknowledged unverified match).
+  const forceInclude = new Map([...listRequests(entries, listed, resolveIdentity), ...manualIncludes]);
   const { items, rejected } = selectForSonarrDetailed(entries, resolveIdentity, now, {
     forceInclude,
   });
@@ -666,6 +699,7 @@ async function buildPushPlan(refs: SeasonRef[], now: Date, cap: number): Promise
     tvdbId: i.tvdbId,
     anilistId: a.proposedBy.get(i.tvdbId) ?? null,
     title: i.title,
+    ...(i.monitor ? { monitor: i.monitor } : {}),
   }));
   const plan = planPushRun(candidates, priors, held, excluded, cap);
 
@@ -683,7 +717,8 @@ async function buildPushPlan(refs: SeasonRef[], now: Date, cap: number): Promise
   if (!observed) problems.push('no trusted Sonarr snapshot yet - run a snapshot first');
   if (!identityReady()) problems.push('identity data is still loading');
 
-  const describeOne = (c: PushCandidate) => describeProposed({ tvdbId: c.tvdbId, title: c.title }, a.entries);
+  const describeOne = (c: PushCandidate) =>
+    describeProposed(a.items.find((i) => i.tvdbId === c.tvdbId) ?? { tvdbId: c.tvdbId, title: c.title }, a.entries);
   return {
     enabled,
     cap,
@@ -869,7 +904,7 @@ export async function runScheduledPush(cap: number = DEFAULT_CAP): Promise<PushR
     });
   }
 
-  for (const { tvdbId, title, anilistId } of plan.raw) {
+  for (const { tvdbId, title, anilistId, monitor } of plan.raw) {
       const base = {
         tvdbId,
         anilistId,
@@ -905,7 +940,7 @@ export async function runScheduledPush(cap: number = DEFAULT_CAP): Promise<PushR
         continue;
       }
 
-      const add = await addSeries(cfg!, lookup, tagIds);
+      const add = await addSeries(cfg!, lookup, tagIds, monitor ? { monitor } : undefined);
       if (add.ok) {
         await recordPush({ ...base, status: 'pushed', sonarrSeriesId: add.seriesId ?? null, pushedAt: now });
         results.push({ tvdbId, title, status: 'pushed' });
@@ -1022,6 +1057,14 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
     // **692 series** here, so two shows the owner had for years rendered as
     // added by us - the page claiming credit for someone else's library.
     const pushedBy = new Map(a.pushes.map((p) => [p.tvdbId, p]));
+    // Failed attempts a corrected match has made irrelevant - kept in the log,
+    // but no longer counted or flagged. See `supersededFailures`.
+    const superseded = supersededFailures(a.pushes, (anilistId) => {
+      const n = Number(resolveIdentity(anilistId).tvdbId);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    });
+    const isOpenFailure = (p: PushRow) =>
+      (p.status === 'lookupFailed' || p.status === 'failed') && !superseded.has(p.tvdbId);
     const state = (tvdbId: number) => {
       const prior = pushedBy.get(tvdbId);
       if (prior?.status === 'pushed') return 'pushedAlready';
@@ -1109,7 +1152,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         // two are separated on purpose so "we added 36 series" can never be
         // rendered from a library we did not build.
         alreadyHeld: a.pushes.filter((p) => p.status === 'alreadyHeld').length,
-        needsAttention: a.pushes.filter((p) => p.status === 'lookupFailed' || p.status === 'failed').length,
+        needsAttention: a.pushes.filter(isOpenFailure).length,
         firstPushAt: earliest(a.pushes.map((p) => p.pushedAt)),
         lastPushAt: latest(a.pushes.map((p) => p.pushedAt)),
       },
@@ -1129,6 +1172,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
           attempts: p.attempts,
           lastAttemptAt: p.lastAttemptAt,
           lastError: p.lastError,
+          superseded: superseded.has(p.tvdbId),
         })),
       orphans,
       counts: { proposed: a.items.length, rejected: counts },
