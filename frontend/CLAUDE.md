@@ -308,6 +308,30 @@ every page in it**; a page wanting narrow content constrains its own children (t
 Connection form caps its cards at `max-w-2xl`) - making width a shell prop just
 moved the inconsistency up a level.
 
+**One status per show, on both `/admin/sonarr` and `/admin/matching`.** The
+server decides it (`backend/src/lib/entryStatus.ts`); both pages render it with
+the same pieces (`lib/entryStatus.ts`, `StatusBadge`, `StatusChips`, `AirDate`)
+and neither recomputes it. Each page used to have its own vocabulary, and they
+disagreed: matching left entries with no id out of its queue and never saw a
+Sonarr rejection, and the Sonarr page hid failures, unaired shows and missing
+ids in collapsed sections. **Colour means the result, never the format**:
+
+| colour | level | e.g. |
+|---|---|---|
+| red | `broken` - can't work until someone acts | no id, Sonarr rejected it, aired with no video, no English on episode 1 |
+| yellow | `check` - probably fine, nothing verified it | a guess, ambiguous, title-only, an auto-match no date confirmed, a viewer pick |
+| blue | `waiting` - not aired, more than 14 days out | no id yet, joins the list on a date |
+| green | `ok` - nothing to do | added, will be added, matched |
+
+**Needs attention = wanted and red or yellow**, where wanted = the auto-add rules
+take it, a trusted user listed it, or someone pressed Include. A problem on a
+show nothing wants keeps its colour but stays out of the queue. **Red means
+Randomize hides it**: "not in the library" and "no English" come from the same
+availability verdict Randomize's Hide Not English reads, so on the admin's own
+list the two counts match by construction (`test_sonarr` step 13). Handles:
+`data-level`, `data-code`, `data-chip`, `data-attention-row`, `data-entry-row`,
+`data-air`.
+
 **`/admin/sonarr`** - what is about to be added to Sonarr, and what already was.
 A separate page from `/admin/matching` on purpose: that one asks **identity** (which real
 series is this - permanent), this one asks **scope** (do we auto-add it, and what
@@ -320,10 +344,16 @@ for the same reason. What lives nowhere else:
   misreading. The first version did exactly that and was caught in a browser,
   with the build and svelte-check both green. Same discipline as `unknown` on the
   Jellyfin availability path.
-- **The excluded list is grouped by the gate that dropped each entry**, because a
-  count is not reviewable: "39 proposed" says nothing, "50 dropped on a
-  prequel/parent edge" says whether the filter is sane. Each row has an *Include
-  anyway* button (the force-include overlay, the only override direction).
+- **Nothing is in a dropdown.** Top to bottom: **Needs attention** (every wanted
+  show that is red or yellow, both seasons, plus open failures no row accounts
+  for - `report.attention`), the filter chips and an **On my list** toggle (the
+  admin's own list - the set their Randomize shows), one table per season with
+  **every wanted show** sorted worst first then by premiere, and an always-open
+  **Not auto-added** section for what a rule skipped, each naming the rule, with
+  *Include* (the force-include overlay, the only override direction). Every row
+  prints its reason in a **Why** column; a reason you have to hover for is
+  hidden. The only `<details>` left is the push history, whose open failures
+  also appear above - flow 28 fails if a collapsed section holds show rows.
 - **Every TVDB and TMDB id is a link** (`components/ExternalIdLink.svelte`,
   shared with `/admin/matching`). It renders the bare number, so the columns look
   the same, but both pages exist to answer "is this id the right series?" and
@@ -342,8 +372,8 @@ for the same reason. What lives nowhere else:
   the Sonarr auto-add grab 14 days ahead, and an identity has to be right
   *before* something acts on it, so 30 gives a fortnight of lead over that. An
   explicit `?season=` still wins - `/admin/sonarr` deep-links here.
-- **`noUsableTvdbId` rows link to `/admin/matching?season=&year=`** - the one
-  real seam between the two pages, since an unresolved id is a matching problem.
+- **A row whose problem is the match links to `/admin/matching?season=&year=`**
+  (*Fix match*) - no id, a guess, Sonarr rejecting the id, a TMDB-only match.
   That page reads the query params **once at mount**, falling back to the calendar
   season on anything unrecognised, so a stale link cannot fight a reviewer
   mid-review.
@@ -367,10 +397,9 @@ for the same reason. What lives nowhere else:
 - **Entries dropped as sequels say whether you hold the previous one** (25 of 50
   did, measured 2026-08-09). Display only - the first-seasons-only rule is
   unchanged, and auto-including on that signal is a separate decision.
-- **Every row carries a Match badge** from `matchGrade` (`lib/seriesIdentity.ts`)
-  - the same ladder the Watch pop-up's correction picker uses, so the two
-  surfaces cannot drift on what "certain" means. `weak` and `viewerPick` are
-  warning-coloured because those are the ones that can be wrong.
+- **The match grade is part of the status**, not its own column: a `weak` or
+  `viewerPick` identity is yellow with its reason in Why. The grade itself is
+  still `matchGrade` (`lib/seriesIdentity.ts`), shared with the Watch pop-up.
 - **"Ours" is counted from BOTH the marker tag and our own push record**, and the
   line says so, because neither is complete: the record does not follow a new
   database, and a series since deleted carries no tag. It must be the *marker*
@@ -390,11 +419,10 @@ for the same reason. What lives nowhere else:
 - **A failure whose show has since been re-matched reads `replaced`**, muted,
   and is not counted in "need attention" (the backend's `superseded` flag) -
   otherwise a fixed match left the red badge up for ever.
-- **"Everything we have tried" lists the failures first.** `bad TVDB id` and
-  `add failed` both mean nothing was added and both retry, so they are the only
-  rows anyone can act on - burying them under a hundred successful adds is how a
-  persistent bad id goes unnoticed for a season. A `bad TVDB id` row links to
-  `/admin/matching`, because that is where it gets fixed.
+- **"Everything we have tried" is a log**, failures first, collapsed - every
+  open failure in it is also on its show's row (joined by AniList id, so a show
+  re-matched to no id keeps its failure - `pushForEntry`) or in Needs attention.
+  Its *Fix the match* link carries the entry's season.
 - **An unverified row's button reads "Include anyway" and opens a confirm** that
   names the grade and what the id matched against - a generic "are you sure" is
   noise, whereas *"matched against Unanswered//butterfly"* is judgeable. The
@@ -405,8 +433,10 @@ for the same reason. What lives nowhere else:
   `on:change` handler splits the value **inside `load()`**, not in a `$:`
   statement - reactive declarations have not flushed when the handler runs, which
   produced `?season=&year=NaN` and a 400.
-- **One English column** in the three row tables (they share one colgroup, so it
-  is in all three): the backend's `english.label` - `subs` / `dub` / `subs + dub`
+- **Unaired premieres are a blue countdown** (`AirDate`), bold inside the 14-day
+  window; an aired date stays quiet.
+- **One English column** in every row table (they share one colgroup and one
+  row component, `SonarrEntryRow`): the backend's `english.label` - `subs` / `dub` / `subs + dub`
   / `no English`, with a count when only some episodes have English - green when
   `ok`, red otherwise, blank when Sonarr does not hold the show. The page never
   computes it. A separate subtitle section existed first and was removed: it hid
@@ -535,15 +565,18 @@ off around its dry run and restores it in a `finally`. Leaving alerts off after
 a crashed test is the silent half of that bug.
 
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
-contract (filter modes, provenance rules, the changed-vs-untouched Confirm
+contract (the filter chips, provenance rules, the changed-vs-untouched Confirm
 discriminator) is the header comment in `pages/AdminMatching.svelte`; the
 resolution rules it fronts are in *Matching AniList entries to the library* in
 the root guide. What lives nowhere else:
 
-- Shows what needs review for a season, with a per-row state verdict **derived
-  from the stored acceptance rung**, so the column can never contradict what
-  verified the match. The match control is Sonarr-import style: picking fills,
-  and only Confirm saves.
+- **Each row's status comes from `/api/sonarr/report`** (fetched for the season
+  on screen), so a show reads the same here as on /admin/sonarr and Sonarr's
+  verdicts - a rejected id, "can't add, no TVDB id" - are on the card. When the
+  report fails, the identity half from `/identity/resolve` stands in, every
+  problem counts as wanted, and the page says so. Needs attention is grouped by
+  problem, worst first. The match control is Sonarr-import style: picking
+  fills, and only Confirm saves.
 - **Rows sort by display title.** The API returns AniList id order, which reads
   as arbitrary.
 - **Run sweep now** fires `POST /identity/sweep` and polls the sweep summary

@@ -216,8 +216,17 @@ chronological order; all features listed are live.
   click, keys stored server-side and never sent back to a browser.
 - **/admin/matching** - review and correct how AniList entries were matched to
   your library. A correction is remembered permanently.
+- **One status per show on both admin pages**: red = can't work until you act
+  (no id, Sonarr rejected it, aired with no video, no English on episode 1),
+  yellow = probably fine but unverified, blue = not aired yet (with a countdown),
+  green = nothing to do. **Needs attention** lists every red or yellow show that
+  something wants - the auto-add rules, a trusted user's list, or an Include -
+  with the reason printed beside it; nothing is tucked into a dropdown. Red means
+  exactly what Randomize's *Hide Not English* hides, so on your own list the two
+  counts match.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
-  done, with a *Add now* button and a pause switch. An **English** column on
+  done, with a *Add now* button and a pause switch. Every wanted show is in its
+  season's table, worst first; what a rule skipped is in its own open section. An **English** column on
   every show Sonarr holds says whether it has English subtitles, a dub, or both
   - green when every episode does, red (with a count) when some or none do - read
   from Jellyfin's own tracks, so a signs-only track does not count. **Refresh

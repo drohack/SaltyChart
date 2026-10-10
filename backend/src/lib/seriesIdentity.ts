@@ -1,4 +1,5 @@
 import prisma from '../db';
+import type { IdentityFacts } from './entryStatus';
 import { tvdbIdForAnilist, tmdbRefForAnilist, anilistTvdbMapReady } from './anilistTvdbMap';
 
 // ---------------------------------------------------------------------------
@@ -539,6 +540,41 @@ export function dateSettlesCandidates(
   if (!winner) return false;
   return (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)
     || (!!stored.tmdbId && winner.tmdbId === stored.tmdbId);
+}
+
+/**
+ * The facts `identityStatus` (lib/entryStatus.ts) judges, for one entry.
+ *
+ * One home because two routes ask: `/identity/resolve` for /admin/matching and
+ * `/api/sonarr/report` for /admin/sonarr, and the two pages must never disagree
+ * about the same show.
+ *
+ * Judged on the RESOLVED identity - what availability and Sonarr actually use -
+ * so a bookkeeping miss row never hides a community-map id. The raw row is only
+ * consulted for what the resolved one cannot carry: that a miss was searched for.
+ */
+export function identityFacts(
+  anilistId: number,
+  extra: { titleOnly?: boolean; titleTier?: number | null; startDateMs?: number | null } = {}
+): IdentityFacts {
+  const resolved = resolveIdentity(anilistId);
+  const raw = _overrides.get(anilistId) ?? null;
+  const hasId = !!(resolved.tvdbId || resolved.tmdbId);
+  return {
+    grade: matchGrade(resolved),
+    confirmed: resolved.confirmed,
+    rejected: resolved.rejected,
+    pending: hasId ? resolved.pending : !!raw?.pending,
+    hasId,
+    note: resolved.note,
+    titleOnly: extra.titleOnly,
+    titleTier: extra.titleTier ?? null,
+    candidates: resolved.candidates,
+    matchedTitle: resolved.matchedTitle,
+    settledByDate: dateSettlesCandidates(resolved.candidates, extra.startDateMs ?? null, resolved),
+    startDateMs: extra.startDateMs ?? null,
+    year: resolved.year,
+  };
 }
 
 export function matchGrade(identity: Identity): MatchGrade {

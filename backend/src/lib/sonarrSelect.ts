@@ -27,6 +27,12 @@ export interface SonarrPushItem {
   title: string;
   tvdbId: number;
   /**
+   * The AniList entry this came from. Carried on the item rather than recovered
+   * from the title afterwards: two entries can share a display title, and the
+   * title join attributed one show's push to the other.
+   */
+  anilistId?: number;
+  /**
    * What Sonarr monitors on add. Absent = `firstSeason`, the auto-add's rule.
    * `lastSeason` for a force-included or list-requested SEQUEL: `firstSeason`
    * on a "Season 2" entry would download season 1 - the wrong season.
@@ -408,6 +414,7 @@ export function selectForSonarrDetailed(
         items.push({
           title: forcedTitle,
           tvdbId: forced.tvdbId,
+          anilistId: entry.id,
           monitor: isFirstSeason(entry) ? 'firstSeason' : 'lastSeason',
           ...(forced.listedBy ? { listedBy: forced.listedBy } : {}),
         });
@@ -459,7 +466,7 @@ export function selectForSonarrDetailed(
     }
 
     seen.add(tvdbId);
-    items.push({ title, tvdbId });
+    items.push({ title, tvdbId, anilistId });
   }
 
   return { items, rejected };

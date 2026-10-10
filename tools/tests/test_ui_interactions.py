@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 36 flows.
+Pre-deploy smoke test: frontend UI interactions - 39 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -130,6 +130,12 @@ Replaced files and subtitle tracks (37-38):
   verdict kind is present; the classification behind the field is unit-tested
   and checked live in `test_jellyfin` step 6.
 
+One status vocabulary across the admin pages (39):
+- /admin/matching reads each row's status from /api/sonarr/report (39), so a
+  Sonarr rejection and a no-id entry something wants sit in Needs attention
+  while the same problem on a show nothing wants does not. The report is
+  stubbed so all three shapes are present on any season.
+
 Seeds from live season data - the old hardcoded mediaIds aged out of the
 season entirely, so every seeded list joined against zero shows and the
 looser assertions passed anyway.
@@ -152,7 +158,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 38
+TOTAL = 39
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -1388,19 +1394,23 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
                 "[data-matching-list], [data-matching-empty], [data-matching-error]",
                 timeout=30_000)
             page.wait_for_timeout(500)
-        # The admin trusts resolver accepts: the default queue must NOT hold
-        # them (low priority was the ask), and the second filter option is
-        # where they live - reachable, never invisible.
-        assert not page.locator("[data-matching-list] li", has_text=seed_title).count(), (
-            "a resolver accept sits in the default 'Needs attention' queue - these "
-            "are trusted and belong behind the unverified-auto-matches filter")
-        page.locator("[data-filter-mode]").select_option("attention+accepts")
+        # An accept no DATE confirmed is yellow at best (owner's call,
+        # 2026-10-10): visible, never green, and saying why. "Everything" is
+        # where every row lives; whether it is also in Needs attention depends
+        # on whether anything wants the show, which flow 39 pins.
+        page.locator("[data-chip='all']").click()
         page.wait_for_timeout(500)
-        row = page.locator("[data-matching-list] li", has_text=seed_title)
+        row = page.locator("[data-matching-list] li[data-matching-row]", has_text=seed_title)
         assert row.count(), (
             "remote-accepted row is invisible on /admin/matching - an accept decided "
-            "on title text alone is unreachable under every filter, and the empty "
-            "state says nothing needs looking at")
+            "on title text alone is unreachable under every filter")
+        level = row.first.get_attribute("data-level")
+        assert level in ("broken", "check"), (
+            f"a title-text auto-match reads as settled (level {level!r}) - an accept no "
+            "date confirmed must be yellow at least")
+        assert "no date confirmed it" in (row.first.text_content() or "").lower(), (
+            "the unconfirmed auto-match reason is not on screen - the reviewer cannot "
+            "tell this match was never dated")
 
         step(20, "step 4/6: the match dropdown fills and previews without saving")
         LOOKUP_ROUTE = "**/api/jellyfin/identity/lookup**"
@@ -1444,11 +1454,15 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
         finally:
             page.unroute(LOOKUP_ROUTE)
 
-        step(20, "step 5/6: Confirm settles it and it leaves the list")
+        step(20, "step 5/6: Confirm settles the match half of its status")
         row.first.locator("button", has_text="Confirm").click()
         page.wait_for_timeout(3000)
-        assert not page.locator("[data-matching-list] li", has_text=seed_title).count(), \
-            "confirming the row did not remove it from the review list"
+        # The row stays under Everything (the seeded id is not in the library,
+        # so it is still not watchable) but the match itself is now settled.
+        settled = (page.locator("[data-matching-list] li[data-matching-row]", has_text=seed_title)
+                   .first.text_content() or "").lower()
+        assert "no date confirmed it" not in settled, \
+            "confirming the row did not settle its match - it still reads as an unconfirmed auto-match"
         # And the click must not have relabelled it: the id boxes are PREFILLED
         # with the stored ids, so an untouched Confirm has to keep the
         # resolver's provenance - "typed" means "changed", not "non-empty".
@@ -1472,9 +1486,9 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
             page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
             page.wait_for_timeout(1000)
-            page.locator("[data-filter-mode]").select_option("attention+accepts")
+            page.locator("[data-chip='all']").click()
             page.wait_for_timeout(500)
-            row2 = page.locator("[data-matching-list] li", has_text=seed_title)
+            row2 = page.locator("[data-matching-list] li[data-matching-row]", has_text=seed_title)
             assert row2.count(), "the re-seeded row did not reappear in the review list"
             row2.first.locator("[data-match-control]").click()
             page.wait_for_selector("[data-match-dropdown]", timeout=10_000)
@@ -1502,7 +1516,9 @@ def test_remote_accept_visible(page, backend: str, frontend: str):
             page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
             page.wait_for_selector("[data-matching-list], [data-matching-empty]", timeout=30_000)
             page.wait_for_timeout(1000)
-            unv = (page.locator("[data-matching-list] li", has_text=seed_title)
+            page.locator("[data-chip='all']").click()
+            page.wait_for_timeout(500)
+            unv = (page.locator("[data-matching-list] li[data-matching-row]", has_text=seed_title)
                    .first.text_content() or "").lower()
             assert "exact title" not in unv, (
                 "a row nothing could verify still claims it matched on an exact "
@@ -2774,6 +2790,7 @@ SELECTABLE_FLOWS = {
     "admin status badges",
     "compare share image",
     "nicknames set and shown",
+    "matching shows sonarr problems",
 }
 
 
@@ -2870,7 +2887,7 @@ def test_sonarr_page_renders(page, frontend: str):
     None of those is a type error, so nothing else here can catch them. The
     assertions below are the shapes of those four bugs.
     """
-    step(28, "step 1/5: loading /admin/sonarr as the admin user")
+    step(28, "step 1/6: loading /admin/sonarr as the admin user")
     tok = admin_token()
     if not tok:
         step(28, "SKIP - could not sign an admin token (node or backend/.env missing)")
@@ -2879,11 +2896,24 @@ def test_sonarr_page_renders(page, frontend: str):
     page.evaluate("t => { localStorage.setItem('token', t);"
                   " localStorage.setItem('username', 'admin_probe'); }", tok)
     page.goto(f"{frontend}/admin/sonarr")
-    page.wait_for_selector("[data-sonarr-stats]", timeout=30_000)
-    # Expand every accordion: the tables that broke were all inside one.
-    page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
+    page.wait_for_selector("[data-sonarr-stats]", timeout=60_000)
+    # Nothing actionable may hide in an accordion any more: the only <details>
+    # left is the push history, a log whose failures also appear above.
+    hidden = page.evaluate("""() => [...document.querySelectorAll('details')]
+        .filter(d => d.querySelector('[data-entry-row], table')).length""")
+    assert not hidden, f"{hidden} collapsed section(s) hold show rows - problems are hidden in a dropdown again"
+    # First, before anything reads the rows: every later step counts on seeing
+    # all of them, so a default filter that hides some must fail HERE, by name.
+    rep0 = page.evaluate("""() => fetch('/api/sonarr/report', {
+        headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
+    }).then(r => r.json())""")
+    shown = page.evaluate("document.querySelectorAll('[data-entry-row]').length")
+    assert shown == len(rep0["proposed"]) + len(rep0["rejected"]), (
+        f"the page shows {shown} show rows but the report has "
+        f"{len(rep0['proposed']) + len(rep0['rejected'])} - the default filter must show every show, "
+        "or a level is hidden")
 
-    step(28, "step 2/5: every row table matches its own colgroup")
+    step(28, "step 2/6: every row table matches its own colgroup")
     bad = page.evaluate("""() => {
         const out = [];
         document.querySelectorAll('table').forEach((t, ti) => {
@@ -2901,7 +2931,7 @@ def test_sonarr_page_renders(page, frontend: str):
     }""")
     assert not bad, f"row/column mismatch - values render under the wrong headings: {bad[:3]}"
 
-    step(28, "step 3/5: tables line up with each other, and nothing is clipped")
+    step(28, "step 3/6: tables line up with each other, and nothing is clipped")
     sigs = page.evaluate("""() => {
         const t = [...document.querySelectorAll('table')].filter(x => x.querySelector('colgroup'));
         return [...new Set(t.map(x => [...(x.querySelector('tbody tr')?.children ?? [])]
@@ -2924,7 +2954,7 @@ def test_sonarr_page_renders(page, frontend: str):
         .map(b => b.textContent.trim())""")
     assert not tall, f"badge(s) wrapped onto a second line and stopped reading as badges: {tall[:3]}"
 
-    step(28, "step 4/5: the headline never reports 'couldn't ask' as zero")
+    step(28, "step 4/6: the headline never reports 'couldn't ask' as zero")
     text = page.evaluate("document.body.innerText")
     observed = page.evaluate("""() => fetch('/api/sonarr/report', {
         headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
@@ -2938,7 +2968,7 @@ def test_sonarr_page_renders(page, frontend: str):
     else:
         assert "would add 0" not in text.lower(),             ("the page reported 0 additions while Sonarr had never been read - "
              "'couldn't ask' must never render as 'nothing to do'")
-    step(28, "step 5/5: the English column shows what the last check found, and only that")
+    step(28, "step 5/6: the English column shows what the last check found, and only that")
     rep = page.evaluate("""() => fetch('/api/sonarr/report', {
         headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
     }).then(r => r.json())""")
@@ -2952,9 +2982,103 @@ def test_sonarr_page_renders(page, frontend: str):
         f"{sorted(set(cells) ^ set(want))[:4]}")
     assert page.query_selector("[data-lib-check]"), "the Refresh Jellyfin button is missing"
     lib_note = f"{len(cells)} English cells"
+
+    step(28, "step 6/6: every show is on the page with its status, problems first")
+    all_rows = rep["proposed"] + rep["rejected"]
+    bad_level = page.evaluate("""() => [...document.querySelectorAll('[data-entry-row]')]
+        .filter(r => !['broken','check','waiting','ok'].includes(r.dataset.level)).length""")
+    assert not bad_level, f"{bad_level} row(s) render without a status level"
+    order = page.evaluate("""() => [...document.querySelectorAll('[data-season-group] table')].map(t =>
+        [...t.querySelectorAll('[data-entry-row]')].map(r => r.dataset.level))""")
+    rank = {"broken": 0, "check": 1, "waiting": 2, "ok": 3}
+    for levels in order:
+        assert levels == sorted(levels, key=rank.get), (
+            f"a season table lists {levels[:6]}... - broken and check rows must sort above the rest")
+    want_attention = sum(1 for r in all_rows if r.get("attention")) + len(rep.get("attention") or [])
+    got_attention = page.evaluate("document.querySelectorAll('[data-attention-row]').length")
+    assert got_attention == want_attention, (
+        f"Needs attention lists {got_attention} but the report flags {want_attention} - "
+        "wanted shows that are red or yellow must all be at the top")
     rows = page.evaluate("document.querySelectorAll('tbody tr').length")
     step(28, f"PASS - {rows} rows, one column layout, no clipping or wrapped badges, "
-             f"headline honest (observed={observed}); subtitles: {lib_note}")
+             f"headline honest (observed={observed}); subtitles: {lib_note}; "
+             f"{got_attention} need attention")
+
+
+def test_matching_shows_sonarr_problems(page, backend: str, frontend: str):
+    """/admin/matching shows what Sonarr knows, and Needs attention means wanted.
+
+    The page used to load nothing from Sonarr, so a TVDB id Sonarr rejected was
+    visible only inside a collapsed section of /admin/sonarr - and its own
+    queue skipped entries with no id at all. The report is stubbed with three
+    real entries of the season: a Sonarr rejection and a no-id show something
+    wants (both must be in Needs attention), and a no-id show nothing wants
+    (red, but under Broken only, marked "not wanted").
+    """
+    step(39, "step 1/3: stubbing the Sonarr report with three real entries")
+    tok = admin_token()
+    if not tok:
+        step(39, "SKIP - could not sign an admin token (node or backend/.env missing)")
+        return
+    r = requests.get(f"{backend}/api/anime", params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}, timeout=120)
+    r.raise_for_status()
+    shows = [s for s in r.json() if (s.get("title") or {}).get("english") or (s.get("title") or {}).get("romaji")][:3]
+    if len(shows) < 3:
+        step(39, "SKIP - the season has fewer than three titled entries")
+        return
+    title = lambda s: (s.get("title") or {}).get("english") or (s.get("title") or {}).get("romaji")
+
+    def row(s, code, text, wanted):
+        return {"anilistId": s["id"], "tvdbId": None, "title": title(s), "reason": "noUsableTvdbId",
+                "wanted": wanted, "attention": wanted, "listedBy": 0,
+                "status": {"level": "broken", "code": code, "text": text}}
+    rejected_by_sonarr, wanted_no_id, unwanted_no_id = shows
+    body = {"proposed": [], "rejected": [
+        row(rejected_by_sonarr, "sonarrRejected", "Sonarr rejected tvdb 1 - fix the match", True),
+        row(wanted_no_id, "noId", "No TVDB or TMDB id, and no title match", True),
+        row(unwanted_no_id, "noId", "No TVDB or TMDB id, and no title match", False),
+    ]}
+    ROUTE = "**/api/sonarr/report**"
+    page.route(ROUTE, lambda rt: rt.fulfill(status=200, content_type="application/json", body=json.dumps(body)))
+    try:
+        page.goto(frontend)
+        page.evaluate("t => { localStorage.setItem('token', t);"
+                      " localStorage.setItem('username', 'admin_probe'); }", tok)
+        page.goto(f"{frontend}/admin/matching?season={SEEDED_SEASON}&year={SEEDED_YEAR}")
+        page.wait_for_selector("[data-matching-list], [data-matching-empty], [data-matching-error]", timeout=60_000)
+        page.wait_for_timeout(500)
+
+        step(39, "step 2/3: Needs attention holds the wanted problems, not the unwanted one")
+        rows = page.locator("[data-matching-list] li[data-matching-row]")
+        def present(s):
+            return rows.filter(has_text=title(s)).count() > 0
+        assert present(rejected_by_sonarr), (
+            "a Sonarr rejection is missing from Needs attention on /admin/matching - "
+            "the page is not reading the Sonarr report")
+        hit = rows.filter(has_text=title(rejected_by_sonarr)).first
+        assert hit.get_attribute("data-level") == "broken" and "sonarr rejected" in (hit.text_content() or "").lower(), (
+            "the Sonarr rejection is listed without its red status or its reason")
+        assert present(wanted_no_id), "a wanted show with no id is missing from Needs attention"
+        assert not present(unwanted_no_id), (
+            "a problem on a show nothing wants is in Needs attention - it must stay out "
+            "until someone lists or Includes it")
+
+        step(39, "step 3/3: the unwanted one is still red, under Broken")
+        page.locator("[data-chip='broken']").click()
+        page.wait_for_timeout(300)
+        un = rows.filter(has_text=title(unwanted_no_id))
+        assert un.count() and un.first.get_attribute("data-level") == "broken", (
+            "an unwanted show with no id is not red under Broken - colour must mean the result, "
+            "whatever wants it")
+        assert "not wanted" in (un.first.text_content() or "").lower(), \
+            "the unwanted problem does not say why it is out of Needs attention"
+    finally:
+        # Leave the page first: a report request still in flight when the
+        # handler is removed (or the browser closes) surfaces as an asyncio
+        # CancelledError traceback in the gate log.
+        page.goto("about:blank")
+        page.unroute(ROUTE)
+    step(39, "PASS - Sonarr's verdicts reach /admin/matching, and Needs attention means wanted")
 
 
 ENGLISH_VERDICTS = [
@@ -3138,6 +3262,7 @@ def main():
                 ("nicknames set and shown", lambda: test_nicknames_set_and_shown(page, args.backend, frontend, token_a)),
                 ("subtitle track picker", lambda: test_subtitle_track_picker(page, frontend)),
                 ("hide not english",    lambda: test_hide_not_english(page, args.backend, frontend, token_a)),
+                ("matching shows sonarr problems", lambda: test_matching_shows_sonarr_problems(page, args.backend, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

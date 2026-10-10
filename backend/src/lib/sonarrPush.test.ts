@@ -8,6 +8,8 @@ import {
   findOrphans,
   isTerminal,
   supersededFailures,
+  pushForEntry,
+  unattachedFailures,
   type PushRow,
   type PushStatus,
   type PushCandidate,
@@ -209,6 +211,27 @@ test('a failed attempt stops needing attention once its entry is re-matched', ()
   assert.ok(!gone.has(111), 'a failure whose entry still resolves to that id was hidden - it is real');
   assert.ok(!gone.has(222), 'an unknown current identity hid a failure');
   assert.ok(!gone.has(482279), 'a successful push was marked superseded');
+});
+
+test('a failure follows its entry by AniList id, even after the entry lost its tvdbId', () => {
+  const failed: PushRow = { ...prior(470200, 'lookupFailed'), anilistId: 9 };
+  const ok: PushRow = { ...prior(111, 'pushed'), anilistId: 8 };
+  const isOpen = (r: PushRow) => r.status === 'lookupFailed' || r.status === 'failed';
+  assert.equal(pushForEntry([failed, ok], 9, null, isOpen), failed,
+    'a failed attempt must stay on its entry once the entry has no tvdbId - join by AniList id');
+  assert.equal(pushForEntry([failed, ok], null, 111, isOpen), ok, 'the tvdbId is the fallback join');
+  assert.equal(pushForEntry([ok, failed], 8, 470200, isOpen), failed, 'an open failure outranks an older success');
+  assert.equal(pushForEntry([failed], 7, 222, isOpen), null, 'no record is null, not a neighbour');
+});
+
+test('a failure no row accounts for is still listed', () => {
+  const isOpen = (r: PushRow) => r.status === 'lookupFailed' || r.status === 'failed';
+  const old: PushRow = { ...prior(300, 'failed'), anilistId: 30 };
+  const shown: PushRow = { ...prior(400, 'lookupFailed'), anilistId: 40 };
+  const done: PushRow = { ...prior(500, 'pushed'), anilistId: 50 };
+  const out = unattachedFailures([old, shown, done], isOpen, new Set([40]), new Set<number>());
+  assert.deepEqual(out.map((r) => r.tvdbId), [300],
+    'an open failure outside the shown seasons must be listed, and one a row carries must not be listed twice');
 });
 
 // --- reading Sonarr's refusals ---------------------------------------------

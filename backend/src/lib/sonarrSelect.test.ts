@@ -58,7 +58,7 @@ test('a season 1 that HAS a sequel is kept - only PREQUEL/PARENT disqualify', ()
   const out = selectForSonarr(shows, mapResolver({ 1: '100' }), NOW);
   assert.deepEqual(
     out,
-    [{ title: 'Show 1', tvdbId: 100 }],
+    [{ title: 'Show 1', tvdbId: 100, anilistId: 1 }],
     'a first season that later got a sequel must still be auto-added'
   );
 });
@@ -235,8 +235,8 @@ test('the title falls back english -> romaji -> native, and an untitled entry is
   assert.deepEqual(
     out,
     [
-      { title: 'Romaji Only', tvdbId: 100 },
-      { title: 'ネイティブのみ', tvdbId: 200 },
+      { title: 'Romaji Only', tvdbId: 100, anilistId: 1 },
+      { title: 'ネイティブのみ', tvdbId: 200, anilistId: 2 },
     ],
     'romaji then native fill in for a missing english title, and a blank title is not a row'
   );
@@ -251,12 +251,32 @@ test('malformed cache rows are skipped rather than thrown on', () => {
     mapResolver({ 7: '700' }),
     NOW
   );
-  assert.deepEqual(out, [{ title: 'Show 7', tvdbId: 700 }], 'junk rows are skipped and the good one still lands');
+  assert.deepEqual(out, [{ title: 'Show 7', tvdbId: 700, anilistId: 7 }], 'junk rows are skipped and the good one still lands');
   assert.deepEqual(
     selectForSonarr(undefined as unknown as unknown[], mapResolver({}), NOW),
     [],
     'a non-array input yields an empty list, never a throw'
   );
+});
+
+test('two entries sharing a title keep their own AniList id on the item', () => {
+  // The report used to recover the anilistId by matching display titles back to
+  // cache entries, so the second "Show" pushed under the first one's id - the
+  // duplicate-title lookup failure of 2026-10-10.
+  const shows = [
+    entry({ id: 11, title: { english: 'Same Name', romaji: null, native: null } }),
+    entry({ id: 22, title: { english: 'Same Name', romaji: null, native: null } }),
+  ];
+  const out = selectForSonarr(shows, mapResolver({ 11: '1100', 22: '2200' }), NOW);
+  assert.deepEqual(
+    out.map((i) => [i.tvdbId, i.anilistId]),
+    [[1100, 11], [2200, 22]],
+    'each item must carry the AniList id it came from, not one recovered from its title'
+  );
+  const forced = selectForSonarr(shows, mapResolver({}), NOW, {
+    forceInclude: new Map([[22, { tvdbId: 2200, acknowledgedUnverified: false }]]),
+  });
+  assert.deepEqual(forced.map((i) => i.anilistId), [22], 'a forced item carries its AniList id too');
 });
 
 test('every dropped entry reports the gate that stopped it', () => {

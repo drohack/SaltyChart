@@ -67,6 +67,20 @@ Coverage, and the trap each step exists for:
   same show must appear, then everything is put back. Signup is open to anyone,
   so an untrusted list starting downloads is the failure that matters.
 
+- **Every row carries one status, and the counts add up (step 12).** Each
+  proposed and rejected row has a `status.level` among broken / check / waiting
+  / ok, a boolean `wanted`, and `attention` exactly when it is wanted and red or
+  yellow - never on a show nothing wants. `summary.attention` equals the rows
+  plus the unattached failures, and every open push failure is on a row or in
+  `attention`, so nothing actionable lives only in the collapsed history log.
+
+- **/admin/sonarr agrees with Randomize's Hide Not English (step 13).** For the
+  admin's own list, each aired show is asked about with `fresh` (what the
+  pop-up does), the report is re-read, and the set Randomize's `isNotEnglish`
+  rule hides must equal the rows the report calls not `watchable` - every one
+  of them red. That is the 1:1 the owner asked for: Show All, Hide Not English,
+  and the hidden count matches the page.
+
 **Not covered here, deliberately:** a successful add. It needs write
 credentials and it changes a real library, so it is a manual verification step
 (push one series with `cap: 1`, check it in Sonarr's UI, push again and confirm
@@ -82,7 +96,7 @@ Usage:
 Exits 0 if all steps pass (or the cache-dependent steps were skipped), 1 on any
 failure. Each progress line is self-contained per the global CLAUDE.md
 convention:
-  [k/11 Sonarr] step name - detail
+  [k/13 Sonarr] step name - detail
 """
 import argparse
 import sqlite3
@@ -118,7 +132,7 @@ def admin_token() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-TOTAL_STEPS = 11
+TOTAL_STEPS = 13
 
 
 def step(n: int, msg: str) -> None:
@@ -503,13 +517,128 @@ def main():
         fail(9, f"history.needsAttention is {rep['history']['needsAttention']} but "
                 f"{len(open_failures)} failures are still open - superseded ones are counted")
 
-    # --------- 10/11  The library check adds up and stays on our series ---------
+    # --------- 10/13  The library check adds up and stays on our series ---------
     library_check_step(backend, auth)
 
-    # --------- 11/11  Only trusted accounts' lists add shows ---------
+    # --------- 11/13  Only trusted accounts' lists add shows ---------
     trusted_lists_step(backend, auth)
 
+    # --------- 12/13  One status per row, and the counts add up ---------
+    status_step(backend, auth)
+
+    # --------- 13/13  The page agrees with Randomize's Hide Not English ---------
+    randomize_parity_step(backend, auth)
+
     print(f"Sonarr: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
+
+
+LEVELS = ("broken", "check", "waiting", "ok")
+
+
+def status_step(backend: str, auth: dict) -> None:
+    step(12, "every row has one status, and Needs attention adds up")
+    rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=120).json()
+    rows = rep["proposed"] + rep["rejected"]
+    for r in rows:
+        st = r.get("status") or {}
+        if st.get("level") not in LEVELS or not st.get("code") or not isinstance(st.get("text"), str):
+            fail(12, f"row {r.get('title')!r} has no usable status: {st!r}")
+        if not isinstance(r.get("wanted"), bool) or r.get("watchable") not in (True, False, None):
+            fail(12, f"row {r.get('title')!r} lacks wanted/watchable: {r.get('wanted')!r} {r.get('watchable')!r}")
+        expect = r["wanted"] and st["level"] in ("broken", "check")
+        if bool(r.get("attention")) != expect:
+            fail(12, f"{r.get('title')!r}: attention={r.get('attention')} but wanted={r['wanted']} level={st['level']} "
+                     f"- Needs attention must be exactly wanted and red or yellow")
+        if r.get("reason") in ("format", "adult", "notFirstSeason") and r["wanted"] \
+                and not (r.get("listedBy") or r.get("wantedBy") == "include"):
+            fail(12, f"{r.get('title')!r} was skipped by a rule ({r['reason']}) yet counts as wanted")
+    flagged = sum(1 for r in rows if r.get("attention"))
+    if rep["summary"]["attention"] != flagged + len(rep["attention"]):
+        fail(12, f"summary.attention is {rep['summary']['attention']} but {flagged} rows + "
+                 f"{len(rep['attention'])} unattached failures need attention")
+    # Every open failure is visible outside the collapsed history log.
+    attached = {(r.get("anilistId"), r.get("tvdbId")) for r in rows
+                if {r["status"]["code"], *[a["code"] for a in r["status"].get("also", [])]}
+                & {"sonarrRejected", "addFailed"}}
+    unattached = {u["tvdbId"] for u in rep["attention"]}
+    for p in rep["pushes"]:
+        if p["status"] not in ("lookupFailed", "failed") or p.get("superseded"):
+            continue
+        on_row = any(a == p.get("anilistId") or t == p["tvdbId"] for a, t in attached)
+        if not on_row and p["tvdbId"] not in unattached:
+            fail(12, f"open failure tvdb {p['tvdbId']} ({p.get('title')!r}) appears nowhere but the history log")
+    step(12, f"PASS - {len(rows)} rows, {flagged} need attention, "
+             f"{rep['summary']['broken']} broken / {rep['summary']['check']} check / "
+             f"{rep['summary']['waiting']} waiting / {rep['summary']['ok']} ok")
+
+
+def randomize_hides(info: dict | None, unaired: bool) -> bool:
+    """Randomize's `isNotEnglish`, ported line for line (Randomize.svelte)."""
+    if unaired or not info or info.get("unknown") or info.get("notAired"):
+        return False
+    if info.get("available") is False:
+        return True
+    return info.get("english") in ("none", "signsOnly")
+
+
+def is_unaired(entry: dict, now_ms: int) -> bool:
+    """`isUnaired` (stores/jellyfin.ts): status first, else the earliest possible day."""
+    if entry.get("status"):
+        return entry["status"] == "NOT_YET_RELEASED"
+    d = entry.get("startDate") or {}
+    if not d.get("year"):
+        return False
+    import calendar
+    ms = calendar.timegm((d["year"], d.get("month") or 1, d.get("day") or 1, 0, 0, 0)) * 1000
+    return ms > now_ms
+
+
+def randomize_parity_step(backend: str, auth: dict) -> None:
+    step(13, "on the admin's own list, the page's not-watchable rows are exactly what Hide Not English hides")
+    if not requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json().get("configured"):
+        step(13, "SKIP - Jellyfin is not configured")
+        return
+    rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=120).json()
+    mine = [r for r in rep["proposed"] + rep["rejected"] if r.get("onMyList") and r.get("anilistId")]
+    if not mine:
+        step(13, "SKIP - nothing on the admin's list for these seasons")
+        return
+    # The titles Randomize sends, from the season list it reads.
+    entries: dict[int, dict] = {}
+    for s in rep["seasons"]:
+        r = requests.get(f"{backend}/api/anime", params={"season": s["season"], "year": s["year"]}, timeout=120)
+        for e in r.json() if r.ok else []:
+            entries[e["id"]] = e
+    now_ms = int(time.time() * 1000)
+    hidden: set[int] = set()
+    for row in mine:
+        e = entries.get(row["anilistId"])
+        if not e:
+            continue
+        unaired = is_unaired(e, now_ms)
+        info = None
+        if not unaired:
+            t = e.get("title") or {}
+            titles = [x for x in (t.get("english"), t.get("romaji"), t.get("native")) if x][:10]
+            info = requests.post(f"{backend}/api/jellyfin/availability", headers=auth, timeout=60,
+                                 json={"mediaId": e["id"], "titles": titles, "fresh": True,
+                                       "startDate": e.get("startDate")}).json()
+        if randomize_hides(info, unaired):
+            hidden.add(e["id"])
+    # Re-read: the report must now see exactly the verdicts just resolved.
+    rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=120).json()
+    by_id = {r["anilistId"]: r for r in rep["proposed"] + rep["rejected"]
+             if r.get("onMyList") and r.get("anilistId") in entries}
+    not_watchable = {a for a, r in by_id.items() if r.get("watchable") is False}
+    if hidden != not_watchable:
+        name = lambda a: (by_id.get(a) or {}).get("title") or a
+        fail(13, f"Randomize would hide {sorted(map(name, hidden - not_watchable))} that the page calls watchable, "
+                 f"and the page flags {sorted(map(name, not_watchable - hidden))} that Randomize keeps")
+    for a in not_watchable:
+        if by_id[a]["status"]["level"] != "broken":
+            fail(13, f"{by_id[a]['title']!r} cannot be watched in English yet reads "
+                     f"{by_id[a]['status']['level']} ({by_id[a]['status']['code']}) - it must be red")
+    step(13, f"PASS - {len(by_id)} on the list, {len(hidden)} hidden by Hide Not English, the same {len(hidden)} red here")
 
 
 def trusted_lists_step(backend: str, auth: dict) -> None:

@@ -4,6 +4,18 @@
   import { authToken } from '../stores/auth';
   import { apiJson, QUICK, SEASON, ApiError } from '../lib/remote';
   import AdminShell from '../components/AdminShell.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
+  import StatusChips from '../components/StatusChips.svelte';
+  import AirDate from '../components/AirDate.svelte';
+  import {
+    LEVEL,
+    CODE_HEADING,
+    byLevel,
+    chipMatches,
+    needsAttention as isAttention,
+    type Chip,
+    type EntryStatus,
+  } from '../lib/entryStatus';
 
   /**
    * Review and correct how AniList entries resolve to the library.
@@ -12,44 +24,37 @@
    * and re-breaking - on every cache expiry. A wrong match is now a row you fix
    * once rather than a threshold someone re-tunes.
    *
-   * The default queue ("Needs attention") is what a human can settle:
+   * **The status is the server's, never this page's.** Each row renders the one
+   * status `backend/src/lib/entryStatus.ts` decides - from `/api/sonarr/report`
+   * when it answers (identity + Sonarr + the library, the same row /admin/sonarr
+   * shows), else the identity half from `/identity/resolve`. A client-side
+   * verdict ladder lived here and drifted from the Sonarr page: it left
+   * entries with no id at all out of the queue, never learned that Sonarr had
+   * rejected an id, and used six colours that did not map to actions.
    *
-   *  - a **title-only** match, which resolved but has no id to verify it;
-   *  - a suggestion from our own remote lookup that no air date could confirm;
-   *  - any row where the lookup returned **more than one plausible answer**
-   *    AND the entry's premiere date could not separate them - see
-   *    `dateSettlesCandidates` (lib/seriesIdentity.ts, decided server-side and
-   *    arriving as `settledByDate`). Echo's three candidates are all titled
-   *    "Echo" and are three different films, which is what this rung is for;
-   *    142 of 170 such rows turned out to be matches nothing disputed, and
-   *    those no longer ask for a click;
-   *  - a **viewer pick** from the Watch pop-up, unconfirmed by construction -
-   *    somebody contradicted the matcher, which is exactly this queue's job.
+   * Four colours, meaning the RESULT, never the format: red = can't work until
+   * someone acts (no id, Sonarr rejected it, aired with no video, no English on
+   * episode 1), yellow = probably fine but nothing verified it (a guess, an
+   * ambiguous or title-only match, an auto-match no date confirmed, a viewer
+   * pick), blue = not aired yet, green = nothing to do.
    *
-   * Resolver **accepts decided on title text or release year alone** are
-   * trusted but unverified - they live behind the "+ resolver accepts" filter,
-   * listed after the queue, because the admin treats them as correct and only
-   * needs them *reachable* (a wrong exact-title collision used to be permanent
-   * and invisible; low-priority-but-visible is the fix, not a demand for
-   * review).
+   * **Needs attention** (the default) = something wants the show - the auto-add
+   * rules, a trusted user's list, or Include - and it is red or yellow, grouped
+   * by problem. A problem on a show nothing wants keeps its colour under its
+   * level but is marked "not wanted" and stays out of the queue. When the Sonarr
+   * report did not answer, every problem counts as wanted and the page says so.
    *
-   * Everything else is left alone: a community-map id is exact, and an entry
-   * whose known id the library lacks is reported missing rather than guessed at.
    * Nothing here is a *gate* - resolver ids are positive-only and already in
    * use, marked unverified. This is a cleanup list, not a queue that blocks.
    *
    * UI contract:
    *
-   *  - Three-mode filter: "Needs attention" (the work queue above),
-   *    "+ unverified auto-matches" (adds the title-text accepts after the
-   *    queue), "Everything". Air-date and premiere-date accepts skip even the
-   *    middle view - a date-verified match needs nobody.
-   *  - The per-row state column answers "is it matched, how well, is it not,
-   *    why not" as a colored verdict over a terse reason DERIVED FROM THE
-   *    STORED ACCEPTANCE RUNG, so the column can never contradict what
-   *    verified the match - a date-verified auto-match reads green like a map
-   *    id; a title-text accept stays blue-unverified. A highlighted
-   *    "N possible matches" line appears when the picker has alternatives.
+   *  - Filter chips (shared with /admin/sonarr): Needs attention, Broken,
+   *    Check, Waiting, OK, Everything - each with its count.
+   *  - Every card shows its premiere (`AirDate` - unaired is a blue countdown)
+   *    and what Sonarr makes of it ("Sonarr: will be added", "can't add - no
+   *    TVDB id"). "N possible matches" appears when the picker has
+   *    alternatives.
    *  - The user-facing word is auto-match / auto-search, never "resolver".
    *  - The Sonarr-import-style match control: the button shows what the row
    *    currently resolves to; its dropdown searches by name (Jellyfin remote
@@ -183,7 +188,25 @@
     } | null;
     /** How this id was arrived at, verbatim from the resolver. */
     note?: string | null;
+    /** The server's status - see `visible` below. Never computed on this page. */
+    status: EntryStatus;
+    /** Does anything want this show? null when the Sonarr report did not answer. */
+    wanted: boolean | null;
+    sonarr: SonarrSide | null;
+    startDate?: { year?: number | null; month?: number | null; day?: number | null } | null;
+    airing?: string | null;
   };
+
+  /** The slice of an /api/sonarr/report row this page shows. */
+  type SonarrSide = {
+    status: EntryStatus;
+    wanted: boolean;
+    state?: string;
+    reason?: string;
+    listedBy?: number;
+  };
+  /** False when /api/sonarr/report did not answer - said on screen, never read as "no problems". */
+  let sonarrOk = true;
 
   type Choice = {
     tvdbId: string | null;
@@ -201,8 +224,6 @@
   let status: 'idle' | 'loading' | 'ok' | 'failed' = 'idle';
   let error = '';
   let saving = new Set<number>();
-  /** What the list shows - the queue/accepts split is in the header's UI contract. */
-  let filterMode: 'attention' | 'attention+accepts' | 'all' = 'attention';
   /**
    * The Sonarr-style lookup: one field per row takes a name, `tvdb:12345`, or
    * `tmdb:12345`. Typing a name searches Jellyfin's remote providers; pasting
@@ -528,6 +549,15 @@
       // every entry past the first hundred, so a review page could report
       // "nothing needs review" while a third of the season was never looked at.
       const CHUNK = 100;
+      // The Sonarr report for this season, in parallel: it carries the one
+      // status per entry (identity + Sonarr + the library) and whether anything
+      // wants the show. A failure degrades to the identity half and is said on
+      // screen - never read as "nothing wrong".
+      const sonarrReport = apiJson<{ proposed: any[]; rejected: any[] }>(
+        `/api/sonarr/report?season=${season}&year=${year}`,
+        { headers: auth() },
+        { label: 'admin/sonarr-report', timeoutMs: 60_000 }
+      ).catch(() => null);
       const avail: Record<string, any> = {};
       const identities: Record<string, any> = {};
       for (let i = 0; i < items.length; i += CHUNK) {
@@ -570,6 +600,15 @@
         if (b?.sweep) sweep = b.sweep;
       }
       const ident = { identities };
+      const rep = await sonarrReport;
+      sonarrOk = !!rep;
+      const sonarrBy = new Map<number, SonarrSide>();
+      for (const x of rep?.proposed ?? []) {
+        if (x.anilistId != null) sonarrBy.set(x.anilistId, { status: x.status, wanted: x.wanted, state: x.state, listedBy: x.listedBy });
+      }
+      for (const x of rep?.rejected ?? []) {
+        if (x.anilistId != null) sonarrBy.set(x.anilistId, { status: x.status, wanted: x.wanted, reason: x.reason, listedBy: x.listedBy });
+      }
 
       rows = shows.map((s) => {
         const a = avail?.[s.id] ?? {};
@@ -597,6 +636,13 @@
           retry: i.retry ?? null,
           tier: i.tier ?? null,
           settledByDate: !!i.settledByDate,
+          // The report's combined status when it has this entry, else the
+          // identity half; `ok` only when neither said anything at all.
+          status: sonarrBy.get(s.id)?.status ?? i.status ?? { level: 'ok', code: 'matched', text: '' },
+          wanted: sonarrBy.has(s.id) ? sonarrBy.get(s.id)!.wanted : null,
+          sonarr: sonarrBy.get(s.id) ?? null,
+          startDate: s.startDate ?? null,
+          airing: s.status ?? null,
           startDateMs: s.startDate?.year
             ? Date.UTC(s.startDate.year, (s.startDate.month ?? 1) - 1, s.startDate.day ?? 1)
             : null,
@@ -642,134 +688,66 @@
     }
   }
 
-  // The "Needs attention" queue - the four row kinds are in the header doc.
-  // A pending row with NO ids is a recorded *miss* (the resolver searched and
-  // found nothing), so it stays out of the queue.
-  /** A viewer corrected this from the Watch pop-up - see `viewerPick`. */
-  const isViewerPick = (r: Row) => (r.note ?? '').startsWith('viewer:');
-  const needsAttention = (r: Row) =>
-    // A viewer contradicted the matcher from the pop-up. That is exactly the
-    // signal this queue exists for, and it is unconfirmed by construction.
-    (isViewerPick(r) && !r.confirmed && !r.rejected) ||
-    (r.pending && !!(r.tvdbId || r.tmdbId)) ||
-    (!r.confirmed && (r.candidates?.length ?? 0) > 1 && !r.settledByDate) ||
-    (!r.pending && r.matchedBy === 'title' && !r.confirmed);
-
-  // Title-text / release-year accepts: reachable but never demanding review -
-  // the rationale is the "resolver accepts" bullet in the header doc.
-  const dateVerified = (r: Row) => {
-    const n = r.note ?? '';
-    return n.startsWith('remote: air date') || n.startsWith('remote: premiere date')
-      || n.startsWith('remote: tvdb season premiere');
+  // -- Which rows show, and in what order ------------------------------------
+  // The status is the server's (lib/entryStatus.ts): from /api/sonarr/report
+  // when it answered, so this page and /admin/sonarr say the same thing about
+  // the same show, else the identity half from /identity/resolve. Nothing here
+  // decides a level - the old client-side verdict ladder disagreed with the
+  // Sonarr page and left no-id rows out of the queue entirely.
+  let chip: Chip = 'attention';
+  $: chipCounts = {
+    attention: rows.filter((r) => isAttention(r)).length,
+    broken: rows.filter((r) => r.status.level === 'broken').length,
+    check: rows.filter((r) => r.status.level === 'check').length,
+    waiting: rows.filter((r) => r.status.level === 'waiting').length,
+    ok: rows.filter((r) => r.status.level === 'ok').length,
+    all: rows.length,
+  } as Record<Chip, number>;
+  /** Needs attention groups by problem, worst first; the other views by level. */
+  const codeOrder = (c: string) => {
+    const i = Object.keys(CODE_HEADING).indexOf(c);
+    return i < 0 ? 99 : i;
   };
-  const resolverAccept = (r: Row) =>
-    !r.confirmed && r.source === 'remote' && !r.pending &&
-    !!(r.tvdbId || r.tmdbId) && !dateVerified(r) &&
-    !needsAttention(r);
+  $: visible = rows
+    .filter((r) => chipMatches(chip, r))
+    .sort((a, b) =>
+      byLevel(a, b)
+      || (chip === 'attention' ? codeOrder(a.status.code) - codeOrder(b.status.code) : 0)
+      || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+  /** "No id found (3)" - shown above the first row of each group in Needs attention. */
+  $: groupCount = visible.reduce<Record<string, number>>((acc, r) => {
+    acc[r.status.code] = (acc[r.status.code] ?? 0) + 1;
+    return acc;
+  }, {});
 
-  $: visible =
-    filterMode === 'all'
-      ? rows
-      : filterMode === 'attention+accepts'
-        ? [...rows.filter(needsAttention), ...rows.filter(resolverAccept)]
-        : rows.filter(needsAttention);
-
-  /**
-   * Why a suggestion couldn't be verified, in the terms a reviewer judges it
-   * on: how far the match's own premiere is from this entry's.
-   *
-   * Derived from the stored candidate, so it says nothing when the evidence
-   * isn't there rather than inventing a reason - which is the bug this
-   * replaced.
-   */
-  function unverifiedBecause(r: Row): string {
-    const chosen = (r.candidates ?? []).find((c) => c.matchedTitle === r.matchedTitle);
-    const prem = chosen?.premiereDate;
-    if (prem && r.startDateMs != null) {
-      const days = Math.round(Math.abs(Date.parse(prem) - r.startDateMs) / 86_400_000);
-      if (Number.isFinite(days)) {
-        return `nothing could verify it - the match premiered ${prem}, ${days.toLocaleString()} days off`;
-      }
-    }
-    const y = chosen?.year ?? r.year;
-    const mine = r.startDateMs != null ? new Date(r.startDateMs).getUTCFullYear() : null;
-    if (y && mine && y !== mine) {
-      return `nothing could verify it - the match is from ${y}, this premieres ${mine}`;
-    }
-    return 'nothing could verify it - no date to check against';
-  }
-
-  /** The state column: verdict + reason, derived from the stored acceptance
-   * rung so it can't contradict it - see the header's UI contract. */
-  function statusOf(r: Row): { verdict: string; detail: string; cls: string; options: number | null } {
-    const options = (r.candidates?.length ?? 0) > 1 && !r.confirmed ? (r.candidates?.length ?? 0) : null;
-    const rung = (r.note ?? '').replace(/^remote:\s*/, '');
-    if (r.rejected) {
-      return { verdict: 'Rejected', detail: 'marked not-in-library by hand', cls: 'badge-neutral', options: null };
-    }
-    if (r.confirmed) {
-      return r.libraryTitle
-        ? { verdict: 'Matched', detail: 'human-confirmed', cls: 'badge-success', options: null }
-        : { verdict: 'Confirmed', detail: 'human-confirmed - not in library yet', cls: 'badge-success', options: null };
-    }
-    if (r.libraryTitle) {
-      if (r.matchedBy === 'id') {
-        if (r.source === 'remote') {
-          if (rung.startsWith('air date')) {
-            return { verdict: 'Matched', detail: `auto-match, air date verified (${rung.replace('air date ', '')} off)`, cls: 'badge-success', options };
-          }
-          if (rung.startsWith('premiere date')) {
-            return { verdict: 'Matched', detail: `auto-match, premiere date verified (${rung.replace('premiere date ', '')} off)`, cls: 'badge-success', options };
-          }
-          if (rung.startsWith('tvdb season premiere')) {
-            return { verdict: 'Matched', detail: `auto-match, TVDB season premiere verified (${rung.replace('tvdb season premiere ', '')} off)`, cls: 'badge-success', options };
-          }
-          if (rung.startsWith('release year')) {
-            return { verdict: 'Matched', detail: `auto-match, release year ${rung.replace('release year ', '')}`, cls: 'badge-info', options };
-          }
-          // `exact title` is a real rung and keeps its name. Everything else
-          // reaching here accepted on NO rung at all (`remote: unverified`),
-          // and claiming a rung it didn't use broke this page's own contract:
-          // measured on the dev deployment, 81 rows read "on exact title"
-          // against 13 that genuinely used it - and Bananya's candidate was
-          // not even an exact match.
-          if (rung.startsWith('exact title')) {
-            return { verdict: 'Matched', detail: 'auto-match on exact title - no date could confirm it', cls: 'badge-info', options };
-          }
-          return { verdict: 'Matched', detail: `auto-match, ${unverifiedBecause(r)}`, cls: 'badge-info', options };
-        }
-        if (isViewerPick(r)) {
-          // The note carries the provenance a bare "manual id" would hide:
-          // this row was set by someone watching, not by an admin here.
-          return {
-            verdict: 'Viewer pick', detail: (r.note ?? '').replace(/^viewer:\s*/, ''),
-            cls: 'badge-info', options,
-          };
-        }
-        return {
-          verdict: 'Matched',
-          detail: r.source === 'manual' ? 'manual id' : 'community-map id',
-          cls: 'badge-success', options,
-        };
-      }
-      if (r.matchedBy === 'title') {
-        return r.titleTier === 1
-          ? { verdict: 'Matched?', detail: 'title prefix only - weakest tier', cls: 'badge-warning', options }
-          : { verdict: 'Matched?', detail: 'same title, no id to verify', cls: 'badge-warning', options };
-      }
-      return { verdict: 'Matched', detail: `-> ${r.libraryTitle}`, cls: 'badge-success', options };
-    }
-    if (r.pending && (r.tvdbId || r.tmdbId)) {
-      return { verdict: 'Needs review', detail: `auto-search found a likely match - ${unverifiedBecause(r)}`, cls: 'badge-warning', options };
-    }
-    if (r.tvdbId || r.tmdbId) {
-      const from = r.source === 'map' ? 'community map' : r.source === 'remote' ? 'auto-search' : 'stored';
-      return { verdict: 'Not in library', detail: `id known (${from}), not held`, cls: 'badge-ghost', options };
-    }
-    if (r.pending) {
-      return { verdict: 'Not matched', detail: 'auto-search found nothing at TMDB or TVDB', cls: 'badge-error badge-outline', options: null };
-    }
-    return { verdict: 'Not matched', detail: 'no id anywhere, no title match', cls: 'badge-error badge-outline', options: null };
+  /** What Sonarr makes of the entry, one line - from the report row. */
+  const SONARR_STATE: Record<string, string> = {
+    willBeAdded: 'will be added',
+    pushedAlready: 'added by us',
+    addedByUs: 'added by us',
+    heldAlready: 'already in Sonarr',
+    excludedInSonarr: 'excluded in Sonarr',
+    lookupFailed: 'rejected the id',
+    failed: 'add failed',
+    unknown: 'not read yet',
+  };
+  const SONARR_REASON: Record<string, string> = {
+    format: 'not auto-added (not TV / TV Short)',
+    adult: 'not auto-added (adult)',
+    notFirstSeason: 'not auto-added (a sequel)',
+    outsideAirWindow: 'joins the list 14 days before its premiere',
+    noUsableTvdbId: "can't add - no TVDB id",
+    duplicateTvdbId: "can't add - another entry has this TVDB id",
+    unverifiedNotAcknowledged: 'listed, but waiting for this match to be confirmed',
+    noTitle: "can't add - no title",
+    noAnilistId: "can't add - no AniList id",
+    malformed: 'unreadable cache row',
+  };
+  function sonarrCaption(s: SonarrSide | null | undefined): string | null {
+    if (!s) return null;
+    const what = s.state ? SONARR_STATE[s.state] ?? s.state : s.reason ? SONARR_REASON[s.reason] ?? s.reason : null;
+    const lists = s.listedBy ? ` - on ${s.listedBy} trusted list${s.listedBy === 1 ? '' : 's'}` : '';
+    return what ? `Sonarr: ${what}${lists}` : null;
   }
 
   async function save(r: Row, body: Record<string, unknown>) {
@@ -819,12 +797,6 @@
         {#each SEASONS as s}<option value={s}>{s}</option>{/each}
       </select>
       <input class="input input-bordered input-sm w-24" type="number" bind:value={year} on:change={load} />
-      <select class="select select-bordered select-sm" bind:value={filterMode}
-        aria-label="Which rows to show" data-filter-mode>
-        <option value="attention">Needs attention</option>
-        <option value="attention+accepts">+ unverified auto-matches</option>
-        <option value="all">Everything</option>
-      </select>
       <button class="btn btn-sm btn-outline" on:click={load} disabled={status === 'loading'}>
         {#if status === 'loading'}<span class="loading loading-spinner loading-xs"></span>{/if}
         Reload
@@ -993,18 +965,37 @@
       </div>
     {/if}
 
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+      <StatusChips bind:value={chip} counts={chipCounts} allLabel="Everything" />
+      <p class="text-[11px] opacity-50 basis-full">
+        Needs attention = something wants the show (the auto-add rules, a trusted list, or Include)
+        and it is red or yellow. A problem on a show nothing wants keeps its colour under its level
+        but stays out of Needs attention.
+        {#if !sonarrOk && status === 'ok'}
+          <span class="text-warning">Sonarr status unavailable - showing the match only, and every
+          problem counts as wanted.</span>
+        {/if}
+      </p>
+    </div>
+
     {#if status === 'loading'}
       <p class="opacity-70 text-sm">Loading {season} {year}...</p>
     {:else if status === 'ok' && !visible.length}
       <p class="opacity-70 text-sm" data-matching-empty>
-        Nothing needs review in {season} {year} - every resolved entry was matched by id
-        or already confirmed.
+        {chip === 'attention'
+          ? `Nothing needs attention in ${season} ${year}.`
+          : `Nothing in ${season} ${year} matches this filter.`}
       </p>
     {/if}
 
     <ul class="flex flex-col gap-2" data-matching-list>
-      {#each visible as r (r.mediaId)}
-        <li class="card bg-base-100 shadow-sm">
+      {#each visible as r, idx (r.mediaId)}
+        {#if chip === 'attention' && (idx === 0 || visible[idx - 1].status.code !== r.status.code)}
+          <li class="mt-2 text-sm font-semibold {LEVEL[r.status.level].text}" data-attention-group={r.status.code}>
+            {CODE_HEADING[r.status.code] ?? r.status.code} ({groupCount[r.status.code]})
+          </li>
+        {/if}
+        <li class="card bg-base-100 shadow-sm" data-matching-row data-level={r.status.level}>
           <div class="card-body p-3 flex-row items-center gap-3 flex-wrap">
             {#if r.cover}
               <img src={r.cover} alt="" class="w-10 h-14 object-cover rounded" loading="lazy" />
@@ -1018,18 +1009,27 @@
                 {:else}
                   &rarr; <span class="opacity-60">not in library</span>
                 {/if}
-
+              </p>
+              <p class="text-xs mt-0.5 flex flex-wrap items-center gap-x-2">
+                <AirDate date={r.startDate} status={r.airing} />
+                {#if sonarrCaption(r.sonarr)}
+                  <span class="opacity-70" data-sonarr-caption>{sonarrCaption(r.sonarr)}</span>
+                {/if}
+                {#if r.wanted === false && r.status.level !== 'ok' && r.status.level !== 'waiting'}
+                  <span class="badge badge-xs badge-ghost" title="Nothing wants this show - not on a trusted list, not Included, and the auto-add rules skip it - so it stays out of Needs attention">not wanted</span>
+                {/if}
               </p>
 
             </div>
             <div class="w-52 shrink-0 flex flex-col gap-0.5" data-status-cell>
-              <span class="badge badge-sm whitespace-nowrap {statusOf(r).cls}" data-status>
-                {statusOf(r).verdict}
-              </span>
-              <span class="text-xs opacity-70 leading-tight">{statusOf(r).detail}</span>
-              {#if statusOf(r).options}
+              <span data-status><StatusBadge status={r.status} /></span>
+              <span class="text-xs opacity-80 leading-tight">{r.status.text}</span>
+              {#each r.status.also ?? [] as a (a.code)}
+                <span class="text-xs leading-tight {LEVEL[a.level].text}">also: {a.text}</span>
+              {/each}
+              {#if !r.confirmed && (r.candidates?.length ?? 0) > 1}
                 <span class="text-xs text-warning leading-tight">
-                  {statusOf(r).options} possible matches
+                  {r.candidates?.length} possible matches
                 </span>
               {/if}
             </div>

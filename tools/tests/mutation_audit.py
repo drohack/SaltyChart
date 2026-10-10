@@ -126,6 +126,8 @@ ADMIN_MATCHING = "frontend/src/pages/AdminMatching.svelte"
 ADMIN_SONARR = "frontend/src/pages/AdminSonarr.svelte"
 BACKEND_LIBAUDIT = "backend/src/lib/libraryAudit.ts"
 BACKEND_LIBCHECK = "backend/src/lib/libraryCheck.ts"
+BACKEND_ENTRY_STATUS = "backend/src/lib/entryStatus.ts"
+SONARR_ENTRY_ROW = "frontend/src/components/SonarrEntryRow.svelte"
 PREWARM = "frontend/src/lib/jellyfinPrewarm.ts"
 RANDOMIZE = "frontend/src/pages/Randomize.svelte"
 
@@ -1184,16 +1186,14 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         name="a Sonarr table row loses a cell and every value shifts a column",
-        path=ADMIN_SONARR,
+        path=SONARR_ENTRY_ROW,
         # The bug as it happened: a stray <td> put 8 cells in a 7-column table,
         # so titles rendered under TVDB and dates under Eps. tsc, svelte-check
         # and the API tests were all green - it was found by a human looking at
-        # the screen, which is why this page needed a browser flow at all.
-        find="""                      </span>
-                    </td>
-                    <td></td>""",
-        replace="""                      </span>
-                    </td>""",
+        # the screen, which is why this page needed a browser flow at all. Every
+        # row on the page now comes from this one component.
+        find="  <td><StatusBadge status={row.status} /></td>\n",
+        replace="",
         test=T_UI,
         flows=("sonarr page renders",),
         expect="values render under the wrong headings",
@@ -1681,20 +1681,17 @@ MUTATIONS: list[Mutation] = [
                "single-digit months, silently disabling both daily guards",
     ),
     Mutation(
-        name="a title-text remote accept is invisible to review again",
-        path="frontend/src/pages/AdminMatching.svelte",
+        name="a title-text remote accept reads as settled again",
+        path=BACKEND_ENTRY_STATUS,
         # The resolver accepts an exact title without any air date vouching for
-        # it, stored pending=false - this clause is the only one that lists such
-        # a row. Neutering it recreates the hole: a wrong exact-title collision
-        # (two works genuinely sharing a name) becomes permanent, and the empty
-        # state says nothing needs review.
-        find="""  const resolverAccept = (r: Row) =>
-    !r.confirmed && r.source === 'remote' && !r.pending &&""",
-        replace="""  const resolverAccept = (r: Row) =>
-    false && !r.confirmed && r.source === 'remote' && !r.pending && /* mutation */""",
-        flows=("remote accept visible",),
-        test=T_UI,
-        expect="remote-accepted row is invisible on /admin/matching",
+        # it, stored pending=false. Green would recreate the hole: a wrong
+        # exact-title collision (two works genuinely sharing a name) becomes
+        # permanent and nothing asks anyone to look. Yellow at least, by the
+        # owner's call on 2026-10-10.
+        find="        return { level: 'check', code: 'unconfirmedAuto', text: 'Auto-match on exact title - no date confirmed it' };",
+        replace="        return { level: 'ok', code: 'unconfirmedAuto', text: 'Auto-match on exact title - no date confirmed it' }; /* mutation */",
+        test=T_UNIT,
+        expect="must be a check - nothing dated it",
         guards="everything the resolver accepts on a title string alone is "
                "invisible to the one page that could catch a wrong one",
     ),
@@ -1912,7 +1909,7 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         name="an unverifiable suggestion gives no reason on screen",
-        path=ADMIN_MATCHING,
+        path=BACKEND_ENTRY_STATUS,
         # The reviewer is asked to judge a match with the evidence that decided
         # it. Dropping the reason restores the bare word "unverified", which is
         # what the page said while 81 rows were ALSO being told, wrongly, that
@@ -1922,8 +1919,8 @@ MUTATIONS: list[Mutation] = [
         # The sibling wording on HELD rows (the Bananya case) renders only for
         # a row whose id the library carries, which this test cannot seed -
         # stated so the gap isn't mistaken for coverage.
-        find="      return { verdict: 'Needs review', detail: `auto-search found a likely match - ${unverifiedBecause(r)}`, cls: 'badge-warning', options };",
-        replace="      return { verdict: 'Needs review', detail: 'auto-search found a likely match - unverified', cls: 'badge-warning', options };",
+        find="    return { level: 'check', code: 'guess', text: `Auto-search guess, ${unverifiedBecause(f)}` };",
+        replace="    return { level: 'check', code: 'guess', text: 'Auto-search guess, unverified' }; /* mutation */",
         flows=("remote accept visible",),
         test=T_UI,
         expect="gives no reason at all",
@@ -3026,6 +3023,101 @@ MUTATIONS: list[Mutation] = [
         test=T_SONARR,
         expect="an untrusted account's list put shows on the auto-add list",
         guards="anyone who signs up can make the server download shows",
+    ),
+    Mutation(
+        name="a rule-skipped show counts as wanted",
+        path=BACKEND_ENTRY_STATUS,
+        # Needs attention is "something wants it". Counting every skipped sequel,
+        # film and ONA floods the queue with shows nobody asked for - the noise
+        # that makes a real problem easy to scroll past.
+        find="  return !!f.rejectedReason && WANTED_REASONS.has(f.rejectedReason);",
+        replace="  return !!f.rejectedReason; /* mutation */",
+        test=T_UNIT,
+        expect="it must stay out of Needs attention",
+        guards="Needs attention fills with sequels and films nobody listed",
+    ),
+    Mutation(
+        name="a missing id far from its premiere reads as broken",
+        path=BACKEND_ENTRY_STATUS,
+        # Map coverage is ~55% two months out; without the softening the next
+        # season reads as half broken for problems that solve themselves.
+        find="  const list = findings.map((x) => (waiting && ID_CODES.has(x.code) && x.level !== 'ok'",
+        replace="  const list = findings.map((x) => (ID_CODES.has(x.code) && x.level !== 'ok' /* mutation */",
+        test=T_UNIT,
+        expect="inside the air window a missing id is broken",
+        guards="every unaired show with no id yet reads as waiting even inside the "
+               "air window, where Sonarr would act now",
+    ),
+    Mutation(
+        name="a failed push is joined to its row by tvdbId only",
+        path=BACKEND_SONARR_PUSH,
+        # An entry re-matched to "no id" no longer carries the tvdbId its failure
+        # was recorded under, so the failure dropped off its row.
+        find="    (r) => (anilistId !== null && r.anilistId === anilistId) || (tvdbId !== null && r.tvdbId === tvdbId)",
+        replace="    (r) => (tvdbId !== null && r.tvdbId === tvdbId) /* mutation */",
+        test=T_UNIT,
+        expect="join by AniList id",
+        guards="a Sonarr failure vanishes from its show's row once the match changes",
+    ),
+    Mutation(
+        name="/admin/matching ignores what Sonarr knows",
+        path=ADMIN_MATCHING,
+        # The page loaded nothing from Sonarr, so a rejected TVDB id lived only
+        # in a collapsed section of the other page.
+        find="          status: sonarrBy.get(s.id)?.status ?? i.status ?? { level: 'ok', code: 'matched', text: '' },",
+        replace="          status: i.status ?? { level: 'ok', code: 'matched', text: '' }, /* mutation */",
+        test=T_UI,
+        flows=("matching shows sonarr problems",),
+        expect="the page is not reading the Sonarr report",
+        guards="a TVDB id Sonarr rejected is invisible on the page where it gets fixed",
+    ),
+    Mutation(
+        name="/admin/sonarr opens on a filter that hides shows",
+        path=ADMIN_SONARR,
+        # The redesign's promise: nothing hidden away by default.
+        find="  let chip: Chip = 'all';",
+        replace="  let chip: Chip = 'attention'; /* mutation */",
+        test=T_UI,
+        flows=("sonarr page renders",),
+        expect="the default filter must show every show",
+        guards="the page opens with most shows filtered out, which is the hidden-away "
+               "layout it replaced",
+    ),
+    Mutation(
+        name="the Sonarr report stops asking the library what Randomize asks",
+        path=BACKEND_SONARR_ROUTE,
+        # The 1:1 with Hide Not English holds because both read the same verdict.
+        find="      avail = await availabilityFor(askable);",
+        replace="      avail = new Map(); void availabilityFor; /* mutation */",
+        test=T_SONARR,
+        expect="Randomize would hide",
+        guards="/admin/sonarr says a show is fine while Randomize hides it, the "
+               "mismatch the owner reported (7 against 4)",
+    ),
+    Mutation(
+        name="an aired show Sonarr never got reads as merely missing",
+        path=BACKEND_ENTRY_STATUS,
+        # Wanted, aired, not in Sonarr: the show the owner asked to be loud about.
+        find="        if (f.wanted && (f.sonarrHeld === false || f.sonarrFiles === 0)) {",
+        replace="        if (f.wanted && f.sonarrFiles === 0) { /* mutation */",
+        test=T_UNIT,
+        expect="must be broken (noVideo)",
+        guards="an aired show Sonarr never added reads as a generic library gap with "
+               "no hint to press Add now",
+    ),
+    Mutation(
+        name="a signs-only first episode counts as English",
+        path=BACKEND_ENTRY_STATUS,
+        # Randomize hides signsOnly; the page must call it red too.
+        find="    } else if (av.english === 'none' || av.english === 'signsOnly') {",
+        # Written as a list lookup so the mutant still type-checks: a bare
+        # `=== 'none'` narrows the type and the later `=== 'signsOnly'` becomes
+        # TS2367, which fails the compile instead of the test.
+        replace="    } else if (['none'].includes(av.english ?? '')) { /* mutation */",
+        test=T_UNIT,
+        expect="signs-only is not English dialogue",
+        guards="a show with only a signs track reads as watchable here while "
+               "Randomize hides it",
     ),
 ]
 

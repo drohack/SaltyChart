@@ -41,6 +41,8 @@ import {
   classifyAddError,
   findOrphans,
   supersededFailures,
+  pushForEntry,
+  unattachedFailures,
   sonarrValidationMessages,
   type PushRow,
   type PushStatus,
@@ -52,7 +54,24 @@ import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
 import { alreadyRanToday } from '../lib/scheduling';
 import { readLibraryAudit, libraryCheckRunning } from '../lib/libraryCheck';
 import { englishSummary } from '../lib/libraryAudit';
-import { requestLibraryCheck } from './jellyfin';
+import { requestLibraryCheck, availabilityFor } from './jellyfin';
+import { identityFacts } from '../lib/seriesIdentity';
+import { jellyfinErrorInfo } from '../lib/jellyfinApi';
+import {
+  identityStatus,
+  sonarrFindings,
+  combine,
+  isWanted,
+  isUnaired,
+  anilistMs,
+  skipReasonText,
+  needsAttention,
+  watchable,
+  DAY_MS,
+  type EntryStatus,
+  type Availability,
+} from '../lib/entryStatus';
+import { isWithinAirWindow } from '../lib/sonarrSelect';
 
 /**
  * Sonarr auto-add: which new seasonal series should be grabbed, added once each.
@@ -343,6 +362,10 @@ interface Assembled {
   /** tvdbId -> anilistId for every candidate, so a push records what it was for. */
   proposedBy: Map<number, number>;
   pushes: PushRow[];
+  /** anilistId -> trusted lists carrying it. */
+  listed: Map<number, number>;
+  /** anilistIds someone pressed Include on. */
+  included: Set<number>;
 }
 
 /**
@@ -375,20 +398,18 @@ async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
 
   // Which AniList entry produced each candidate tvdbId. Stored with the push so
   // an identity corrected later is visible as an orphan rather than as a second
-  // series nobody can explain.
+  // series nobody can explain. Read off the item: this used to be recovered by
+  // matching display titles back to entries, and two entries sharing a title
+  // attributed one show's push to the other.
   const proposedBy = new Map<number, number>();
-  const titleToId = new Map<string, number>();
-  for (const raw of entries) {
-    const e = raw as SonarrCandidate;
-    const t = e?.title?.english || e?.title?.romaji || e?.title?.native;
-    if (t && typeof e?.id === 'number') titleToId.set(t.trim(), e.id);
-  }
   for (const it of items) {
-    const aid = titleToId.get(it.title);
-    if (aid !== undefined) proposedBy.set(it.tvdbId, aid);
+    if (typeof it.anilistId === 'number') proposedBy.set(it.tvdbId, it.anilistId);
   }
 
-  return { refs, perSeason, entries, items, rejected, proposedBy, pushes };
+  return {
+    refs, perSeason, entries, items, rejected, proposedBy, pushes,
+    listed, included: new Set(manualIncludes.keys()),
+  };
 }
 
 /** anilistId -> the tvdbId it resolves to *now*, for orphan detection. */
@@ -596,7 +617,9 @@ function describe(e: CacheEntry) {
     episodes: e.episodes ?? null,
     title: e.title?.english || e.title?.romaji || e.title?.native || null,
     format: e.format ?? null,
-    status: e.status ?? null,
+    // AniList airing status. Not `status`: every row also carries the entry
+    // status (lib/entryStatus.ts) under that name.
+    airing: e.status ?? null,
     startDate: e.startDate ?? null,
     // Season and year so the page can group; without them it showed two
     // seasons mixed together and could not answer "what is this proposing?".
@@ -632,11 +655,8 @@ function describeParent(e: CacheEntry, held: Set<number>) {
 }
 
 function describeProposed(item: SonarrPushItem, entries: unknown[]) {
-  const e = entries.find((raw) => {
-    const c = raw as CacheEntry;
-    const t = c?.title?.english || c?.title?.romaji || c?.title?.native;
-    return t?.trim() === item.title;
-  }) as CacheEntry | undefined;
+  // By AniList id, never by title - see `SonarrPushItem.anilistId`.
+  const e = entries.find((raw) => (raw as CacheEntry)?.id === item.anilistId) as CacheEntry | undefined;
   return {
     ...item,
     ...(e ? describe(e) : {}),
@@ -1079,6 +1099,145 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       return 'willBeAdded';
     };
 
+    // ----- One status per entry (lib/entryStatus.ts) ------------------------
+    // Both admin pages render this and neither recomputes it; /admin/matching
+    // reads it from here too, so the two cannot disagree about the same show.
+    const nowMs = now.getTime();
+    const entryById = new Map<number, CacheEntry>();
+    for (const raw of a.entries) {
+      const e = raw as CacheEntry;
+      if (e && typeof e === 'object' && typeof e.id === 'number') entryById.set(e.id, e);
+    }
+    // The verdicts Randomize reads, for every entry that has aired: the same
+    // resolver and the same cache, so "not in the library" and "no English" mean
+    // here exactly what Hide Not English means there. Unaired entries are never
+    // asked, as there. This is the one Jellyfin call the report makes, and on a
+    // warm cache it is a Map lookup per entry.
+    const askable = [...entryById.values()]
+      .filter((e) => !isUnaired(e, nowMs))
+      .map((e) => ({
+        mediaId: e.id as number,
+        titles: [e.title?.english, e.title?.romaji, e.title?.native]
+          .filter((t): t is string => typeof t === 'string' && !!t),
+        startDate: e.startDate ?? null,
+      }))
+      .filter((x) => x.titles.length);
+    let avail = new Map<number, Availability & { titleTier?: number | null }>();
+    try {
+      avail = await availabilityFor(askable);
+    } catch (err) {
+      console.warn('[sonarr] report: library verdicts unavailable -', jellyfinErrorInfo(err));
+    }
+    const filesBy = new Map<number, number>();
+    for (const s of [...(status?.ours ?? []), ...(status?.seasonHeld ?? [])]) filesBy.set(s.tvdbId, s.episodeFileCount);
+    const inJellyfinBy = new Map<number, boolean>();
+    for (const r of library.last?.rows ?? []) inJellyfinBy.set(r.tvdbId, r.jellyfinId != null);
+    // The admin's own list, so the page can narrow to exactly what their
+    // Randomize page shows - the comparison the 1:1 promise is about.
+    const myList = new Set(
+      (await prisma.watchList.findMany({
+        where: {
+          userId: (req as AuthRequest).userId,
+          OR: a.refs.map((r) => ({ season: r.season, year: r.year })),
+        },
+        select: { mediaId: true },
+      })).map((r) => r.mediaId)
+    );
+
+    // An entry's push record - see `pushForEntry` for why the AniList id leads.
+    const pushFor = (anilistId: number | null, tvdbId: number | null) => {
+      const p = pushForEntry(a.pushes, anilistId, tvdbId, isOpenFailure);
+      return p ? { status: p.status, tvdbId: p.tvdbId, lastError: p.lastError, superseded: superseded.has(p.tvdbId) } : null;
+    };
+
+    const statusFor = (o: {
+      anilistId: number | null;
+      tvdbId: number | null;
+      proposedState?: string;
+      reason?: string;
+      parent?: { held: boolean } | null;
+    }) => {
+      const e = o.anilistId != null ? entryById.get(o.anilistId) : undefined;
+      const av = o.anilistId != null ? avail.get(o.anilistId) : undefined;
+      const startMs = anilistMs(e?.startDate);
+      const facts = o.anilistId != null
+        ? identityFacts(o.anilistId, { titleOnly: av?.matchedBy === 'title', titleTier: av?.titleTier ?? null, startDateMs: startMs })
+        : null;
+      const identity = facts
+        ? identityStatus(facts)
+        : { level: 'check' as const, code: 'noAnilistId', text: 'No usable AniList id' };
+      const listedBy = o.anilistId != null ? a.listed.get(o.anilistId) ?? 0 : 0;
+      const included = o.anilistId != null && a.included.has(o.anilistId);
+      const wanted = isWanted({
+        proposed: !!o.proposedState, rejectedReason: o.reason, forced: included, listedBy,
+        identityRejected: facts?.rejected,
+      });
+      const unaired = e ? isUnaired(e, nowMs) : false;
+      const status: EntryStatus = combine([
+        ...sonarrFindings({
+          wanted,
+          proposedState: o.proposedState ?? null,
+          rejectedReason: o.reason ?? null,
+          push: pushFor(o.anilistId, o.tvdbId),
+          tvdbId: o.tvdbId,
+          sonarrHeld: !observed ? null : o.tvdbId == null ? false : heldIds.has(o.tvdbId),
+          sonarrFiles: o.tvdbId != null ? filesBy.get(o.tvdbId) ?? null : null,
+          inJellyfin: o.tvdbId != null ? inJellyfinBy.get(o.tvdbId) ?? null : null,
+          availability: av ?? null,
+          english: english(o.tvdbId),
+          unaired,
+          startMs,
+          joinsMs: startMs != null ? startMs - DEFAULT_WITHIN_DAYS * DAY_MS : null,
+          skipReason: o.reason && !wanted ? skipReasonText(o.reason, o.parent) : null,
+        }, identity),
+        identity,
+      ], !!e && unaired && !isWithinAirWindow(e, now));
+      return {
+        status,
+        // What Randomize's Hide Not English decides for this show - false is
+        // hidden there, null is no definite answer. See `watchable`.
+        watchable: watchable({ availability: av ?? null, unaired }),
+        wanted,
+        wantedBy: !wanted ? null : included ? 'include' : listedBy ? 'list' : 'rules',
+        listedBy,
+        onMyList: o.anilistId != null && myList.has(o.anilistId),
+        attention: needsAttention(status, wanted),
+      };
+    };
+
+    const proposedRows = a.items.map((i) => {
+      const st = state(i.tvdbId);
+      return {
+        ...describeProposed(i, a.entries),
+        state: st,
+        english: english(i.tvdbId),
+        ...statusFor({ anilistId: i.anilistId ?? null, tvdbId: i.tvdbId, proposedState: st }),
+      };
+    });
+    const rejectedRows = a.rejected.map((r) => {
+      const d = describe(r.entry);
+      // Only the sequel rejections carry this; everything else gets null and
+      // the page renders nothing rather than an empty label.
+      const parent = r.reason === 'notFirstSeason' ? describeParent(r.entry, heldIds) : null;
+      return {
+        ...d,
+        reason: r.reason,
+        english: english(d.tvdbId),
+        parent,
+        ...statusFor({ anilistId: d.anilistId ?? null, tvdbId: d.tvdbId, reason: r.reason, parent }),
+      };
+    });
+    // Open failures no row in these seasons accounts for - an older season, or
+    // an entry that has left the cache. Without this they would live only in
+    // the collapsed history log.
+    const rowTvdb = new Set(
+      [...proposedRows, ...rejectedRows].map((r) => r.tvdbId).filter((t): t is number => t != null)
+    );
+    const attention = unattachedFailures(a.pushes, isOpenFailure, new Set(entryById.keys()), rowTvdb)
+      .map((p) => ({ tvdbId: p.tvdbId, anilistId: p.anilistId, title: p.title, status: p.status, lastError: p.lastError }));
+    const allRows = [...proposedRows, ...rejectedRows];
+    const levelCount = (lv: string) => allRows.filter((r) => r.status.level === lv).length;
+
     return res.json({
       // `published` is the first thing the page reads: every other number here
       // describes what WOULD happen, and this says whether it will.
@@ -1114,19 +1273,22 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       sonarr: { observed, held: heldIds.size, excluded: excludedIds.size, at: status?.at ?? null },
       seasons: a.perSeason,
       withinDays: DEFAULT_WITHIN_DAYS,
-      proposed: a.items.map((i) => ({
-        ...describeProposed(i, a.entries),
-        state: state(i.tvdbId),
-        english: english(i.tvdbId),
-      })),
-      rejected: a.rejected.map((r) => ({
-        ...describe(r.entry),
-        reason: r.reason,
-        english: english(describe(r.entry).tvdbId),
-        // Only the sequel rejections carry this; everything else gets null and
-        // the page renders nothing rather than an empty label.
-        parent: r.reason === 'notFirstSeason' ? describeParent(r.entry, heldIds) : null,
-      })),
+      proposed: proposedRows,
+      rejected: rejectedRows,
+      attention,
+      // What the page's chips count. `attention` is the Needs attention rule
+      // (wanted, and broken or check) plus the unattached failures above.
+      summary: {
+        attention: allRows.filter((r) => r.attention).length + attention.length,
+        broken: levelCount('broken'),
+        check: levelCount('check'),
+        waiting: levelCount('waiting'),
+        ok: levelCount('ok'),
+        // How many aired entries the library was asked about, and how many it
+        // answered - a Jellyfin outage must read as "couldn't ask", not "fine".
+        libraryAsked: askable.length,
+        libraryAnswered: [...avail.values()].filter((v) => v && !v.unknown).length,
+      },
       // What has actually happened, from the rows already loaded above.
       //
       // **`pushedAt` means we added it, and nothing else does.** The Custom List

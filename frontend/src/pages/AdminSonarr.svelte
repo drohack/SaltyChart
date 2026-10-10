@@ -4,6 +4,18 @@
   import { authToken } from '../stores/auth';
   import { apiJson, QUICK, ApiError } from '../lib/remote';
   import AdminShell from '../components/AdminShell.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
+  import StatusChips from '../components/StatusChips.svelte';
+  import SonarrEntryRow from '../components/SonarrEntryRow.svelte';
+  import {
+    LEVEL,
+    LEVELS,
+    byLevel,
+    chipMatches,
+    needsAttention as isAttention,
+    type Chip,
+    type EntryStatus,
+  } from '../lib/entryStatus';
 
   /**
    * What is about to be added to Sonarr, and what already was?
@@ -15,8 +27,16 @@
    * It answers a different question from `/admin/matching`, which is why it is a
    * different page. That one asks **identity** - which real series is this,
    * permanently. This one asks **scope** - do we auto-add it, and what is about
-   * to be grabbed. They meet at exactly one point: an entry excluded because it
-   * has no usable TVDB id is a *matching* problem, so those rows link across.
+   * to be grabbed. They share one thing: the status of each show, decided once
+   * on the server (`backend/src/lib/entryStatus.ts`) and rendered the same way
+   * on both pages, so a problem cannot read differently depending on which page
+   * you open. A row whose problem is the match links across (*Fix match*).
+   *
+   * **Nothing actionable is collapsed.** Needs attention sits at the top, every
+   * wanted show is in its season's table worst-first, and what a rule skipped
+   * has its own always-open section. Problems used to live in a "Not on the
+   * list" accordion, a waiting accordion per season and the bottom of the push
+   * history, which is where a bad id went unnoticed.
    *
    * **The size estimate is a median, not a promise.** 0.38 GB/episode measured
    * 2026-08-04 over a random 500-episode sample of the live library; the
@@ -28,17 +48,14 @@
   /** AniList leaves `episodes` null on plenty of unaired entries. Labelled, never hidden. */
   const ASSUMED_EPISODES = 12;
 
-  const REASON_LABEL: Record<string, string> = {
-    malformed: 'malformed cache row',
-    format: 'not TV / TV Short',
-    adult: 'adult',
-    notFirstSeason: 'has a prequel/parent (not a first season)',
-    outsideAirWindow: 'outside the air window',
-    noAnilistId: 'no usable AniList id',
-    noUsableTvdbId: 'no usable TVDB id',
-    duplicateTvdbId: 'duplicate TVDB id',
-    noTitle: 'no usable title',
-  };
+  const ENGLISH_TIP =
+    'English subtitles or dub on the episodes Sonarr holds - green when every episode has one, red when some or all do not. Blank when Sonarr does not hold the show.';
+
+  /** Problems fixed by correcting the match; they link to /admin/matching. */
+  const MATCH_CODES = new Set([
+    'noId', 'guess', 'ambiguous', 'titleOnly', 'unconfirmedAuto', 'viewerPick',
+    'sonarrRejected', 'noTvdbId', 'unverifiedListed', 'duplicateTvdbId',
+  ]);
 
   /**
    * Every state gets a *visible* badge, including the boring ones.
@@ -98,13 +115,21 @@
     title: string;
     anilistId: number | null;
     format: string | null;
-    status: string | null;
+    /** AniList airing status (`RELEASING`, `NOT_YET_RELEASED`, ...). */
+    airing: string | null;
     startDate: Dated;
     season: string | null;
     year: number | null;
     cover: string | null;
     episodes: number | null;
     state: string;
+    /** The one status (lib/entryStatus.ts on the server). Never computed here. */
+    status: EntryStatus;
+    wanted: boolean;
+    wantedBy: 'rules' | 'list' | 'include' | null;
+    onMyList: boolean;
+    attention: boolean;
+    watchable: boolean | null;
     grade: string;
     unverified: boolean;
     matchedTitle: string | null;
@@ -134,6 +159,14 @@
     matchedTitle: string | null;
     gradeNote: string | null;
     english?: { label: string; ok: boolean } | null;
+    airing: string | null;
+    status: EntryStatus;
+    wanted: boolean;
+    wantedBy: 'rules' | 'list' | 'include' | null;
+    listedBy?: number;
+    onMyList: boolean;
+    attention: boolean;
+    watchable: boolean | null;
   };
   type Push = {
     tvdbId: number;
@@ -241,6 +274,12 @@
     rejected: Rejected[];
     pushes: Push[];
     orphans: { tvdbId: number; title: string; anilistId: number; nowTvdbId: number }[];
+    /** Open failures no row in these seasons accounts for. */
+    attention: { tvdbId: number; anilistId: number | null; title: string; status: string; lastError: string | null }[];
+    summary: {
+      attention: number; broken: number; check: number; waiting: number; ok: number;
+      libraryAsked: number; libraryAnswered: number;
+    };
     counts: { proposed: number; rejected: Record<string, number> };
     /** `last: null` is "never checked" - never render it as zero problems. */
     library: {
@@ -308,7 +347,10 @@
       const [ps, py] = preview.split(' ');
       const qs = preview ? `?season=${ps}&year=${py}` : '';
       report = await apiJson<Report>(`/api/sonarr/report${qs}`, { headers: auth }, {
-        timeoutMs: QUICK,
+        // Not QUICK: the report asks the library about every aired show (the
+        // verdicts Randomize uses). Warm, that is instant; cold, it walks the
+        // library and takes seconds.
+        timeoutMs: 60_000,
         label: 'sonarr-report',
       });
     } catch (e) {
@@ -446,15 +488,15 @@
    * that is the real guard - this only decides whether to ask before spending
    * the round trip. A UI that forgot to ask would still be safe.
    */
-  function includeRow(r: { anilistId: number | null; title: string | null; unverified: boolean; grade: string; matchedTitle: string | null; gradeNote: string | null }) {
+  function includeRow(r: { anilistId: number | null; title: string | null; unverified: boolean; grade?: string; matchedTitle?: string | null; gradeNote?: string | null }) {
     if (!r.anilistId) return;
     if (r.unverified) {
       confirming = {
         anilistId: r.anilistId,
         title: r.title ?? '(untitled)',
-        grade: r.grade,
-        matchedTitle: r.matchedTitle,
-        note: r.gradeNote,
+        grade: r.grade ?? 'weak',
+        matchedTitle: r.matchedTitle ?? null,
+        note: r.gradeNote ?? null,
       };
       return;
     }
@@ -472,33 +514,49 @@
     return typeof p.episodes === 'number' && p.episodes > 0 ? p.episodes : ASSUMED_EPISODES;
   }
 
-  function airDate(d: Proposed['startDate']): string {
-    if (!d?.year) return 'no date';
-    const m = String(d.month ?? 1).padStart(2, '0');
-    const day = String(d.day ?? 1).padStart(2, '0');
-    return `${d.year}-${m}-${day}`;
-  }
-
   $: incoming = (report?.proposed ?? []).filter((p) => p.state === 'willBeAdded');
   $: incomingEpisodes = incoming.reduce((n, p) => n + episodesOf(p), 0);
   $: assumedCount = incoming.filter((p) => !(typeof p.episodes === 'number' && p.episodes > 0)).length;
-  $: rejectedByReason = (report?.rejected ?? []).reduce<Record<string, Rejected[]>>((acc, r) => {
-    (acc[r.reason] ||= []).push(r);
-    return acc;
-  }, {});
-  /** The season a `noUsableTvdbId` row belongs to, for the /admin/matching link. */
-  $: linkSeason = report?.seasons?.[0];
-
-  /**
-   * How many the "Not on the list" panel actually shows.
-   *
-   * Not `rejected.length`: the air-window entries are listed under their own
-   * season with a join date, and counting them here as well would have the
-   * heading disagree with the rows beneath it.
-   */
-  $: notOnListCount = (report?.rejected ?? []).filter((r) => r.reason !== 'outsideAirWindow').length;
-  /** Held back purely on timing - they are listed under their own season. */
-  $: waitingCount = (report?.rejected ?? []).filter((r) => r.reason === 'outsideAirWindow').length;
+  // -- Every entry, one shape ------------------------------------------------
+  // Proposed and rejected rows carry the same fields (the server's `describe`)
+  // plus one status, so the page treats them as one list and the status alone
+  // decides where a row goes and what colour it is.
+  type Row = (Proposed | Rejected) & {
+    kind: 'proposed' | 'rejected';
+    reason?: string;
+    outlier?: boolean;
+    offset?: number;
+  };
+  /** Which rows the tables show. Needs attention above is not filtered by it. */
+  let chip: Chip = 'all';
+  /** Narrow everything to the viewing admin's own list - what their Randomize shows. */
+  let myListOnly = false;
+  $: allRows = report
+    ? ([
+        ...report.proposed.map((p) => ({ ...p, kind: 'proposed' as const })),
+        ...report.rejected.map((r) => ({ ...r, kind: 'rejected' as const })),
+      ] as Row[])
+    : [];
+  $: scoped = myListOnly ? allRows.filter((r) => r.onMyList) : allRows;
+  $: myListCount = allRows.filter((r) => r.onMyList).length;
+  $: attentionRows = scoped.filter((r) => isAttention(r)).sort((a, b) => byLevel(a, b) || (a.title ?? '').localeCompare(b.title ?? ''));
+  $: unattached = report?.attention ?? [];
+  $: chipCounts = {
+    attention: scoped.filter((r) => isAttention(r)).length + (myListOnly ? 0 : unattached.length),
+    broken: scoped.filter((r) => r.status.level === 'broken').length,
+    check: scoped.filter((r) => r.status.level === 'check').length,
+    waiting: scoped.filter((r) => r.status.level === 'waiting').length,
+    ok: scoped.filter((r) => r.status.level === 'ok').length,
+    all: scoped.length,
+  } as Record<Chip, number>;
+  $: shown = scoped.filter((r) => chipMatches(chip, r));
+  /** Rule-skipped rows, every season - the "Not auto-added" section. */
+  $: skippedTotal = scoped.filter((r) => !r.wanted).length;
+  $: skippedRows = shown
+    .filter((r) => !r.wanted)
+    .sort((a, b) => (a.season ?? '').localeCompare(b.season ?? '') || byLevel(a, b) || (a.title ?? '').localeCompare(b.title ?? ''));
+  /** Wanted rows still waiting on their air window, for the counts table. */
+  $: waitingCount = allRows.filter((r) => r.wanted && r.reason === 'outsideAirWindow').length;
 
   /**
    * Proposals per state, for the summary row.
@@ -534,7 +592,7 @@
   const ATTENTION = new Set(['lookupFailed', 'failed']);
   // A superseded failure is history, not a to-do: its show was re-matched or
   // added under another id, so nothing about the old id can be acted on.
-  $: needsAttention = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status) && !p.superseded);
+  $: openFailures = (report?.pushes ?? []).filter((p) => ATTENTION.has(p.status) && !p.superseded);
 
   // -- Refresh Jellyfin (the library check) --------------------------------
   // Runs daily on the server's schedule; the button is for "I just changed
@@ -550,7 +608,7 @@
   }
 
   $: pushesSorted = [
-    ...needsAttention,
+    ...openFailures,
     ...(report?.pushes ?? []).filter((p) => !ATTENTION.has(p.status) || p.superseded),
   ];
 
@@ -582,47 +640,40 @@
     return s[Math.floor(s.length / 2)];
   }
 
-  /** Proposals grouped by season, alphabetical inside, with air-date outliers marked. */
+  /**
+   * Every wanted show, one table per season: what will be added, what was, what
+   * is waiting on its premiere and what is wrong - nothing in a collapsed
+   * section. Worst first, then by premiere, so the problems are at the top and
+   * the rest reads as a schedule. Air-date outliers are marked against the
+   * season's median premiere.
+   */
   $: groups = (report?.seasons ?? []).map((s) => {
-    const rows = (report?.proposed ?? []).filter((p) => p.season === s.season && p.year === s.year);
-    const mid = median(rows.map((p) => airDay(p.startDate)).filter((n): n is number => n !== null));
-    // Entries of this season that a gate held back purely on timing, plus when
-    // the earliest of them joins - which is what turns "38 outside the air
-    // window" from an alarming number into a schedule.
-    const waiting = (report?.rejected ?? []).filter(
-      (r) => r.reason === 'outsideAirWindow' && r.season === s.season && r.year === s.year
-    );
-    const soonest = waiting
-      .map((r) => airDay(r.startDate))
-      .filter((n): n is number => n !== null)
-      .sort((a, b) => a - b)[0];
-    // Each waiting entry with the date it actually joins - 14 days before its
-    // OWN premiere, not before the season. Most anime premiere on the season
-    // boundary so they cluster, but the stragglers are weeks behind and the
-    // schedule is the only thing that shows it.
-    const waitingRows = waiting
-      .map((r) => {
-        const d = airDay(r.startDate);
-        return { ...r, joins: d === null ? null : new Date((d - (report?.withinDays ?? 14)) * 86_400_000) };
-      })
-      .sort((a, b) => (a.joins?.getTime() ?? Infinity) - (b.joins?.getTime() ?? Infinity));
+    const inSeason = (r: Row) => r.season === s.season && r.year === s.year && r.wanted;
+    const wanted = scoped.filter(inSeason);
+    const mid = median(wanted.map((p) => airDay(p.startDate)).filter((n): n is number => n !== null));
     return {
       ...s,
-      rows: rows
+      total: wanted.length,
+      waiting: wanted.filter((r) => r.status.level === 'waiting').length,
+      rows: shown
+        .filter(inSeason)
         .map((p) => {
           const d = airDay(p.startDate);
           const off = d !== null && mid !== null ? d - mid : 0;
           return { ...p, offset: off, outlier: Math.abs(off) > OUTLIER_DAYS };
         })
-        .sort((a, b) => a.title.localeCompare(b.title)),
-      waiting: waiting.length,
-      waitingRows,
-      joinsAt:
-        soonest === undefined
-          ? null
-          : new Date((soonest - (report?.withinDays ?? 14)) * 86_400_000),
+        .sort((a, b) =>
+          byLevel(a, b)
+          || (airDay(a.startDate) ?? Infinity) - (airDay(b.startDate) ?? Infinity)
+          || (a.title ?? '').localeCompare(b.title ?? '')),
     };
   });
+
+  /** The /admin/matching season for a push's entry, when the report has it. */
+  function matchingLinkFor(anilistId: number | null): string {
+    const r = anilistId != null ? allRows.find((x) => x.anilistId === anilistId) : undefined;
+    return r?.season && r.year ? `/admin/matching?season=${r.season}&year=${r.year}` : '/admin/matching';
+  }
 
   onMount(load);
 </script>
@@ -752,9 +803,9 @@
               <th class="font-normal text-right border-l border-base-300">we added</th>
               <th class="font-normal text-right border-l border-base-300">you already had</th>
               <th class="font-normal text-right border-l border-base-300">Sonarr excludes</th>
-              <th class="font-normal text-right border-l border-base-300">needs attention</th>
+              <th class="font-normal text-right border-l border-base-300">add failed</th>
               <th class="font-normal text-right border-l border-base-300">waiting on air date</th>
-              <th class="font-normal text-right border-l border-base-300">filtered out</th>
+              <th class="font-normal text-right border-l border-base-300">not auto-added</th>
             </tr>
           </thead>
           <tbody class="[&_td]:tabular-nums [&_td]:text-right [&_td]:text-base">
@@ -766,12 +817,12 @@
               <td class="border-l border-base-300">{byState.excludedInSonarr}</td>
               <td class="border-l border-base-300">{byState.lookupFailed + byState.failed}</td>
               <td class="border-l border-base-300">{waitingCount}</td>
-              <td class="border-l border-base-300">{notOnListCount}</td>
+              <td class="border-l border-base-300">{skippedTotal}</td>
             </tr>
           </tbody>
         </table>
         <p class="text-[11px] opacity-40 mt-1">
-          candidates = still to add + we added + you already had + Sonarr excludes + needs attention
+          candidates = still to add + we added + you already had + Sonarr excludes + add failed
         </p>
       </div>
 
@@ -929,229 +980,144 @@
       </div>
     {/if}
 
+    <!-- Needs attention FIRST: every wanted show that is red or yellow, across
+         both seasons, plus failures no row in these seasons accounts for. It
+         used to be spread across a collapsed "Not on the list" group, the
+         waiting accordions and the bottom of the history log. -->
+    <div class="rounded-lg border px-4 py-3"
+         class:border-error={attentionRows.length + unattached.length > 0}
+         class:border-base-300={attentionRows.length + unattached.length === 0}
+         data-attention>
+      <h2 class="font-semibold">
+        Needs attention
+        <span class="font-normal text-sm opacity-60">({attentionRows.length + unattached.length}{myListOnly ? ' on your list' : ''})</span>
+      </h2>
+      {#if attentionRows.length + unattached.length === 0}
+        <p class="text-sm text-success mt-1">Nothing needs attention{myListOnly ? ' on your list' : ''}.</p>
+      {:else}
+        <ul class="mt-1 divide-y divide-base-300">
+          {#each attentionRows as r (r.kind + (r.anilistId ?? r.title))}
+            <li class="py-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm" data-attention-row data-code={r.status.code}>
+              <StatusBadge status={r.status} />
+              <span class="font-medium">{r.title ?? '(untitled)'}</span>
+              <span class="text-xs opacity-50">{r.season ?? ''} {r.year ?? ''}</span>
+              <span class="basis-full sm:basis-auto sm:flex-1 text-xs opacity-80">
+                {r.status.text}{#each r.status.also ?? [] as a (a.code)}<span class={LEVEL[a.level].text}>{' - also: '}{a.text}</span>{/each}
+              </span>
+              {#if MATCH_CODES.has(r.status.code) || (r.status.also ?? []).some((a) => MATCH_CODES.has(a.code))}
+                <a class="link link-primary text-xs" href={`/admin/matching?season=${r.season}&year=${r.year}`}>Fix match</a>
+              {/if}
+            </li>
+          {/each}
+          {#if !myListOnly}
+            {#each unattached as u (u.tvdbId)}
+              <li class="py-1.5 flex flex-wrap items-baseline gap-x-2 text-sm" data-attention-row data-code={u.status}>
+                <span class="badge badge-sm badge-error whitespace-nowrap" data-level="broken">{u.status === 'lookupFailed' ? 'Sonarr rejected' : 'add failed'}</span>
+                <span class="font-medium">{u.title || `tvdb ${u.tvdbId}`}</span>
+                <span class="text-xs opacity-50">not in these seasons</span>
+                <span class="flex-1 text-xs opacity-80">{u.lastError ?? ''}</span>
+                {#if u.status === 'lookupFailed'}<a class="link link-primary text-xs" href="/admin/matching">Fix match</a>{/if}
+              </li>
+            {/each}
+          {/if}
+        </ul>
+      {/if}
+    </div>
+
+    <!-- One filter row for everything below. Counts are in the buttons, so how
+         much a filter hides is visible before it is clicked. -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <StatusChips bind:value={chip} counts={chipCounts} />
+      <label class="label cursor-pointer gap-2 py-0" title="Only shows on your own list for these seasons - the same set your Randomize page shows, so Needs attention here matches what Hide Not English hides there">
+        <input type="checkbox" class="toggle toggle-sm" bind:checked={myListOnly} data-my-list />
+        <span class="text-sm">On my list ({myListCount})</span>
+      </label>
+      <p class="text-[11px] opacity-50 basis-full">
+        {#each LEVELS as lv (lv)}
+          <span class="badge badge-xs {LEVEL[lv].badge} mr-1 align-middle" aria-hidden="true"></span><span class="mr-3">{LEVEL[lv].label} = {LEVEL[lv].legend}</span>
+        {/each}
+        {#if report.summary.libraryAsked > report.summary.libraryAnswered}
+          <span class="text-warning">The library did not answer for {report.summary.libraryAsked - report.summary.libraryAnswered} aired shows - they are not marked missing.</span>
+        {/if}
+      </p>
+    </div>
+
     {#each groups as g (g.season + g.year)}
-      <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3">
+      <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3" data-season-group>
         <h2 class="font-semibold">
           {g.season} {g.year}
           <span class="font-normal text-sm opacity-60">
-            - {g.rows.length} on the list{#if g.waiting}, {g.waiting} waiting for their air date{/if}
+            - {g.total} we want{#if g.waiting}, {g.waiting} not aired yet{/if}{#if g.rows.length !== g.total}, {g.rows.length} shown{/if}
           </span>
         </h2>
-
         {#if g.rows.length}
           <div class="overflow-x-auto mt-2">
             <table class="table table-fixed w-full">
               <colgroup>
                 <col style="width:3.5rem" /><col /><col style="width:4.5rem" />
-                <col style="width:5rem" /><col style="width:6.5rem" />
-                <col style="width:3rem" /><col style="width:8rem" /><col style="width:7rem" />
-                <col style="width:9rem" /><col style="width:6rem" />
+                <col style="width:5rem" /><col style="width:9.5rem" />
+                <col style="width:3rem" /><col style="width:7rem" /><col style="width:8.5rem" />
+                <col style="width:30%" /><col style="width:8.5rem" />
               </colgroup>
               <thead>
                 <tr class="opacity-60 text-xs">
                   <th></th><th>Title</th><th>TVDB</th><th>Format</th>
-                  <th>Premieres</th><th class="text-right">Eps</th><th title="English subtitles or dub on the episodes Sonarr holds - green when every episode has one, red when some or all do not. Blank when Sonarr does not hold the show.">English</th><th>Match</th><th>What happens</th><th></th>
+                  <th>Premieres</th><th class="text-right">Eps</th><th title={ENGLISH_TIP}>English</th><th>Status</th><th>Why</th><th></th>
                 </tr>
               </thead>
               <tbody>
-                {#each g.rows as p (p.tvdbId)}
-                  <tr>
-                    <td class="px-1">
-                      {#if p.cover}
-                        <img src={p.cover} alt="" class="h-11 w-auto rounded" loading="lazy" />
-                      {/if}
-                    </td>
-                    <td title={p.title}>
-                      <div class="truncate">{p.title}</div>
-                      <!-- Why it is here when the rules would skip it, and what a
-                           sequel downloads: only its newest season. -->
-                      {#if p.listedBy || p.monitor === 'lastSeason'}
-                        <div class="truncate text-[11px] opacity-60" data-listed={p.listedBy ?? 0}>
-                          {#if p.listedBy}on {p.listedBy} trusted list{p.listedBy === 1 ? '' : 's'}{/if}{#if p.listedBy && p.monitor === 'lastSeason'} - {/if}{#if p.monitor === 'lastSeason'}new season only{/if}
-                        </div>
-                      {/if}
-                    </td>
-                    <td class="opacity-60"><ExternalIdLink id={p.tvdbId} /></td>
-                    <td class="opacity-60">{p.format ?? '-'}</td>
-                    <td class="opacity-60 whitespace-nowrap">
-                      {airDate(p.startDate)}
-                      {#if p.outlier}
-                        <span
-                          class="badge badge-xs badge-warning badge-outline ml-1"
-                          title={`Premieres ${Math.abs(p.offset)} days ${p.offset < 0 ? 'before' : 'after'} the rest of ${g.season} ${g.year}`}
-                        >{p.offset > 0 ? '+' : ''}{p.offset}d</span>
-                      {/if}
-                    </td>
-                    <td class="opacity-60 text-right">{p.episodes ?? '?'}</td>
-                    <td class="whitespace-nowrap text-xs" data-english>{#if p.english}<span class="font-medium {p.english.ok ? 'text-success' : 'text-error'}">{p.english.label}</span>{/if}</td>
-                    <td>
-                      <span
-                        class="badge badge-sm whitespace-nowrap {GRADE[p.grade]?.cls ?? 'badge-outline'}"
-                        title={[p.matchedTitle && 'matched: ' + p.matchedTitle, p.gradeNote].filter(Boolean).join(' - ')}
-                      >{GRADE[p.grade]?.label ?? p.grade}</span>
-                    </td>
-                    <td>
-                      <span class="badge badge-sm whitespace-nowrap {STATE[p.state]?.cls ?? 'badge-outline'}">
-                        {STATE[p.state]?.label ?? p.state}
-                      </span>
-                    </td>
-                    <td></td>
-                  </tr>
+                {#each g.rows as r (r.kind + (r.anilistId ?? r.title))}
+                  <SonarrEntryRow row={r} busy={busy === '/api/sonarr/include'} on:include={(e) => includeRow(e.detail)} />
                 {/each}
               </tbody>
             </table>
           </div>
-        {/if}
-
-        <!-- The waiting entries belong HERE, under their own season, not buried
-             in a collapsed accordion at the bottom of the page. The heading
-             counts them; asking "where did they go" and having to hunt is the
-             failure this whole page exists to avoid. -->
-        {#if g.waitingRows.length}
-          <details class="mt-2">
-            <summary class="cursor-pointer text-sm opacity-70 py-1">
-              {g.waitingRows.length} waiting for their air date - each joins the list
-              {report.withinDays} days before its own premiere{#if g.joinsAt}, the first on
-              {g.joinsAt.toLocaleDateString(undefined, { timeZone: 'UTC' })}{/if}
-            </summary>
-            <div class="overflow-x-auto mt-1">
-              <table class="table table-fixed w-full">
-                <colgroup>
-                  <col style="width:3.5rem" /><col /><col style="width:4.5rem" />
-                  <col style="width:5rem" /><col style="width:6.5rem" />
-                  <col style="width:3rem" /><col style="width:8rem" /><col style="width:7rem" />
-                  <col style="width:9rem" /><col style="width:6rem" />
-                </colgroup>
-                <thead>
-                  <tr class="opacity-60 text-xs">
-                    <th></th><th>Title</th><th>TVDB</th><th>Format</th>
-                    <th>Premieres</th><th class="text-right">Eps</th><th title="English subtitles or dub on the episodes Sonarr holds - green when every episode has one, red when some or all do not. Blank when Sonarr does not hold the show.">English</th><th>Match</th><th>Joins the list</th><th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each g.waitingRows as r (r.anilistId ?? r.title)}
-                    <tr>
-                      <td class="px-1">
-                        {#if r.cover}
-                          <img src={r.cover} alt="" class="h-11 w-auto rounded" loading="lazy" />
-                        {/if}
-                      </td>
-                      <td class="truncate" title={r.title ?? ''}>{r.title ?? '(untitled)'}</td>
-                      <td class="opacity-60"><ExternalIdLink id={r.tvdbId} /></td>
-                      <td class="opacity-60">{r.format ?? '-'}</td>
-                      <td class="opacity-60 whitespace-nowrap">{airDate(r.startDate)}</td>
-                      <td class="opacity-60 text-right">{r.episodes ?? '?'}</td>
-                    <td class="whitespace-nowrap text-xs" data-english>{#if r.english}<span class="font-medium {r.english.ok ? 'text-success' : 'text-error'}">{r.english.label}</span>{/if}</td>
-                      <td>
-                        <span class="badge badge-sm whitespace-nowrap {GRADE[r.grade]?.cls ?? 'badge-outline'}"
-                        >{GRADE[r.grade]?.label ?? r.grade}</span>
-                      </td>
-                      <td class="opacity-70 whitespace-nowrap">
-                        {r.joins ? r.joins.toLocaleDateString(undefined, { timeZone: 'UTC' }) : '-'}
-                      </td>
-                      <td></td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          </details>
-        {:else if !g.rows.length}
-          <p class="text-sm opacity-60 mt-1">Nothing from this season is on the list.</p>
+        {:else}
+          <p class="text-sm opacity-60 mt-1">
+            {g.total ? 'Nothing here matches the filter.' : 'Nothing from this season is wanted yet.'}
+          </p>
         {/if}
       </div>
     {/each}
 
-    <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3">
-      <h2 class="font-semibold">Not on the list ({notOnListCount})</h2>
-      <p class="text-[11px] opacity-40 mb-2">
-        Entries in these seasons that a filter held back. None of these is an error - each names
-        the rule that skipped it, and Include anyway overrides any of them.
+    <!-- Shows a rule skips (sequels nobody listed, films, adult). Same columns
+         and badges as above, always open, and never counted in Needs
+         attention - colour still means the result, so a skipped show the
+         library lacks is still red. Listing it or pressing Include moves it up. -->
+    <div class="rounded-lg border border-base-300 bg-base-200/70 px-4 py-3" data-skipped>
+      <h2 class="font-semibold">
+        Not auto-added
+        <span class="font-normal text-sm opacity-60">({skippedTotal}{skippedRows.length !== skippedTotal ? `, ${skippedRows.length} shown` : ''})</span>
+      </h2>
+      <p class="text-[11px] opacity-50 mb-1">
+        A rule left these off - each says which. They never count as needing attention unless someone
+        lists one or presses Include.
       </p>
-      <!-- `outsideAirWindow` is deliberately absent here: those entries are
-           listed under their own season above, with the date each one joins.
-           Showing them in both places was real duplication and made the page
-           look like it was reporting the same thing twice. -->
-      {#each Object.entries(rejectedByReason).filter(([reason]) => reason !== 'outsideAirWindow').sort((a, b) => b[1].length - a[1].length) as [reason, rows] (reason)}
-        <details class="border-b border-base-300 last:border-0">
-          <summary class="cursor-pointer py-1.5 flex items-center gap-2 text-sm">
-            <span class="font-mono opacity-60 w-8 text-right">{rows.length}</span>
-            <span>{REASON_LABEL[reason] ?? reason}</span>
-            {#if reason === 'noUsableTvdbId' && linkSeason}
-              <a
-                class="link link-primary text-xs"
-                href={`/admin/matching?season=${linkSeason.season}&year=${linkSeason.year}`}
-              >resolve on Matching</a>
-            {/if}
-          </summary>
-          <div class="overflow-x-auto pb-2">
-            <table class="table table-fixed w-full">
-              <colgroup>
-                <col style="width:3.5rem" /><col /><col style="width:4.5rem" />
-                <col style="width:5rem" /><col style="width:6.5rem" />
-                <col style="width:3rem" /><col style="width:8rem" /><col style="width:7rem" />
-                <col style="width:9rem" /><col style="width:6rem" />
-              </colgroup>
-              <thead>
-                <tr class="opacity-60 text-xs">
-                  <th></th><th>Title</th><th>TVDB</th><th>Format</th>
-                  <th>Premieres</th><th class="text-right">Eps</th><th title="English subtitles or dub on the episodes Sonarr holds - green when every episode has one, red when some or all do not. Blank when Sonarr does not hold the show.">English</th><th>Match</th><th>Previous</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each rows as r (r.anilistId ?? r.title)}
-                  <tr>
-                    <td class="px-1">
-                      {#if r.cover}
-                        <img src={r.cover} alt="" class="h-11 w-auto rounded" loading="lazy" />
-                      {/if}
-                    </td>
-                    <td class="truncate" title={r.title ?? ''}>{r.title ?? '(untitled)'}</td>
-                    <td class="opacity-60"><ExternalIdLink id={r.tvdbId} /></td>
-                    <td class="opacity-60">{r.format ?? '-'}</td>
-                    <td class="opacity-60 whitespace-nowrap">{airDate(r.startDate)}</td>
-                    <td class="opacity-60 text-right">{r.episodes ?? '?'}</td>
-                    <td class="whitespace-nowrap text-xs" data-english>{#if r.english}<span class="font-medium {r.english.ok ? 'text-success' : 'text-error'}">{r.english.label}</span>{/if}</td>
-                    <!-- Match and action in SEPARATE columns, so the button
-                         starts at the same x on every row instead of being
-                         pushed around by whatever badge precedes it. -->
-                    <td class="whitespace-nowrap">
-                      <span
-                        class="badge badge-sm whitespace-nowrap {GRADE[r.grade]?.cls ?? 'badge-outline'}"
-                        title={[r.matchedTitle && 'matched: ' + r.matchedTitle, r.gradeNote].filter(Boolean).join(' - ')}
-                      >{GRADE[r.grade]?.label ?? r.grade}</span>
-                    </td>
-                    <td class="whitespace-nowrap">
-                      {#if r.parent}
-                        <span
-                          class="badge badge-sm whitespace-nowrap"
-                          class:badge-success={r.parent.held}
-                          class:badge-outline={!r.parent.held}
-                          title={r.parent.title ?? ''}
-                        >{r.parent.held ? 'have prev' : 'no prev'}</span>
-                      {/if}
-                    </td>
-                    <td>
-                      {#if r.anilistId}
-                        <!-- An unverified identity gets a different label AND a
-                             confirm. The backend 409s regardless - this is so
-                             the click is informed, not so it is possible. -->
-                        <button
-                          class="btn btn-xs normal-case"
-                          class:btn-primary={!r.unverified}
-                          class:btn-warning={r.unverified}
-                          disabled={busy === '/api/sonarr/include'}
-                          on:click={() => includeRow(r)}
-                        >{r.unverified ? 'Include anyway' : 'Include'}</button>
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      {/each}
+      {#if skippedRows.length}
+        <div class="overflow-x-auto">
+          <table class="table table-fixed w-full">
+            <colgroup>
+              <col style="width:3.5rem" /><col /><col style="width:4.5rem" />
+              <col style="width:5rem" /><col style="width:9.5rem" />
+              <col style="width:3rem" /><col style="width:7rem" /><col style="width:8.5rem" />
+              <col style="width:30%" /><col style="width:8.5rem" />
+            </colgroup>
+            <thead>
+              <tr class="opacity-60 text-xs">
+                <th></th><th>Title</th><th>TVDB</th><th>Format</th>
+                <th>Premieres</th><th class="text-right">Eps</th><th title={ENGLISH_TIP}>English</th><th>Status</th><th>Why</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each skippedRows as r (r.kind + (r.anilistId ?? r.title))}
+                <SonarrEntryRow row={r} busy={busy === '/api/sonarr/include'} on:include={(e) => includeRow(e.detail)} />
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <p class="text-sm opacity-60">{skippedTotal ? 'Nothing here matches the filter.' : 'Nothing was skipped.'}</p>
+      {/if}
     </div>
 
     {#if report.pushes.length}
@@ -1159,9 +1125,9 @@
         <details>
           <summary class="cursor-pointer">
             <h2 class="font-semibold inline">Everything we have tried ({report.pushes.length})</h2>
-            {#if needsAttention.length}
+            {#if openFailures.length}
               <span class="badge badge-sm badge-error badge-outline ml-2">
-                {needsAttention.length} need attention
+                {openFailures.length} failed - also listed under Needs attention
               </span>
             {/if}
           </summary>
@@ -1200,7 +1166,7 @@
                       : ''}
                 </span>
                 {#if p.status === 'lookupFailed' && !p.superseded}
-                  <a class="link text-xs whitespace-nowrap" href="/admin/matching">Fix the match</a>
+                  <a class="link text-xs whitespace-nowrap" href={matchingLinkFor(p.anilistId)}>Fix the match</a>
                 {/if}
               </li>
             {/each}

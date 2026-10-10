@@ -46,7 +46,9 @@ import {
   clearIdentityOverride,
   listIdentityOverrides,
   onIdentityChanged,
+  identityFacts,
 } from '../lib/seriesIdentity';
+import { identityStatus } from '../lib/entryStatus';
 import {
   DEVICE_ID,
   deviceProfile,
@@ -277,6 +279,12 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
     // The raw row first, so *pending* suggestions are visible here. Matching
     // hides them on purpose; this page exists to show them.
     const ident = rawIdentityOverride(id) ?? resolveIdentity(id);
+    const tier = tierFor(id);
+    const settledByDate = dateSettlesCandidates(
+      ident?.candidates ?? null,
+      Number(datesFor[String(id)]) || null,
+      { tvdbId: ident?.tvdbId ?? null, tmdbId: ident?.tmdbId ?? null },
+    );
     out[id] = {
       ...ident,
       // The identity's own display year: stored (the sweep dates rows at
@@ -287,18 +295,21 @@ router.post('/identity/resolve', jellyfinLimiter, requireAuth, requireAdmin, asy
       candidates: ident?.candidates?.length
         ? ident.candidates.map((c) => (c.year != null ? c : { ...c, year: yearFor(c) }))
         : ident?.candidates ?? null,
-      tier: tierFor(id),
+      tier,
       // Whether the entry's premiere date SEPARATED a multi-candidate row, so
       // /admin/matching can stop queueing a match nothing disputes. Decided
       // here, next to `tier` and `retry`, because the page asked the same
       // question and a correctness rule with two copies can disagree with
       // itself - the `matchGrade` lesson. The page renders this; it does not
       // recompute it.
-      settledByDate: dateSettlesCandidates(
-        ident?.candidates ?? null,
-        Number(datesFor[String(id)]) || null,
-        { tvdbId: ident?.tvdbId ?? null, tmdbId: ident?.tmdbId ?? null },
-      ),
+      settledByDate,
+      // The identity half of the status vocabulary (lib/entryStatus.ts). The
+      // page prefers the full status from /api/sonarr/report, which adds Sonarr
+      // and the library; this is its fallback when that report is unavailable.
+      status: identityStatus(identityFacts(id, {
+        titleOnly: tier === 'title',
+        startDateMs: Number(datesFor[String(id)]) || null,
+      })),
       // A row with no ids and no human decision is what the sweep still owes
       // an answer for - say where it stands (eligible / cooldown / retired).
       // Settled rows get null, not 'eligible': there is nothing to retry.
@@ -1916,6 +1927,39 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
  * is one show at a time, and its 30 s refetch throttle assumes that.
  */
 const AVAILABILITY_BATCH_MAX = 100; // mirrors /api/translate/check-batch
+
+/**
+ * The verdicts Randomize reads, for `/api/sonarr/report`.
+ *
+ * Same `resolveAvailability`, same cache, same answers - so a show Randomize's
+ * Hide Not English hides is the show /admin/sonarr marks broken, by
+ * construction rather than by two implementations agreeing. A second matcher
+ * here is exactly how the two pages came to report 7 against 4.
+ *
+ * Unconfigured returns an empty map ("not asked"), never a page of negatives.
+ * Callers must leave unaired entries out, as Randomize does.
+ */
+export async function availabilityFor(
+  items: Array<{ mediaId: number; titles: string[]; startDate?: { year?: number | null; month?: number | null; day?: number | null } | null }>,
+  fresh = false
+): Promise<Map<number, any>> {
+  const out = new Map<number, any>();
+  if (!items.length) return out;
+  const cfg = await getJellyfinConfig();
+  if (!cfg) return out;
+  const api = await jellyfinApi(cfg);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const it = items[next++];
+      out.set(it.mediaId, await resolveAvailability(api, it.mediaId, it.titles, fresh, it.startDate));
+    }
+  };
+  // The batch route's pool size, for its reason: on a cold cache, walk the
+  // library at a steady rate rather than open every episode query at once.
+  await Promise.all(Array.from({ length: Math.min(5, items.length) }, worker));
+  return out;
+}
 
 router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res) => {
   const { items } = req.body ?? {};

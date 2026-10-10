@@ -196,7 +196,10 @@ Routes (contracts here; each guard's story is commented at its code):
   "never ran"; a corrupt row parses to null, never a throw. `remaining` counts
   what future runs will actually process (cooldown and retired rows excluded -
   the first shape counted every unmatched entry, so it could never reach 0);
-  `retired` counts old misses no longer re-asked.
+  `retired` counts old misses no longer re-asked. Each row also carries
+  `status` - the identity half of the status vocabulary (`identityStatus` over
+  `identityFacts`, both one definition shared with `/api/sonarr/report`), which
+  /admin/matching shows when the Sonarr report is unavailable.
 - `POST /identity/sweep` - admin only; starts a **drain** sweep (per-run cap
   *and* retry cooldowns dropped, pacing kept) and returns `202 { started, running }`
   immediately - a drain over a cold-start backlog runs for minutes, so
@@ -307,6 +310,22 @@ do not own. `lib/sonarrPush.ts` holds this argument at the code.
   `watchable/episodes` count when only some episodes have English; null when
   the last check did not see that tvdbId. For a sequel row the count covers
   every episode Sonarr holds for the series, earlier seasons included.
+  **Every row also carries the one status** (`lib/entryStatus.ts`): `status`
+  `{ level, code, text, also? }`, `wanted` / `wantedBy`, `listedBy`, `onMyList`
+  (the requesting admin's own list), `attention` (wanted and broken or check) and
+  `watchable` (`false` = what Randomize's Hide Not English hides, `null` = no
+  definite answer). The AniList airing status is `airing`, not `status`. Top
+  level adds `attention` (open failures no row accounts for, from
+  `unattachedFailures`) and `summary` (the chip counts, plus how many aired shows
+  the library was asked about and answered). **This is the one place the report
+  asks Jellyfin anything**: `availabilityFor` (routes/jellyfin.ts) - the same
+  `resolveAvailability` and cache Randomize uses, for every aired entry - which
+  is what makes "red here" and "hidden there" the same set by construction.
+  Warm it is a Map lookup per entry (0.5 s for 170 rows, 2026-10-10); cold it
+  walks the library, so the page waits up to 60 s. Push failures join a row by
+  AniList id first (`pushForEntry`): an entry re-matched to no id keeps its
+  failed attempt. `SonarrPushItem` carries its `anilistId`; the title join that
+  attributed one show's push to another show of the same name is gone.
 - `POST /library/check` - admin; the **Refresh Jellyfin** button. Runs the
   library check now and answers once the audit is stored and any refreshes are
   requested (Jellyfin catching up is watched in the background). Takes a
@@ -1667,9 +1686,10 @@ renders a picker defaulting to the resolver's choice, and a multi-candidate
 row stays in review even when the air-date gate accepted it. Every resolver
 row shows provenance - an `our lookup` badge plus the rung that accepted it -
 because an id we guessed is not the same kind of fact as one from the map.
-Accepts decided on title text or release year alone stay reachable behind the
-"+ resolver accepts" filter (deliberately not in the default queue; their
-being *invisible* was the audited bug). Rows stored before candidates carried
+Accepts decided on title text or release year alone read yellow
+(`unconfirmedAuto` - the owner's call on 2026-10-10; their being *invisible* was
+the audited bug), so they are in Needs attention whenever something wants the
+show. Rows stored before candidates carried
 premiere dates are re-graded by a capped, self-terminating sweep pass
 (`regradeStoredRows`); it never touches confirmed/rejected/manual rows.
 

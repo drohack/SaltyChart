@@ -240,7 +240,7 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 195 rows
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 203 rows
   now (2026-10-09) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
@@ -381,6 +381,8 @@ both bind from outside `backend/`:
 - **It must never trigger a cold AniList fetch.** It reads `SeasonCache` and
   serves a stale row happily; AniList's ~30/min budget is shared with every
   viewer.
+- **One status per show** (`lib/entryStatus.ts`), rendered by /admin/sonarr and
+  /admin/matching and recomputed by neither.
 
 Before turning it on, run `tools/sonarr_dryrun.py` (read-only, needs a local
 admin token, no Sonarr credentials) or open **`/admin/sonarr`**, which adds what

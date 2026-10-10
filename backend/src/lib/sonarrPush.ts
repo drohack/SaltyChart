@@ -214,6 +214,46 @@ export function supersededFailures(
 }
 
 /**
+ * The push record that speaks for one entry on /admin/sonarr.
+ *
+ * By AniList id first, its current tvdbId second. Joining on the tvdbId alone -
+ * which is all the report did once - lost exactly the failures that matter: an
+ * entry re-matched to "no id" (or to a different id) no longer carries the
+ * tvdbId its failed attempt was recorded under, so the failure vanished from
+ * its row. An open failure wins over an older success or skip, because it is
+ * the one somebody has to act on.
+ */
+export function pushForEntry<T extends PushRow>(
+  rows: T[],
+  anilistId: number | null,
+  tvdbId: number | null,
+  isOpen: (r: T) => boolean
+): T | null {
+  const pool = rows.filter(
+    (r) => (anilistId !== null && r.anilistId === anilistId) || (tvdbId !== null && r.tvdbId === tvdbId)
+  );
+  const open = pool.find(isOpen);
+  if (open) return open;
+  return pool.sort((x, y) => (y.lastAttemptAt?.getTime() ?? 0) - (x.lastAttemptAt?.getTime() ?? 0))[0] ?? null;
+}
+
+/**
+ * Open failures no row on the page accounts for - an older season, or an entry
+ * that has left the cache. Without this list they would live only in the
+ * collapsed history log, which is where failures used to go unnoticed.
+ */
+export function unattachedFailures<T extends PushRow>(
+  rows: T[],
+  isOpen: (r: T) => boolean,
+  entryIds: ReadonlySet<number>,
+  rowTvdbIds: ReadonlySet<number>
+): T[] {
+  return rows.filter(
+    (r) => isOpen(r) && !(r.anilistId !== null && entryIds.has(r.anilistId)) && !rowTvdbIds.has(r.tvdbId)
+  );
+}
+
+/**
  * Which skips deserve a terminal row of their own.
  *
  * Series Sonarr already holds are skipped from the *live* snapshot, so without
