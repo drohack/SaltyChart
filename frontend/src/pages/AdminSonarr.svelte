@@ -130,6 +130,8 @@
     onMyList: boolean;
     attention: boolean;
     watchable: boolean | null;
+    /** Not out yet - Randomize hides it, but it is not red here for that. */
+    unaired: boolean;
     grade: string;
     unverified: boolean;
     matchedTitle: string | null;
@@ -167,6 +169,7 @@
     onMyList: boolean;
     attention: boolean;
     watchable: boolean | null;
+    unaired: boolean;
   };
   type Push = {
     tvdbId: number;
@@ -539,6 +542,12 @@
     : [];
   $: scoped = myListOnly ? allRows.filter((r) => r.onMyList) : allRows;
   $: myListCount = allRows.filter((r) => r.onMyList).length;
+  // What Hide Not English hides on Randomize, from the same verdicts: the red
+  // rows on the admin's list plus the ones not out yet, which are not red here.
+  $: myHidden = allRows.filter((r) => r.onMyList && r.watchable === false);
+  // An unaired show whose file landed early and has no English is red, not
+  // "not aired yet" - only the uncoloured ones count here.
+  $: myHiddenUnaired = myHidden.filter((r) => r.unaired && r.status.level !== 'broken').length;
   $: attentionRows = scoped.filter((r) => isAttention(r)).sort((a, b) => byLevel(a, b) || (a.title ?? '').localeCompare(b.title ?? ''));
   $: unattached = report?.attention ?? [];
   $: chipCounts = {
@@ -1028,16 +1037,23 @@
          much a filter hides is visible before it is clicked. -->
     <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
       <StatusChips bind:value={chip} counts={chipCounts} />
-      <label class="label cursor-pointer gap-2 py-0" title="Only shows on your own list for these seasons - the same set your Randomize page shows, so Needs attention here matches what Hide Not English hides there">
+      <label class="label cursor-pointer gap-2 py-0" title="Only shows on your own list for these seasons - the same set your Randomize page shows">
         <input type="checkbox" class="toggle toggle-sm" bind:checked={myListOnly} data-my-list />
         <span class="text-sm">On my list ({myListCount})</span>
       </label>
+      {#if myListCount}
+        <span class="text-xs opacity-70" data-randomize-hides={myHidden.length}
+              title="The same verdicts Randomize reads: a red row is hidden there, and so is a show not out yet whose file is not in the library (it stays uncoloured here - nothing is wrong with it)">
+          Hide Not English on Randomize hides {myHidden.length} of these:
+          {myHidden.length - myHiddenUnaired} red, {myHiddenUnaired} not aired yet
+        </span>
+      {/if}
       <p class="text-[11px] opacity-50 basis-full">
         {#each LEVELS as lv (lv)}
           <span class="badge badge-xs {LEVEL[lv].badge} mr-1 align-middle" aria-hidden="true"></span><span class="mr-3">{LEVEL[lv].label} = {LEVEL[lv].legend}</span>
         {/each}
         {#if report.summary.libraryAsked > report.summary.libraryAnswered}
-          <span class="text-warning">The library did not answer for {report.summary.libraryAsked - report.summary.libraryAnswered} aired shows - they are not marked missing.</span>
+          <span class="text-warning">The library did not answer for {report.summary.libraryAsked - report.summary.libraryAnswered} shows - they are not marked missing.</span>
         {/if}
       </p>
     </div>

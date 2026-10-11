@@ -6,6 +6,7 @@ import {
   combine,
   isWanted,
   isUnaired,
+  withAiring,
   needsAttention,
   NOT_WATCHABLE_CODES,
   watchable,
@@ -111,6 +112,11 @@ test('aired, wanted and no video in Sonarr is broken', () => {
   assert.match(gone.text, /no longer has it/, 'a show we added and someone deleted says so rather than "press Add now"');
   const unaired = statusOf(facts(), sonarr({ unaired: true, availability: null, sonarrHeld: false, sonarrFiles: null, proposedState: 'willBeAdded' }));
   assert.equal(unaired.level, 'ok', 'before the premiere nothing is missing');
+  const unairedAbsent = statusOf(facts(), sonarr({ unaired: true, availability: { available: false }, sonarrHeld: false, sonarrFiles: null, proposedState: 'willBeAdded' }));
+  assert.equal(unairedAbsent.level, 'ok', 'an unaired show the library lacks is not out yet, not broken');
+  // Chitose 2nd Cour (2026-10-10): its episode was on disk before the premiere.
+  const early = statusOf(facts(), sonarr({ unaired: true, availability: { available: true, english: 'none' } }));
+  assert.equal(early.code, 'noEnglish', 'a file that landed before the premiere is judged like any other');
   const unwanted = statusOf(facts(), sonarr({ wanted: false, availability: missing, sonarrHeld: false, sonarrFiles: null, rejectedReason: 'notFirstSeason', skipReason: 'Not auto-added: a sequel' }));
   assert.equal(unwanted.code, 'notInLibrary', 'an unwanted show is not "missing from Sonarr" - it is just not in the library');
 });
@@ -139,12 +145,12 @@ test('a verdict that could not be asked is never "missing"', () => {
 });
 
 test('watchable is exactly the Randomize rule', () => {
-  assert.equal(watchable({ unaired: true, availability: { available: false } }), null, 'unaired is not asked');
-  assert.equal(watchable({ unaired: false, availability: { available: false, unknown: true } }), null, 'unknown is not missing');
-  assert.equal(watchable({ unaired: false, availability: { available: false } }), false, 'definitely absent is not watchable');
-  assert.equal(watchable({ unaired: false, availability: { available: true, english: 'signsOnly' } }), false, 'signs-only is not watchable');
-  assert.equal(watchable({ unaired: false, availability: { available: true, english: 'engAudio' } }), true, 'a dub is watchable');
-  assert.equal(watchable({ unaired: false, availability: { available: true } }), true, 'a verdict without the english field keeps the show, as Randomize does');
+  assert.equal(watchable({ availability: { available: false, unknown: true } }), null, 'unknown is not missing');
+  assert.equal(watchable({ availability: null }), null, 'not asked is not missing');
+  assert.equal(watchable({ availability: { available: false } }), false, 'definitely absent is not watchable');
+  assert.equal(watchable({ availability: { available: true, english: 'signsOnly' } }), false, 'signs-only is not watchable');
+  assert.equal(watchable({ availability: { available: true, english: 'engAudio' } }), true, 'a dub is watchable');
+  assert.equal(watchable({ availability: { available: true } }), true, 'a verdict without the english field keeps the show, as Randomize does');
 });
 
 test('every code Randomize hides is broken, and every broken availability code is one Randomize hides', () => {
@@ -194,10 +200,23 @@ test('Needs attention = wanted and broken or check', () => {
   assert.equal(needsAttention({ level: 'ok' }, true), false);
 });
 
-test('isUnaired mirrors the frontend rule', () => {
+test('isUnaired: status first, partial dates read as their earliest day', () => {
   assert.equal(isUnaired({ status: 'NOT_YET_RELEASED', startDate: { year: 2020 } }, NOW), true, 'status wins over the date');
   assert.equal(isUnaired({ status: 'RELEASING' }, NOW), false);
   assert.equal(isUnaired({ startDate: { year: 2026, month: 11 } }, NOW), true, 'a partial future date is unaired');
   assert.equal(isUnaired({ startDate: { year: 2026, month: 10 } }, NOW), false, 'a partial date reads as its earliest day');
   assert.equal(isUnaired({}, NOW), false, 'no evidence is not unaired');
+});
+
+test('withAiring marks per request, whatever the cache holds', () => {
+  // DARK MACHINE, 2026-10-11: a lookup that sent no status cached a bare "no",
+  // and the next caller - who did send NOT_YET_RELEASED - got it unmarked.
+  const cachedNo = { available: false, idConfident: true };
+  assert.equal(withAiring(cachedNo, true).notAired, true, 'a cached "no" is marked for an unaired caller');
+  assert.equal('notAired' in withAiring(cachedNo, false), false, 'and not for an aired one');
+  assert.equal('notAired' in withAiring({ available: false, notAired: true }, false), false,
+    'a flag stored by an older build is dropped once the entry has aired');
+  assert.equal('notAired' in withAiring({ available: true }, true), false, 'a file on disk is never "not aired"');
+  assert.equal('notAired' in withAiring({ available: false, unknown: true }, true), false,
+    '"could not ask" stays exactly that');
 });

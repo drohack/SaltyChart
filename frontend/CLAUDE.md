@@ -40,10 +40,11 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   configured, using the batch availability cache), and a "N shown, M hidden"
   count beside the Unwatched heading (`data-unwatched-counts`). **Hide Not
   English** hides every show that cannot be watched in English here: one the
-  library lacks (so it is a superset of Hide Not in Library, by request) or one
-  whose episode has neither full English subtitles nor English audio - the
+  library lacks, aired or not (so it is a superset of Hide Not in Library, by
+  request - an unaired show whose file landed early is judged like any other),
+  or one whose episode has neither full English subtitles nor English audio - the
   verdict's `english` field is `none` or `signsOnly`, from the same backend
-  rules as /admin/sonarr's audit. A dub (`engAudio`), `unknown`, `notAired`, or
+  rules as /admin/sonarr's audit. A dub (`engAudio`), `unknown`, or
   a held show whose verdict predates the field keeps the show (`isNotEnglish`;
   flow 38 pins all eight kinds). The four buttons sit on two rows
   (`data-hide-controls`) - on one line the library pair ran off the sidebar.
@@ -51,8 +52,11 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   `Randomize.svelte` / `stores/jellyfin.ts`:
   * an `unknown` verdict is never acted on - it means "couldn't ask", and one
     slow moment must not empty the wheel;
-  * `notAired` neither triggers hides nor lights the button - "can't exist
-    yet" is not "confirmed missing";
+  * "not in the library" means no video file, aired or not. Unaired shows are
+    asked like any other (with AniList's `status`), and the server's "no"
+    carries `notAired` so the pop-up can say why. They used to be answered in
+    the browser and never asked: DARK MACHINE, four days out, survived both
+    buttons while Chitose 2nd Cour already had its episode on disk;
   * title-only matches report `available: true`, so bulk-hide can only ever
     *keep* an unconfirmed match;
   * the library lookup has a visible state (`libraryStatus`: idle / checking /
@@ -327,10 +331,13 @@ ids in collapsed sections. **Colour means the result, never the format**:
 take it, a trusted user listed it, or someone pressed Include. A problem on a
 show nothing wants keeps its colour but stays out of the queue. **Red means
 Randomize hides it**: "not in the library" and "no English" come from the same
-availability verdict Randomize's Hide Not English reads, so on the admin's own
-list the two counts match by construction (`test_sonarr` step 13). Handles:
-`data-level`, `data-code`, `data-chip`, `data-attention-row`, `data-entry-row`,
-`data-air`.
+availability verdict Randomize's Hide Not English reads. Randomize also hides a
+show that has not aired, which keeps its countdown and its own colour here
+(nothing is wrong with it), so beside the *On my list* toggle the page prints
+"Hide Not English on Randomize hides N of these: X red, Y not aired yet" (`data-randomize-hides`, from each row's
+`watchable` and `unaired`) - the two counts match by construction (`test_sonarr`
+step 13). Handles: `data-level`, `data-code`, `data-chip`, `data-attention-row`,
+`data-entry-row`, `data-air`, `data-randomize-hides`.
 
 **`/admin/sonarr`** - what is about to be added to Sonarr, and what already was.
 A separate page from `/admin/matching` on purpose: that one asks **identity** (which real

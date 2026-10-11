@@ -221,9 +221,10 @@ chronological order; all features listed are live.
   yellow = probably fine but unverified, blue = not aired yet (with a countdown),
   green = nothing to do. **Needs attention** lists every red or yellow show that
   something wants - the auto-add rules, a trusted user's list, or an Include -
-  with the reason printed beside it; nothing is tucked into a dropdown. Red means
-  exactly what Randomize's *Hide Not English* hides, so on your own list the two
-  counts match.
+  with the reason printed beside it; nothing is tucked into a dropdown. Red, plus
+  anything not aired yet, is exactly what Randomize's *Hide Not English* hides,
+  and with *On my list* on the page says how many that is, so the two counts
+  match.
 - **/admin/sonarr** - what the auto-add is about to do and what it has already
   done, with a *Add now* button and a pause switch. Every wanted show is in its
   season's table, worst first; what a rule skipped is in its own open section. An **English** column on
@@ -293,7 +294,8 @@ chronological order; all features listed are live.
 - The Unwatched list says how many shows are on the wheel and how many are
   hidden ("12 shown, 4 hidden").
 - **Hide Not English** hides every show you cannot watch in English: ones not
-  in the library (everything **Hide Not in Library** does), plus ones whose
+  in the library (everything **Hide Not in Library** does - "in the library"
+  means a video file is there, aired or not), plus ones whose
   episode has no English subtitles (or only a signs-and-songs track) and no
   English audio. A show it cannot get an answer for is never hidden.
 - "Nicknames from" auto-checks users who have rankings for the current

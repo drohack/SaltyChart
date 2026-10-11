@@ -50,7 +50,6 @@ Coverage, and the trap each step was added for:
   rescans one, so `/playback` for the old id must answer 404 `ITEM_GONE` - not
   the 502 "unreachable" it used to, which sent the reader looking for an
   outage while the dead id stayed cached.
-
 Usage:
   py -3.13 -u tools/tests/test_jellyfin.py [--backend http://localhost:3000]
 
@@ -585,7 +584,11 @@ def main():
                 # In-memory deletion alone looked identical in every test until a
                 # restart: boot restored the pre-correction verdict from disk and
                 # the just-saved fix silently reverted for up to an hour.
-                if not wait_for(lambda: persisted_verdict(mid) is None, 15):
+                # Gone, or replaced by the post-override answer: a concurrent
+                # lookup (the gate runs test_sonarr beside this) may legitimately
+                # re-resolve and persist the show again. What must not survive
+                # is the old "in library" verdict.
+                if not wait_for(lambda: not (persisted_verdict(mid) or {}).get("data", {}).get("available"), 15):
                     fail(11, "stale availability verdict survives a restart - the override "
                              "busted the in-memory cache but the persisted blob still holds "
                              "the old answer")
@@ -845,6 +848,7 @@ def main():
                  f"{r.text[:160]} - expected 404 ITEM_GONE. Reporting it as an outage "
                  f"keeps the dead id cached and the player black.")
     step(14, "PASS - a dead item id is ITEM_GONE, not an outage")
+
 
     print(f"Jellyfin: {TOTAL_STEPS}/{TOTAL_STEPS} passed - OK", flush=True)
 

@@ -196,9 +196,11 @@ throw).
 **Count `/api/jellyfin/availability*` per page load**, and expect a number that
 depends on the season:
 - an **aired** season -> exactly **1** (one batch, never one per show)
-- an **unaired** season -> exactly **0** (nothing is looked up; see the `isUnaired`
-  gate). If you see a lookup here, that guard has regressed and fuzzy titles will
-  start offering the wrong series again.
+- an **unaired** season -> also exactly **1**. It was 0 until 2026-10-10 (the
+  browser answered unaired shows itself), which kept a show premiering next
+  week on the wheel. A Watch button on an unaired show is right only if its
+  episode is dated at the premiere (Chitose 2nd Cour's was, on disk early);
+  a next-season sequel can title-match its parent, which is accepted.
 
 **5. Watching an episode.** Pop-up -> the *Watch here* button -> playback advances. Speed-step
 with `[` and `]`, switch subtitle track, switch quality, seek forward and back,
@@ -388,7 +390,7 @@ What each fix was:
 
 | # | fix |
 |---|---|
-| unaired lookups | `isUnaired()` in `stores/jellyfin.ts` gates both entry points; unaired entries resolve `{available:false, notAired:true}` with **no request**. Pop-up says "Not aired yet"; Hide-Not-in-Library ignores them |
+| unaired lookups | Originally an `isUnaired()` gate in `stores/jellyfin.ts` answered unaired entries `{available:false, notAired:true}` with no request. Superseded 2026-10-10: that gate is gone, unaired shows ARE asked (a file can land before the premiere), the server adds `notAired` to a "no" (`isUnaired` in `backend/src/lib/entryStatus.ts`), the pop-up still says "Not aired yet", and both hide buttons hide one with no file |
 | Escape / close | `<svelte:window on:keydown>` in `AnimeGridTranslate` + `Escape` added to Randomize's existing window handler; a real X button on the trailer modal |
 | check-batch | `Home.svelte` chunks at 100 and merges, staleness guard covering the whole set |
 | Server busy | transient chip beside the CC toggle, auto-clears after 6 s, never gates playback |

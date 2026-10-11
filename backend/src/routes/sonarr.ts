@@ -1116,18 +1116,19 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       const e = raw as CacheEntry;
       if (e && typeof e === 'object' && typeof e.id === 'number') entryById.set(e.id, e);
     }
-    // The verdicts Randomize reads, for every entry that has aired: the same
-    // resolver and the same cache, so "not in the library" and "no English" mean
-    // here exactly what Hide Not English means there. Unaired entries are never
-    // asked, as there. This is the one Jellyfin call the report makes, and on a
-    // warm cache it is a Map lookup per entry.
+    // The verdicts Randomize reads, for every entry: the same resolver, the same
+    // cache and the same airing status, so "not in the library" and "no English"
+    // mean here exactly what Hide Not English means there. Unaired entries are
+    // asked too - a file can land before AniList's premiere. This is the one
+    // Jellyfin call the report makes, and on a warm cache it is a Map lookup
+    // per entry.
     const askable = [...entryById.values()]
-      .filter((e) => !isUnaired(e, nowMs))
       .map((e) => ({
         mediaId: e.id as number,
         titles: [e.title?.english, e.title?.romaji, e.title?.native]
           .filter((t): t is string => typeof t === 'string' && !!t),
         startDate: e.startDate ?? null,
+        status: typeof e.status === 'string' ? e.status : null,
       }))
       .filter((x) => x.titles.length);
     let avail = new Map<number, Availability & { titleTier?: number | null }>();
@@ -1204,7 +1205,9 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         status,
         // What Randomize's Hide Not English decides for this show - false is
         // hidden there, null is no definite answer. See `watchable`.
-        watchable: watchable({ availability: av ?? null, unaired }),
+        watchable: watchable({ availability: av ?? null }),
+        // Not out yet: hidden there too, but never red here for that alone.
+        unaired,
         wanted,
         wantedBy: !wanted ? null : included ? 'include' : listedBy ? 'list' : 'rules',
         listedBy,
@@ -1292,7 +1295,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
         check: levelCount('check'),
         waiting: levelCount('waiting'),
         ok: levelCount('ok'),
-        // How many aired entries the library was asked about, and how many it
+        // How many entries (unaired ones too) the library was asked about, and how many it
         // answered - a Jellyfin outage must read as "couldn't ask", not "fine".
         libraryAsked: askable.length,
         libraryAnswered: [...avail.values()].filter((v) => v && !v.unknown).length,

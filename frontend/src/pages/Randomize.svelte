@@ -178,13 +178,7 @@ $: _lang = $options.titleLanguage;
       );
       if (season !== forSeason || year !== forYear) return;
       const next = new Map(libraryAvailability);
-      // Skip notAired here too, not only in the hide filter below: this map
-      // drives the button's enabled state and tooltip, and recording an
-      // unaired show as `false` lit "Hide Not in Library" on seasons where
-      // nothing had been checked against the library at all.
-      for (const [id, info] of results) {
-        if (!info.notAired) next.set(id, info.available);
-      }
+      for (const [id, info] of results) next.set(id, info.available);
       libraryAvailability = next;
       // Never hide on an inconclusive answer - a timeout must not make
       // shows disappear from the wheel. An `unknown` verdict never reaches
@@ -196,13 +190,12 @@ $: _lang = $options.titleLanguage;
       // conservative direction - an unconfirmed match's danger is playing the
       // wrong series, which the popup warns about, not vanishing from the wheel.
       //
-      // `notAired` is also `available: false`, but it means "can't exist yet",
-      // not "we looked and it's missing". On an unaired season that is every
-      // entry, so hiding on it would empty the wheel in one click.
-      const missing = visible.filter((it) => {
-        const info = results.get(it.id);
-        return info?.available === false && !info.notAired;
-      });
+      // An unaired show is asked like any other: "not in the library" means no
+      // file, whatever the calendar says. Unaired shows used to be kept without
+      // asking, so DARK MACHINE (premiering in four days, 2026-10-10) survived
+      // both hide buttons - while Chitose 2nd Cour already had its episode on
+      // disk. Show All undoes a hide.
+      const missing = visible.filter((it) => results.get(it.id)?.available === false);
       if (!missing.length) return;
 
       watchList = watchList.map((entry) =>
@@ -226,9 +219,10 @@ $: _lang = $options.titleLanguage;
    * same rules as /admin/sonarr's subtitle audit, so the two never disagree.
    *
    * A superset of Hide Not in Library, by request: a show you do not have is no
-   * more watchable in English than a raw. Like every bulk hide here it never
-   * acts on an unanswered show - `unknown`, `notAired`, or a held show whose
-   * verdict predates the `english` field all keep the show visible.
+   * more watchable in English than a raw, and one that has not aired has no
+   * episode to have English. Like every bulk hide here it never acts on an
+   * unanswered show - `unknown`, or a held show whose verdict predates the
+   * `english` field, keeps the show visible.
    */
   let hidingNotEnglish = false;
 
@@ -269,13 +263,14 @@ $: _lang = $options.titleLanguage;
 
   /**
    * Is this a definite "can't watch it in English here"? Yes for a show the
-   * library definitely lacks (the same test as Hide Not in Library, `notAired`
-   * excluded), and for a held show whose episode is explicitly `none` or
+   * library definitely lacks (the same test as Hide Not in Library, aired or
+   * not), and for a held show whose episode is explicitly `none` or
    * `signsOnly`. No for `unknown`, a dub (`engAudio`), and a held show whose
    * verdict has no `english` field yet - those are "don't know" or "fine".
+   * `watchable` in backend/src/lib/entryStatus.ts is this rule for /admin/sonarr.
    */
   function isNotEnglish(info: MediaAvailability | undefined): boolean {
-    if (!info || info.unknown || info.notAired) return false;
+    if (!info || info.unknown) return false;
     if (info.available === false) return true;
     return info.english === 'none' || info.english === 'signsOnly';
   }
@@ -344,10 +339,9 @@ $: _lang = $options.titleLanguage;
           void warmOrHeal(id, titles as string[], airing, info);
         }
         // Cached "not available" -> re-check live, so a show downloaded a
-        // minute ago appears without waiting out the cache TTLs. Skipped for
-        // `notAired`: nothing was cached and nothing can be downloaded yet, so
-        // this would just re-issue the lookup the gate exists to prevent.
-        if (!info.available && !info.notAired) {
+        // minute ago appears without waiting out the cache TTLs - an unaired
+        // one included, since its file can land before the premiere.
+        if (!info.available) {
           checkAvailability(id, titles, true, airing)
             .then((freshInfo) => {
               if (selected?.id !== id) return;
@@ -883,7 +877,7 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
   let notEnglishIds = new Map<number, boolean>();
 
   function recordEnglish(id: number, info: MediaAvailability) {
-    if (info.unknown || info.notAired) return;
+    if (info.unknown) return;
     const value = isNotEnglish(info);
     if (notEnglishIds.get(id) === value) return;
     notEnglishIds = new Map(notEnglishIds).set(id, value);
@@ -906,15 +900,15 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
           item.title?.romaji,
           item.title?.native,
         ].filter(Boolean),
-        // Unaired entries are answered locally and never sent upstream.
+        // Unaired shows are asked too - a file can land before the premiere.
         airing: { status: item.status, startDate: item.startDate },
       }))
     )
       .then((results) => {
         for (const [mediaId, info] of results) {
-          // Definite answers only - the unknown/notAired invariant is spelled
-          // out on the hide path above.
-          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);
+          // Definite answers only - the unknown invariant is spelled out on the
+          // hide path above. An unaired show is answered like any other.
+          if (!info.unknown) recordAvailability(mediaId, info.available);
           recordEnglish(mediaId, info);
         }
       })
@@ -2331,8 +2325,7 @@ $: {
         {:else if $mediaConfigured && watchInfo?.unknown}
           <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server - try again shortly</p>
         {:else if $mediaConfigured && watchInfo?.notAired}
-          <!-- Never looked up: an unaired series can't be in the library, and
-               asking only ever produced false positives. -->
+          <!-- Looked up and not held: the show simply isn't out yet. -->
           <p class="text-center text-xs opacity-50 mb-4" data-not-aired>Not aired yet</p>
         {:else if $mediaConfigured && watchInfo && !watchInfo.available}
           <p class="text-center text-xs opacity-50 mb-4">

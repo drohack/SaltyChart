@@ -29,12 +29,11 @@ Correctness the old assertions never checked:
 
 From the exploratory pass:
 - no-match search (15): an explicit message, never a blank page.
-- unaired season (16): ZERO /api/jellyfin/availability calls - a
-  NOT_YET_RELEASED series cannot be in the library, so a lookup can only
-  produce a false positive (measured 7/7 wrong before the guard); and Hide
-  Not in Library stays disabled. `notAired` is available:false with `unknown`
-  falsy, so a writer guarding only `unknown` recorded every unaired show as
-  confirmed-missing and lit a button whose hides could never fire.
+- unaired season (16): every NOT_YET_RELEASED show IS asked, with its AniList
+  status, and Hide Not in Library hides exactly the ones with no file.
+  "In library" means a video file, not an air date: unaired shows used to be
+  answered in the browser and never asked, which kept DARK MACHINE on the
+  wheel while Chitose 2nd Cour already had its episode on disk.
 
 Silent-failure paths (17-19):
 - library unreachable (17): 502 on every lookup -> a message and a working
@@ -124,9 +123,9 @@ Replaced files and subtitle tracks (37-38):
   unsubtitled), while a dual-audio release's forced track is signs and must
   lose to the dialogue track beside it.
 - Hide Not English (38) hides exactly the shows that cannot be watched in
-  English here - not in the library, or an episode with no English subtitles or
-  audio (`none`, `signsOnly`) - and keeps a dub, an answer without the field,
-  `unknown` and `notAired`, with the shown/hidden counts following. Availability is stubbed so every
+  English here - not in the library, not aired yet, or an episode with no
+  English subtitles or audio (`none`, `signsOnly`) - and keeps a dub, an answer
+  without the field and `unknown`, with the shown/hidden counts following. Availability is stubbed so every
   verdict kind is present; the classification behind the field is unit-tested
   and checked live in `test_jellyfin` step 6.
 
@@ -1209,67 +1208,107 @@ def test_failed_hide_write_reverts(page, backend: str, frontend: str, token: str
     step(19, "PASS - failed writes reverted and reported, bulk and single")
 
 
-def test_unaired_never_looked_up(page, backend: str, frontend: str, token: str):
-    """An unaired series must never be looked up in the library.
+def test_unaired_season_asked(page, backend: str, frontend: str, token: str):
+    """An unaired show is asked about like any other, and hidden when it has no file.
 
-    It cannot be there, so a lookup can only produce a false positive. Measured
-    before this guard: on the season the app opens on by default, *every* match
-    was fuzzy-title and *all* of them were wrong ("Firefly Wedding" -> "Firefly",
-    "Dragon Ball Super: Beerus" -> "Dragon Ball").
+    "Not in library" means no video file, whatever the calendar says. Unaired
+    shows used to be answered "not aired" in the browser and never asked, which
+    kept DARK MACHINE on the wheel four days before its premiere - while
+    Chitose 2nd Cour already had its episode on disk (2026-10-10). Every show
+    is asked now, and the server marks an unaired "no" as `notAired`.
     """
-    step(16, "step 1/4: finding a NOT_YET_RELEASED season to seed from")
-    unaired_season, unaired_year, ids = None, None, []
-    for season, year in [("FALL", 2026), ("WINTER", 2027), ("SPRING", 2026)]:
+    step(16, "step 1/4: seeding up to 6 NOT_YET_RELEASED shows")
+    unaired_season, unaired_year, entries = None, None, []
+    for season, year in [("FALL", 2026), ("WINTER", 2027), ("SPRING", 2027)]:
         r = requests.get(f"{backend}/api/anime", params={"season": season, "year": year}, timeout=120)
         if not r.ok:
             continue
-        entries = [a for a in r.json() if a.get("status") == "NOT_YET_RELEASED"]
-        if len(entries) >= 3:
-            unaired_season, unaired_year = season, year
-            ids = [a["id"] for a in entries[:3]]
+        found = [a for a in r.json() if a.get("status") == "NOT_YET_RELEASED"]
+        if len(found) >= 3:
+            unaired_season, unaired_year, entries = season, year, found[:6]
             break
-    if not ids:
+    if not entries:
         step(16, "SKIP - no season with unaired entries available right now")
         return
-
-    requests.put(f"{backend}/api/list", timeout=15,
-                 headers={"Authorization": f"Bearer {token}"},
+    ids = [e["id"] for e in entries]
+    auth = {"Authorization": f"Bearer {token}"}
+    if not requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json().get("configured"):
+        step(16, "SKIP - Jellyfin is not configured")
+        return
+    requests.put(f"{backend}/api/list", timeout=15, headers=auth,
                  json={"season": unaired_season, "year": unaired_year,
                        "items": [{"mediaId": m} for m in ids]})
+
+    step(16, f"step 2/4: opening /random on {unaired_season} {unaired_year} - every show must be asked")
+    sent: dict[int, dict] = {}
+
+    def record(req) -> None:
+        if "/api/jellyfin/availability" in req.url and req.method == "POST":
+            body = req.post_data_json or {}
+            for it in body.get("items", [body]):
+                if isinstance(it, dict) and "mediaId" in it:
+                    sent[it["mediaId"]] = it
+    page.on("request", record)
     page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
     page.evaluate(
         "([s, y]) => localStorage.setItem('season-year', JSON.stringify("
         "{season: s, year: y, saved: Date.now()}))",
         [unaired_season, unaired_year],
     )
-
-    step(16, f"step 2/4: opening /random on {unaired_season} {unaired_year} "
-             f"and counting availability calls")
-    calls = []
-    page.on("request", lambda r: calls.append(r.url) if "/api/jellyfin/availability" in r.url else None)
     page.goto(f"{frontend}/random")
-    page.wait_for_timeout(8000)
+    for _ in range(40):
+        if set(ids) <= set(sent):
+            break
+        page.wait_for_timeout(500)
+    page.remove_listener("request", record)
+    unasked = [m for m in ids if m not in sent]
+    assert not unasked, (
+        f"{len(unasked)} of {len(ids)} unaired shows were never asked about - an unaired show is being "
+        f"answered from the calendar instead of the library")
+    no_status = [m for m in ids if sent[m].get("status") != "NOT_YET_RELEASED"]
+    assert not no_status, (
+        f"{len(no_status)} lookups did not carry the AniList status - the server cannot tell an unaired "
+        f"entry apart, and a title guess would stand for it")
 
-    step(16, "step 3/4: expecting zero lookups for an unaired season")
-    assert not calls, (
-        f"{len(calls)} availability lookup(s) fired for a NOT_YET_RELEASED season - "
-        "the isUnaired() gate in stores/jellyfin.ts is not holding, so fuzzy title "
-        "matching will offer the wrong series"
-    )
+    step(16, "step 3/4: the server's verdicts for the same shows")
+    verdicts = requests.post(f"{backend}/api/jellyfin/availability/batch", headers=auth, timeout=120,
+                             json={"items": [sent[m] for m in ids]}).json()
+    missing = {m for m in ids if verdicts[str(m)].get("available") is False
+               and not verdicts[str(m)].get("unknown")}
+    held = [m for m in ids if verdicts[str(m)].get("available")]
+    unmarked = [m for m in missing if not verdicts[str(m)].get("notAired")]
+    assert not unmarked, f"{len(unmarked)} unaired 'not in library' verdicts lack notAired - the pop-up cannot say why"
 
-    step(16, "step 4/4: unaired shows must not light 'Hide Not in Library'")
-    # notAired is `available: false` with `unknown` falsy, so a writer guarding
-    # only `unknown` records every unaired show as confirmed-missing - and the
-    # button enables with a tooltip promising hides it cannot perform. The hide
-    # action itself always filtered notAired; this is the button state lying.
+    step(16, f"step 4/4: Hide Not in Library hides the {len(missing)} with no file and keeps the {len(held)} held")
+    if not missing:
+        step(16, f"PASS - all {len(ids)} unaired shows asked; every one is held, nothing to hide")
+        return
     hide = page.locator("button", has_text="Hide Not in Library")
-    if hide.count():
-        assert hide.first.is_disabled(), (
-            "'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED shows - "
-            "notAired verdicts are being recorded as 'not in library'"
-        )
-    step(16, f"PASS - 0 availability lookups across {len(ids)} unaired shows, "
-             f"hide control {'disabled' if hide.count() else 'not offered'}")
+    try:
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('button')].some("
+            "b => b.textContent.includes('Hide Not in Library') && !b.disabled)", timeout=15_000)
+    except Exception:
+        raise AssertionError(
+            "'Hide Not in Library' stays disabled on a season of NOT_YET_RELEASED shows the library "
+            "does not hold - an unaired show is not being counted as not in the library")
+    hide.first.click()
+    hidden: set[int] = set()
+    for _ in range(20):
+        rows = requests.get(f"{backend}/api/list", timeout=15, headers=auth,
+                            params={"season": unaired_season, "year": unaired_year}).json()
+        hidden = {r["mediaId"] for r in rows if r.get("hidden")}
+        if hidden >= missing:
+            break
+        page.wait_for_timeout(500)
+    kept = missing - hidden
+    assert not kept, (
+        f"Hide Not in Library kept {len(kept)} of {len(missing)} unaired shows the library does not hold")
+    wrongly = hidden - missing
+    assert not wrongly, f"Hide Not in Library hid {len(wrongly)} unaired show(s) whose file is on disk"
+    step(16, f"PASS - all {len(ids)} unaired shows asked with their status; hid the {len(missing)} "
+             f"with no file, kept {len(held)} held")
 
 
 def test_remote_accept_visible(page, backend: str, frontend: str):
@@ -2770,7 +2809,7 @@ SELECTABLE_FLOWS = {
     "trailer modal esc",
     "viewer picks the right show",
     "no-results message",
-    "unaired not looked up",
+    "unaired season asked",
     "library unreachable visible",
     "hung backend reported",
     "failed hide write reverts",
@@ -3090,7 +3129,7 @@ ENGLISH_VERDICTS = [
     ({"available": True}, False),                      # cached before the field existed
     ({"available": False}, True),                     # not in the library - can't watch it at all
     ({"available": False, "unknown": True}, False),    # couldn't ask
-    ({"available": False, "notAired": True}, False),   # can't exist yet - not "missing"
+    ({"available": False, "notAired": True}, True),    # no episode yet - nothing to watch
 ]
 
 
@@ -3098,10 +3137,13 @@ def test_hide_not_english(page, backend: str, frontend: str, token: str):
     """Hide Not English hides exactly the shows nobody can watch in English here.
 
     Every verdict kind is stubbed so the rule is pinned in both directions: the
-    three that must hide (no English subtitles or audio, only a signs track, or
-    not in the library at all) and five that must not - a dub, full subtitles,
-    an answer missing the field, `unknown` and `notAired`, the "never act on
+    four that must hide (no English subtitles or audio, only a signs track, not
+    in the library at all, or not aired yet) and four that must not - a dub, full
+    subtitles, an answer missing the field, and `unknown`, the "never act on
     couldn't-ask" rule every bulk hide here obeys.
+
+    The `notAired` verdict is what the server sends for an unaired show it does
+    not hold; flow 16 covers the real path on a real unaired season.
     """
     step(38, "step 1/3: seeding eight shows, one per verdict kind")
     ids = season_ids(backend, len(ENGLISH_VERDICTS))
@@ -3146,13 +3188,13 @@ def test_hide_not_english(page, backend: str, frontend: str, token: str):
         wrongly = hidden - want_hidden
         assert not wrongly, (
             f"Hide Not English hid {len(wrongly)} show(s) it must keep: "
-            f"{[verdicts[m] for m in wrongly]} - only none/signsOnly or not-in-library may hide")
+            f"{[verdicts[m] for m in wrongly]} - only none/signsOnly, not-in-library or not-aired may hide")
         missed = want_hidden - hidden
         assert not missed, f"Hide Not English left {[verdicts[m] for m in missed]} visible"
         counts = page.inner_text("[data-unwatched-counts]")
         expect = f"{len(ids) - len(want_hidden)} shown, {len(want_hidden)} hidden"
         assert counts == expect, f"the counts read {counts!r} after hiding, expected {expect!r}"
-        step(38, f"PASS - hid {len(want_hidden)} of {len(ids)} (none, signsOnly, not in library); "
+        step(38, f"PASS - hid {len(want_hidden)} of {len(ids)} (none, signsOnly, not in library, not aired); "
                  f"counts {counts!r}")
     finally:
         page.unroute(AVAILABILITY_ROUTE)
@@ -3239,7 +3281,7 @@ def main():
                 ("share as image",     lambda: test_share_as_image(page, args.backend, frontend, token_a)),
                 ("progressive loading",lambda: test_progressive_loading(page, frontend)),
                 ("no-results message", lambda: test_no_results_message(page, frontend)),
-                ("unaired not looked up", lambda: test_unaired_never_looked_up(page, args.backend, frontend, token_a)),
+                ("unaired season asked", lambda: test_unaired_season_asked(page, args.backend, frontend, token_a)),
                 ("library unreachable visible", lambda: test_library_unreachable_is_visible(page, args.backend, frontend, token_a)),
                 ("hung backend reported", lambda: test_hung_backend_does_not_hang_the_page(page, args.backend, frontend, token_a)),
                 ("failed hide write reverts", lambda: test_failed_hide_write_reverts(page, args.backend, frontend, token_a)),

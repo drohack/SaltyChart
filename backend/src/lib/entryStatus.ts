@@ -45,11 +45,10 @@ export function anilistMs(d?: { year?: number | null; month?: number | null; day
 /**
  * Has this entry not started airing?
  *
- * **Mirrors `isUnaired` in frontend/src/stores/jellyfin.ts exactly**, because
- * Randomize never asks the library about an unaired show (`notAired`) and the
- * 1:1 with Hide Not English depends on both sides drawing that line in the same
- * place: status is authoritative when present, otherwise the earliest day the
- * (possibly partial) start date could mean.
+ * The one definition: `resolveAvailability` uses it to mark a "not in
+ * library" answer `notAired`, and the Sonarr report to keep an unaired show
+ * out of the red. Status is authoritative when present, otherwise
+ * the earliest day the (possibly partial) start date could mean.
  */
 export function isUnaired(
   entry: { status?: string | null; startDate?: { year?: number | null; month?: number | null; day?: number | null } | null },
@@ -58,6 +57,26 @@ export function isUnaired(
   if (entry.status) return entry.status === 'NOT_YET_RELEASED';
   const ms = anilistMs(entry.startDate);
   return ms != null && ms > now;
+}
+
+/**
+ * A library answer as one caller should see it: `notAired` on a definite "not
+ * in library" for an entry that has not aired, and on nothing else.
+ *
+ * Applied per request, never stored. The availability cache is keyed by AniList
+ * id alone and answers "is the file there", which every caller shares; whether
+ * the entry has aired comes from what THIS caller sent. Baking the flag into
+ * the cache let a lookup that sent no status (DARK MACHINE, 2026-10-11) hand
+ * every later caller an unmarked "no" for up to ten minutes - and would keep a
+ * stale flag past the premiere. A flag found in an old persisted answer is
+ * dropped for the same reason.
+ */
+export function withAiring<T extends { available?: boolean; unknown?: boolean; notAired?: boolean }>(
+  answer: T,
+  unaired: boolean
+): Omit<T, 'notAired'> & { notAired?: true } {
+  const { notAired: _stale, ...rest } = answer;
+  return unaired && rest.available === false && !rest.unknown ? { ...rest, notAired: true } : rest;
 }
 
 /** "Oct 3" - short, and in UTC so a premiere day never shifts by a timezone. */
@@ -305,10 +324,11 @@ export function sonarrFindings(f: SonarrFacts, identity: Finding): Finding[] {
     out.push({ level: 'ok', code: f.proposedState, text: OUTCOME[f.proposedState] });
   }
 
-  // Watchable? Only an aired show can be, and only a definite verdict counts -
-  // `unknown` is "couldn't ask", never "missing".
+  // Watchable? Only a definite verdict counts - `unknown` is "couldn't ask",
+  // never "missing". An unaired show the library lacks is simply not out yet,
+  // not a problem; one already on disk is judged like any other.
   const av = f.availability;
-  if (!f.unaired && av && !av.unknown) {
+  if (av && !av.unknown && !(f.unaired && !av.available)) {
     if (!av.available) {
       // Randomize hides this as not in the library. Say why, most specific first;
       // a push failure or a missing id already explains it.
@@ -354,14 +374,19 @@ export function sonarrFindings(f: SonarrFacts, identity: Finding): Finding[] {
 
 /**
  * Can this be watched in English here? `false` is exactly what Randomize's Hide
- * Not English hides (`isNotEnglish` in Randomize.svelte): an aired show the
- * library definitely lacks, or whose episode is `none` / `signsOnly`. `null` is
- * "no definite answer" - unaired, or the library could not be asked - which
- * Randomize also refuses to act on.
+ * Not English hides (`isNotEnglish` in Randomize.svelte): a show the library
+ * definitely lacks - aired or not, the question is whether the file is here -
+ * or one whose episode is `none` / `signsOnly`. `null` is "no definite answer"
+ * - the library could not be asked - which Randomize also refuses to act on.
+ *
+ * An unaired show the library lacks is `false` but keeps its countdown status
+ * rather than turning red: nothing is wrong with it, it is just not out. The
+ * page counts it separately (`unaired` on the row), so red + not aired is what
+ * Randomize hides.
  */
-export function watchable(f: Pick<SonarrFacts, 'availability' | 'unaired'>): boolean | null {
+export function watchable(f: Pick<SonarrFacts, 'availability'>): boolean | null {
   const av = f.availability;
-  if (f.unaired || !av || av.unknown) return null;
+  if (!av || av.unknown) return null;
   if (!av.available) return false;
   return !(av.english === 'none' || av.english === 'signsOnly');
 }

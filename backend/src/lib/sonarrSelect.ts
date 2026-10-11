@@ -203,13 +203,12 @@ export function isFirstSeason(entry: SonarrCandidate): boolean {
 /**
  * Has it aired, or will it within `withinDays`?
  *
- * Mirrors the convention `isUnaired()` encodes in
- * `frontend/src/stores/jellyfin.ts`: **status is authoritative when present,
- * `startDate` is the fallback, and a partial date means the earliest day it
- * could mean** - which is what `anilistDateToMs` already does. Those rules were
- * measured, not guessed, and there is no `shared/` directory, so if this and the
- * frontend helper ever disagree about a partial date the site and the feed
- * disagree about whether a show has aired.
+ * Mirrors the convention `isUnaired()` encodes in `lib/entryStatus.ts`:
+ * **status is authoritative when present, `startDate` is the fallback, and a
+ * partial date means the earliest day it could mean** - which is what
+ * `anilistDateToMs` already does. Those rules were measured, not guessed; if
+ * this and that helper ever disagree about a partial date, the auto-add and the
+ * availability lookup disagree about whether a show has aired.
  *
  * The one adaptation: `isUnaired` asks "has it aired", which a status alone can
  * answer. This asks "will it air soon", which it cannot - so a

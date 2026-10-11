@@ -73,7 +73,7 @@ When your diff touches any of these, update the listed locations too:
   `file.svelte:36` reference was moved by its own fix within the hour. Past-tense
   the finding, say what the fix was, and correct any session step whose expected
   value changed (e.g. "availability calls must be exactly 1" became "1 on an
-  aired season, 0 on an unaired one"). `test_audit_anchors.py` catches only the
+  aired season, 0 on an unaired one", and later went back to 1 for both). `test_audit_anchors.py` catches only the
   mechanical half - dead file paths and line-number references.
 
 ### Measure before claiming - and check what you measured
@@ -240,8 +240,8 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 215 rows
-  now (2026-10-09) and unmeasured since.
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 220 rows
+  now (2026-10-11) and unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
   Windows loses track of it - the process then serves whatever it last compiled

@@ -15,9 +15,10 @@ export interface MediaAvailability {
   /** True when the lookup failed (server slow/unreachable) - NOT "not present". */
   unknown?: boolean;
   /**
-   * The series hasn't aired yet, so it was never looked up. Distinct from
-   * `available: false` on its own, which means "we asked and it isn't there" -
-   * bulk actions must not treat this as missing. See `isUnaired`.
+   * Set by the server on a "not in library" answer for an entry that has not
+   * aired yet, so the pop-up can say why. It is a real lookup, not a guess
+   * from the calendar - a file can land before AniList's premiere (Chitose 2nd
+   * Cour, 2026-10-10), and then the answer is simply `available: true`.
    */
   notAired?: boolean;
   /** Jellyfin ids for the episode to play. */
@@ -151,7 +152,6 @@ authToken.subscribe((tok) => {
 });
 
 const NOT_AVAILABLE: MediaAvailability = { available: false, unknown: true };
-const NOT_AIRED: MediaAvailability = { available: false, notAired: true };
 
 /** AniList airing facts, as they arrive on an `/api/anime` entry. */
 export interface AiringInfo {
@@ -160,28 +160,18 @@ export interface AiringInfo {
 }
 
 /**
- * Has this series started airing?
+ * What the server needs to know about airing, sent with every lookup.
  *
- * A show that hasn't aired cannot be in the library, so asking about it can only
- * ever produce a false positive. Measured on the season the app opens on by
- * default (the look-ahead can land on an unaired season): the AniList->TVDB map has no
- * entries for brand-new shows, so every match fell through to fuzzy titles and
- * *all* of them were wrong - "Firefly Wedding" -> the 2002 series "Firefly",
- * "Dragon Ball Super: Beerus" -> "Dragon Ball". FALL 2026 was 83/83
- * NOT_YET_RELEASED; SPRING 2026 had none, so aired seasons are unaffected.
- *
- * `status` is authoritative when present. `startDate` is the fallback and is
- * routinely partial (`{year: 2026, month: 10, day: null}`) - a missing month or
- * day is treated as the earliest possible, so a show is only called unaired when
- * even its earliest possible date is still in the future.
+ * Unaired entries used to be answered here as "not aired" and never sent, so a
+ * show premiering next week stayed on the wheel through both hide buttons, and
+ * a show whose file had landed early would have been hidden. Every entry is
+ * asked now; the status only lets the server mark a "no" as `notAired`.
  */
-export function isUnaired(info?: AiringInfo | null, now: Date = new Date()): boolean {
-  if (!info) return false;
-  if (info.status) return info.status === 'NOT_YET_RELEASED';
-  const d = info.startDate;
-  if (!d?.year) return false;
-  const earliest = Date.UTC(d.year, (d.month ?? 1) - 1, d.day ?? 1);
-  return earliest > now.getTime();
+function airingBody(airing?: AiringInfo | null) {
+  return {
+    ...(airing?.startDate ? { startDate: airing.startDate } : {}),
+    ...(airing?.status ? { status: airing.status } : {}),
+  };
 }
 
 /**
@@ -202,12 +192,6 @@ export function checkAvailability(
   const tok = get(authToken);
   if (!tok || get(mediaConfigured) === false) return Promise.resolve(NOT_AVAILABLE);
 
-  // Never ask about a show that hasn't aired - see `isUnaired`. Deliberately
-  // ahead of the cache and not written to it: this is a fact about the calendar,
-  // not about the library, so it must be re-derived rather than pinned for the
-  // session (a show can start airing while the tab is open).
-  if (isUnaired(airing)) return Promise.resolve(NOT_AIRED);
-
   if (!fresh) {
     const cached = _availabilityCache.get(mediaId);
     if (cached) return Promise.resolve(cached);
@@ -225,8 +209,9 @@ export function checkAvailability(
         titles: titles.filter(Boolean).slice(0, 10),
         ...(fresh ? { fresh: true } : {}),
         // Lets the server pick the episode by air date rather than by parsing a
-        // season number out of the title - see `getFirstEpisode`.
-        ...(airing?.startDate ? { startDate: airing.startDate } : {}),
+        // season number out of the title (`getFirstEpisode`), and tell an
+        // unaired entry apart.
+        ...airingBody(airing),
       }),
     },
     { label: 'availability', timeoutMs: QUICK }
@@ -287,10 +272,6 @@ export async function checkAvailabilityMany(
 
   const missing: Array<{ mediaId: number; titles: string[]; airing?: AiringInfo | null }> = [];
   for (const e of entries) {
-    // Unaired entries are answered locally and never sent - on an unaired
-    // season this is the whole list, so it also removes ~83 library
-    // lookups per page load. Not cached, for the reason in `checkAvailability`.
-    if (isUnaired(e.airing)) { out.set(e.mediaId, NOT_AIRED); continue; }
     const cached = _availabilityCache.get(e.mediaId);
     if (cached) out.set(e.mediaId, cached);
     else if (!out.has(e.mediaId)) missing.push(e);
@@ -309,7 +290,7 @@ export async function checkAvailabilityMany(
       items: chunk.map((e) => ({
         mediaId: e.mediaId,
         titles: e.titles.filter(Boolean).slice(0, 10),
-        ...(e.airing?.startDate ? { startDate: e.airing.startDate } : {}),
+        ...airingBody(e.airing),
       })),
     });
 

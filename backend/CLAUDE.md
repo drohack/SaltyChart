@@ -93,13 +93,13 @@ Routes (contracts here; each guard's story is commented at its code):
 - `GET  /status` - `{ configured, isAdmin }` probe (JWT). `isAdmin` rides
   along so the header's Admin link doesn't 403-spam an admin-only endpoint;
   fetched once per login by `stores/jellyfin.ts`.
-- `POST /availability/batch` - `{ items: [{ mediaId, titles[], startDate? }] }`
+- `POST /availability/batch` - `{ items: [{ mediaId, titles[], startDate?, status? }] }`
   (max 100) -> map of the single-route shape. Randomize asks about every wheel
   item in one request (was ~50 POSTs and 40% of this router's budget per page
   load). Shares `resolveAvailability()` with the single route; per-entry
   `unknown` preserved - one failed show neither contaminates others nor gets
   cached.
-- `POST /availability` - `{ mediaId, titles[] }` -> is the series in the
+- `POST /availability` - `{ mediaId, titles[], startDate?, status? }` -> is the series in the
   library + the entry's season's first episode (season parsed from
   "Nth Season"/「第N期」; missing season = unavailable). Returns `{ available,
   seriesId, itemId, mediaSourceId, episodeTitle, seasonNumber, episodeNumber,
@@ -107,7 +107,20 @@ Routes (contracts here; each guard's story is commented at its code):
   offers an English speaker (`fullEng` / `signsOnly` / `engAudio` / `none` /
   `unknown`, `classifyJellyfin`), read from the media source `finishEpisode`
   already fetches - no extra request. It drives Randomize's Hide Not English;
-  verdicts cached before it existed lack it and read as unknown until expiry. The series list is cached 1 h and served
+  verdicts cached before it existed lack it and read as unknown until expiry.
+  **An unaired entry** (AniList `status`, else `startDate` - `isUnaired`) is
+  asked like any other, because "in the library" means a file is there and a
+  file can land before AniList's premiere (Chitose 2nd Cour, 2026-10-10). A
+  "no" for it carries `notAired`, applied per request (`withAiring`) and never
+  cached: the cache is keyed by AniList id alone, and a cached flag let a
+  status-less lookup hand later callers an unmarked "no". Until then the browser answered unaired
+  entries itself and never asked, so DARK MACHINE survived both hide buttons.
+  The title and season-marker fallbacks can mis-answer a NEXT-season sequel
+  (One Punch Man S3 Part 2 read as Part 1's S3E1) - accepted, because an
+  unaired show has nothing to watch yet, so nobody acts on that answer (the
+  look-ahead can open Randomize on such a season; a viewer goes back one for a
+  first episode). Nothing writes on it either: the Sonarr selection never
+  reads availability. On FALL 2026 all 33 unaired entries answered correctly. The series list is cached 1 h and served
   stale-while-revalidate (`getSeriesLibraryFresh` is the blocking variant for
   `fresh: true` callers). **`Fields=ProviderIds,OriginalTitle` is mandatory**
   on that query or Jellyfin returns `ProviderIds: null`, silently disabling
@@ -313,13 +326,16 @@ do not own. `lib/sonarrPush.ts` holds this argument at the code.
   **Every row also carries the one status** (`lib/entryStatus.ts`): `status`
   `{ level, code, text, also? }`, `wanted` / `wantedBy`, `listedBy`, `onMyList`
   (the requesting admin's own list), `attention` (wanted and broken or check) and
-  `watchable` (`false` = what Randomize's Hide Not English hides, `null` = no
-  definite answer). The AniList airing status is `airing`, not `status`. Top
+  `watchable` (`false` = what Randomize's Hide Not English hides; `null` = no
+  definite answer) and `unaired` (an unaired show with no file is hidden there
+  but not red here - the page counts it apart from red). The report asks the
+  library about unaired entries too, with their status. The AniList airing status is
+  `airing`, not `status`. Top
   level adds `attention` (open failures no row accounts for, from
-  `unattachedFailures`) and `summary` (the chip counts, plus how many aired shows
-  the library was asked about and answered). **This is the one place the report
+  `unattachedFailures`) and `summary` (the chip counts, plus how many shows,
+  unaired included, the library was asked about and answered). **This is the one place the report
   asks Jellyfin anything**: `availabilityFor` (routes/jellyfin.ts) - the same
-  `resolveAvailability` and cache Randomize uses, for every aired entry - which
+  `resolveAvailability` and cache Randomize uses, for every entry - which
   is what makes "red here" and "hidden there" the same set by construction.
   Warm it is a Map lookup per entry (0.5 s for 170 rows, 2026-10-10); cold it
   walks the library, so the page waits up to 60 s. Push failures join a row by

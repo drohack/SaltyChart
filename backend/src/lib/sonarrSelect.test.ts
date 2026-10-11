@@ -145,7 +145,7 @@ test('two AniList ids sharing one TVDB id emit a single row', () => {
 });
 
 test('a partial startDate is read as the earliest day it could mean', () => {
-  // Same convention as isUnaired() in the frontend. A month-only date must not
+  // Same convention as isUnaired() in lib/entryStatus.ts. A month-only date must not
   // be read as the end of the month, or a show tips in or out of the window
   // depending on which helper asked.
   const inWindow = entry({

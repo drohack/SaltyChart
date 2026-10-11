@@ -8,7 +8,7 @@
    * starts acting on it) is bold; an aired date stays quiet.
    *
    * Partial AniList dates read as the earliest day they could mean, the same
-   * rule `isUnaired` uses everywhere else.
+   * rule `isUnaired` (backend lib/entryStatus.ts) uses everywhere else.
    */
   export let date: { year?: number | null; month?: number | null; day?: number | null } | null | undefined;
   /** AniList status, authoritative over the date when present. */

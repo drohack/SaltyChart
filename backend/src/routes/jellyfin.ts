@@ -48,7 +48,7 @@ import {
   onIdentityChanged,
   identityFacts,
 } from '../lib/seriesIdentity';
-import { identityStatus } from '../lib/entryStatus';
+import { identityStatus, isUnaired, withAiring } from '../lib/entryStatus';
 import {
   DEVICE_ID,
   deviceProfile,
@@ -799,16 +799,21 @@ let _libraryPersisted: { series: JfSeries[]; total: number; at: number } | null 
  * wheel load re-derives ~50 shows, each an episodes lookup.
  *
  * The `Map` stays the hot path and its semantics are untouched. All that is
- * added is: seed it at boot, and write it back on change. Writes are debounced
+ * added is: seed it at boot, and write it back on change. Writes are batched
  * because a wheel load populates ~50 entries in a burst and that must be one
  * write, not fifty.
+ *
+ * A write already scheduled is never pushed back: the snapshot is taken when the
+ * timer fires, so changes made meanwhile are in it. It used to restart on every
+ * change, and a steady stream of lookups (the Sonarr report, once it also asked
+ * about unaired shows) kept the blob from being written at all - what a restart
+ * would have restored was arbitrarily old (2026-10-11).
  */
 const PERSIST_DEBOUNCE_MS = 5_000;
 const persistTimers = new Map<string, NodeJS.Timeout>();
 
 function persistMapSoon(key: string, snapshot: () => unknown): void {
-  const existing = persistTimers.get(key);
-  if (existing) clearTimeout(existing);
+  if (persistTimers.has(key)) return;
   const t = setTimeout(() => {
     persistTimers.delete(key);
     const value = JSON.stringify(snapshot());
@@ -1399,12 +1404,32 @@ function invalidEntry(mediaId: unknown, titles: unknown): boolean {
  * Never throws: a failure becomes `{ available: false, unknown: true }`, which
  * means "couldn't ask" rather than "not in the library" and is deliberately not
  * cached. In a batch that keeps one bad entry from contaminating the rest.
+ *
+ * An unaired entry is asked like any other, because a file can land before
+ * AniList's premiere (Chitose 2nd Cour, 2026-10-10); its "no" carries
+ * `notAired` so the pop-up can say why. That flag depends on what this caller
+ * sent (`status`, `startDate`), so it is applied here on the way out
+ * (`withAiring`) and never stored in the shared cache.
  */
 async function resolveAvailability(
   api: Api,
   mediaId: number,
   titles: string[],
   fresh = false,
+  startDate?: { year?: number | null; month?: number | null; day?: number | null } | null,
+  /** AniList's airing status - with `startDate`, whether the entry has aired. */
+  status?: string | null
+): Promise<any> {
+  const answer = await lookUpAvailability(api, mediaId, titles, fresh, startDate);
+  return withAiring(answer, isUnaired({ status, startDate }, Date.now()));
+}
+
+/** Is the file there? The cached half of `resolveAvailability`. */
+async function lookUpAvailability(
+  api: Api,
+  mediaId: number,
+  titles: string[],
+  fresh: boolean,
   startDate?: { year?: number | null; month?: number | null; day?: number | null } | null
 ): Promise<any> {
   // `fresh: true` means "re-resolve this; don't hand me a cached answer".
@@ -1896,7 +1921,7 @@ router.post('/identity/pick', jellyfinLimiter, requireAuth, async (req: AuthRequ
 });
 
 router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
-  const { mediaId, titles, fresh, startDate } = req.body ?? {};
+  const { mediaId, titles, fresh, startDate, status } = req.body ?? {};
   if (invalidEntry(mediaId, titles)) {
     return res.status(400).json({
       error: 'Expected { mediaId: int, titles: string[1..10] }',
@@ -1911,7 +1936,8 @@ router.post('/availability', jellyfinLimiter, requireAuth, async (req, res) => {
   if (!cfg) return res.json({ available: false, configured: false, unknown: true });
 
   res.json(await resolveAvailability(
-    await jellyfinApi(cfg), mediaId, titles, fresh === true, startDate
+    await jellyfinApi(cfg), mediaId, titles, fresh === true, startDate,
+    typeof status === 'string' ? status : null
   ));
 });
 
@@ -1937,10 +1963,10 @@ const AVAILABILITY_BATCH_MAX = 100; // mirrors /api/translate/check-batch
  * here is exactly how the two pages came to report 7 against 4.
  *
  * Unconfigured returns an empty map ("not asked"), never a page of negatives.
- * Callers must leave unaired entries out, as Randomize does.
+ * Unaired entries are asked too, with their `status`, exactly as Randomize does.
  */
 export async function availabilityFor(
-  items: Array<{ mediaId: number; titles: string[]; startDate?: { year?: number | null; month?: number | null; day?: number | null } | null }>,
+  items: Array<{ mediaId: number; titles: string[]; startDate?: { year?: number | null; month?: number | null; day?: number | null } | null; status?: string | null }>,
   fresh = false
 ): Promise<Map<number, any>> {
   const out = new Map<number, any>();
@@ -1952,7 +1978,7 @@ export async function availabilityFor(
   const worker = async () => {
     while (next < items.length) {
       const it = items[next++];
-      out.set(it.mediaId, await resolveAvailability(api, it.mediaId, it.titles, fresh, it.startDate));
+      out.set(it.mediaId, await resolveAvailability(api, it.mediaId, it.titles, fresh, it.startDate, it.status ?? null));
     }
   };
   // The batch route's pool size, for its reason: on a cold cache, walk the
@@ -1995,7 +2021,9 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
   const worker = async () => {
     while (next < items.length) {
       const it = items[next++];
-      out[it.mediaId] = await resolveAvailability(api, it.mediaId, it.titles, false, it.startDate);
+      out[it.mediaId] = await resolveAvailability(
+        api, it.mediaId, it.titles, false, it.startDate, typeof it.status === 'string' ? it.status : null
+      );
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));

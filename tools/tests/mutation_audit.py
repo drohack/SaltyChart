@@ -1459,20 +1459,70 @@ MUTATIONS: list[Mutation] = [
                "wrong name, reading as what that person rated",
     ),
     Mutation(
-        name="unaired shows light the Hide button again",
+        name="unaired shows no longer light Hide Not in Library",
         path="frontend/src/pages/Randomize.svelte",
-        # notAired is `available:false` with `unknown` falsy, so a writer that
-        # guards only `unknown` records every unaired show as confirmed-missing
-        # and the button enables on seasons where nothing was checked at all.
-        # The hide action itself filters notAired, so this lies without acting -
-        # which is why only the button-state assertion can see it.
-        find="          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
-        replace="          if (!info.unknown) recordAvailability(mediaId, info.available); /* mutation */",
-        flows=("unaired not looked up",),
+        # An unaired show has no episode, so it is not in the library. This
+        # rule was once the opposite (unaired shows were kept), and DARK
+        # MACHINE, four days from its premiere, survived both hide buttons.
+        find="          if (!info.unknown) recordAvailability(mediaId, info.available);",
+        replace="          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available); /* mutation */",
+        flows=("unaired season asked",),
         test=T_UI,
-        expect="'Hide Not in Library' is enabled on a season of NOT_YET_RELEASED",
-        guards="the app's default look-ahead season shows an enabled control "
-               "promising hides it cannot perform",
+        expect="stays disabled on a season of NOT_YET_RELEASED",
+        guards="a show that has not aired stays on the wheel with nothing to watch",
+    ),
+    Mutation(
+        name="Hide Not in Library keeps unaired shows again",
+        path="frontend/src/pages/Randomize.svelte",
+        # The button lights (the row above) but the click filters them back out.
+        find="      const missing = visible.filter((it) => results.get(it.id)?.available === false);",
+        replace="      const missing = visible.filter((it) => results.get(it.id)?.available === false && !results.get(it.id)?.notAired); /* mutation */",
+        flows=("unaired season asked",),
+        test=T_UI,
+        expect="Hide Not in Library kept",
+        guards="the button promises to hide unaired shows and then keeps every one",
+    ),
+    Mutation(
+        name="Hide Not English keeps unaired shows again",
+        path="frontend/src/pages/Randomize.svelte",
+        find="    if (!info || info.unknown) return false;",
+        replace="    if (!info || info.unknown || info.notAired) return false; /* mutation */",
+        flows=("hide not english",),
+        test=T_UI,
+        expect="Hide Not English left",
+        guards="a show premiering next week survives Hide Not English",
+    ),
+    Mutation(
+        name="an unaired show the library lacks reads as broken on /admin/sonarr",
+        path=BACKEND_ENTRY_STATUS,
+        # Not out yet is not a problem - it keeps its countdown, not a red badge.
+        find="  if (av && !av.unknown && !(f.unaired && !av.available)) {",
+        replace="  if (av && !av.unknown) { /* mutation */",
+        test=T_UNIT,
+        expect="an unaired show the library lacks is not out yet, not broken",
+        guards="every show premiering next week turns red as 'not in library'",
+    ),
+    Mutation(
+        name="the availability lookup stops marking an unaired show",
+        path=BACKEND_JF,
+        find="  return withAiring(answer, isUnaired({ status, startDate }, Date.now()));",
+        replace="  return withAiring(answer, false && isUnaired({ status, startDate }, Date.now())); /* mutation */",
+        flows=("unaired season asked",),
+        test=T_UI,
+        expect="lack notAired",
+        guards="the Watch pop-up says 'Not in library' for a show that simply is not out yet",
+    ),
+    Mutation(
+        name="a notAired flag stored in the cache outlives the premiere",
+        path=BACKEND_ENTRY_STATUS,
+        # The flag is per request; the cache is shared and keyed by AniList id
+        # alone. Trusting a stored flag is the same mistake as storing one: an
+        # answer cached before the premiere keeps saying "not aired yet" after it.
+        find="  return unaired && rest.available === false && !rest.unknown ? { ...rest, notAired: true } : rest;",
+        replace="  return unaired && rest.available === false && !rest.unknown ? { ...rest, notAired: true } : (answer as any); /* mutation */",
+        test=T_UNIT,
+        expect="a flag stored by an older build is dropped once the entry has aired",
+        guards="a show that premiered today still reads 'Not aired yet' from a cached answer",
     ),
     Mutation(
         name="every Confirm claims the human looked it up",
@@ -2266,8 +2316,8 @@ MUTATIONS: list[Mutation] = [
         # mutation survives having changed nothing. Both layers have to go for
         # the invariant to be exercised at all.
         extra=[("frontend/src/pages/Randomize.svelte",
-                "          if (!info.unknown && !info.notAired) recordAvailability(mediaId, info.available);",
-                "          if (!info.notAired) recordAvailability(mediaId, info.available); /* mutation */")],
+                "          if (!info.unknown) recordAvailability(mediaId, info.available);",
+                "          recordAvailability(mediaId, info.available); /* mutation */")],
         flows=("unknown never hides",),
         test=T_UI,
         # The failure text, not the pass text - 'unknown verdicts' appears only
@@ -2381,16 +2431,16 @@ MUTATIONS: list[Mutation] = [
                "which cost four wrong theories and was never explained",
     ),
     Mutation(
-        name="unaired series are looked up in the library again",
+        name="unaired shows are answered from the calendar again, never asked",
         path="frontend/src/stores/jellyfin.ts",
-        find="  if (info.status) return info.status === 'NOT_YET_RELEASED';",
-        replace="  if (info.status) return false; /* mutation */",
-        flows=("unaired not looked up",),
+        # That hid DARK MACHINE from both hide buttons and would have hidden
+        # Chitose 2nd Cour, whose episode was on disk before its premiere.
+        find="  for (const e of entries) {\n    const cached = _availabilityCache.get(e.mediaId);",
+        replace="  for (const e of entries) {\n    if (e.airing?.status === 'NOT_YET_RELEASED') { out.set(e.mediaId, { available: false, notAired: true }); continue; } /* mutation */\n    const cached = _availabilityCache.get(e.mediaId);",
+        flows=("unaired season asked",),
         test=T_UI,
-        expect="availability lookup(s) fired for a NOT_YET_RELEASED season",
-        guards="every match on the default (unaired) season falls through to fuzzy "
-               "titles against a library that cannot hold the show - measured 7/7 "
-               "wrong, offering 'Firefly' for 'Firefly Wedding'",
+        expect="were never asked about",
+        guards="a show whose file landed before the premiere is hidden as not in the library",
     ),
     Mutation(
         name="Escape stops closing the trailer modal",

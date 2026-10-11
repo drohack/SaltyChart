@@ -78,8 +78,10 @@ Coverage, and the trap each step exists for:
   admin's own list, each aired show is asked about with `fresh` (what the
   pop-up does), the report is re-read, and the set Randomize's `isNotEnglish`
   rule hides must equal the rows the report calls not `watchable` - every one
-  of them red. That is the 1:1 the owner asked for: Show All, Hide Not English,
-  and the hidden count matches the page.
+  of them red, except a show that has not aired and has no file, which
+  Randomize hides too and the page marks `unaired` instead of red. That
+  is the 1:1 the owner asked for: Show All, Hide Not English, and the hidden
+  count matches the page's "Randomize hides" line.
 
 **Not covered here, deliberately:** a successful add. It needs write
 credentials and it changes a real library, so it is a manual verification step
@@ -572,25 +574,13 @@ def status_step(backend: str, auth: dict) -> None:
              f"{rep['summary']['waiting']} waiting / {rep['summary']['ok']} ok")
 
 
-def randomize_hides(info: dict | None, unaired: bool) -> bool:
+def randomize_hides(info: dict | None) -> bool:
     """Randomize's `isNotEnglish`, ported line for line (Randomize.svelte)."""
-    if unaired or not info or info.get("unknown") or info.get("notAired"):
+    if not info or info.get("unknown"):
         return False
     if info.get("available") is False:
         return True
     return info.get("english") in ("none", "signsOnly")
-
-
-def is_unaired(entry: dict, now_ms: int) -> bool:
-    """`isUnaired` (stores/jellyfin.ts): status first, else the earliest possible day."""
-    if entry.get("status"):
-        return entry["status"] == "NOT_YET_RELEASED"
-    d = entry.get("startDate") or {}
-    if not d.get("year"):
-        return False
-    import calendar
-    ms = calendar.timegm((d["year"], d.get("month") or 1, d.get("day") or 1, 0, 0, 0)) * 1000
-    return ms > now_ms
 
 
 def randomize_parity_step(backend: str, auth: dict) -> None:
@@ -609,21 +599,18 @@ def randomize_parity_step(backend: str, auth: dict) -> None:
         r = requests.get(f"{backend}/api/anime", params={"season": s["season"], "year": s["year"]}, timeout=120)
         for e in r.json() if r.ok else []:
             entries[e["id"]] = e
-    now_ms = int(time.time() * 1000)
     hidden: set[int] = set()
     for row in mine:
         e = entries.get(row["anilistId"])
         if not e:
             continue
-        unaired = is_unaired(e, now_ms)
-        info = None
-        if not unaired:
-            t = e.get("title") or {}
-            titles = [x for x in (t.get("english"), t.get("romaji"), t.get("native")) if x][:10]
-            info = requests.post(f"{backend}/api/jellyfin/availability", headers=auth, timeout=60,
-                                 json={"mediaId": e["id"], "titles": titles, "fresh": True,
-                                       "startDate": e.get("startDate")}).json()
-        if randomize_hides(info, unaired):
+        # Every show is asked, aired or not, with what Randomize sends.
+        t = e.get("title") or {}
+        titles = [x for x in (t.get("english"), t.get("romaji"), t.get("native")) if x][:10]
+        info = requests.post(f"{backend}/api/jellyfin/availability", headers=auth, timeout=60,
+                             json={"mediaId": e["id"], "titles": titles, "fresh": True,
+                                   "startDate": e.get("startDate"), "status": e.get("status")}).json()
+        if randomize_hides(info):
             hidden.add(e["id"])
     # Re-read: the report must now see exactly the verdicts just resolved.
     rep = requests.get(f"{backend}/api/sonarr/report", headers=auth, timeout=120).json()
@@ -634,11 +621,20 @@ def randomize_parity_step(backend: str, auth: dict) -> None:
         name = lambda a: (by_id.get(a) or {}).get("title") or a
         fail(13, f"Randomize would hide {sorted(map(name, hidden - not_watchable))} that the page calls watchable, "
                  f"and the page flags {sorted(map(name, not_watchable - hidden))} that Randomize keeps")
+    unaired_rows = 0
     for a in not_watchable:
-        if by_id[a]["status"]["level"] != "broken":
-            fail(13, f"{by_id[a]['title']!r} cannot be watched in English yet reads "
-                     f"{by_id[a]['status']['level']} ({by_id[a]['status']['code']}) - it must be red")
-    step(13, f"PASS - {len(by_id)} on the list, {len(hidden)} hidden by Hide Not English, the same {len(hidden)} red here")
+        row = by_id[a]
+        if row.get("unaired"):
+            # Not out yet: hidden there, not red here - nothing is wrong with it.
+            unaired_rows += 1
+            if row["status"]["level"] == "broken" and row["status"]["code"] in ("noVideo", "notInLibrary", "notInJellyfin", "noEnglish"):
+                fail(13, f"{row['title']!r} has not aired yet reads {row['status']['code']} - "
+                         f"an unaired show is not missing")
+        elif row["status"]["level"] != "broken":
+            fail(13, f"{row['title']!r} cannot be watched in English yet reads "
+                     f"{row['status']['level']} ({row['status']['code']}) - it must be red")
+    step(13, f"PASS - {len(by_id)} on the list, {len(hidden)} hidden by Hide Not English, the same "
+             f"{len(hidden)} here ({len(hidden) - unaired_rows} red, {unaired_rows} not aired yet)")
 
 
 def trusted_lists_step(backend: str, auth: dict) -> None:
