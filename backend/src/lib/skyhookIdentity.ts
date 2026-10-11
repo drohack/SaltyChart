@@ -102,10 +102,32 @@ export interface SkyhookShow {
   episodes: SkyhookEpisode[];
   /** TVDB's own TMDB cross-reference, when it has one. */
   tmdbId: string | null;
+  /** The series title, so a caller holding only an id can apply `titleRelated`. */
+  title: string | null;
+}
+
+/**
+ * How long a skyhook answer is reused: 12 hours, empty answers included.
+ *
+ * Both caches were kept for the life of the process, and that was the bug: TVDB
+ * creates and dates a new season's record in the days around its premiere, so
+ * "not found" on Monday is routinely "found, aired today" by Wednesday - and a
+ * backend that had not restarted kept answering Monday's "not found" to every
+ * daily retry. PANDOROBO (tvdb 483116) is the case: a record that did not exist
+ * when the entry was first looked up, dated to the AniList premiere once it did.
+ * Within one sweep the dedupe still holds (a drain is minutes long), which is
+ * all the memo was ever for.
+ */
+export const SKYHOOK_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
+let _now: () => number = () => Date.now();
+/** Test clock for the expiry only - pacing keeps the real clock (`_lastCall`). */
+export function __setSkyhookClockForTest(now: (() => number) | null): void {
+  _now = now ?? (() => Date.now());
 }
 
 /** Per series, memoised - a sweep run asks about the same parent repeatedly. */
-const _showCache = new Map<string, SkyhookShow>();
+const _showCache = new Map<string, { at: number; value: SkyhookShow }>();
 /**
  * Per search term, memoised for the same reason the shows are - and it matters
  * more than it looks. `baseTitles` strips season markers before searching, so
@@ -114,19 +136,35 @@ const _showCache = new Map<string, SkyhookShow>();
  * each one a fresh round trip 300 ms behind the last. The shows were cached
  * from the start and the searches simply never were.
  */
-const _searchCache = new Map<string, SkyhookSeries[]>();
+const _searchCache = new Map<string, { at: number; value: SkyhookSeries[] }>();
 export function __clearSkyhookCachesForTest(): void {
   _showCache.clear();
   _searchCache.clear();
+}
+
+function fresh<T>(hit: { at: number; value: T } | undefined): T | undefined {
+  return hit && _now() - hit.at < SKYHOOK_CACHE_TTL_MS ? hit.value : undefined;
 }
 
 function dateStr(v: unknown): string | null {
   return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
 }
 
+/** Search results, or `[]` when skyhook could not be asked - see skyhookSearchOutcome. */
 export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
+  return (await skyhookSearchOutcome(term)) ?? [];
+}
+
+/**
+ * The search, telling "could not ask" (`null`) apart from "nothing found" (`[]`).
+ *
+ * The background TVDB pass needs the difference: a row it could not ask about
+ * must keep its retry clock, or one skyhook outage silently pushes every row it
+ * touched back by days.
+ */
+export async function skyhookSearchOutcome(term: string): Promise<SkyhookSeries[] | null> {
   const key = term.trim().toLowerCase();
-  const cached = _searchCache.get(key);
+  const cached = fresh(_searchCache.get(key));
   if (cached) return cached;
   try {
     const data = await _fetch(`${BASE}/search/en/?term=${encodeURIComponent(term)}`);
@@ -144,7 +182,7 @@ export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
     // Only a successful search is cached. A failure must stay retryable for the
     // same reason it does for shows: one 400 becoming permanent is how the
     // whole TVDB tier went quiet.
-    _searchCache.set(key, out);
+    _searchCache.set(key, { at: _now(), value: out });
     return out;
   } catch (err: any) {
     // Same rule as skyhookShow: an unreachable search is not an empty one.
@@ -152,14 +190,20 @@ export async function skyhookSearch(term: string): Promise<SkyhookSeries[]> {
       `[skyhook] search ${JSON.stringify(term)} failed ` +
       `(${err?.response?.status ?? err?.code ?? err?.message})`
     );
-    return [];
+    return null;
   }
 }
 
+/** The show record, or an empty one when skyhook could not be asked - see skyhookShowOutcome. */
 export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
-  const hit = _showCache.get(tvdbId);
+  return (await skyhookShowOutcome(tvdbId)) ?? { episodes: [], tmdbId: null, title: null };
+}
+
+/** The show record, or `null` when skyhook could not be asked (never cached). */
+export async function skyhookShowOutcome(tvdbId: string): Promise<SkyhookShow | null> {
+  const hit = fresh(_showCache.get(tvdbId));
   if (hit) return hit;
-  let show: SkyhookShow = { episodes: [], tmdbId: null };
+  let show: SkyhookShow = { episodes: [], tmdbId: null, title: null };
   // A FAILED lookup is never cached and never silent. Both halves matter: the
   // cache turned one 400 into a permanent "this show has no episodes" for the
   // life of the process, and the silence is why a dead evidence tier looked
@@ -177,16 +221,21 @@ export async function skyhookShow(tvdbId: string): Promise<SkyhookShow> {
             airDate: dateStr(e.airDate),
           }))
       : [];
-    show = { episodes: eps, tmdbId: data?.tmdbId != null ? String(data.tmdbId) : null };
+    show = {
+      episodes: eps,
+      tmdbId: data?.tmdbId != null ? String(data.tmdbId) : null,
+      title: typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : null,
+    };
   } catch (err: any) {
     failed = true;
-    show = { episodes: [], tmdbId: null };
+    show = { episodes: [], tmdbId: null, title: null };
     console.warn(
       `[skyhook] show ${tvdbId} lookup failed (${err?.response?.status ?? err?.code ?? err?.message}) - ` +
       'TVDB date evidence is unavailable for this entry'
     );
   }
-  if (!failed) _showCache.set(tvdbId, show);
+  if (failed) return null;
+  _showCache.set(tvdbId, { at: _now(), value: show });
   return show;
 }
 

@@ -16,16 +16,22 @@ import {
   rawIdentityOverride,
   resolveIdentity,
   mergeIdentityPatch,
+  clearIdentityOverride,
+  isDateVerified,
 } from './seriesIdentity';
-import { anilistTvdbMapSize, crosswalkIds } from './anilistTvdbMap';
+import { anilistTvdbMapSize, crosswalkIds, tvdbIdForAnilist, tmdbRefForAnilist } from './anilistTvdbMap';
 import {
   skyhookSearch,
+  skyhookSearchOutcome,
   skyhookEpisodes,
   skyhookShow,
+  skyhookShowOutcome,
   titleRelated,
   seasonPremiereDelta,
   hasUndatedFutureSeason,
+  type SkyhookSeries,
 } from './skyhookIdentity';
+import { seasonsForSonarr } from './sonarrSelect';
 
 // ---------------------------------------------------------------------------
 // Creating the links nobody else has.
@@ -868,9 +874,10 @@ export function baseTitles(t: string): string[] {
  */
 const MAX_PER_RUN = 150;
 /**
- * The three maintenance passes (legacy-row dating, re-grades, TVDB gap fill)
- * keep the smaller cap: they groom already-stored rows, so nothing an admin is
- * waiting on ever depends on them - steady drain beats a big burst.
+ * The smaller cap, for passes that groom already-stored rows: legacy-row dating,
+ * and the TVDB check's OLDER rows. (Re-grades have their own, below; the TVDB
+ * check takes current/next-season rows daily on a separate ceiling, because
+ * that is where new data appears - see planGapFill.)
  */
 const MAINTENANCE_PER_RUN = 40;
 /**
@@ -1106,6 +1113,10 @@ export interface SweepStatus {
    * memory by the time it runs.
    */
   tiers?: { id: number; title: number; notHeld: number; noMatch: number };
+  /** What the TVDB check did this run (see fillTvdbGaps). Absent on older statuses. */
+  gapFill?: GapStats;
+  /** Unverified stored guesses the community map now answers, handed back to it. */
+  mapReplaced?: number;
   /** Override rows in memory, and the community map size, for scale. */
   overrides: number;
   mapSize: number;
@@ -1389,84 +1400,426 @@ export async function regradeStoredRows(
   return { regraded, promoted, flagged, stamped };
 }
 
+// ---------------------------------------------------------------------------
+// The TVDB check: complete and verify the TVDB half of stored rows.
+//
+// TVDB is what Sonarr acts on, and for a new season it is also the source that
+// changes day by day: the record appears, then gains a premiere date, in the
+// days around the premiere. A row stored before that - TMDB-only, or holding a
+// TVDB id nothing has dated yet - has to be looked at again or it stays as it
+// was for ever. Pan Dorobou (2026-10-10) was both in turn: TMDB-only, then a
+// TVDB id with note `exact title`, while TVDB had PANDOROBO dated to the
+// AniList premiere and linked to the very TMDB id we stored.
+//
+// Two rules, and every branch below follows them:
+//
+//  - A LINK COMPLETES, A DATE VERIFIES. TVDB's own link to a TMDB id proves the
+//    two records are the same show - not that the show is right for the AniList
+//    entry. So a link may add the missing id but never raises trust; only a
+//    TVDB season premiere within tolerance on a title-related record does (rung
+//    B0, measured 345/345 on first seasons).
+//  - UPGRADE ONLY. A verified row is never demoted, and a stored TVDB id is
+//    never swapped: it may already have been added to Sonarr, and a swap orphans
+//    it and adds a second series.
+//
+// Unverified ids cannot start downloads whatever this writes - the Sonarr
+// selection refuses anything not confident (SonarrIdentity.confident).
+// ---------------------------------------------------------------------------
+
 /**
- * Fill the TVDB half of rows the remote search could only give TMDB for -
- * the population a Sonarr request flow needs (the 125-row measurement lives
- * in skyhookIdentity.ts's header).
+ * Current and next season are re-checked on every daily run - that is where the
+ * data moves. 20 h rather than 24 so a timer that drifts a little still lands on
+ * the next run instead of skipping a day.
+ */
+const CURRENT_RECHECK_MS = 20 * 60 * 60 * 1000;
+/** Ceiling on the daily current-season tier, so "bounded per run" holds by construction. */
+const CURRENT_PER_RUN = REGRADE_PER_RUN;
+
+export type GapClass = 'fill' | 'verify';
+
+/** One row the TVDB check could look at. */
+export interface GapRow {
+  anilistId: number;
+  /** `fill`: no TVDB id yet. `verify`: a TVDB id no date has vouched for. */
+  cls: GapClass;
+  /** When anything last wrote the row, read at the START of the sweep. */
+  askedAt: number;
+  startYear: number | null;
+  /** The entry belongs to the current or next season. */
+  current: boolean;
+}
+
+/**
+ * What this run checks, in order. Pure.
  *
- * Self-throttling without a marker: every attempt bumps `updatedAt`, and rows
- * younger than `retryAfterFor` are skipped - the same schedule the main sweep
- * uses, because the answer changes on the same clock (TVDB gains the record
- * as the show approaches airing).
+ * Current/next season first and daily (capped at CURRENT_PER_RUN); older rows
+ * on the main sweep's retry tiers, oldest first, MAINTENANCE_PER_RUN a run. A
+ * drain lifts both caps and the cooldowns - an admin pressing the button means
+ * "everything now" - but never retirement, the same contract as `planSweep`.
+ *
+ * `askedAt` must be the sweep-start snapshot: the passes before this one bump
+ * `updatedAt` on rows they touch, and reading it live let the year-dating pass
+ * starve undated rows of their TVDB check every run.
+ */
+export function planGapFill(
+  rows: GapRow[],
+  opts: { now: number; max?: number; currentMax?: number; force?: boolean }
+): { batch: GapRow[]; waiting: number } {
+  const max = opts.max ?? MAINTENANCE_PER_RUN;
+  const currentMax = opts.currentMax ?? CURRENT_PER_RUN;
+  const thisYear = new Date(opts.now).getFullYear();
+  const due = (r: GapRow): boolean => {
+    if (r.current) return !!opts.force || opts.now - r.askedAt >= CURRENT_RECHECK_MS;
+    const after = retryAfterFor(r.startYear, thisYear);
+    if (after === Infinity) return false;
+    return !!opts.force || opts.now - r.askedAt >= after;
+  };
+  const byAge = (a: GapRow, b: GapRow) => a.askedAt - b.askedAt;
+  const current = rows.filter((r) => r.current && due(r)).sort(byAge);
+  const older = rows.filter((r) => !r.current && due(r)).sort(byAge);
+  const batch = opts.force
+    ? [...current, ...older]
+    : [...current.slice(0, currentMax), ...older.slice(0, max)];
+  return { batch, waiting: current.length + older.length - batch.length };
+}
+
+/** One TVDB record as the check sees it. */
+export interface TvdbRecord {
+  tvdbId: string;
+  title: string | null;
+  /** The series' first air date - season 1's, for a sequel. */
+  firstAired: string | null;
+  /** |nearest TVDB SEASON premiere - entry premiere|, when both are known. */
+  seasonDeltaMs: number | null;
+  /** TVDB's own link to a TMDB id, when it has one. */
+  tmdbId: string | null;
+}
+
+export interface GapFacts {
+  cls: GapClass;
+  /** A human decided the row (confirmed, or source `manual`): only a link may add to it. */
+  human: boolean;
+  storedTvdbId: string | null;
+  storedTmdbId: string | null;
+  /** The stored note is date evidence (`isDateVerified`). */
+  storedDateVerified: boolean;
+  /** Entry titles plus their base forms - what a record must relate to. */
+  searched: string[];
+  /** The entry's own full titles - what counts as an exact match. */
+  exactTitles: string[];
+  airDateMs: number | null;
+  /** `verify`: the stored id's own record. `fill`: the title-related search results. */
+  records: TvdbRecord[];
+}
+
+export type GapDecision =
+  | { write: false }
+  | {
+      write: true;
+      tvdbId: string;
+      /** null = keep the stored value. */
+      pending: boolean | null;
+      /** null = keep the stored note. */
+      note: string | null;
+      via: 'date' | 'link' | 'title';
+      record: TvdbRecord;
+    };
+
+/**
+ * What the TVDB check writes for one row. Pure - the whole policy lives here.
+ *
+ * verify (a stored TVDB id no date vouched for):
+ *   its own record is title-related and premieres a season within tolerance
+ *   -> pending false, note = that date. Anything else -> nothing.
+ * fill (no TVDB id yet), first match wins:
+ *   human row           -> only a record linking to the stored TMDB id; trust kept
+ *   dated record        -> that id, pending false, note = the date (always -
+ *                          a fill used to keep `exact title` beside a date that
+ *                          matched to the day, so verified rows stayed weak)
+ *   linked, no date     -> that id; pending unless the stored match was dated
+ *   exact title, no date known either way -> that id, pending
+ *   anything else (incl. an exact title a date refutes) -> nothing
+ * The stored TMDB id is never touched: Dandivine's TVDB record links to 323937
+ * while we store 324504 - two dated TMDB records of one show.
+ */
+export function decideTvdbFill(f: GapFacts): GapDecision {
+  const days = (ms: number) => Math.round(ms / DAY);
+  const within = (ms: number | null): ms is number => ms != null && ms <= AIR_DATE_TOLERANCE_MS;
+  const firstDelta = (r: TvdbRecord): number | null => {
+    const t = r.firstAired ? Date.parse(r.firstAired) : NaN;
+    return Number.isFinite(t) && f.airDateMs != null ? Math.abs(t - f.airDateMs) : null;
+  };
+  const related = (r: TvdbRecord) => titleRelated(r.title, f.searched);
+
+  if (f.cls === 'verify') {
+    const own = f.records.find((r) => r.tvdbId === f.storedTvdbId);
+    if (own && related(own) && within(own.seasonDeltaMs)) {
+      return {
+        write: true, tvdbId: own.tvdbId, pending: false,
+        note: `remote: tvdb season premiere ${days(own.seasonDeltaMs)}d`, via: 'date', record: own,
+      };
+    }
+    return { write: false };
+  }
+
+  const linked = f.storedTmdbId ? f.records.find((r) => r.tmdbId === f.storedTmdbId) : undefined;
+  if (f.human) {
+    return linked
+      ? { write: true, tvdbId: linked.tvdbId, pending: null, note: null, via: 'link', record: linked }
+      : { write: false };
+  }
+
+  const dateOf = (r: TvdbRecord): number | null =>
+    within(r.seasonDeltaMs) ? r.seasonDeltaMs : within(firstDelta(r)) ? firstDelta(r) : null;
+  const dated = f.records
+    .filter((r) => related(r) && dateOf(r) != null)
+    .sort((a, b) => (dateOf(a) as number) - (dateOf(b) as number));
+  if (dated.length) {
+    const r = dated[0];
+    const note = within(r.seasonDeltaMs)
+      ? `remote: tvdb season premiere ${days(r.seasonDeltaMs)}d`
+      : `remote: premiere date ${days(firstDelta(r) as number)}d`;
+    return { write: true, tvdbId: r.tvdbId, pending: false, note, via: 'date', record: r };
+  }
+  if (linked) {
+    return {
+      write: true, tvdbId: linked.tvdbId, pending: !f.storedDateVerified, note: null, via: 'link', record: linked,
+    };
+  }
+  const norms = new Set(f.exactTitles.map(normalizeTitle).filter(Boolean));
+  const exact = f.records.find(
+    (r) => !!r.title && norms.has(normalizeTitle(r.title))
+      // Any known date that did not land inside tolerance refutes it - the
+      // dated branch above took every record a date vouches for.
+      && r.seasonDeltaMs == null && firstDelta(r) == null
+  );
+  if (exact) return { write: true, tvdbId: exact.tvdbId, pending: true, note: null, via: 'title', record: exact };
+  return { write: false };
+}
+
+/**
+ * The stored candidates after a write: the TVDB id merged into the candidate the
+ * row now says it is, never a list of every search result. Appending them all
+ * turned settled rows into a false "N possible matches".
+ */
+export function mergeTvdbCandidate(
+  cands: RemoteChoice[] | null,
+  stored: { tvdbId: string | null; tmdbId: string | null },
+  r: TvdbRecord
+): RemoteChoice[] {
+  const list = [...(cands ?? [])];
+  const year = r.firstAired ? Number(r.firstAired.slice(0, 4)) || null : null;
+  const i = list.findIndex(
+    (c) => (!!c.tvdbId && c.tvdbId === r.tvdbId)
+      || (!!stored.tvdbId && c.tvdbId === stored.tvdbId)
+      || (!!stored.tmdbId && c.tmdbId === stored.tmdbId && !c.tvdbId)
+  );
+  if (i >= 0) {
+    list[i] = {
+      ...list[i],
+      tvdbId: r.tvdbId,
+      year: list[i].year ?? year,
+      premiereDate: list[i].premiereDate ?? r.firstAired,
+    };
+    return list;
+  }
+  return [...list, {
+    tvdbId: r.tvdbId, tmdbId: null, tmdbKind: null,
+    matchedTitle: r.title ?? '', exact: false, year, premiereDate: r.firstAired,
+  }];
+}
+
+/**
+ * What the community map does to a stored remote row that has no TVDB id. Pure.
+ *
+ * The map is the higher-precedence source, and a remote row only exists because
+ * the map had nothing when we looked - but a stored row SHADOWS the map, so when
+ * the map later learns the TVDB id nothing ever saw it (Apothecary Diaries S3:
+ * pending `unverified`, map tvdb 431162).
+ *
+ *  - an unverified tv row: CLEAR it, so `resolveIdentity` falls through to the
+ *    map. `needsRemoteLookup` is then false, so nothing re-creates it.
+ *  - a date-verified tv row whose TMDB id the map also names: add the TVDB id
+ *    (it then grades `map`, corroborated).
+ *  - anything else is left alone. That includes the dated films and OVAs where
+ *    the map names a PARENT series (SHIBOYUGI, given, Nanatsu no Taizai,
+ *    Yamato 2205 measured 2026-10-10): a map disagreeing with a dated row is a
+ *    dispute, not support - the IGPX rule - and swapping a film id for a series
+ *    removes a working Watch button.
+ */
+export function mapBackfillAction(
+  ex: { source: string; confirmed: boolean; rejected: boolean; tvdbId: string | null; tmdbId: string | null; tmdbKind: string | null; note: string | null },
+  entryFormat: string | null,
+  map: { tvdbId: string | null; tmdbId: string | null }
+): 'clear' | 'addTvdb' | 'none' {
+  // A row with no ids at all is bookkeeping ("we looked, found nothing"): it
+  // never shadows the map (`resolveIdentity` skips it), so there is nothing to
+  // hand back - only a guess carrying a TMDB id does.
+  if (ex.source !== 'remote' || ex.confirmed || ex.rejected || ex.tvdbId || !ex.tmdbId || !map.tvdbId) return 'none';
+  if (ex.tmdbKind === 'movie' || entryFormat === 'MOVIE') return 'none';
+  if (!isDateVerified(ex.note)) return 'clear';
+  return ex.tmdbId && map.tmdbId === ex.tmdbId ? 'addTvdb' : 'none';
+}
+
+export interface GapStats {
+  checked: number;
+  filled: number;
+  verified: number;
+  /** Written as pending - a TVDB id waiting for a date or a Confirm. */
+  pending: number;
+  /** Could not ask skyhook; the row keeps its place for the next run. */
+  failed: number;
+  /** Due but left for a later run by the caps. */
+  waiting: number;
+}
+
+/**
+ * The TVDB records a `fill` row's titles relate to - the same search and the
+ * same relation gate the resolver uses, asking each record (up to 4) for its
+ * season dates and its TMDB link. `null` means skyhook could not be asked.
+ */
+async function relatedTvdbRecords(q: RemoteQuery, searched: string[]): Promise<TvdbRecord[] | null> {
+  const related: SkyhookSeries[] = [];
+  const seen = new Set<string>();
+  for (const term of searched) {
+    const res = await skyhookSearchOutcome(term);
+    if (res === null) return null;
+    for (const s of res) {
+      if (seen.has(s.tvdbId) || !titleRelated(s.title, searched)) continue;
+      seen.add(s.tvdbId);
+      related.push(s);
+    }
+    if (related.length >= 4) break;
+  }
+  const out: TvdbRecord[] = [];
+  for (const s of related.slice(0, 4)) {
+    const show = await skyhookShowOutcome(s.tvdbId);
+    if (show === null) return null;
+    out.push({
+      tvdbId: s.tvdbId,
+      title: s.title,
+      firstAired: s.firstAired,
+      seasonDeltaMs: seasonPremiereDelta(show.episodes, q.airDateMs ?? null),
+      tmdbId: show.tmdbId,
+    });
+  }
+  return out;
+}
+
+/**
+ * Run the TVDB check over the rows `planGapFill` picks.
+ *
+ * Writes go through `setIdentityOverride`, so the availability cache and the
+ * persisted blob are invalidated for the shows that changed. A check that
+ * changes nothing only touches `updatedAt` directly: the identity-change hook
+ * would otherwise wipe that show's cached Watch verdict every single day.
  */
 export async function fillTvdbGaps(
   entryById: Map<number, RemoteQuery>,
-  max: number,
-  /** Drain-only: ignore the retry schedule (a backlog drain IS the retry). */
-  force = false
-): Promise<{ tried: number; filled: number; verified: number }> {
-  const gapRows = await prisma.seriesIdentity.findMany({
-    where: { source: 'remote', confirmed: false, rejected: false, tmdbId: { not: null }, tvdbId: null },
+  opts: {
+    askedAt: ReadonlyMap<number, number>;
+    currentIds: ReadonlySet<number>;
+    force?: boolean;
+    now?: number;
+  }
+): Promise<GapStats> {
+  const now = opts.now ?? Date.now();
+  const stats: GapStats = { checked: 0, filled: 0, verified: 0, pending: 0, failed: 0, waiting: 0 };
+  const candidates = await prisma.seriesIdentity.findMany({
+    where: { rejected: false, tmdbId: { not: null } },
     select: { anilistId: true, updatedAt: true },
-    orderBy: { updatedAt: 'asc' },
   });
-  let tried = 0;
-  let filled = 0;
-  let verified = 0;
-  for (const row of gapRows) {
-    if (tried >= max) break;
+  const verifyRows = await prisma.seriesIdentity.findMany({
+    where: { source: 'remote', confirmed: false, rejected: false, tvdbId: { not: null } },
+    select: { anilistId: true, updatedAt: true },
+  });
+  const rows: GapRow[] = [];
+  const consider = (anilistId: number, cls: GapClass, fallbackAt: number) => {
+    const ex = rawIdentityOverride(anilistId);
+    const entry = entryById.get(anilistId);
+    if (!ex || !entry || entry.airDateMs == null || entry.format === 'MOVIE') return;
+    if (ex.tmdbKind === 'movie') return;
+    if (cls === 'fill' && (ex.tvdbId || !ex.tmdbId)) return;
+    if (cls === 'verify') {
+      // Already verified, or two sources agreeing (map-corroborated) - nothing
+      // a date could add, and checking would only spend requests.
+      if (!ex.tvdbId || ex.confirmed || isDateVerified(ex.note)) return;
+      if (resolveIdentity(anilistId).mapCorroborated) return;
+    }
+    rows.push({
+      anilistId,
+      cls,
+      askedAt: opts.askedAt.get(anilistId) ?? fallbackAt,
+      startYear: entry.year ?? null,
+      current: opts.currentIds.has(anilistId),
+    });
+  };
+  for (const r of candidates) consider(r.anilistId, 'fill', r.updatedAt.getTime());
+  for (const r of verifyRows) consider(r.anilistId, 'verify', r.updatedAt.getTime());
+
+  const { batch, waiting } = planGapFill(rows, { now, force: opts.force });
+  stats.waiting = waiting;
+  for (const row of batch) {
     const ex = rawIdentityOverride(row.anilistId);
-    if (!ex || ex.source !== 'remote' || ex.confirmed || ex.rejected || ex.tvdbId || !ex.tmdbId) continue;
     const entry = entryById.get(row.anilistId);
-    if (!entry) continue; // aged out of the season cache - nothing to search with
-    if (!force && Date.now() - row.updatedAt.getTime() < retryAfterFor(entry.year)) continue;
-    tried++;
-    const sky = await searchSkyhookCandidates(entry);
+    if (!ex || !entry) continue;
+    stats.checked++;
+    const titles = entry.titles.filter(Boolean).slice(0, 3);
+    const searched = [...new Set([...titles, ...titles.flatMap(baseTitles)])];
+    let records: TvdbRecord[] | null;
+    if (row.cls === 'verify') {
+      // One request: the stored id's own record. No search - the id is known.
+      const show = await skyhookShowOutcome(String(ex.tvdbId));
+      records = show === null ? null : [{
+        tvdbId: String(ex.tvdbId),
+        title: show.title,
+        firstAired: null,
+        seasonDeltaMs: seasonPremiereDelta(show.episodes, entry.airDateMs ?? null),
+        tmdbId: show.tmdbId,
+      }];
+    } else {
+      records = await relatedTvdbRecords(entry, searched);
+    }
     await new Promise((r) => setTimeout(r, PACE_MS));
-
-    const within = (v: number | null) => v != null && v <= AIR_DATE_TOLERANCE_MS;
-    const seasonHit = sky.cands.find((c) => within(sky.evidence.get(c.tvdbId ?? '')?.seasonDeltaMs ?? null));
-    const firstHit = sky.cands.find((c) => within(premiereDelta(c.premiereDate, entry.airDateMs ?? null)));
-    const exactHit = sky.cands.find((c) => c.exact);
-    const hit = seasonHit ?? firstHit ?? exactHit ?? null;
-
-    // Merged either way - the TVDB fill must not lose the stored picker list.
-    const stored = ex.candidates ?? [];
-    const have = new Set(stored.map((c) => c.tvdbId).filter(Boolean));
-    const mergedCands = [...stored, ...sky.cands.filter((c) => c.tvdbId && !have.has(c.tvdbId))].slice(0, 8);
-
-    if (!hit) {
-      // Nothing trustworthy - rewrite unchanged (plus any new candidates) so
-      // updatedAt bumps and the retry schedule owns the next attempt.
-      await setIdentityOverride(mergeIdentityPatch(ex, {
-        anilistId: row.anilistId,
-        tvdbId: ex.tvdbId, tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
-        candidates: mergedCands.length ? mergedCands : ex.candidates,
-        confirmed: ex.confirmed, rejected: ex.rejected, pending: ex.pending,
-      }));
+    if (records === null) {
+      // Could not ask - not "nothing there". Leave the clock alone.
+      stats.failed++;
       continue;
     }
-    const dateProof = hit === seasonHit
-      ? `tvdb season premiere ${Math.round((sky.evidence.get(hit.tvdbId ?? '')!.seasonDeltaMs ?? 0) / 86400000)}d`
-      : hit === firstHit
-        ? `premiere date ${Math.round((premiereDelta(hit.premiereDate, entry.airDateMs ?? null) ?? 0) / 86400000)}d`
-        : null;
+    const decision = decideTvdbFill({
+      cls: row.cls,
+      human: ex.confirmed || ex.source === 'manual',
+      storedTvdbId: ex.tvdbId,
+      storedTmdbId: ex.tmdbId,
+      storedDateVerified: isDateVerified(ex.note),
+      searched,
+      exactTitles: titles,
+      airDateMs: entry.airDateMs ?? null,
+      records,
+    });
+    if (!decision.write) {
+      await prisma.seriesIdentity.update({
+        where: { anilistId: row.anilistId },
+        data: { updatedAt: new Date() },
+      }).catch(() => undefined);
+      continue;
+    }
     await setIdentityOverride(mergeIdentityPatch(ex, {
       anilistId: row.anilistId,
-      tvdbId: hit.tvdbId,
+      tvdbId: decision.tvdbId,
       tmdbId: ex.tmdbId,
       tmdbKind: ex.tmdbKind,
-      candidates: mergedCands,
-      // A date-verified TVDB id settles a row that was only queued; an
-      // exact-title one fills the id but stays whatever it was.
-      pending: dateProof ? false : ex.pending,
-      note: dateProof && ex.pending ? `remote: ${dateProof}` : ex.note,
-      confirmed: ex.confirmed, rejected: ex.rejected,
+      candidates: mergeTvdbCandidate(ex.candidates, { tvdbId: ex.tvdbId, tmdbId: ex.tmdbId }, decision.record),
+      pending: decision.pending ?? ex.pending,
+      note: decision.note ?? ex.note,
+      confirmed: ex.confirmed,
+      rejected: ex.rejected,
     }));
-    filled++;
-    if (dateProof) verified++;
+    if (row.cls === 'fill') stats.filled++;
+    if (decision.via === 'date') stats.verified++;
+    if (decision.pending === true) stats.pending++;
   }
-  return { tried, filled, verified };
+  return stats;
 }
 
 /**
@@ -1483,6 +1836,8 @@ export async function runRemoteIdentitySweep(
     ignoreCooldown?: boolean;
     /** Uncapped on a manual drain - see REGRADE_PER_RUN. */
     regradeMax?: number;
+    /** A manual drain: the TVDB check lifts its caps and cooldowns too (never retirement). */
+    gapForce?: boolean;
     heldFilmTmdbIds?: ReadonlySet<string>;
   }
 ): Promise<void> {
@@ -1501,6 +1856,10 @@ export async function runRemoteIdentitySweep(
     const rows = await prisma.seasonCache.findMany();
     const seen = new Set<number>();
     const todo: RemoteQuery[] = [];
+    // Entries of the current and next season - the TVDB check visits these
+    // daily, because that is where TVDB records appear and gain dates.
+    const currentKeys = new Set(seasonsForSonarr(new Date()).map((r) => `${r.season}-${r.year}`));
+    const currentIds = new Set<number>();
     // Every entry, not just the ones needing a first lookup - the re-grade
     // pass below needs titles and premiere dates for rows already stored.
     const entryById = new Map<number, RemoteQuery>();
@@ -1513,6 +1872,7 @@ export async function runRemoteIdentitySweep(
       }
       if (!Array.isArray(shows)) continue;
       for (const s of shows) {
+        if (s?.id && currentKeys.has(`${row.season}-${row.year}`)) currentIds.add(s.id);
         if (!s?.id || seen.has(s.id)) continue;
         seen.add(s.id);
         // Adult titles are not indexed by TVDB or TMDB at all - 92 of 106 aren't
@@ -1640,6 +2000,39 @@ export async function runRemoteIdentitySweep(
       console.log(`[identity] backfilled ${backfilled} half-filled row(s) with cross-walked ids`);
     }
 
+    // The community map answers what an unverified stored guess was standing in
+    // for - see mapBackfillAction. Every run, uncapped: in-memory reads only.
+    let mapReplaced = 0;
+    let mapAdded = 0;
+    const tvdbless = await prisma.seriesIdentity.findMany({
+      where: { source: 'remote', confirmed: false, rejected: false, tvdbId: null },
+      select: { anilistId: true },
+    });
+    for (const row of tvdbless) {
+      const ex = rawIdentityOverride(row.anilistId);
+      if (!ex) continue;
+      const action = mapBackfillAction(ex, entryById.get(row.anilistId)?.format ?? null, {
+        tvdbId: tvdbIdForAnilist(row.anilistId),
+        tmdbId: tmdbRefForAnilist(row.anilistId)?.id ?? null,
+      });
+      if (action === 'clear') {
+        await clearIdentityOverride(row.anilistId);
+        mapReplaced++;
+      } else if (action === 'addTvdb') {
+        await setIdentityOverride(mergeIdentityPatch(ex, {
+          anilistId: row.anilistId,
+          tvdbId: tvdbIdForAnilist(row.anilistId),
+          tmdbId: ex.tmdbId, tmdbKind: ex.tmdbKind,
+          confirmed: ex.confirmed, rejected: ex.rejected, pending: ex.pending,
+        }));
+        mapAdded++;
+      }
+    }
+    if (mapReplaced || mapAdded) {
+      console.log(`[identity] community map: ${mapReplaced} unverified guess(es) handed back to the map, ` +
+                  `${mapAdded} dated row(s) given the map's TVDB id`);
+    }
+
     // Date legacy rows the local sources couldn't: one remote by-id lookup
     // each, capped per run - the backlog (271 undated rows when this shipped)
     // drains across a week of sweeps instead of hammering the provider. Rows
@@ -1682,20 +2075,21 @@ export async function runRemoteIdentitySweep(
       );
     }
 
-    const gaps = await fillTvdbGaps(entryById, MAINTENANCE_PER_RUN);
-    if (gaps.tried) {
-      console.log(
-        `[identity] tvdb gap fill: ${gaps.tried} searched, ${gaps.filled} filled ` +
-          `(${gaps.verified} date-verified)`
-      );
-    }
+    const gapFill = await fillTvdbGaps(entryById, { askedAt, currentIds, force: opts?.gapForce });
+    // One line either way - a check that ran and changed nothing must be
+    // distinguishable from one that never ran.
+    console.log(
+      `[identity] TVDB check: ${gapFill.checked} checked, ${gapFill.filled} filled, ` +
+        `${gapFill.verified} verified by date, ${gapFill.pending} waiting for a Confirm, ` +
+        `${gapFill.failed} could not ask, ${gapFill.waiting} left for later runs`
+    );
 
     if (!batch.length) {
       // "Ran and found nothing to ask" is a result worth recording - the whole
       // point of the status is telling that apart from "never ran".
       await saveSweepStatus({
         finishedAt: Date.now(), looked: 0, accepted: 0, queued: 0, rejected: 0,
-        remaining: plan.eligible, retired, cooldown,
+        remaining: plan.eligible, retired, cooldown, gapFill, mapReplaced,
         overrides: identityOverrideCount(),
         mapSize: anilistTvdbMapSize(),
         tracked: entryById.size, unmatched: todo.length, tiers: tallyTiers(),
@@ -1790,7 +2184,7 @@ export async function runRemoteIdentitySweep(
     );
     await saveSweepStatus({
       finishedAt: Date.now(), looked, accepted, queued, rejected,
-      remaining: plan.eligible - batch.length, retired,
+      remaining: plan.eligible - batch.length, retired, gapFill, mapReplaced,
       overrides: identityOverrideCount(),
       mapSize: anilistTvdbMapSize(),
       // Pre-run counts - the batch just processed may have shrunk `unmatched`,

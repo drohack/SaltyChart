@@ -174,6 +174,7 @@ const WANTED_REASONS = new Set([
   'outsideAirWindow',
   'noAnilistId',
   'noUsableTvdbId',
+  'unverifiedMatch',
   'unverifiedNotAcknowledged',
   'duplicateTvdbId',
   'noTitle',
@@ -284,6 +285,8 @@ export function sonarrFindings(f: SonarrFacts, identity: Finding): Finding[] {
       level: 'waiting', code: 'joinsList',
       text: f.joinsMs != null ? `Joins the list ${shortDate(f.joinsMs)}` : 'Joins the list once it has a premiere date',
     });
+  } else if (reason === 'unverifiedMatch') {
+    out.push({ level: 'check', code: 'unverifiedMatch', text: 'Not added to Sonarr until the match is verified - by a premiere date, or Confirm on Matching' });
   } else if (reason === 'unverifiedNotAcknowledged') {
     out.push({ level: 'check', code: 'unverifiedListed', text: 'Listed, but the match is unverified - confirm it on Matching before it is added' });
   } else if (reason === 'duplicateTvdbId') {

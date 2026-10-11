@@ -8,6 +8,10 @@ import {
   skyhookEpisodes,
   __setSkyhookFetchForTest,
   __clearSkyhookCachesForTest,
+  __setSkyhookClockForTest,
+  skyhookSearchOutcome,
+  skyhookShowOutcome,
+  SKYHOOK_CACHE_TTL_MS,
   type SkyhookEpisode,
 } from './skyhookIdentity';
 
@@ -147,6 +151,43 @@ test('the client degrades to empty on anything, and memoises episodes', async ()
     __setSkyhookFetchForTest(async () => 'not json shaped');
     __clearSkyhookCachesForTest();
     assert.deepEqual(await skyhookSearch('anything'), [], 'a malformed body reads as no results');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+
+test('an empty search is asked again after the cache expires - TVDB adds records days later', async () => {
+  // PANDOROBO did not exist when its entry was first looked up. A memo kept for
+  // the life of the process answered "not found" to every daily retry after it
+  // did, until the backend happened to restart.
+  let calls = 0;
+  let clock = 1_000_000;
+  __clearSkyhookCachesForTest();
+  __setSkyhookClockForTest(() => clock);
+  __setSkyhookFetchForTest(async () => { calls++; return []; });
+  try {
+    await skyhookSearch('Pan Dorobou');
+    await skyhookSearch('Pan Dorobou');
+    assert.equal(calls, 1, 'within the cache window a search is asked once');
+    clock += SKYHOOK_CACHE_TTL_MS + 1;
+    await skyhookSearch('Pan Dorobou');
+    assert.equal(calls, 2, 'an expired empty search must be asked again, or new TVDB records are never seen');
+  } finally {
+    __setSkyhookFetchForTest(null);
+    __setSkyhookClockForTest(null);
+    __clearSkyhookCachesForTest();
+  }
+});
+
+test('"could not ask" is null, never an empty answer', async () => {
+  __clearSkyhookCachesForTest();
+  __setSkyhookFetchForTest(async () => { throw Object.assign(new Error('boom'), { response: { status: 503 } }); });
+  try {
+    assert.equal(await skyhookSearchOutcome('x'), null, 'a failed search must read as could-not-ask (null), not nothing-found');
+    assert.equal(await skyhookShowOutcome('1'), null, 'a failed show lookup must read as could-not-ask (null)');
+    assert.deepEqual(await skyhookSearch('x'), [], 'the plain search still degrades to empty for existing callers');
   } finally {
     __setSkyhookFetchForTest(null);
     __clearSkyhookCachesForTest();

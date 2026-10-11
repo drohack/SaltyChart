@@ -51,6 +51,7 @@ export const CODE_LABEL: Record<string, string> = {
   viewerPick: 'viewer pick',
   duplicateTvdbId: 'duplicate id',
   unverifiedListed: 'unverified',
+  unverifiedMatch: 'not verified',
   sonarrUnread: 'Sonarr unread',
   noTitle: 'no title',
   noAnilistId: 'no AniList id',
@@ -82,6 +83,7 @@ export const CODE_HEADING: Record<string, string> = {
   viewerPick: 'Viewer pick',
   duplicateTvdbId: 'Duplicate TVDB id',
   unverifiedListed: 'Listed, match unverified',
+  unverifiedMatch: 'Waiting for the match to be verified',
   someNoEnglish: 'Some episodes without English',
   sonarrUnread: 'Sonarr not read yet',
 };

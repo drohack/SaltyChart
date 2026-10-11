@@ -359,7 +359,7 @@ export async function triggerSweep(
     // A drain drops every bound the schedule exists to enforce: the lookup cap,
     // the retry cooldowns, and the re-grade cap - an admin pressing the button
     // after a deploy means "propagate everything now".
-    ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true, regradeMax: Infinity } : {}),
+    ...(mode === 'drain' ? { max: Infinity, ignoreCooldown: true, regradeMax: Infinity, gapForce: true } : {}),
   });
   return sweepRunning() ? 'started' : 'not-ready';
 }

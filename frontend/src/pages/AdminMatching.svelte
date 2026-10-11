@@ -402,6 +402,9 @@
     never?: number; ready?: number;
     tiers?: { id: number; title: number; notHeld: number; noMatch: number };
     overrides: number; mapSize: number;
+    /** What the TVDB check did (complete and verify the TVDB half). Absent on older statuses. */
+    gapFill?: { checked: number; filled: number; verified: number; pending: number; failed: number; waiting: number };
+    mapReplaced?: number;
   } | null = null;
 
   /**
@@ -739,6 +742,7 @@
     noUsableTvdbId: "can't add - no TVDB id",
     duplicateTvdbId: "can't add - another entry has this TVDB id",
     unverifiedNotAcknowledged: 'listed, but waiting for this match to be confirmed',
+    unverifiedMatch: 'not added until the match is verified (a premiere date, or Confirm)',
     noTitle: "can't add - no title",
     noAnilistId: "can't add - no AniList id",
     malformed: 'unreadable cache row',
@@ -950,6 +954,13 @@
             Last sweep {ago(sweep.finishedAt)}: looked up {sweep.looked},
             matched {sweep.accepted}, queued {sweep.queued} for review,
             ruled out {sweep.rejected} on air date
+            {#if sweep.gapFill}
+              <br />
+              <span data-gap-fill title="The daily TVDB check: current and next season every day, older seasons on a schedule. A TVDB id is only ever verified by a premiere date; one found any other way waits for a Confirm and is not sent to Sonarr.">
+                TVDB check: {sweep.gapFill.checked} checked, {sweep.gapFill.filled} filled,
+                {sweep.gapFill.verified} verified by date{#if sweep.gapFill.pending}, {sweep.gapFill.pending} waiting for a Confirm{/if}{#if sweep.mapReplaced}, {sweep.mapReplaced} handed back to the community map{/if}{#if sweep.gapFill.failed}<span class="text-warning">, {sweep.gapFill.failed} could not reach TVDB</span>{/if}{#if sweep.gapFill.waiting}, {sweep.gapFill.waiting} left for later runs{/if}
+              </span>
+            {/if}
           {:else}
             No sweep has finished yet. One runs 90 s after the server starts and
             daily after that - or press Run sweep now.

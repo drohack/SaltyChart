@@ -582,7 +582,13 @@ the root guide. What lives nowhere else:
 - **Run sweep now** fires `POST /identity/sweep` and polls the sweep summary
   until the run finishes. It updates the status line only - rows never reload
   out from under a review in progress - and reports `remaining`/`retired`
-  honestly.
+  honestly. The line also says what the **TVDB check** did (`data-gap-fill`:
+  checked, filled, verified by date, waiting for a Confirm, handed back to the
+  community map, could not reach TVDB), because a background pass with no
+  visible trace is indistinguishable from one that never ran.
+- A Sonarr caption of **"not added until the match is verified"** is the
+  `unverifiedMatch` reason: the rules want the show but nothing has dated its
+  id. The daily TVDB check upgrades it when a date appears; Confirm does it now.
 - A **two-row summary table**: the season on screen, and every cached season.
   They share columns so the two scopes are read by comparison and the numbers
   align by construction. Two earlier tile layouts drifted out of alignment the

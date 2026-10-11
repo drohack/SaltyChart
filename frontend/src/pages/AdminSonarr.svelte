@@ -54,7 +54,7 @@
   /** Problems fixed by correcting the match; they link to /admin/matching. */
   const MATCH_CODES = new Set([
     'noId', 'guess', 'ambiguous', 'titleOnly', 'unconfirmedAuto', 'viewerPick',
-    'sonarrRejected', 'noTvdbId', 'unverifiedListed', 'duplicateTvdbId',
+    'sonarrRejected', 'noTvdbId', 'unverifiedListed', 'unverifiedMatch', 'duplicateTvdbId',
   ]);
 
   /**

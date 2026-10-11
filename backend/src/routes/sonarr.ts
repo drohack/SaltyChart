@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import prisma from '../db';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
-import { resolveIdentity, identityReady, matchGrade } from '../lib/seriesIdentity';
+import { resolveIdentity, identityReady, matchGrade, isIdConfident } from '../lib/seriesIdentity';
+
+/** An identity in the shape the selection needs - with `confident`, see SonarrIdentity. */
+function sonarrIdentity(anilistId: number) {
+  const identity = resolveIdentity(anilistId);
+  return { ...identity, confident: isIdConfident(identity) };
+}
 import {
   selectForSonarrDetailed,
   listRequests,
@@ -391,8 +397,8 @@ async function assemble(refs: SeasonRef[], now: Date): Promise<Assembled> {
   ]);
   // Trusted users' lists first, manual Includes over them - an Include is the
   // more specific decision (it may carry an acknowledged unverified match).
-  const forceInclude = new Map([...listRequests(entries, listed, resolveIdentity), ...manualIncludes]);
-  const { items, rejected } = selectForSonarrDetailed(entries, resolveIdentity, now, {
+  const forceInclude = new Map([...listRequests(entries, listed, sonarrIdentity), ...manualIncludes]);
+  const { items, rejected } = selectForSonarrDetailed(entries, sonarrIdentity, now, {
     forceInclude,
   });
 
@@ -610,7 +616,9 @@ function describe(e: CacheEntry) {
     // How well we know this is the right series. Same ladder the Watch pop-up's
     // correction picker uses - one definition, in lib/seriesIdentity.ts.
     grade: identity ? matchGrade(identity) : 'none',
-    unverified: !!identity && (identity.pending || identity.rejected),
+    // Same rule as the selection: anything not confident needs an
+    // acknowledged Include, so the button reads "Include anyway".
+    unverified: !!identity && (identity.pending || identity.rejected || !isIdConfident(identity)),
     matchedTitle: identity?.matchedTitle ?? null,
     gradeNote: identity?.note ?? null,
     tvdbId: Number.isInteger(tvdb) && tvdb > 0 ? tvdb : null,
@@ -1433,7 +1441,7 @@ router.post('/include', requireAuth, requireAdmin, async (req: AuthRequest, res)
   // conflict is with what we know, and it carries the grade so the UI can ask
   // a specific question instead of a generic "are you sure".
   const identity = resolveIdentity(anilistId);
-  const unverified = identity.pending || identity.rejected;
+  const unverified = identity.pending || identity.rejected || !isIdConfident(identity);
   const acknowledge = req.body?.acknowledgeUnverified === true;
   if (unverified && !acknowledge) {
     return res.status(409).json({

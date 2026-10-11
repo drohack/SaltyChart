@@ -17,7 +17,14 @@ import {
   needsResearch,
   storedChoice,
   SEARCH_AFFECTING_VERSIONS,
+  planGapFill,
+  decideTvdbFill,
+  mergeTvdbCandidate,
+  mapBackfillAction,
   type RemoteCandidate,
+  type GapFacts,
+  type GapRow,
+  type TvdbRecord,
 } from './remoteIdentity';
 import { __setSkyhookFetchForTest, __clearSkyhookCachesForTest } from './skyhookIdentity';
 import { __setMapsForTest } from './anilistTvdbMap';
@@ -797,4 +804,129 @@ test('an unrecoverable stored choice returns null so the caller re-searches', ()
   // re-decided honestly, and falling back to a real search is the safe half.
   assert.equal(storedChoice({ tvdbId: '1', tmdbId: null, tmdbKind: null, candidates: [] } as any), null);
   assert.equal(storedChoice({ tvdbId: null, tmdbId: null, tmdbKind: null, candidates: [] } as any), null);
+});
+
+
+// --- the TVDB check: complete and verify the TVDB half ---------------------
+// Fixtures are the 2026-10-10 cases: Pan Dorobou (AniList 194207 -> TVDB
+// PANDOROBO 483116, linked to tmdb 309202, S1E1 on the premiere day), Dandivine
+// (TVDB 478770 links tmdb 323937 while we store 324504) and Yu-Gi-Oh! Card Game
+// The Chronicles (exact title, season dates 442 days apart).
+
+const PREMIERE = Date.UTC(2026, 9, 2);
+const rec = (over: Partial<TvdbRecord> = {}): TvdbRecord => ({
+  tvdbId: '483116', title: 'PANDOROBO', firstAired: null, seasonDeltaMs: 0, tmdbId: '309202', ...over,
+});
+const facts = (over: Partial<GapFacts> = {}): GapFacts => ({
+  cls: 'fill', human: false, storedTvdbId: null, storedTmdbId: '309202', storedDateVerified: false,
+  searched: ['Pan Dorobou', 'パンどろぼう'], exactTitles: ['Pan Dorobou', 'パンどろぼう'],
+  airDateMs: PREMIERE, records: [rec()], ...over,
+});
+
+test('TVDB check: a stored TVDB id is verified by its own season premiere (the Pan Dorobou repair)', () => {
+  const d = decideTvdbFill(facts({ cls: 'verify', storedTvdbId: '483116' }));
+  assert.ok(d.write, 'a stored TVDB id whose season premieres on the AniList day must be verified');
+  if (!d.write) return;
+  assert.equal(d.tvdbId, '483116', 'verifying never changes the stored id');
+  assert.equal(d.pending, false);
+  assert.equal(d.note, 'remote: tvdb season premiere 0d', 'the note must record the date, or the row stays weak');
+});
+
+test('TVDB check: a stored id is never verified without a date, and never swapped', () => {
+  assert.equal(decideTvdbFill(facts({ cls: 'verify', storedTvdbId: '483116', records: [rec({ seasonDeltaMs: null })] })).write,
+    false, 'no date, no upgrade');
+  const other = decideTvdbFill(facts({ cls: 'verify', storedTvdbId: '483116', records: [rec({ tvdbId: '999', seasonDeltaMs: 0 })] }));
+  assert.equal(other.write, false, 'a stored TVDB id must never be swapped for another record, however well dated');
+  assert.equal(decideTvdbFill(facts({ cls: 'verify', storedTvdbId: '483116', records: [rec({ title: 'Lego Friends' })] })).write,
+    false, 'a record the title does not relate to cannot verify anything');
+});
+
+test('TVDB check: a dated record fills and records the date, the TMDB id untouched (the Dandivine shape)', () => {
+  const d = decideTvdbFill(facts({
+    storedTmdbId: '324504', storedDateVerified: true,
+    searched: ['Dandivine'], exactTitles: ['Dandivine'],
+    records: [rec({ tvdbId: '478770', title: 'Dandivine', tmdbId: '323937' })],
+  }));
+  assert.ok(d.write, 'a TVDB record premiering on the AniList day must fill the missing id');
+  if (!d.write) return;
+  assert.equal(d.tvdbId, '478770');
+  assert.equal(d.pending, false);
+  assert.equal(d.note, 'remote: tvdb season premiere 0d', 'a date fill must always rewrite the note to the date');
+});
+
+test('TVDB check: a link completes but never verifies', () => {
+  const undated = rec({ seasonDeltaMs: null, title: 'Something Else Entirely' });
+  const d = decideTvdbFill(facts({ records: [undated] }));
+  assert.ok(d.write && d.via === 'link', 'a TVDB record linking to our TMDB id must fill the missing id');
+  if (!d.write) return;
+  assert.equal(d.pending, true, 'a link proves the two records are one show, not that the show is right - it must stay pending');
+  assert.equal(d.note, null, 'a link never writes a verified note');
+  const dated = decideTvdbFill(facts({ storedDateVerified: true, records: [undated] }));
+  assert.ok(dated.write && dated.pending === false, 'a link onto a match a date already verified keeps it verified');
+});
+
+test('TVDB check: an exact title alone fills as pending; a date that refutes it fills nothing (Yu-Gi-Oh)', () => {
+  const exact = decideTvdbFill(facts({ storedTmdbId: '1', records: [rec({ seasonDeltaMs: null, tmdbId: null, title: 'Pan Dorobou' })] }));
+  assert.ok(exact.write && exact.via === 'title' && exact.pending === true,
+    'an exact title with no date either way fills only as pending');
+  const refuted = decideTvdbFill(facts({
+    storedTmdbId: '1', searched: ['Yu-Gi-Oh! Card Game The Chronicles'], exactTitles: ['Yu-Gi-Oh! Card Game The Chronicles'],
+    records: [rec({ tvdbId: '466457', title: 'Yu-Gi-Oh! Card Game The Chronicles', seasonDeltaMs: 442 * DAY, tmdbId: '289422' })],
+  }));
+  assert.equal(refuted.write, false, 'an exact title a date refutes must not be written');
+});
+
+test('TVDB check: a human-decided row only takes a link', () => {
+  assert.equal(decideTvdbFill(facts({ human: true, storedTmdbId: '1' })).write, false,
+    'a date on a different record must not add to a row a human decided');
+  const linked = decideTvdbFill(facts({ human: true }));
+  assert.ok(linked.write && linked.pending === null && linked.note === null,
+    'a link onto the TMDB id a human chose adds the TVDB id and changes nothing else');
+});
+
+test('TVDB check: the merged candidate list stays one show (no false "2 possible matches")', () => {
+  const stored = [{ tvdbId: null, tmdbId: '309202', tmdbKind: 'tv' as const, matchedTitle: 'パンどろぼう', exact: true, year: null }];
+  const out = mergeTvdbCandidate(stored, { tvdbId: null, tmdbId: '309202' }, rec({ firstAired: '2026-10-02' }));
+  assert.equal(out.length, 1, 'the TVDB id must merge into the stored candidate, not be appended beside it');
+  assert.equal(out[0].tvdbId, '483116');
+  assert.equal(out[0].tmdbId, '309202');
+});
+
+test('TVDB check: current season daily, older rows capped and tiered, drain lifts both but not retirement', () => {
+  const now = Date.UTC(2026, 9, 10);
+  const yr = new Date(now).getFullYear();
+  const row = (id: number, over: Partial<GapRow> = {}): GapRow => ({
+    anilistId: id, cls: 'fill', askedAt: now - 30 * DAY, startYear: yr, current: false, ...over,
+  });
+  const current = Array.from({ length: 5 }, (_, i) => row(100 + i, { current: true, askedAt: now - 21 * 60 * 60 * 1000 }));
+  const older = Array.from({ length: 50 }, (_, i) => row(200 + i, { askedAt: now - (60 - i) * DAY }));
+  const fresh = row(300, { current: true, askedAt: now - 60 * 60 * 1000 });
+  const retired = row(400, { startYear: yr - 5, askedAt: 0 });
+  const plan = planGapFill([...older, ...current, fresh, retired], { now, max: 40 });
+  const ids = plan.batch.map((r) => r.anilistId);
+  assert.deepEqual(ids.slice(0, 5).sort(), [100, 101, 102, 103, 104], 'current/next-season rows due today must come first');
+  assert.ok(!ids.includes(300), 'a current row checked an hour ago is not due again');
+  assert.equal(ids.length, 45, 'older rows are capped');
+  assert.ok(!ids.includes(400), 'a retired row is never checked');
+  assert.equal(ids[5], 200, 'older rows go oldest first');
+  const drain = planGapFill([...older, ...current, fresh, retired], { now, max: 40, force: true });
+  // Specific first: a drain that lifted retirement would also change the count.
+  assert.ok(!drain.batch.some((r) => r.anilistId === 400), 'a drain never lifts retirement');
+  assert.equal(drain.batch.length, 56, 'a drain lifts the caps and the cooldowns');
+});
+
+test('map backfill: an unverified guess goes back to the map; dated films and OVAs are left alone', () => {
+  const base = { source: 'remote', confirmed: false, rejected: false, tvdbId: null, tmdbId: '333686', tmdbKind: 'tv', note: 'remote: unverified' };
+  assert.equal(mapBackfillAction(base, 'TV', { tvdbId: '431162', tmdbId: '220542' }), 'clear',
+    'an unverified stored guess must yield to the community map once it knows the TVDB id');
+  assert.equal(mapBackfillAction({ ...base, tmdbId: '1659338', tmdbKind: 'movie', note: 'remote: premiere date 0d' }, 'MOVIE',
+    { tvdbId: '453992', tmdbId: '263330' }), 'none', 'a dated film id is never replaced by a parent series (SHIBOYUGI)');
+  assert.equal(mapBackfillAction({ ...base, note: 'remote: premiere date 2d' }, 'OVA', { tvdbId: '361218', tmdbId: '88040' }),
+    'none', 'a dated row the map disputes is left alone (the IGPX rule)');
+  assert.equal(mapBackfillAction({ ...base, note: 'remote: premiere date 2d' }, 'TV', { tvdbId: '431162', tmdbId: '333686' }),
+    'addTvdb', 'a dated row the map agrees with on TMDB gains the map TVDB id');
+  assert.equal(mapBackfillAction({ ...base, confirmed: true }, 'TV', { tvdbId: '431162', tmdbId: null }), 'none',
+    'a human decision is never touched');
+  assert.equal(mapBackfillAction({ ...base, tmdbId: null, note: 'remote: no match' }, 'TV', { tvdbId: '431162', tmdbId: null }),
+    'none', 'an id-less bookkeeping row shadows nothing, so it is not handed back');
 });

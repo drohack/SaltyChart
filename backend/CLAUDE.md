@@ -385,12 +385,24 @@ legitimate way to say "this one is ours".
 
 The selection itself is `lib/sonarrSelect.ts`: pure, I/O-free, resolver injected,
 so every predicate is unit-tested without a DB. The identity filter is
-**`tvdbId && !pending && !rejected`** - deliberately not `confirmed`, since a
-community-map row is unconfirmed by construction and requiring confirmation
-would discard the ~94% of TV the map answers. `pending` *is* excluded, and this
-is the one path stricter than the site's: elsewhere an unverified resolver id is
+**`tvdbId && !pending && !rejected && confident`** - deliberately not
+`confirmed`, since a community-map row is unconfirmed by construction and
+requiring confirmation would discard the ~94% of TV the map answers. This is the
+one path stricter than the site's: elsewhere an unverified resolver id is
 positive-only because a bad guess costs a Watch button that doesn't work; here
 it downloads a season of the wrong series.
+
+**`confident` is `isIdConfident`** (a human decision, a map id, or a resolver id
+a DATE vouched for), passed in as `SonarrIdentity.confident`. `pending` alone
+was not enough: the resolver's exact-title rung, the id backfill and the TVDB
+gap fill all write NON-pending rows carrying a TVDB id nothing has dated - Pan
+Dorobou (2026-10-10) would have been auto-added on title text alone. Checking
+confidence in the selection covers every writer, past and future, in one place.
+A not-confident entry the rules want is rejected as **`unverifiedMatch`**
+(wanted, yellow, in Needs attention) until the daily TVDB check verifies it by a
+date or someone presses Confirm; a trusted list drops it as
+`unverifiedNotAcknowledged`; an acknowledged Include still adds it, and
+`POST /include` 409s on it exactly as on a pending match.
 
 Measured 2026-08-06 on the live cache: 39 proposed from SUMMER 2026's 111 cached
 entries; 157 excluded across both seasons (66 not TV/TV_SHORT, 50 with a
@@ -1505,10 +1517,51 @@ age), and is bounded at **150 lookups per run** (the re-grade pass shares that
 figure via `REGRADE_PER_RUN` - it carries correctness fixes now, not grooming,
 and 40/day would take over a week to propagate one across a few hundred rows) - sized at ~one year's worth
 of gap entries (measured: ~150 of a year's ~470 entries lack any map id), so
-a season rollover clears in one run. The three maintenance passes
-(legacy-row dating, `regradeStoredRows`, `fillTvdbGaps`) keep a smaller
-40-per-run cap; they groom already-stored rows and nothing an admin waits on
-depends on them. `POST /identity/sweep` (the *Run sweep now* button on
+a season rollover clears in one run. Legacy-row dating and the TVDB check's
+older rows keep a smaller 40-per-run cap (`MAINTENANCE_PER_RUN`); the re-grade
+pass is 150 (`REGRADE_PER_RUN`).
+
+**The TVDB check (`fillTvdbGaps`) completes and verifies the TVDB half of stored
+rows**, because TVDB is what Sonarr acts on and, for a new season, the source
+that changes day by day: the record appears, then gains a premiere date, around
+the premiere. It handles two kinds of row - **fill** (a TMDB-only tv row; for a
+confirmed or manual row, only TVDB's own link to that TMDB id may add to it) and
+**verify** (a stored TVDB id whose note is not date evidence, not
+map-corroborated) - and its policy is one pure function, `decideTvdbFill`:
+
+| row | evidence | writes |
+|---|---|---|
+| verify | the stored id's own record, title-related, premieres a season within 31 d | `pending: false`, note = the date. Never swaps the id |
+| fill | a title-related record premiering within 31 d | that TVDB id, `pending: false`, note = the date (always - a fill used to keep `exact title` beside a date that matched to the day) |
+| fill | a record linking to the stored TMDB id, no date | the TVDB id; pending unless the stored match was already dated |
+| fill | an exact title with no date known either way | the TVDB id, pending |
+| fill | anything else, incl. an exact title a date refutes | nothing |
+
+**A link completes, a date verifies**: TVDB's link to a TMDB id proves the two
+records are one show, not that the show is right for the AniList entry. The
+stored TMDB id is never touched (Dandivine's TVDB record links 323937 while we
+store 324504: two dated TMDB records of one show), and only the candidate used
+is merged into the stored list - appending every search result turned settled
+rows into a false "N possible matches". **Scheduling** (`planGapFill`):
+current/next-season rows every daily run (ceiling 150), older rows 40 a run on
+the main sweep's retry tiers, films skipped (TVDB lists none - 103 of the queue
+were films on 2026-10-10), retirement never lifted, and due-ness read from the
+sweep-START `updatedAt` snapshot so the year-dating pass cannot starve it. **A
+drain lifts its caps and cooldowns too** - it used to keep the 40 cap, so Run
+sweep now never cleared the backlog. A check that could not reach skyhook is
+counted as `failed` and leaves the row's clock alone; a check that changes
+nothing touches only `updatedAt`, so it does not wipe the show's cached Watch
+verdict daily. skyhook answers are reused for **12 h** (`SKYHOOK_CACHE_TTL_MS`,
+empty answers included) - they were kept for the life of the process, so a
+record TVDB added after the first lookup stayed "not found" until a restart.
+Results land in the sweep status (`gapFill`) and on /admin/matching.
+
+**The community map takes over from an unverified guess** (`mapBackfillAction`,
+every run): a stored remote row with no TVDB id that is not date-verified is
+CLEARED once the map gives its AniList id a TVDB id, so `resolveIdentity` falls
+through to the map (Apothecary Diaries S3, 2026-10-10); a dated tv row the map
+agrees with on TMDB gains the map's TVDB id; dated films and OVAs where the map
+names a parent series are left alone (the IGPX rule). `POST /identity/sweep` (the *Run sweep now* button on
 `/admin/matching`) runs the same sweep with **both the cap and the retry
 cooldowns dropped** (`planSweep`'s `ignoreCooldown`) - a human pressing it is
 not the daily budget, and without the override the button is a no-op on
@@ -1928,7 +1981,7 @@ Tables / columns:
   resolver run, and what did it do" must survive the restart that follows a
   deploy, which is exactly when someone wonders; its `remaining` counts only
   what future runs will actually process, `retired` the old misses no longer
-  re-asked, and `tracked`/`unmatched`/`cooldown`/`never`/`ready` plus `tiers`
+  re-asked, `gapFill` what the TVDB check did and `mapReplaced` the guesses handed back to the map, and `tracked`/`unmatched`/`cooldown`/`never`/`ready` plus `tiers`
   the whole-cache counts behind the admin page's all-seasons row. `tiers`
   (`id`/`title`/`notHeld`/`noMatch`) comes from `classifyMatch`, the *same*
   classifier `/identity/resolve` reports per row - so the panel's two scopes

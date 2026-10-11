@@ -38,11 +38,11 @@ function ok(tvdbId: number) {
 }
 
 function mapResolver(ids: Record<number, string | Partial<SonarrIdentity>>) {
-  const none: SonarrIdentity = { tvdbId: null, pending: false, rejected: false };
+  const none: SonarrIdentity = { tvdbId: null, pending: false, rejected: false, confident: true };
   return (anilistId: number): SonarrIdentity => {
     const hit = ids[anilistId];
     if (hit === undefined) return none;
-    if (typeof hit === 'string') return { tvdbId: hit, pending: false, rejected: false };
+    if (typeof hit === 'string') return { tvdbId: hit, pending: false, rejected: false, confident: true };
     return { ...none, ...hit };
   };
 }
@@ -214,11 +214,11 @@ test('status is authoritative when present, and an undated future entry is exclu
 });
 
 test('a tvdbId that is not a positive integer never reaches Sonarr', () => {
-  assert.equal(usableTvdbId({ tvdbId: 'abc', pending: false, rejected: false }), null, 'a non-numeric id is refused');
-  assert.equal(usableTvdbId({ tvdbId: '0', pending: false, rejected: false }), null, 'zero is not a TVDB id');
-  assert.equal(usableTvdbId({ tvdbId: '-5', pending: false, rejected: false }), null, 'a negative id is refused');
+  assert.equal(usableTvdbId({ tvdbId: 'abc', pending: false, rejected: false, confident: true }), null, 'a non-numeric id is refused');
+  assert.equal(usableTvdbId({ tvdbId: '0', pending: false, rejected: false, confident: true }), null, 'zero is not a TVDB id');
+  assert.equal(usableTvdbId({ tvdbId: '-5', pending: false, rejected: false, confident: true }), null, 'a negative id is refused');
   assert.equal(
-    usableTvdbId({ tvdbId: '12345', pending: false, rejected: false }),
+    usableTvdbId({ tvdbId: '12345', pending: false, rejected: false, confident: true }),
     12345,
     'a real id is coerced from its stored string form to a number'
   );
@@ -498,4 +498,25 @@ test('a list never adds an unverified match, a film, or a show with no id', () =
     rejected.some((r) => r.entry.id === 1 && r.reason === 'unverifiedNotAcknowledged'),
     'the unverified listed show was not reported as such'
   );
+});
+
+
+test('an unverified match never starts a download on its own', () => {
+  // Pan Dorobou, 2026-10-10: a TVDB id nothing had dated (note `exact title`,
+  // not pending) would have been auto-added on title text alone.
+  const shows = [entry({ id: 1 }), entry({ id: 2 })];
+  const ids = mapResolver({ 1: { tvdbId: '100', confident: false }, 2: '200' });
+  const { items, rejected } = selectForSonarrDetailed(shows, ids, NOW);
+  assert.deepEqual(items.map((i) => i.tvdbId), [200], 'only a confident identity may be auto-added');
+  assert.equal(rejected.find((r) => r.entry.id === 1)?.reason, 'unverifiedMatch',
+    'an unverified match must wait as unverifiedMatch, not be added');
+  const listed = selectForSonarrDetailed(shows, ids, NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: false, listedBy: 1 }]]),
+  });
+  assert.equal(listed.rejected.find((r) => r.entry.id === 1)?.reason, 'unverifiedNotAcknowledged',
+    'a trusted list must not add an unverified match either');
+  const included = selectForSonarrDetailed(shows, ids, NOW, {
+    forceInclude: new Map([[1, { tvdbId: 100, acknowledgedUnverified: true }]]),
+  });
+  assert.ok(included.items.some((i) => i.tvdbId === 100), 'an acknowledged Include still adds it');
 });

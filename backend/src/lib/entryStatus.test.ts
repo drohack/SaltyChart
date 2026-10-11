@@ -166,7 +166,7 @@ test('every code Randomize hides is broken, and every broken availability code i
 
 test('wanted: the rules, a trusted list, or an Include - never a rule-skipped show', () => {
   assert.equal(isWanted({ proposed: true }), true, 'a proposed show is wanted');
-  for (const reason of ['outsideAirWindow', 'noUsableTvdbId', 'unverifiedNotAcknowledged', 'duplicateTvdbId']) {
+  for (const reason of ['outsideAirWindow', 'noUsableTvdbId', 'unverifiedMatch', 'unverifiedNotAcknowledged', 'duplicateTvdbId']) {
     assert.equal(isWanted({ proposed: false, rejectedReason: reason }), true, `${reason} comes after every rule gate, so it is wanted`);
   }
   for (const reason of ['format', 'adult', 'notFirstSeason', 'malformed']) {
@@ -175,6 +175,15 @@ test('wanted: the rules, a trusted list, or an Include - never a rule-skipped sh
   assert.equal(isWanted({ proposed: false, rejectedReason: 'notFirstSeason', listedBy: 1 }), true, 'a listed sequel is wanted');
   assert.equal(isWanted({ proposed: false, rejectedReason: 'format', forced: true }), true, 'an Included film is wanted');
   assert.equal(isWanted({ proposed: true, identityRejected: true }), false, 'a show marked not-in-library is never wanted');
+});
+
+test('an unverified match the rules want waits in Needs attention, yellow', () => {
+  const s = statusOf(facts({ grade: 'weak', note: 'remote: exact title' }), sonarr({ rejectedReason: 'unverifiedMatch' }));
+  assert.equal(s.level, 'check', 'an unverified match held back from Sonarr must read as a check');
+  assert.ok([s.code, ...(s.also ?? []).map((a) => a.code)].includes('unverifiedMatch'),
+    'the row must say it is not added until the match is verified');
+  assert.equal(needsAttention(s, isWanted({ proposed: false, rejectedReason: 'unverifiedMatch' })), true,
+    'an unverified match the rules want must be in Needs attention');
 });
 
 test('Needs attention = wanted and broken or check', () => {

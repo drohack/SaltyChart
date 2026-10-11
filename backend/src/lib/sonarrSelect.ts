@@ -53,6 +53,17 @@ export interface SonarrIdentity {
   tvdbId: string | null;
   pending: boolean;
   rejected: boolean;
+  /**
+   * Do we KNOW this is the right series - `isIdConfident` (lib/seriesIdentity.ts):
+   * a human decision, a community-map id, or a resolver id a DATE vouched for.
+   *
+   * `pending` alone was never enough to keep an unverified id out of Sonarr:
+   * the resolver's exact-title rung, the id backfill and the TVDB gap fill all
+   * write non-pending rows that carry a TVDB id nothing has dated - which is how
+   * Pan Dorobou (2026-10-10) would have been auto-added on title text alone.
+   * Checking confidence HERE covers every writer, past and future, in one place.
+   */
+  confident: boolean;
 }
 
 /**
@@ -271,6 +282,7 @@ export type RejectReason =
   | 'outsideAirWindow'
   | 'noAnilistId'
   | 'noUsableTvdbId'
+  | 'unverifiedMatch'
   | 'unverifiedNotAcknowledged'
   | 'duplicateTvdbId'
   | 'noTitle';
@@ -400,7 +412,7 @@ export function selectForSonarrDetailed(
     if (forced !== undefined) {
       const forcedTitle = pickTitle(entry);
       const identity = typeof entry.id === 'number' ? resolve(entry.id) : null;
-      const unverified = !!identity && (identity.pending || identity.rejected);
+      const unverified = !!identity && (identity.pending || identity.rejected || !identity.confident);
       if (!forcedTitle) {
         drop('noTitle');
       } else if (!Number.isInteger(forced.tvdbId) || forced.tvdbId <= 0) {
@@ -449,9 +461,17 @@ export function selectForSonarrDetailed(
       continue;
     }
 
-    const tvdbId = usableTvdbId(resolve(anilistId));
+    const identity = resolve(anilistId);
+    const tvdbId = usableTvdbId(identity);
     if (tvdbId === null) {
       drop('noUsableTvdbId');
+      continue;
+    }
+    // An id nothing has verified (title text, a +/-1 year, a viewer's pick)
+    // never starts a download on its own. It waits - in Needs attention - for a
+    // date to vouch for it (the daily TVDB check upgrades it) or for a Confirm.
+    if (!identity.confident) {
+      drop('unverifiedMatch');
       continue;
     }
     if (seen.has(tvdbId)) {

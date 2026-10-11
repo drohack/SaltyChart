@@ -345,8 +345,10 @@ MUTATIONS: list[Mutation] = [
         # default User-Agent; the bare catch made every failure an empty result
         # and this line pinned it for the process lifetime, so the whole TVDB
         # evidence tier was dead and nothing said a word.
-        find="  if (!failed) _showCache.set(tvdbId, show);",
-        replace="  _showCache.set(tvdbId, show);  /* mutation: a 400 becomes permanent */",
+        find="""  if (failed) return null;
+  _showCache.set(tvdbId, { at: _now(), value: show });""",
+        replace="""  _showCache.set(tvdbId, { at: _now(), value: show });  /* mutation: a 400 becomes permanent */
+  if (failed) return null;""",
         test=T_UNIT,
         expect='a failed show lookup is not cached as "this show has no episodes"',
         guards="'could not ask' must never be cached as 'nothing to find' - the same "
@@ -3118,6 +3120,140 @@ MUTATIONS: list[Mutation] = [
         expect="signs-only is not English dialogue",
         guards="a show with only a signs track reads as watchable here while "
                "Randomize hides it",
+    ),
+    Mutation(
+        name="a skyhook answer is reused for the life of the process again",
+        path="backend/src/lib/skyhookIdentity.ts",
+        # TVDB creates and dates a new season's record days after it was first
+        # looked up; a memo that never expires answers "not found" to every retry.
+        find="  return hit && _now() - hit.at < SKYHOOK_CACHE_TTL_MS ? hit.value : undefined;",
+        replace="  return hit ? hit.value : undefined; /* mutation */",
+        test=T_UNIT,
+        expect="an expired empty search must be asked again",
+        guards="a show TVDB adds after its first lookup stays not-found until a restart",
+    ),
+    Mutation(
+        name="a failed skyhook search reads as nothing found",
+        path="backend/src/lib/skyhookIdentity.ts",
+        # The TVDB check must not bump a row's retry clock on an outage.
+        find="""    return null;
+  }
+}
+
+/** The show record, or an empty one""",
+        replace="""    return []; /* mutation */
+  }
+}
+
+/** The show record, or an empty one""",
+        test=T_UNIT,
+        expect="could-not-ask (null), not nothing-found",
+        guards="a skyhook outage silently pushes every row it touched back by days",
+    ),
+    Mutation(
+        name="the TVDB check swaps a stored TVDB id for another dated record",
+        path=BACKEND_REMOTE,
+        # A stored id may already be in Sonarr; a swap orphans it and adds a second series.
+        find="    const own = f.records.find((r) => r.tvdbId === f.storedTvdbId);",
+        replace="    const own = f.records[0]; /* mutation */",
+        test=T_UNIT,
+        expect="must never be swapped",
+        guards="a show already added to Sonarr is orphaned and a second series added",
+    ),
+    Mutation(
+        name="a TVDB fill keeps the old note beside a matching date",
+        path=BACKEND_REMOTE,
+        # Pan Dorobou: a TVDB id verified to the day still read `exact title`.
+        find="    return { write: true, tvdbId: r.tvdbId, pending: false, note, via: 'date', record: r };",
+        replace="    return { write: true, tvdbId: r.tvdbId, pending: false, note: null, via: 'date', record: r }; /* mutation */",
+        test=T_UNIT,
+        expect="a date fill must always rewrite the note to the date",
+        guards="verified rows stay weak and yellow and never reach Sonarr",
+    ),
+    Mutation(
+        name="TVDB's TMDB link is treated as verification",
+        path=BACKEND_REMOTE,
+        # A link proves two records are one show, not that the show is right.
+        find="      write: true, tvdbId: linked.tvdbId, pending: !f.storedDateVerified, note: null, via: 'link', record: linked,",
+        replace="      write: true, tvdbId: linked.tvdbId, pending: false, note: null, via: 'link', record: linked, /* mutation */",
+        test=T_UNIT,
+        expect="it must stay pending",
+        guards="a title-only guess becomes settled because TVDB and TMDB agree with each other",
+    ),
+    Mutation(
+        name="the TVDB check writes an exact title the date refutes",
+        path=BACKEND_REMOTE,
+        # Yu-Gi-Oh! Card Game The Chronicles: exact title, season dates 442 days apart.
+        find="      && r.seasonDeltaMs == null && firstDelta(r) == null",
+        replace="      /* mutation: dates ignored */",
+        test=T_UNIT,
+        expect="an exact title a date refutes must not be written",
+        guards="a same-named show from another year gets its TVDB id",
+    ),
+    Mutation(
+        name="the TVDB check appends every search result to the candidates again",
+        path=BACKEND_REMOTE,
+        # Appending turned settled rows into a false "N possible matches".
+        find="""  if (i >= 0) {
+    list[i] = {
+      ...list[i],
+      tvdbId: r.tvdbId,""",
+        replace="""  if (i >= 99999) { /* mutation */
+    list[i] = {
+      ...list[i],
+      tvdbId: r.tvdbId,""",
+        test=T_UNIT,
+        expect="must merge into the stored candidate",
+        guards="every verified row reads as ambiguous and yellow",
+    ),
+    Mutation(
+        name="a drain lifts retirement in the TVDB check",
+        path=BACKEND_REMOTE,
+        find="""    const after = retryAfterFor(r.startYear, thisYear);
+    if (after === Infinity) return false;""",
+        replace="""    const after = retryAfterFor(r.startYear, thisYear); /* mutation: retirement ignored */""",
+        test=T_UNIT,
+        expect="a drain never lifts retirement",
+        guards="every press re-asks years-old shows no source has ever heard of",
+    ),
+    Mutation(
+        name="a drain keeps the TVDB check's daily cap",
+        path=BACKEND_REMOTE,
+        # Run sweep now never cleared the backlog while this held.
+        find="  const batch = opts.force\n",
+        replace="  const batch = false /* mutation */\n",
+        test=T_UNIT,
+        expect="a drain lifts the caps and the cooldowns",
+        guards="Run sweep now leaves the TVDB backlog where it was",
+    ),
+    Mutation(
+        name="the community map replaces a dated row it disputes",
+        path=BACKEND_REMOTE,
+        # Dated films and OVAs where the map names a parent series (given, SHIBOYUGI).
+        find="  if (!isDateVerified(ex.note)) return 'clear';",
+        replace="  return 'clear'; /* mutation */",
+        test=T_UNIT,
+        expect="a dated row the map disputes is left alone",
+        guards="a correct film or OVA match is thrown away for its parent series",
+    ),
+    Mutation(
+        name="an unverified match is auto-added to Sonarr again",
+        path=BACKEND_SONARR,
+        find="    if (!identity.confident) {",
+        replace="    if (false && !identity.confident) { /* mutation */",
+        test=T_UNIT,
+        expect="only a confident identity may be auto-added",
+        guards="a show matched on title text alone downloads a whole season",
+    ),
+    Mutation(
+        name="an unverified match the rules want drops out of Needs attention",
+        path=BACKEND_ENTRY_STATUS,
+        find="""  'noUsableTvdbId',
+  'unverifiedMatch',""",
+        replace="""  'noUsableTvdbId', /* mutation */""",
+        test=T_UNIT,
+        expect="an unverified match the rules want must be in Needs attention",
+        guards="a held-back show waits silently instead of asking for a Confirm",
     ),
 ]
 
