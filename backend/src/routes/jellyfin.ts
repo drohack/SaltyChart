@@ -2033,6 +2033,10 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
   // nothing was missing" - from the logs as well as on screen - which is why a
   // real report cost four wrong theories and no answer. `unknown` is the one to
   // watch: it means the lookup failed, not that the show is absent.
+  // A dev server logs only the failures: the UI suite makes hundreds of these
+  // requests, and the routine line buried the suite's own progress lines in
+  // the task output the owner watches. Production keeps every line - that is
+  // where the report this exists for came from.
   const vals = Object.values(out) as any[];
   const unknown = vals.filter((v) => v?.unknown).length;
   const available = vals.filter((v) => v?.available).length;
@@ -2040,7 +2044,7 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
     `[jellyfin] availability batch: ${items.length} asked, ${available} available, ` +
     `${vals.length - available - unknown} absent, ${unknown} unknown, ${Date.now() - startedAt}ms`;
   if (unknown) console.warn(`${line}  <- ${unknown} lookup(s) FAILED, not "not in library"`);
-  else console.log(line);
+  else if (!_isDev) console.log(line);
   res.json(out);
 });
 
