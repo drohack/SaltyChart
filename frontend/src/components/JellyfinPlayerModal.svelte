@@ -735,7 +735,9 @@
        generous just means a slightly smaller video, never an overlap.
        Constraining height directly instead (forcing the player to fill a
        fixed-height box) is what letterboxed the picture and stranded the control
-       bar in the dead space below it. -->
+       bar in the dead space below it.
+       Randomize's show pop-up (`.show-popup` in Randomize.svelte) mirrors this
+       box's size so it is never taller than the player; change both together. -->
   <div class="modal-box w-[95%] md:w-5/6 lg:w-4/5 max-w-[calc((92vh-8rem)*16/9)] p-3 pb-1.5 flex flex-col gap-1.5">
     <div class="shrink-0 flex items-center justify-between gap-2">
       <h3 class="font-bold text-lg truncate">

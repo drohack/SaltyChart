@@ -301,6 +301,12 @@ chronological order; all features listed are live.
 - "Nicknames from" auto-checks users who have rankings for the current
   season/year (via `GET /api/list/users-with-ratings`), re-running whenever
   season or year changes.
+- The options panel beside the wheel ("Add Watched to" + "Nicknames from")
+  folds to a single line from its top row, and remembers that in the browser.
+- The show pop-up puts the cover beside everything else on anything wider than
+  a phone, so Watch here and Mark as watched fit on a laptop screen without
+  scrolling. On a phone it stacks, and its close button stays in reach however
+  far you scroll - closing changes nothing about the show.
 - Season row left-aligned to match Home and Compare.
 
 **Hide from Wheel** - right-click a show in *My List* -> **Hide from Randomize**.

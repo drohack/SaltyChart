@@ -184,7 +184,12 @@ reading the same fact off three surfaces - grid highlight, sidebar, and
 All / Show All / Hide Not in Library, checking the wheel matches the visible list
 after each. **There is no nickname control in the pop-up** - its only controls are
 X, HIDE SERIES (UNWATCHED) and MARK AS WATCHED; nicknames are set from Home's
-sidebar by **double-clicking** a row (single and right click do nothing). And
+sidebar by **double-clicking** a row (single and right click do nothing). Open
+it at 375x667 and at 1366x657 as well: on the phone it scrolls and the X must
+stay in view at the bottom, and on the laptop nothing should need scrolling -
+the stacked layout once hid Watch and Mark as watched below the fold there.
+At 320 wide, open and close each side list by its edge tab: both lists once
+covered the other's tab there, so one was always open and the wheel unreachable. And
 **you cannot change season, or log out, with the pop-up open**: it is a real
 `<dialog open class="modal">` and it intercepts pointer events on the toolbar.
 Confirm that as a property rather than trying to perform it - Playwright reports

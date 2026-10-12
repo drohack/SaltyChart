@@ -17,7 +17,7 @@ verification. Read it first; nothing here overrides it.
 **Global *Options* modal** (gear icon in header). Persists in the `options`
 store + `/api/options` when authenticated, `localStorage` for guests. Theme
 (`LIGHT`/`NIGHT`/`SYSTEM`/`HIGH_CONTRAST`), title language, autoplay,
-hide-from-Compare, nickname user picker.
+hide-from-Compare. (Not the nickname picker - that is Randomize's own panel.)
 
 **Season toolbar** (`SeasonSelect.svelte`): search box (client-side fuzzy),
 Hide 18+, Hide sequels, Hide in "My List".
@@ -71,7 +71,61 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
     asserted per-path, not once.
 - "Nicknames from" panel auto-checks users with entries for the current
   season (`/api/list/users-with-ratings`), re-runs on season change; manual
-  toggles reset on season change.
+  toggles reset on season change. The panel (with "Add Watched to") is
+  **desktop-only by decision**: a folded bar floating over the wheel on phones
+  and tablets was built, and the owner judged it clutter - the defaults serve
+  there. Don't re-add it below `lg`. It **folds to its top row** - the whole row is the button
+  (`data-options-toggle`), folded it still shows the Top/Bottom choice, and the
+  fold is kept in `localStorage` (`randomizeOptionsCollapsed`, per browser: a
+  layout preference, not account data). Unfolded it is exactly its old height;
+  flow 41 compares the two.
+- **The wheel and its area have separate sizes** (`.wheel-area` in
+  Randomize's `<style>`). `--area-size` follows the window's height only; the
+  area's min-height and the background read it, and the docked lists stretch
+  to it. `--wheel-size` is that, and from `lg` also no wider than the space
+  between the DOCKED lists (window less 37rem + 14px, 41rem from `3cols`, less
+  2rem); the area's padding centres the wheel in that gap. The wheel used to
+  follow the height alone, so narrowing a desktop window slid it under the
+  lists (247px at 1100x950). **Keep them two variables**: the first fix used
+  one, and the lists shrank with the wheel (760px to 391px tall at 950px
+  high). Flow 43 holds both.
+- **On a phone the two side lists' restore tabs show only while BOTH lists
+  are shut.** The lists are 20rem wide, so on a 320px screen each list's hide
+  tab sat exactly under the other list's restore tab (both pinned to the same
+  edge): tapping "hide" opened the other list, and the wheel could never be
+  reached. Flow 42 taps by coordinate, as a finger does.
+- **The pop-up body has a fixed height on `sm`+** (`--body-h`, the poster
+  actually drawn): Watch and the actions are its `auto` bottom row and never
+  move, and the titles + nicknames above scroll in what is left. With six
+  nickname rows the column was ~548px and pushed Hide and Mark out of view on
+  every window up to 1366x768; flow 40 seeds six nicknamers to hold that.
+- **The show pop-up's layout is a grid**: one column on a phone (nicknames,
+  cover, then Watch and the actions), and from `sm` the cover on the left with
+  the English/romaji names and nicknames at the top of the right column - only
+  the main title spans the box - and Watch + the actions together at its foot. Stacked it was ~705px tall with a Watch button and two nickname
+  rows, which put Watch and Mark as watched below the fold on a 1366x768 laptop
+  (~657px of page) inside a box 768px wide. **Side by side, it is sized from
+  the video player's pop-up and is never the taller of the two** (by request):
+  `.show-popup` in Randomize's `<style>` mirrors `JellyfinPlayerModal`'s box
+  (16:9 video plus 81px of chrome, measured at nine window sizes), the poster
+  takes that height less 7.5rem for the padding and a two-line title, and the
+  box is `w-fit` around it. Caps: 460px wide (AniList serves every cover 460
+  wide - more would upscale into blur), 40vw (keeps Hide and Mark on one row),
+  ratio 0.68 (the narrowest cover measured). Measured 2026-10-11: 288x409 at
+  1366x657 (pop-up 501px vs the player's 544px), 460x652 at 1920x969 (744px vs
+  831px). Where the player is shorter than the right column's text (~428px, at
+  640x700, 768x1024 and 1280x520) the box stops at the player's height and its
+  foot scrolls by under 20px, buttons still in view. **Change the player's box
+  and this follows only if `.show-popup` is changed too** - flow 40 step 7
+  opens the real player (stream aborted) to catch the drift. **The
+  close X is `sticky`, not `absolute`**: `.modal-box` scrolls its own overflow,
+  and on a phone the absolute X scrolled away with the content (y=-114 at
+  375x667), leaving only Mark as watched and Hide Series, which both write.
+  Hide and Mark sit in normal flow at either end of the action row - Hide used
+  to be `absolute left-0` beside a centred Mark, and on a phone the two
+  overlapped by 37px. The box is capped at `100dvh`, not DaisyUI's `100vh`,
+  which on a phone is the viewport with the address bar hidden. Flow 40 pins the
+  phone close, the overlap, and the laptop fit.
 - When Jellyfin is configured, the show pop-up gains a **Watch here - SxEy** button
   (`JellyfinPlayerModal.svelte`) plus a "Library: <matched title>" caption so
   a bad match is visible; title-only matches are marked **unconfirmed**.

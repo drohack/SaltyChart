@@ -832,6 +832,27 @@ $: _lang = $options.titleLanguage;
     }
   }
 
+  // The options panel beside the wheel ("Add Watched to" + "Nicknames from")
+  // folds to its top row. Remembered per browser: it is a layout preference, not
+  // account data, and losing it to blocked storage costs one click.
+  const OPTIONS_COLLAPSED_KEY = 'randomizeOptionsCollapsed';
+  let optionsCollapsed = (() => {
+    try {
+      return localStorage.getItem(OPTIONS_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
+
+  function toggleOptionsCollapsed() {
+    optionsCollapsed = !optionsCollapsed;
+    try {
+      localStorage.setItem(OPTIONS_COLLAPSED_KEY, optionsCollapsed ? '1' : '0');
+    } catch (err) {
+      console.warn('[randomize] could not store the options panel state:', err);
+    }
+  }
+
   // Separate entries into watched/unwatched for easier handling.
   //  * watchedEntries is needed for the ranking sidebar.
   //  * We no longer hide watched shows from the left sidebar - that list now
@@ -1308,6 +1329,8 @@ const sliceWorker: Worker = new SliceWorker();
   }
 
   let showModal = false;
+  $: selectedWatched = !!selected &&
+    !!(selected.watched || watchList.find((w) => w.mediaId === selected.id)?.watched);
 
 // Global key handler (attached while modal is open) so the Enter key triggers
 // the same action irrespective of which element currently has focus.
@@ -1670,8 +1693,12 @@ $: {
     />
   </div>
 
-  <!-- Container: wheel grows to fill remaining space -->
-  <div class="relative w-full flex justify-center items-center overflow-visible flex-1" style="min-height: min(95vmin, calc(100dvh - 195px));">
+  <!-- Container: wheel grows to fill remaining space. `wheel-area` (see
+       <style>) owns the wheel's size; from `lg` the padding matches the docked
+       lists, so the wheel centres in the space between them, not on the page.
+       Absolutely positioned children (the lists, the background) ignore the
+       padding - they sit against the padding edge as before. -->
+  <div class="wheel-area relative w-full flex justify-center items-center overflow-visible flex-1 lg:pl-[calc(16rem+7px)] 3cols:lg:pl-[calc(20rem+7px)] lg:pr-[calc(21rem+7px)]" style="min-height: var(--area-size);">
     <div class="flex flex-col items-center mx-auto">
       {#if loading}
         <LoadingSpinner size="lg" />
@@ -1683,7 +1710,7 @@ $: {
           <div
             class="absolute lg:left-[calc(16rem+7px)] 3cols:lg:left-[calc(20rem+7px)] lg:right-[calc(21rem+7px)]"
             style="
-              height: min(95vmin, calc(100dvh - 195px));
+              height: var(--area-size);
               background-image: url({backgroundImage});
               background-size: cover;
               background-position: center;
@@ -1697,9 +1724,8 @@ $: {
           id="wheel-wrapper"
           class="relative mx-auto overflow-visible select-none"
           style="
-            /* 52 header + 72 selector + 52 extra + 19 buffer -> 195px total */
-            width: min(95vmin, calc(100dvh - 195px));
-            height: min(95vmin, calc(100dvh - 195px));
+            width: var(--wheel-size);
+            height: var(--wheel-size);
             margin-bottom: 5px; /* keep a sliver of space below wheel */
             z-index: 1;
           "
@@ -1982,7 +2008,12 @@ $: {
       {/if}
     </aside>
 
-    {#if unwatchedCollapsed}
+    <!-- The restore tabs show only while BOTH lists are shut. Each list's own
+         hide tab sits on its inner edge, which on a 320px phone (the lists are
+         20rem wide) is exactly where the OTHER list's restore tab is pinned -
+         so tapping "hide" hit "show the other one" instead, and with one list
+         always open the wheel could never be reached. -->
+    {#if unwatchedCollapsed && watchedCollapsed}
       <!-- Restore tab for Unwatched list (mobile only) -->
       <button
         class="lg:hidden fixed z-50 left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center"
@@ -2060,8 +2091,9 @@ $: {
       </div>
     </div>
 
-    {#if watchedCollapsed}
-      <!-- Restore tab for Watched list -->
+    {#if watchedCollapsed && unwatchedCollapsed}
+      <!-- Restore tab for Watched list (mobile only; shown on the same terms as
+           the Unwatched one above) -->
       <button
         class="lg:hidden fixed z-50 right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center"
         style="width: 1.25rem;"
@@ -2075,74 +2107,127 @@ $: {
       </button>
     {/if}
 
-    <!-- Nickname user picker panel (aligned with Watched sidebar) -->
-    <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm space-y-1 z-30 hidden lg:block right-[calc(21rem+7px)]">
-      <!-- Add watched position preference -->
-      <div class="mb-4 pb-3 border-b border-base-300">
-        <h3 class="font-semibold mb-2">Add Watched to:</h3>
-        <div class="flex flex-row gap-3">
-          <label class="flex items-center gap-1 cursor-pointer">
-            <input
-              type="radio"
-              class="radio radio-xs"
-              name="addWatchedPosition"
-              value="TOP"
-              bind:group={$options.addWatchedTo}
-            />
-            Top
-          </label>
-          <label class="flex items-center gap-1 cursor-pointer">
-            <input
-              type="radio"
-              class="radio radio-xs"
-              name="addWatchedPosition"
-              value="BOTTOM"
-              bind:group={$options.addWatchedTo}
-            />
-            Bottom
-          </label>
+    <!-- Nickname user picker panel (aligned with Watched sidebar). The whole top
+         row folds it to a single line, so it can be cleared off the wheel's
+         background without losing the settings; the body keeps its old spacing,
+         so unfolding returns it to exactly the same size.
+         Desktop-only ON PURPOSE: a folded bar floating over the wheel on phones
+         and tablets was tried and judged clutter - the defaults serve there. -->
+    <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm z-30 hidden lg:block right-[calc(21rem+7px)]">
+      <button
+        type="button"
+        class="w-full flex items-center justify-between gap-2 text-left font-semibold rounded hover:bg-base-300/60"
+        data-options-toggle
+        aria-expanded={!optionsCollapsed}
+        aria-controls="randomize-options-body"
+        title={optionsCollapsed ? 'Show these options' : 'Fold these options up'}
+        on:click={toggleOptionsCollapsed}
+      >
+        <span class="min-w-0 truncate">
+          Add Watched to:{#if optionsCollapsed}
+            <span class="font-normal opacity-70 ml-1">{$options.addWatchedTo === 'BOTTOM' ? 'Bottom' : 'Top'}</span>
+          {/if}
+        </span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-4 w-4 shrink-0 transition-transform duration-200"
+          class:rotate-180={optionsCollapsed}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <!-- Chevron pointing up (^): folds the panel; flipped when folded -->
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+        </svg>
+      </button>
+
+      {#if !optionsCollapsed}
+        <div id="randomize-options-body" class="space-y-1" data-options-body>
+          <!-- Add watched position preference -->
+          <div class="pt-2 mb-4 pb-3 border-b border-base-300">
+            <div class="flex flex-row gap-3">
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  class="radio radio-xs"
+                  name="addWatchedPosition"
+                  value="TOP"
+                  bind:group={$options.addWatchedTo}
+                />
+                Top
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  class="radio radio-xs"
+                  name="addWatchedPosition"
+                  value="BOTTOM"
+                  bind:group={$options.addWatchedTo}
+                />
+                Bottom
+              </label>
+            </div>
+          </div>
+
+          <h3 class="font-semibold mb-2">Nicknames from:</h3>
+
+          {#if $nicknameAllUsers.length}
+            {#each $nicknameAllUsers as user}
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-xs"
+                  checked={$nicknameSelected.has(user)}
+                  on:change={() => toggleNicknameUser(user)}
+                />
+                {user}
+              </label>
+            {/each}
+          {:else}
+            <p class="italic opacity-60">No other users yet</p>
+          {/if}
         </div>
-      </div>
-
-      <h3 class="font-semibold mb-2">Nicknames from:</h3>
-
-      {#if $nicknameAllUsers.length}
-        {#each $nicknameAllUsers as user}
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              class="checkbox checkbox-xs"
-              checked={$nicknameSelected.has(user)}
-              on:change={() => toggleNicknameUser(user)}
-            />
-            {user}
-          </label>
-        {/each}
-      {:else}
-        <p class="italic opacity-60">No other users yet</p>
       {/if}
     </div>
   </div> <!-- end flex container -->
 
   {#if showModal && selected}
     <dialog open class="modal">
-      <div class="modal-box w-full max-w-3xl">
-        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" on:click={() => (showModal = false)}>✕</button>
+      <!-- 100dvh, not DaisyUI's 100vh: on a phone 100vh is the viewport with the
+           address bar hidden, so the box could start underneath it. -->
+      <!-- `show-popup` (see <style>) sizes the side-by-side view from the
+           video player's pop-up, so this is never the taller of the two. Pick
+           mode keeps a plain width: it is a search list, not a poster. -->
+      <div class="modal-box w-full max-h-[calc(100dvh-2rem)] {pickOpen ? 'max-w-4xl' : 'show-popup sm:w-fit sm:max-w-[95vw]'}">
+        <!-- Sticky, not absolute. `.modal-box` scrolls its own overflow, and on a
+             phone the pop-up is taller than the screen: an absolute X scrolled
+             away with the content (measured at 375x667: y=-114 once Mark as
+             watched was in view), leaving only buttons that change your list.
+             The zero-height row keeps it from pushing the title down. -->
+        <div class="sticky top-0 z-10 h-0 flex justify-end">
+          <button
+            class="btn btn-sm btn-circle btn-ghost bg-base-100/80 -mr-4 -mt-4"
+            aria-label="Close"
+            data-popup-close
+            on:click={() => (showModal = false)}>&#10005;</button>
+        </div>
 
         <!-- Main title: custom name if exists, otherwise English title -->
-        <h3 class="font-bold text-lg mb-1">
+        <h3 class="font-bold text-lg mb-4 pr-8">
           {selected.customName || getEnglishTitle(selected)}
           {#if myRank != null}
             <span class="text-base font-normal opacity-70">(#{myRank})</span>
           {/if}
         </h3>
 
-        <!-- Always show English title below (non-bold) -->
-        <p class="mb-1 text-base text-base-content/70">
-          {getEnglishTitle(selected)}
-        </p>
-
         {#if pickOpen}
+          <!-- Pick mode has no right column to hold it, so the English title
+               stays under the main one here. -->
+          <p class="-mt-3 mb-1 text-base text-base-content/70">
+            {getEnglishTitle(selected)}
+          </p>
           <!-- Pick mode REPLACES the pop-up body rather than floating over it.
                `.modal-box` is itself a scroll container, so a dropdown inside
                it produced two competing scrollbars, clipped the results, and
@@ -2235,7 +2320,28 @@ $: {
           </div>
         {:else}
 
-        <!-- Only show Romaji title if different from English (non-bold) -->
+        <!-- One column on a phone; from `sm` the cover moves to the left with
+             everything else beside it. Stacked, the pop-up is ~705px tall with a
+             Watch button and two nickname rows, so on a laptop (a 1366x768
+             screen leaves ~657px of page) Watch and Mark as watched were below
+             the fold - in a box 768px wide with the cover alone in the middle.
+             The grid, not two flex columns, keeps the phone order: titles,
+             nicknames, cover, then the rest. Only the main title spans the top:
+             the English and romaji names head the right column, so the whole
+             left side is poster. The poster's size is `--poster-w` /
+             `--poster-h` from `.show-popup` in <style>.
+             On `sm` the body has a FIXED height (the poster's), so the right
+             column cannot outgrow it: Watch and the actions are the `auto` row
+             at the bottom, and the titles and nicknames above take what is left
+             and scroll inside it. With six nickname rows the column was ~548px,
+             and every window up to 1366x768 pushed Hide and Mark out of view. -->
+        <div class="grid grid-cols-1 sm:grid-cols-[var(--poster-w)_minmax(0,28rem)] sm:grid-rows-[minmax(0,1fr)_auto] sm:h-[var(--body-h)] sm:gap-x-6"
+          data-popup-body>
+        <div class="sm:col-start-2 sm:row-start-1 sm:min-h-0 sm:overflow-y-auto">
+        <!-- Always show the English title (non-bold); romaji only when it differs -->
+        <p class="mb-1 text-base text-base-content/70">
+          {getEnglishTitle(selected)}
+        </p>
         {#if !titlesAreSame(selected)}
           <p class="mb-4 text-base text-base-content/70">
             {getRomajiTitle(selected)}
@@ -2243,9 +2349,8 @@ $: {
         {:else}
           <div class="mb-4"></div>
         {/if}
-
         {#if nicknameList.length}
-          <div class="mb-6">
+          <div class="mb-6 sm:mb-4">
             <h4 class="font-semibold mb-1 text-sm">Other users' nicknames:</h4>
             <ul class="list-disc list-inside space-y-1 text-sm">
               {#each nicknameList.filter(n => $nicknameSelected.has(n.userName) && n.userName !== $activeUserName) as n}
@@ -2265,7 +2370,14 @@ $: {
             </ul>
           </div>
         {/if}
-        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={getDisplayTitle(selected)} class="w-56 mx-auto mb-6" />
+        </div>
+        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={getDisplayTitle(selected)}
+          class="w-56 mx-auto mb-6 sm:w-full sm:h-full sm:object-contain sm:object-left-top sm:m-0 sm:col-start-1 sm:row-start-1 sm:row-span-2" />
+        <!-- The bottom row: Watch, the library line and the actions sit together
+             at the foot of the cover, so everything you can press is in one
+             place and never scrolls; the nicknames above are reading, not doing. -->
+        <!-- The divider marks where the scrolling titles/nicknames end. -->
+        <div class="flex flex-col sm:col-start-2 sm:row-start-2 sm:mt-2 sm:pt-3 sm:border-t sm:border-base-300">
         {#if watchInfo?.available}
           <div class="flex flex-col items-center gap-1 mb-4">
             <!-- The player chunk is heavy (weight on `warmPlayerAssets`), so on
@@ -2355,15 +2467,19 @@ $: {
             </button>
           </div>
         {/if}
-        <div class="modal-action relative flex justify-center">
-          {#if selected.watched || watchList.find(w => w.mediaId === selected.id)?.watched}
+        <div class="modal-action flex flex-wrap items-center gap-2 sm:mt-2"
+          class:justify-center={selectedWatched}
+          class:justify-between={!selectedWatched}>
+          {#if selectedWatched}
             <!-- Watched series: only show unwatch button (same pink color as Hide Series) -->
             <button class="btn btn-secondary" on:click={() => { showModal = false; toggleWatched(selected.id, false); }}>
               Mark as Unwatched
             </button>
           {:else}
-            <!-- Unwatched series: show hide and watch buttons -->
-            <button class="btn btn-secondary absolute left-0" on:click={hideSelectedSeries}>
+            <!-- Unwatched series: Hide at one end, Mark at the other, in normal
+                 flow. Hide used to be `absolute left-0` beside a centred Mark;
+                 on a phone the two overlapped by 37px at 375 wide. -->
+            <button class="btn btn-secondary" data-popup-hide on:click={hideSelectedSeries}>
               <span class="flex flex-col items-center leading-tight">
                 <span>Hide Series</span>
                 <span class="text-xs opacity-70">(Unwatched)</span>
@@ -2371,6 +2487,8 @@ $: {
             </button>
             <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
           {/if}
+        </div>
+        </div>
         </div>
         {/if}
       </div>
@@ -2481,6 +2599,74 @@ $: {
 </main>
 
 <style>
+  /* Two sizes, deliberately separate. `--area-size` is the wheel area's
+     height, and the docked lists stretch to it (`top-0 bottom-0`), as does the
+     background: it follows the window's HEIGHT only. 195px is 52 header + 72
+     season selector + 52 extra + 19 buffer. `--wheel-size` is the wheel itself:
+     the same, and from `lg` also no wider than the space between the DOCKED
+     lists (16rem + 7px on the left, 20rem from `3cols`; 21rem + 7px on the
+     right) less 2rem. Without that cap, narrowing a desktop window slid the
+     wheel under the lists (247px of it at 1100x950). With ONE variable for
+     both, the cap also shrank the area, and the lists with it - 760px tall at
+     1600x950, 391px at 1024x950 - for a change that was only ever about width.
+     Below `lg` the lists slide over the page, so the full width is the wheel's. */
+  .wheel-area {
+    --area-size: min(95vmin, calc(100dvh - 195px));
+    --wheel-size: var(--area-size);
+  }
+  @media (min-width: 1024px) {
+    .wheel-area {
+      --wheel-size: min(var(--area-size), calc(100vw - 37rem - 14px - 2rem));
+    }
+  }
+  @media (min-width: 1732px) {
+    .wheel-area {
+      --wheel-size: min(var(--area-size), calc(100vw - 41rem - 14px - 2rem));
+    }
+  }
+
+  /* The show pop-up, side by side (`sm` and up), is sized from the video
+     player's pop-up so it is never the taller of the two - and so it grows with
+     the screen instead of stopping at a fixed size. `--player-w` / `--player-h`
+     mirror `JellyfinPlayerModal.svelte`'s `.modal-box` (95% / 5/6 / 4/5 of the
+     window, never wider than `(92vh - 8rem) * 16/9`): 16:9 video plus 81px of
+     title row, hint and padding, measured 2026-10-11 at nine window sizes from
+     640x700 to 2560x1271 (410px to 1109px tall). Change that box and this
+     follows only if this is changed too.
+     The poster takes the player's height less 7.5rem (the box padding and a
+     main title of up to two lines). Its width is capped at 460px, the
+     resolution AniList serves covers at (measured: every one 460 wide), so it
+     never upscales into blur, and at 40vw so the right column keeps room for
+     Hide and Mark on one line. 0.68 is the narrowest cover ratio measured
+     (460x672); `max-height` on the image catches anything narrower still.
+     Phones keep the stacked, scrolling layout: a phone's player is ~270px
+     tall, and capping the pop-up to that would make it all scroll. */
+  .show-popup {
+    --player-w: min(95vw, calc((92vh - 8rem) * 16 / 9));
+    --player-h: calc((var(--player-w) - 24px) * 9 / 16 + 81px);
+    --poster-h: calc(var(--player-h) - 7.5rem);
+    --poster-w: min(460px, 40vw, calc(var(--poster-h) * 0.68));
+    /* The body is as tall as the poster actually drawn: its height when height
+       is the limit, else its width over a typical cover's 0.705. Taller than
+       the cover would leave a gap under it; shorter would clip it. */
+    --body-h: min(var(--poster-h), calc(var(--poster-w) / 0.705));
+  }
+  @media (min-width: 640px) {
+    .show-popup {
+      max-height: min(calc(100dvh - 2rem), var(--player-h));
+    }
+  }
+  @media (min-width: 768px) {
+    .show-popup {
+      --player-w: min(83.333vw, calc((92vh - 8rem) * 16 / 9));
+    }
+  }
+  @media (min-width: 1024px) {
+    .show-popup {
+      --player-w: min(80vw, calc((92vh - 8rem) * 16 / 9));
+    }
+  }
+
   /* Ensure extremely long words wrap while still preferring spaces */
   .force-wrap {
     overflow-wrap: anywhere; /* allows break inside long words only if needed */

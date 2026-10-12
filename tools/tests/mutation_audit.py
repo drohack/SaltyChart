@@ -3305,6 +3305,123 @@ MUTATIONS: list[Mutation] = [
         expect="an unverified match the rules want must be in Needs attention",
         guards="a held-back show waits silently instead of asking for a Confirm",
     ),
+    Mutation(
+        name="the pop-up's X scrolls away with the content on a phone again",
+        path=RANDOMIZE,
+        # `.modal-box` scrolls its own overflow; without `sticky` the X sits at
+        # the top of the content and leaves with it (y=-114 at 375x667), so the
+        # only exits on screen both write to the list.
+        find='<div class="sticky top-0 z-10 h-0 flex justify-end">',
+        replace='<div class="h-0 flex justify-end"><!-- mutation -->',
+        flows=("phone popup close",),
+        test=T_UI,
+        expect="close button scrolled out of view on a phone",
+        guards="a phone user can only leave a rolled show by marking it watched "
+               "or hiding it",
+    ),
+    Mutation(
+        name="Hide Series is pinned left on a phone again",
+        path=RANDOMIZE,
+        find='<button class="btn btn-secondary" data-popup-hide',
+        replace='<button class="btn btn-secondary absolute left-0" data-popup-hide',
+        flows=("phone popup close",),
+        test=T_UI,
+        expect="Hide Series and Mark as watched overlap",
+        guards="the pop-up's two action buttons sit on top of each other on a "
+               "phone, so a tap meant for one lands on the other",
+    ),
+    Mutation(
+        name="the pop-up stacks into one column on a laptop again",
+        path=RANDOMIZE,
+        find='<div class="grid grid-cols-1 sm:grid-cols-[var(--poster-w)_minmax(0,28rem)] sm:grid-rows-[minmax(0,1fr)_auto] sm:h-[var(--body-h)] sm:gap-x-6"',
+        # Not `grid grid-cols-1`: the children's `sm:col-start-2` would grow an
+        # implicit second column and leave it side by side. Flex ignores grid
+        # placement, which is exactly the old stacked layout.
+        replace='<div class="flex flex-col" data-mutation',
+        flows=("phone popup close",),
+        test=T_UI,
+        expect="the pop-up scrolls on a 1366x768 laptop",
+        guards="on a 1366x768 laptop Watch and Mark as watched sit below the "
+               "fold of the pop-up",
+    ),
+    Mutation(
+        name="the player's pop-up shrinks and the show pop-up does not follow",
+        path="frontend/src/components/JellyfinPlayerModal.svelte",
+        # The show pop-up mirrors this box in CSS rather than measuring it, so a
+        # change here silently makes the show pop-up the taller of the two.
+        find="max-w-[calc((92vh-8rem)*16/9)]",
+        replace="max-w-[calc((70vh-8rem)*16/9)]",
+        flows=("phone popup close",),
+        test=T_UI,
+        expect="the show pop-up is taller than the video player's pop-up",
+        guards="the show pop-up outgrows the video player it opens",
+    ),
+    Mutation(
+        name="a list's restore tab covers the other list's hide tab on a 320px phone",
+        path=RANDOMIZE,
+        find="    {#if watchedCollapsed && unwatchedCollapsed}",
+        replace="    {#if watchedCollapsed} <!-- mutation -->",
+        flows=("phone sidebars reach the wheel",),
+        test=T_UI,
+        expect="tapping Hide Unwatched list on a 320px phone left a list open",
+        guards="on a 320px phone one side list is always open and the wheel "
+               "cannot be reached",
+    ),
+    Mutation(
+        name="many nicknames push the pop-up's buttons out of view again",
+        path=RANDOMIZE,
+        # Without the fixed body height the right column grows with its
+        # nickname rows, and the box (capped at the player's height) scrolls.
+        find=" sm:h-[var(--body-h)] sm:gap-x-6",
+        replace=" sm:gap-x-6 data-mutation",
+        flows=("phone popup close",),
+        test=T_UI,
+        expect="the pop-up scrolls on a 1366x768 laptop",
+        guards="a show many people have nicknamed has its Watch / Hide / Mark "
+               "buttons below the fold on a laptop",
+    ),
+    Mutation(
+        name="the wheel's size ignores the docked lists again",
+        path=RANDOMIZE,
+        find="      --wheel-size: min(var(--area-size), calc(100vw - 37rem - 14px - 2rem));",
+        replace="      --wheel-size: var(--area-size); /* mutation */",
+        flows=("wheel fits between lists",),
+        test=T_UI,
+        expect="the wheel slides under the docked lists at 1100x950",
+        guards="narrowing a desktop window slides the wheel under the side lists",
+    ),
+    Mutation(
+        name="the wheel area shrinks with the wheel, taking the lists with it",
+        path=RANDOMIZE,
+        find='style="min-height: var(--area-size);">',
+        replace='style="min-height: var(--wheel-size);"><!-- mutation -->',
+        flows=("wheel fits between lists",),
+        test=T_UI,
+        expect="the docked lists got shorter when only the width shrank",
+        guards="narrowing a desktop window shrinks both side lists",
+    ),
+    Mutation(
+        name="the options panel's fold is not remembered",
+        path=RANDOMIZE,
+        find="      localStorage.setItem(OPTIONS_COLLAPSED_KEY, optionsCollapsed ? '1' : '0');",
+        replace="      /* mutation: fold not stored */",
+        flows=("options panel collapse",),
+        test=T_UI,
+        expect="the options panel unfolded itself on reload",
+        guards="the folded panel reappears over the wheel on every visit",
+    ),
+    Mutation(
+        name="the options panel's top row stops folding it",
+        path=RANDOMIZE,
+        find="        on:click={toggleOptionsCollapsed}",
+        # The comment goes INSIDE the braces: after them it is markup, the
+        # component stops compiling, and the flow dies on a timeout instead.
+        replace="        on:click={() => { /* mutation */ }}",
+        flows=("options panel collapse",),
+        test=T_UI,
+        expect="did not fold it",
+        guards="the panel beside the wheel can no longer be folded away",
+    ),
 ]
 
 

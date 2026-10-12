@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 39 flows.
+Pre-deploy smoke test: frontend UI interactions - 43 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -12,7 +12,7 @@ The flows, and the trap each was watched to fail on:
 Button-click smoke (1-9): login, search filter, hide 18+, season change,
 add-to-list, theme, wheel spin, logout, trailer-modal Escape. The Escape step
 must NOT fall back to a backdrop click - that fallback is how it passed for
-months while Escape closed nothing - and it also asserts the trailer's ✕
+months while Escape closed nothing - and it also asserts the trailer's X
 button exists.
 
 Correctness the old assertions never checked:
@@ -135,6 +135,30 @@ One status vocabulary across the admin pages (39):
   while the same problem on a show nothing wants does not. The report is
   stubbed so all three shapes are present on any season.
 
+The Randomize pop-up and panel on the sizes people use them at (40-41):
+- the pop-up on a phone (40): at 375x667 the box scrolls, and the X used to
+  scroll away with it, leaving only Mark as watched and Hide Series - which
+  also overlapped by 37px. Asserts the box really scrolls first (or the flow
+  proves nothing), then that the X is on screen when scrolled to the bottom,
+  the two buttons don't overlap, and closing writes nothing. Then the laptop
+  half: at 1366x657 (a 1366x768 screen minus browser chrome) the stacked
+  pop-up was ~705px, putting Watch and Mark as watched below the fold; it is
+  side by side from `sm` up now, and must fit without scrolling - and be no
+  taller than the video player's pop-up, measured by opening the real player
+  with its stream route aborted (no transcode starts).
+- the options panel beside the wheel (41) folds to one line, stays folded
+  across a reload, and unfolds to exactly its original height.
+- both side lists close on a 320px phone (42). The lists are 20rem wide, so on
+  a 320px screen each one's hide tab sat exactly under the other list's
+  restore tab: tapping "hide" opened the other list, and the wheel could never
+  be reached. Taps by COORDINATE, not by locator - a locator click waits out
+  the covering element and fails on a timeout, never on the invariant.
+- the wheel fits between the docked lists (43). Its size only followed the
+  window's height, so narrowing a desktop window slid it under the lists -
+  247px of it at 1100x950. Asserted at that size: nothing hidden, centred in
+  the space between them - and the lists the same height as at 1600x950,
+  because the first fix shrank them along with the wheel.
+
 Seeds from live season data - the old hardcoded mediaIds aged out of the
 season entirely, so every seeded list joined against zero shows and the
 looser assertions passed anyway.
@@ -157,7 +181,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 39
+TOTAL = 43
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -188,6 +212,40 @@ def seed_list(backend: str, token: str, ids: list[int]) -> None:
                      json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
                            "items": [{"mediaId": m} for m in ids]})
     assert r.status_code == 200, f"seeding failed: {r.status_code} {r.text[:120]}"
+
+
+def unhide(backend: str, token: str, ids: list[int]) -> None:
+    """Clear the hidden flag on seeded entries.
+
+    `PUT /api/list` deliberately PRESERVES `hidden` across its delete/recreate,
+    so re-seeding does not undo an earlier flow's hides - and a hidden row
+    ignores clicks by design. Flow 40 passed alone and failed in the full run
+    for exactly this reason: Hide Not English (38) had hidden its first row.
+    """
+    for m in ids:
+        r = requests.patch(f"{backend}/api/list/hidden", timeout=15,
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                                 "mediaId": m, "hidden": False})
+        assert r.status_code == 200, f"unhiding {m} failed: {r.status_code} {r.text[:120]}"
+
+
+def open_first_popup(page) -> None:
+    """Open the Randomize pop-up from the first row that CAN open one.
+
+    Watched and hidden rows ignore clicks on purpose, so "the first row" is not
+    good enough; `tabindex="0"` is exactly the rows whose click opens it.
+    """
+    row = page.locator('aside li[role=button][tabindex="0"]').first
+    row.wait_for(timeout=30_000)
+    row.click()
+    try:
+        page.wait_for_selector("dialog .modal-box", timeout=15_000)
+    except Exception:
+        raise AssertionError("clicking an unwatched, unhidden row did not open the pop-up")
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('dialog .modal-box img')]"
+        ".every(i => i.complete)", timeout=15_000)
 
 
 def pin_season(page) -> None:
@@ -2830,6 +2888,10 @@ SELECTABLE_FLOWS = {
     "compare share image",
     "nicknames set and shown",
     "matching shows sonarr problems",
+    "phone popup close",
+    "options panel collapse",
+    "phone sidebars reach the wheel",
+    "wheel fits between lists",
 }
 
 
@@ -3233,6 +3295,323 @@ def test_subtitle_track_picker(page, frontend: str):
     step(37, "PASS - forced-but-full English is used; signs lose to dialogue")
 
 
+def test_phone_popup_close(page, backend: str, frontend: str, token: str):
+    """On a phone, the Randomize pop-up can be closed without changing anything.
+
+    Measured at 375x667 before the fix: the pop-up's content (749px) is taller
+    than its box (587px), so `.modal-box` scrolls - and the X was `absolute`
+    inside it, so scrolling down to the action buttons took the X to y=-114.
+    What was left on screen were Mark as watched and Hide Series, both of which
+    write to the list. Those two also overlapped by 37px, because Hide was
+    pinned `absolute left-0` beside a centred button in a box too narrow for
+    both - so the pop-up's only exits were two buttons stacked on each other.
+    """
+    step(40, "step 1/7: seeding an unwatched list and opening /random at 375x667")
+    ids = season_ids(backend, 3)
+    seed_list(backend, token, ids)
+    unhide(backend, token, ids)
+    original = page.viewport_size
+    page.set_viewport_size({"width": 375, "height": 667})
+    writes: list = []
+    def on_req(req):
+        if req.method == "PATCH" and re.search(r"/api/list/(watched|hidden)", req.url):
+            writes.append(req.url)
+    page.on("request", on_req)
+    try:
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.click('button[aria-label="Show Unwatched list"]', timeout=30_000)
+        # The cover decides the content height; open_first_popup waits for it.
+        open_first_popup(page)
+
+        step(40, "step 2/7: the pop-up must scroll - otherwise this flow tests nothing")
+        sizes = page.evaluate("() => { const b = document.querySelector('dialog .modal-box');"
+                              " return [b.scrollHeight, b.clientHeight]; }")
+        assert sizes[0] > sizes[1], (
+            f"the pop-up no longer scrolls at 375x667 (content {sizes[0]}px, box "
+            f"{sizes[1]}px) - the close button cannot be tested for staying in view")
+
+        step(40, "step 3/7: scrolled to the action buttons, the X is still on screen")
+        page.evaluate("() => { const b = document.querySelector('dialog .modal-box');"
+                      " b.scrollTop = b.scrollHeight; }")
+        page.wait_for_timeout(200)
+        seen = page.evaluate("""() => {
+            const x = document.querySelector('dialog [data-popup-close]');
+            if (!x) return { missing: true };
+            const r = x.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return { top: r.top, bottom: r.bottom, onTop: !!hit && (hit === x || x.contains(hit)) };
+        }""")
+        assert not seen.get("missing"), "the pop-up has no [data-popup-close] button"
+        assert seen["top"] >= 0 and seen["bottom"] <= 667 and seen["onTop"], (
+            f"the pop-up's close button scrolled out of view on a phone ({seen}) - "
+            "the only exits left on screen are Mark as watched and Hide Series, "
+            "which both change the list")
+
+        step(40, "step 4/7: the two action buttons sit side by side, not on each other")
+        boxes = page.evaluate("""() => [...document.querySelectorAll('dialog .modal-action button')]
+            .map(b => { const r = b.getBoundingClientRect();
+                        return { l: r.left, r: r.right, t: r.top, b: r.bottom }; })""")
+        assert len(boxes) == 2, f"expected Hide Series + Mark as watched, found {len(boxes)} buttons"
+        a, b = boxes
+        overlap_x = min(a["r"], b["r"]) - max(a["l"], b["l"])
+        overlap_y = min(a["b"], b["b"]) - max(a["t"], b["t"])
+        assert overlap_x <= 0 or overlap_y <= 0, (
+            f"Hide Series and Mark as watched overlap by {overlap_x:.0f}px on a phone - "
+            "a tap meant for one can land on the other")
+
+        step(40, "step 5/7: X closes it and writes nothing")
+        writes.clear()
+        page.click("dialog [data-popup-close]")
+        page.wait_for_selector("dialog .modal-box", state="detached", timeout=5_000)
+        page.wait_for_timeout(1000)
+        assert not writes, f"closing the pop-up wrote to the list: {writes}"
+        stored = requests.get(f"{backend}/api/list", timeout=15,
+                              headers={"Authorization": f"Bearer {token}"},
+                              params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+        changed = [w["mediaId"] for w in stored if w.get("watched") or w.get("hidden")]
+        assert not changed, f"closing the pop-up left entries watched or hidden: {changed}"
+
+        # A 1366x768 laptop leaves ~657px of page. Stacked, the pop-up was ~705px
+        # with a Watch button, so Watch and Mark as watched sat below the fold in
+        # a box 768px wide with the cover alone in the middle of it. The cover
+        # now grows with the window's height, so this also guards that it never
+        # grows past what the screen can hold.
+        step(40, "step 6/7: on a 1366x768 laptop the whole pop-up fits without scrolling")
+        # Put a show the library HOLDS first, so the pop-up has its Watch button
+        # (the tallest version of it) and step 7 has a player to open.
+        held = None
+        auth = {"Authorization": f"Bearer {token}"}
+        if requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json().get("configured"):
+            anime = requests.get(f"{backend}/api/anime", timeout=120,
+                                 params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+            items = [{"mediaId": a["id"], "titles": [t for t in ((a.get("title") or {}).get("english"),
+                                                              (a.get("title") or {}).get("romaji")) if t]}
+                     for a in anime[:40]]
+            verdicts = requests.post(f"{backend}/api/jellyfin/availability/batch", headers=auth,
+                                     json={"items": items}, timeout=120).json()
+            held = next((int(k) for k, v in verdicts.items()
+                         if isinstance(v, dict) and v.get("available")), None)
+            if held is not None:
+                seed_list(backend, token, [held] + [m for m in ids if m != held])
+                unhide(backend, token, [held])
+        # Six other people nickname that show, so the right column is as tall as
+        # real data makes it: with six nickname rows it was ~548px and pushed
+        # Hide and Mark out of view on every window up to 1366x768. Throwaway
+        # `ui_test_` accounts - cleanup_users.py removes them.
+        first = held if held is not None else ids[0]
+        stamp = int(time.time())
+        for k in range(6):
+            r = requests.post(f"{backend}/api/auth/signup", timeout=15,
+                              json={"username": f"ui_test_nk{k}_{stamp}", "password": "pw"})
+            assert r.status_code == 200, f"nickname fixture signup failed: {r.status_code}"
+            requests.put(f"{backend}/api/list", timeout=15,
+                         headers={"Authorization": f"Bearer {r.json()['token']}"},
+                         json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                               "items": [{"mediaId": first, "customName": f"nickname number {k}"}]}
+                         ).raise_for_status()
+        page.set_viewport_size({"width": 1366, "height": 657})
+        page.reload()
+        open_first_popup(page)
+        page.wait_for_timeout(1500)
+        fit = page.evaluate("""() => {
+            const b = document.querySelector('dialog .modal-box');
+            const off = [...b.querySelectorAll('.modal-action button')]
+                .filter(x => x.getBoundingClientRect().bottom > innerHeight).length;
+            return { content: b.scrollHeight, box: b.clientHeight, off };
+        }""")
+        assert fit["content"] <= fit["box"] and not fit["off"], (
+            f"the pop-up scrolls on a 1366x768 laptop (content {fit['content']}px, box "
+            f"{fit['box']}px, {fit['off']} action button(s) below the fold)")
+
+        # The show pop-up is sized from the player's pop-up (`.show-popup` in
+        # Randomize.svelte mirrors JellyfinPlayerModal's box), so it must never be
+        # the taller of the two. This compares against the REAL player, which is
+        # what catches the mirror drifting when the player's box changes.
+        # The stream route is aborted: opening the player must not start a
+        # transcode on the server for a size check.
+        step(40, "step 7/7: and it is no taller than the video player's pop-up")
+        if held is None:
+            step(40, "step 7/7: SKIP - Jellyfin not configured or nothing in the season is held")
+        else:
+            page.route("**/api/jellyfin/stream/**", lambda r: r.abort())
+            try:
+                page.wait_for_selector("dialog button:has-text('Watch here')", timeout=20_000)
+                page.locator("dialog button", has_text="Watch here").first.click()
+                page.wait_for_selector(".video-js", timeout=20_000)
+                page.wait_for_timeout(1000)
+                player_h = page.evaluate(
+                    "() => [...document.querySelectorAll('dialog .modal-box')].pop()"
+                    ".getBoundingClientRect().height")
+                page.keyboard.press("Escape")
+            finally:
+                page.unroute("**/api/jellyfin/stream/**")
+            assert fit["content"] <= player_h + 1, (
+                f"the show pop-up is taller than the video player's pop-up at 1366x657 "
+                f"({fit['content']}px vs {player_h:.0f}px) - `.show-popup` no longer "
+                f"mirrors JellyfinPlayerModal's box")
+    finally:
+        page.remove_listener("request", on_req)
+        page.set_viewport_size(original)
+    step(40, "PASS - the X stays in view on a phone, closing changes nothing, a laptop needs no scroll, and it is no taller than the player")
+
+
+def test_phone_sidebars_reach_the_wheel(page, backend: str, frontend: str, token: str):
+    """On a 320px phone, both side lists can be closed again.
+
+    Measured before the fix at 320x568: the centre of "Hide Unwatched list"
+    (x 300-320) was covered by "Show Watched list", pinned to the same edge, so
+    the tap closed one list and opened the other - and the reverse on the left
+    edge. With one list always open the wheel was unreachable.
+    """
+    step(42, "step 1/3: seeding a list and opening /random at 320x568")
+    seed_list(backend, token, season_ids(backend, 3))
+    original = page.viewport_size
+    page.set_viewport_size({"width": 320, "height": 568})
+    state = """() => {
+        const u = document.querySelector('button[aria-label="Hide Unwatched list"]').closest('aside').getBoundingClientRect();
+        const w = document.querySelector('button[aria-label="Hide Watched list"]').parentElement.getBoundingClientRect();
+        return { unwatched: u.right > 1, watched: w.left < innerWidth - 1 };
+    }"""
+    centre = """(label) => { const b = document.querySelector(`button[aria-label="${label}"]`);
+        if (!b) return null; const r = b.getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2]; }"""
+    def tap(label):
+        at = page.evaluate(centre, label)
+        assert at, f"no {label!r} button on the page"
+        page.mouse.click(*at)
+        page.wait_for_timeout(500)  # the lists slide over 300ms
+    try:
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.wait_for_selector('button[aria-label="Show Unwatched list"]', timeout=30_000)
+
+        for n, name in ((2, "Unwatched"), (3, "Watched")):
+            step(42, f"step {n}/3: open the {name} list, then tap its hide tab")
+            tap(f"Show {name} list")
+            opened = page.evaluate(state)
+            assert opened[name.lower()], f"the {name} list did not open: {opened}"
+            tap(f"Hide {name} list")
+            after = page.evaluate(state)
+            assert not after["unwatched"] and not after["watched"], (
+                f"tapping Hide {name} list on a 320px phone left a list open ({after}) - "
+                f"the tap landed on the other list's restore tab, so the wheel "
+                f"can never be reached")
+    finally:
+        page.set_viewport_size(original)
+    step(42, "PASS - both lists close on a 320px phone, and the wheel is reachable")
+
+
+def test_wheel_fits_between_lists(page, backend: str, frontend: str, token: str):
+    """On a narrow desktop window the wheel shrinks to the space between the lists.
+
+    From `lg` the Unwatched and Watched lists are docked either side. The
+    wheel's size was `min(95vmin, 100dvh - 195px)` - on any landscape window
+    that is the height alone - so at 1100x950 it was 755px wide in 508px of
+    room, 247px of it under the lists, and centred on the page rather than on
+    the gap between them.
+    """
+    step(43, "step 1/3: seeding a list and opening /random at 1100x950")
+    seed_list(backend, token, season_ids(backend, 3))
+    original = page.viewport_size
+    page.set_viewport_size({"width": 1100, "height": 950})
+    try:
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.wait_for_selector("#wheel-wrapper", timeout=30_000)
+        page.wait_for_timeout(1000)
+
+        step(43, "step 2/3: the wheel sits wholly between the docked lists, centred")
+        m = page.evaluate("""() => {
+            const w = document.getElementById('wheel-wrapper').getBoundingClientRect();
+            const l = document.querySelector('button[aria-label="Hide Unwatched list"]').closest('aside').getBoundingClientRect();
+            const r = document.querySelector('button[aria-label="Hide Watched list"]').parentElement.getBoundingClientRect();
+            return { wl: w.left, wr: w.right, ll: l.right, rl: r.left };
+        }""")
+        hidden = max(0, m["ll"] - m["wl"]) + max(0, m["wr"] - m["rl"])
+        assert hidden <= 1, (
+            f"the wheel slides under the docked lists at 1100x950 ({hidden:.0f}px hidden) - "
+            f"its size ignores the width the lists take")
+        off = (m["wl"] + m["wr"]) / 2 - (m["ll"] + m["rl"]) / 2
+        assert abs(off) <= 2, (
+            f"the wheel is {off:.0f}px off the centre of the space between the lists")
+
+        # The first fix used one size for the wheel AND its area, and the docked
+        # lists stretch to the area - so narrowing the window shrank the lists
+        # too (760px tall at 1600x950, 391px at 1024x950). Only the wheel may
+        # follow the width.
+        step(43, "step 3/3: the lists keep their height when only the width shrinks")
+        narrow = page.evaluate("() => document.querySelector('aside').getBoundingClientRect().height")
+        page.set_viewport_size({"width": 1600, "height": 950})
+        page.wait_for_timeout(500)
+        wide = page.evaluate("() => document.querySelector('aside').getBoundingClientRect().height")
+        assert abs(wide - narrow) <= 10, (
+            f"the docked lists got shorter when only the width shrank ({wide:.0f}px at "
+            f"1600x950, {narrow:.0f}px at 1100x950)")
+    finally:
+        page.set_viewport_size(original)
+    step(43, "PASS - the wheel fits between the docked lists, centred, and the lists keep their height")
+
+
+def test_options_panel_collapse(page, backend: str, frontend: str, token: str):
+    """The panel beside the wheel folds to one line and comes back the same size.
+
+    It is desktop-only (`hidden lg:block`), so this runs at 1600x950. The fold
+    is remembered per browser; a toggle that forgot it on reload would put the
+    panel back over the wheel every visit.
+    """
+    step(41, "step 1/4: opening /random at 1600x950")
+    seed_list(backend, token, season_ids(backend, 3))
+    original = page.viewport_size
+    page.set_viewport_size({"width": 1600, "height": 950})
+    panel = "div:has(> [data-options-toggle])"
+    try:
+        page.goto(frontend)
+        page.evaluate("t => localStorage.setItem('token', t)", token)
+        page.evaluate("() => localStorage.removeItem('randomizeOptionsCollapsed')")
+        pin_season(page)
+        page.goto(f"{frontend}/random")
+        page.wait_for_selector("[data-options-body]", timeout=30_000)
+        full = page.locator(panel).bounding_box()["height"]
+
+        step(41, "step 2/4: clicking the top row folds it to a single line")
+        page.click("[data-options-toggle]")
+        try:
+            page.wait_for_selector("[data-options-body]", state="detached", timeout=5_000)
+        except Exception:
+            raise AssertionError("clicking the options panel's top row did not fold it")
+        folded = page.locator(panel).bounding_box()["height"]
+        expanded = page.get_attribute("[data-options-toggle]", "aria-expanded")
+        assert expanded == "false", f"folded panel reports aria-expanded={expanded!r}"
+        assert folded < 60 and folded < full, (
+            f"the folded panel is {folded:.0f}px tall (open: {full:.0f}px) - not one line")
+
+        step(41, "step 3/4: the fold survives a reload")
+        page.reload()
+        page.wait_for_selector("[data-options-toggle]", timeout=30_000)
+        page.wait_for_timeout(500)
+        assert page.locator("[data-options-body]").count() == 0, (
+            "the options panel unfolded itself on reload - the fold is not "
+            "remembered, so it covers the wheel again on every visit")
+
+        step(41, "step 4/4: clicking again restores the original size")
+        page.click("[data-options-toggle]")
+        page.wait_for_selector("[data-options-body]", timeout=5_000)
+        back = page.locator(panel).bounding_box()["height"]
+        assert abs(back - full) <= 1, (
+            f"the panel came back at {back:.0f}px, not its original {full:.0f}px")
+    finally:
+        page.evaluate("() => localStorage.removeItem('randomizeOptionsCollapsed')")
+        page.set_viewport_size(original)
+    step(41, "PASS - folds to one line, stays folded, and unfolds to the same size")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--frontend", default="http://localhost:5173")
@@ -3305,6 +3684,10 @@ def main():
                 ("subtitle track picker", lambda: test_subtitle_track_picker(page, frontend)),
                 ("hide not english",    lambda: test_hide_not_english(page, args.backend, frontend, token_a)),
                 ("matching shows sonarr problems", lambda: test_matching_shows_sonarr_problems(page, args.backend, frontend)),
+                ("phone popup close",   lambda: test_phone_popup_close(page, args.backend, frontend, token_a)),
+                ("options panel collapse", lambda: test_options_panel_collapse(page, args.backend, frontend, token_a)),
+                ("phone sidebars reach the wheel", lambda: test_phone_sidebars_reach_the_wheel(page, args.backend, frontend, token_a)),
+                ("wheel fits between lists", lambda: test_wheel_fits_between_lists(page, args.backend, frontend, token_a)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]
