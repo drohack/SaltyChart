@@ -240,8 +240,7 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last full run: **252 rows in 54 min** (2026-10-13); the table is 253 rows
-  now.
+  Last full run: **253 rows in 53 min** (2026-10-13), the whole table.
 - **A mutant's side effects are real.** The dev backend has the server's SMTP,
   the owner's row and the live upstreams, so whatever a broken guard lets out
   goes out: on 2026-10-13 an audit row's junk AniList query mailed the owner a

@@ -188,8 +188,9 @@ which is exactly the load this schedule exists to avoid. The audit is **not** a 
 backend twice per row (253 rows as of 2026-10-13) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
-line is the only figure worth quoting. Last measured: **252 rows in 54 min**
-(2026-10-13). Earlier points on the same curve: 86 rows in 21 min
+line is the only figure worth quoting. Last measured: **253 rows in 53 min**
+(2026-10-13). Earlier points on the same curve: 252 rows in 54 min the same
+day, 86 rows in 21 min
 (2026-08-06), 74 rows in 19 min (2026-08-05), down from 47 min at 73 rows the same
 night.
 
@@ -212,7 +213,11 @@ any row you have not run before:
 - never start the dev backend with `NODE_ENV=production` to "match prod" - that
   reopens every gate at once: the mail, the Sonarr push, the timers;
 - afterwards, search the backend's output for `[alerts] not production`. Each
-  line is a mail the gate stopped, and a question about which row caused it.
+  line is an alert the gate stopped, and a question about which row caused it.
+  The gate is checked BEFORE the master switch, so a line means "this
+  process tried", not "this would have reached an inbox": the first full run
+  behind it logged two, both the fake "Sunday subtitle run failed" verdict
+  `test_local_run_report.py` posts with the switch turned off.
 
 **Don't start an audit straight after `run_all.py`.** The first attempt at that
 86-row run wedged at row 34 - the first row that edits a backend *route* file,

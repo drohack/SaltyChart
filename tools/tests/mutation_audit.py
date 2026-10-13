@@ -3201,12 +3201,17 @@ MUTATIONS: list[Mutation] = [
         name="/admin/matching ignores what Sonarr knows",
         path=ADMIN_MATCHING,
         # The page loaded nothing from Sonarr, so a rejected TVDB id lived only
-        # in a collapsed section of the other page.
+        # in a collapsed section of the other page. Pinned on the status check,
+        # not the membership one: under this mutant the row falls back to the
+        # show's own identity status, and whether THAT is non-ok (so the row is
+        # still in Needs attention) depends on live data - it was on 2026-10-13
+        # and the row read WRONG REASON. Only the Sonarr report ever says
+        # "Sonarr rejected", so the status check holds whatever the data.
         find="          status: sonarrBy.get(s.id)?.status ?? i.status ?? { level: 'ok', code: 'matched', text: '' },",
         replace="          status: i.status ?? { level: 'ok', code: 'matched', text: '' }, /* mutation */",
         test=T_UI,
         flows=("matching shows sonarr problems",),
-        expect="the page is not reading the Sonarr report",
+        expect="the Sonarr rejection is listed without its red status or its reason",
         guards="a TVDB id Sonarr rejected is invisible on the page where it gets fixed",
     ),
     Mutation(

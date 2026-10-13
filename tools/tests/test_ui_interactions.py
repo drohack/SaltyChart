@@ -2523,7 +2523,7 @@ def test_options_auth_races(page, backend: str, frontend: str):
         assert theme == "light" and mirror == "LIGHT", (
             f"the previous account's options reached a logged-out guest: data-theme={theme}, "
             f"mirror={mirror} (expected light / LIGHT)")
-        pg.unroute("**/api/options")
+        pg.unroute_all(behavior="wait")
 
         step(46, "step 2/3: A's late options GET is not applied - or saved - as B's")
         a, _ = user("NIGHT")
@@ -2539,7 +2539,7 @@ def test_options_auth_races(page, backend: str, frontend: str):
         got = server_theme(bt)
         assert got == "LIGHT", (f"A's late options response was saved onto B's account: B's "
                                 f"theme is now {got}, it was LIGHT")
-        pg.unroute("**/api/options")
+        pg.unroute_all(behavior="wait")
         logout(pg)
 
         step(46, "step 3/3: a theme changed just before Logout is still saved")
@@ -2555,6 +2555,10 @@ def test_options_auth_races(page, backend: str, frontend: str):
         assert got == "NIGHT", (f"a theme change made just before logging out was never saved: "
                                 f"server still says {got}")
     finally:
+        # A handler still in flight when the context closes is cancelled, and
+        # asyncio logs that as a Traceback in the middle of a passing suite.
+        for p in ctx.pages:
+            p.unroute_all(behavior="ignoreErrors")
         ctx.close()
     step(46, "PASS - no options cross accounts, and a last-moment change is kept")
 
