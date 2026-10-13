@@ -623,7 +623,10 @@ scheduler may have started it.
 **A test must never mail a human.** A batch exiting non-zero alerts the admins,
 and alerts default to the owner, so the browser flow switches the master alert
 off around its dry run and restores it in a `finally`. Leaving alerts off after
-a crashed test is the silent half of that bug.
+a crashed test is the silent half of that bug. **It restores only once the
+batch's exit is recorded** (`wait_for_batch_exit`): restoring as soon as the
+assertions passed raced the still-running dry run, and on 2026-10-12 its exit
+(9009 - the dev box cannot find the Python it spawns) mailed the owner.
 
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
 contract (the filter chips, provenance rules, the changed-vs-untouched Confirm

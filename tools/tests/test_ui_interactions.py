@@ -169,6 +169,7 @@ Usage:
   py -3.13 -u tools/tests/test_ui_interactions.py [--frontend http://localhost:5173]
 """
 import argparse
+from datetime import datetime
 import json
 import re
 import sqlite3
@@ -2896,6 +2897,32 @@ SELECTABLE_FLOWS = {
 
 
 
+def wait_for_batch_exit(backend: str, ah: dict, since: float, budget_s: int = 180) -> None:
+    """Block until a batch started after `since` has exited AND been recorded.
+
+    The failure alert goes out from `persistBatchRun`, after the exit is stored,
+    so `running: false` alone is too early - it flips before the store. Waits on
+    the stored record's `finishedAt`, then a short grace for the alert's own
+    settings read. Gives up after `budget_s` and says so, rather than hanging.
+    """
+    deadline = time.time() + budget_s
+    while time.time() < deadline:
+        try:
+            sched = requests.get(f"{backend}/api/translate/report", headers=ah,
+                                 timeout=30).json().get("schedule") or {}
+            last = sched.get("lastRun") or {}
+            fin = last.get("finishedAt")
+            done = fin and datetime.fromisoformat(fin.replace("Z", "+00:00")).timestamp() >= since - 1
+            if done and not (sched.get("live") or {}).get("running"):
+                time.sleep(2)  # the alert reads the switch right after the record lands
+                return
+        except Exception:
+            pass
+        time.sleep(1)
+    step(29, f"WARNING - the dry-run batch had not exited after {budget_s}s; "
+             f"alerts are being restored anyway, so its exit may mail the owner")
+
+
 def test_subtitle_batch_button(page, backend: str, frontend: str):
     """/admin/subtitles can actually START a batch.
 
@@ -2911,6 +2938,12 @@ def test_subtitle_batch_button(page, backend: str, frontend: str):
     every failure - it trains the reader to ignore it. The master switch is
     restored in the `finally`, because leaving alerts off after a crashed test
     is the silent half of that bug.
+
+    And it is restored only once the batch has FINISHED. The first version
+    restored it as soon as the assertions were done, while the dry run was
+    still going: on 2026-10-12 the batch exited a moment after alerts came back
+    on and its failure was mailed to the owner. The batch's alert is sent when
+    its exit is persisted, so the wait is for that record, not for `running`.
     """
     step(29, "step 1/5: minting an admin token")
     tok = admin_token()
@@ -2949,6 +2982,7 @@ def test_subtitle_batch_button(page, backend: str, frontend: str):
         page.on("request", lambda r: posts.append(r.method)
                 if "translate/batch" in r.url and r.method == "POST" else None)
         page.locator("[data-batch-dry-run]").check()
+        clicked_at = time.time()
         btn.first.click()
         page.wait_for_selector("[data-batch-notice], [data-batch-error]", timeout=20_000)
         assert posts, "clicking Run now sent no POST to /api/translate/batch"
@@ -2963,6 +2997,8 @@ def test_subtitle_batch_button(page, backend: str, frontend: str):
             "Run now stayed enabled after starting a batch - the admin cannot "
             "tell a started run from a dead button, and can double-fire")
     finally:
+        if "clicked_at" in locals():
+            wait_for_batch_exit(backend, ah, clicked_at)
         if saved_settings:
             requests.put(f"{backend}/api/status/alerts", headers=ah, timeout=20,
                          json=saved_settings)
