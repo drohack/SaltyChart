@@ -10,7 +10,6 @@ import { dragged } from '../stores/drag';
 import { authToken } from '../stores/auth';
 import DOMPurify from 'dompurify';
 // Reactive trigger for title-language changes
-$: _lang = $options.titleLanguage;
 /**
  * Get display title based on user's language preference and custom labels.
  */
@@ -263,8 +262,6 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
   async function addItemAt(item: any, index: number) {
     if (list.find((i) => i.id === item.id)) return; // avoid duplicates
 
-    const prevScroll = listEl?.scrollTop ?? null;
-
     const updated = [...list];
     updated.splice(index, 0, item);
     list = updated;
@@ -277,11 +274,8 @@ $: collapsedClass = collapsed ? 'translate-x-full sm:translate-x-0' : '';
     );
   }
 
-  const addItemToEnd = (item: any) => addItemAt(item, list.length);
-
   async function move(from: number, to: number) {
     if (from === to || from < 0 || from >= list.length) return;
-    const prevScroll = listEl?.scrollTop ?? null;
 
     const dest = from < to ? to - 1 : to; // adjust if moving downwards
     const updated = [...list];
@@ -404,7 +398,7 @@ $: {
   const SCROLL_SPEED = 12; // px per tick
   let scrollTimer: any = null;
 
-  function startAutoScroll(dir: -1 | 0 | 1) {
+  function startAutoScroll(dir: number) {
     if (dir === 0) {
       stopAutoScroll();
       return;

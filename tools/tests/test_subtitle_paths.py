@@ -152,9 +152,9 @@ def test_b_youtube_cc(page):
         has_text=re.compile(r".+")).count()
     assert overlay_count == 0, f"unexpected Whisper overlay rendered: {overlay_count}"
     # Fullscreen is player chrome, not a subtitle control, and this is the path
-    # that lost it: the button was wrapped in the `!hasEnglishSubs` gate while
-    # the iframe carries no `allowfullscreen`, so YouTube-CC trailers had no
-    # fullscreen at all. Nothing else opens a Path A trailer, so it is pinned here.
+    # that lost it: the button was wrapped in the `!hasEnglishSubs` gate, so
+    # YouTube-CC trailers lost our fullscreen (the one that keeps the controls
+    # usable). Nothing else opens a Path B trailer, so it is pinned here.
     print(f"{p} step 4/5: fullscreen button must be there while YouTube CC is active", flush=True)
     fs = page.locator('button[title="Fullscreen"]')
     assert fs.count() == 1 and fs.first.is_visible(), \

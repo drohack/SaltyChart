@@ -429,9 +429,14 @@ let autoRename = false;
   // Reference to sidebar component to call promptRenameFor
   let sidebarRef: any;
 
+  // Resolved against Leftovers too: an entry added from that section is stored
+  // in THIS season's list, and looking it up in `anime` alone made it invisible
+  // in the sidebar - and then deleted by the next sidebar edit, which saves only
+  // what the sidebar shows (see `mergeSidebarUpdate`).
+  $: shownById = new Map([...prevSeasonAnime, ...anime].map((a) => [a.id, a]));
   $: sidebarList = watchList
     .map((w) => {
-      const a = anime.find((a) => a.id === w.mediaId);
+      const a = shownById.get(w.mediaId);
       return a
         ? {
             ...a,
@@ -442,8 +447,29 @@ let autoRename = false;
         : null;
     })
     .filter(Boolean);
+  /**
+   * The sidebar reports only the entries it renders, and `PUT /api/list`
+   * REPLACES the season - so an entry the sidebar could not resolve (the
+   * season's grid still loading, a fetch that failed, a show that is in
+   * neither section) would be deleted by any reorder or rename. Keep those.
+   */
+  function mergeSidebarUpdate(current: any[], visible: any[]): any[] {
+    const rendered = new Set(sidebarList.map((a: any) => a.id));
+    const kept = current.filter((w) => !rendered.has(w.mediaId));
+    return [...visible, ...kept];
+  }
+
+  // True once THIS season's list has loaded. Until then the sidebar is showing
+  // nothing (or, before the reset below, the previous season's list under the
+  // new season's heading), and a save would write that into the new season.
+  let listLanded = false;
+
   async function saveList() {
     if (!$authToken) return;
+    if (!listLanded) {
+      console.warn("[Home] saveList skipped - this season's list has not loaded yet");
+      return;
+    }
     const payload = watchList.map(({ mediaId, customName, watchedAt }) => ({ mediaId, customName, watchedAt }));
 
     try {
@@ -552,9 +578,11 @@ let autoRename = false;
 
   async function fetchList(): Promise<void> {
     if (!$authToken) return;
+    const key = `${season}-${year}`;
     const res = await fetch(`/api/list?season=${season}&year=${year}`, {
       headers: { Authorization: `Bearer ${$authToken}` }
     });
+    if (key !== `${season}-${year}`) return; // the season changed mid-flight
     if (res.status === 401) {
       // Invalid or expired token: clear auth and exit
       authToken.set(null);
@@ -562,7 +590,10 @@ let autoRename = false;
       return;
     }
     if (res.ok) {
-      watchList = await res.json();
+      const data = await res.json();
+      if (key !== `${season}-${year}`) return;
+      watchList = data;
+      listLanded = true;
     }
   }
 
@@ -601,6 +632,9 @@ let autoRename = false;
     const key = `${season}-${year}`;
     if (key !== lastSeasonYearKey) {
       lastSeasonYearKey = key;
+      // The previous season's list must not be shown - or saved - as this one's.
+      watchList = [];
+      listLanded = false;
       fetchAnime(); // no debounce needed - user interaction is limited
       fetchCatchUpUsers();
     }
@@ -778,7 +812,7 @@ let autoRename = false;
       bind:collapsed={sidebarCollapsed}
       on:collapse={(e) => onSidebarCollapse(e.detail)}
       on:update={(e) => {
-        watchList = e.detail;
+        watchList = mergeSidebarUpdate(watchList, e.detail);
         saveList();
       }}
     />

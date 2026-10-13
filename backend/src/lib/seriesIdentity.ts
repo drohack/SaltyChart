@@ -594,6 +594,23 @@ export function matchGrade(identity: Identity): MatchGrade {
 }
 
 /**
+ * May a viewer's pick (or its undo) replace this stored row?
+ *
+ * Only when no human has settled it. A Confirm, a Reject AND an admin's
+ * unconfirmed manual override all count as settled - `matchGrade` calls the
+ * last one `adminOverride` ("a human decided"). The viewer routes used to check
+ * only confirmed/rejected, so any logged-in account could overwrite or delete
+ * an override an admin had saved without pressing Confirm. A previous viewer
+ * pick is fair game: that is what the undo is for.
+ */
+export function viewerMayReplace(existing: Identity | null): boolean {
+  if (!existing) return true;
+  if (existing.rejected) return false;
+  const grade = matchGrade(existing);
+  return grade !== 'confirmed' && grade !== 'adminOverride';
+}
+
+/**
  * Do we actually KNOW which show this is?
  *
  * The single definition, so the Watch pop-up's correction picker and the Sonarr

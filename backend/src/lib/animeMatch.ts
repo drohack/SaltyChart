@@ -56,7 +56,7 @@ export interface MatchResult {
 export function normalizeTitle(s: string): string {
   return s
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^\p{Letter}\p{Number}]+/gu, '');
 }
@@ -71,7 +71,7 @@ export function expandCandidates(candidates: string[]): string[] {
   for (const cand of candidates) {
     out.add(cand);
     const stripped = cand
-      .replace(/\s*[:\-–]?\s*(\d+(st|nd|rd|th)\s+season|season\s+\d+|part\s+\d+|cour\s+\d+)\s*$/i, '')
+      .replace(/\s*[:\-\u2013]?\s*(\d+(st|nd|rd|th)\s+season|season\s+\d+|part\s+\d+|cour\s+\d+)\s*$/i, '')
       .replace(/\s*第\s*\d+\s*(期|クール|シーズン)\s*$/u, '')
       .trim();
     if (stripped && stripped !== cand) out.add(stripped);

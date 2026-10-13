@@ -107,8 +107,31 @@ $: {
     }
   }
 
+  // Guarded by the route it was asked for, so a slow chunk can't land after a
+  // newer navigation. And caught: a tab opened before a deploy still names the
+  // OLD chunk files, which the new build no longer serves - the import rejected
+  // silently and every navigation did nothing. One reload fetches the new
+  // build; the session flag stops a genuinely broken chunk looping it.
+  let _routeReq = 0;
   $: (async () => {
-    Page = await loadPage(route);
+    const req = ++_routeReq;
+    try {
+      const next = await loadPage(route);
+      if (req === _routeReq) Page = next;
+      // Loaded fine, so a LATER deploy in this same tab may reload once more.
+      try { sessionStorage.removeItem('sc-chunk-reload'); } catch { /* blocked */ }
+    } catch (err) {
+      if (req !== _routeReq) return;
+      console.error('[router] could not load the page for', route, err);
+      try {
+        if (!sessionStorage.getItem('sc-chunk-reload')) {
+          sessionStorage.setItem('sc-chunk-reload', '1');
+          location.reload();
+        }
+      } catch {
+        /* storage blocked - leave the current page up rather than loop */
+      }
+    }
   })();
 </script>
 

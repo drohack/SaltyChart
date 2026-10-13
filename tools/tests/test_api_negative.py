@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -134,7 +134,14 @@ def main():
                      params={"season": "BAD", "year": 2026}, headers=auth, timeout=5)
     if r.status_code != 400 or r.json().get("code") != "BAD_REQUEST":
         fail(6, f"expected 400 BAD_REQUEST, got {r.status_code} {r.text[:200]}")
-    step(6, "PASS - 400 BAD_REQUEST")
+    # Each distinct `format` is a new AniList request from the shared budget, and
+    # a failed one is persisted to the backoff map - junk must never get that far.
+    r = requests.get(f"{backend}/api/anime",
+                     params={"season": "SUMMER", "year": 2026, "format": "NOT_A_FORMAT"}, timeout=5)
+    if r.status_code != 400 or r.json().get("code") != "BAD_REQUEST":
+        fail(6, f"/api/anime with format=NOT_A_FORMAT: expected 400, got {r.status_code} - "
+                f"an unvalidated format reaches AniList")
+    step(6, "PASS - 400 BAD_REQUEST for a bad season and a bad format")
 
     # --------- 7/10 Public-list nonexistent user -> 404 ---------
     step(7, "GET /api/public-list?username=zzzzz_nonexistent -> 404")
@@ -232,6 +239,32 @@ def main():
             fail(11, f"expected 401 for a token with no id claim, got "
                      f"{r.status_code} {r.text[:150]}")
         step(11, f"PASS - 401 in {r.elapsed.total_seconds() * 1000:.0f}ms")
+
+    # --------- 12 A throw inside an async handler is ANSWERED ---------
+    # Express 4 ignores a rejected async handler, so any throw outside a
+    # handler's own try hung the request until the client gave up -
+    # `items: [null]` did (reproduced 2026-10-13). `lib/asyncErrors` forwards
+    # those rejections to the final error handler in index.ts.
+    step(12, "a throw inside an async handler is answered, not hung")
+    try:
+        r = requests.put(f"{backend}/api/list", headers=auth, timeout=8,
+                         json={"season": "SUMMER", "year": 2026, "items": [None]})
+    except requests.Timeout:
+        fail(12, "PUT /api/list with items:[null] hung - a malformed item must be a 400")
+    if r.status_code != 400 or r.json().get("code") != "BAD_REQUEST":
+        fail(12, f"items:[null] -> expected 400 BAD_REQUEST, got {r.status_code} {r.text[:150]}")
+    # A real account and a non-string password: bcrypt throws, outside any try.
+    # Nothing validates this one, so only the generic forwarding can answer it.
+    try:
+        r = requests.post(f"{backend}/api/auth/login", timeout=8,
+                          json={"username": test_user, "password": 12345})
+    except requests.Timeout:
+        fail(12, "login with a non-string password hung - a rejected async handler is "
+                 "never answered (lib/asyncErrors not loaded?)")
+    if r.status_code < 400 or "code" not in r.json():
+        fail(12, f"login with a non-string password -> expected an error with a code, got "
+                 f"{r.status_code} {r.text[:150]}")
+    step(12, f"PASS - 400 for a null item, {r.status_code} {r.json()['code']} for a bad password type")
 
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 

@@ -24,3 +24,23 @@ export function isValidYear(y: unknown): boolean {
   const n = typeof y === 'string' ? Number(y) : (y as number);
   return Number.isInteger(n) && n >= 1970 && n <= 2100;
 }
+
+/**
+ * An optional `?season=&year=` override: both or neither, and both valid.
+ * `refs: null` means "neither was sent - use the route's default seasons".
+ * Shared by `/api/sonarr` (`/push`, `/push/preview`, `/report`) and
+ * `/api/translate/report`, which each carried an identical copy.
+ */
+export function seasonOverride(
+  season: string | undefined,
+  year: string | undefined
+): { error: string } | { refs: { season: Season; year: number }[] | null } {
+  if ((season && !year) || (!season && year)) {
+    return { error: 'Provide both "season" and "year", or neither' };
+  }
+  if (season && year) {
+    if (!isValidSeason(season) || !isValidYear(year)) return { error: 'Invalid season or year' };
+    return { refs: [{ season: season.toUpperCase() as Season, year: Number(year) }] };
+  }
+  return { refs: null };
+}

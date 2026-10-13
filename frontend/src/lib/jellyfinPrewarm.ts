@@ -16,6 +16,7 @@
  */
 import { get } from 'svelte/store';
 import { authToken } from '../stores/auth';
+import { apiFetch } from './remote';
 
 export interface SubStream {
   index: number;
@@ -80,11 +81,6 @@ export function defaultSubtitleIndex(subStreams: SubStream[]): number | null {
   const ass = pool.filter((s) => /ass|ssa/i.test(s.codec));
   const preferred = ass.length ? ass : pool;
   return (preferred.find((s) => s.isDefault) ?? preferred[0]).index;
-}
-
-export function isAss(subStreams: SubStream[], index: number): boolean {
-  const s = subStreams.find((x) => x.index === index);
-  return !!s && /ass|ssa/i.test(s.codec);
 }
 
 
@@ -201,16 +197,21 @@ export function playbackInfo(
   const sub = opts.subtitleIndex ?? -1;
   const key = `${itemId}:${mediaSourceId}:${quality}:${stated ? sub : 'default'}`;
   if (opts.fresh) playbackCache.delete(key);
-  return remember(playbackCache, key, async () => {
+  const pending = remember(playbackCache, key, async () => {
     try {
       const params = new URLSearchParams({
         mediaSourceId,
         quality,
         ...(stated ? { subtitleIndex: String(sub) } : {}),
       });
-      const res = await fetch(api(`/playback/${itemId}?${params}`), {
-        headers: { Authorization: `Bearer ${get(authToken)}` },
-      });
+      // Bounded: this used to be a bare fetch, so a stalled request left the
+      // cached promise pending for ever and every later Watch for the episode
+      // waited on it - a black player with nothing to say why.
+      const res = await apiFetch(
+        api(`/playback/${itemId}?${params}`),
+        { headers: { Authorization: `Bearer ${get(authToken)}` } },
+        { timeoutMs: 30_000, retries: 1, label: `playbackInfo ${itemId}` }
+      );
       if (!res.ok) {
         if (res.status === 404) {
           const body = await res.json().catch(() => null);
@@ -230,6 +231,14 @@ export function playbackInfo(
       return null;
     }
   });
+  // A failure is not an answer worth keeping: cached, one blip during the
+  // pop-up's prewarm broke Watch for that episode for the rest of the session.
+  // Only drop the entry if it is still this promise - a `fresh` call may have
+  // replaced it meanwhile.
+  void pending.then((info) => {
+    if (info === null && playbackCache.get(key) === pending) playbackCache.delete(key);
+  });
+  return pending;
 }
 
 /**

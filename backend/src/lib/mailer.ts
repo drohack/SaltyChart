@@ -149,12 +149,7 @@ export function captureMailer(): Mailer & { sent: OutboundMail[] } {
   };
 }
 
-let active: Mailer = smtpMailer();
-
-/** Swap the mailer. Tests use this; production never calls it. */
-export function setMailer(m: Mailer): void {
-  active = m;
-}
+const active: Mailer = smtpMailer();
 
 export function getMailer(): Mailer {
   return active;

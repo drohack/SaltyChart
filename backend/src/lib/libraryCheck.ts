@@ -285,8 +285,8 @@ export interface StartResult {
   status: 'started' | 'running';
   /**
    * Resolves once the audit is stored and any refreshes are REQUESTED - not when
-   * Jellyfin has caught up, which is watched in the background for up to two
-   * minutes. Absent unless this call started the run.
+   * Jellyfin has caught up, which is watched in the background for up to five
+   * minutes (`NEW_SERIES_POLL_TRIES`). Absent unless this call started the run.
    */
   firstPass?: Promise<StoredLibraryAudit>;
 }

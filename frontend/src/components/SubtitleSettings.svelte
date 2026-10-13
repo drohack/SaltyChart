@@ -92,7 +92,7 @@
     <!-- Header -->
     <div class="flex items-center justify-between mb-3">
       <h3 class="font-bold text-base">Subtitle Settings</h3>
-      <button class="btn btn-ghost btn-xs btn-circle" on:click={close}>
+      <button class="btn btn-ghost btn-xs btn-circle" aria-label="Close subtitle settings" on:click={close}>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">
           <path d="M6.3 17.3a1 1 0 0 0 1.4 0L12 13.4l4.3 4.3a1 1 0 0 0 1.4-1.4L13.4 12l4.3-4.3a1 1 0 0 0-1.4-1.4L12 10.6 7.7 6.3a1 1 0 0 0-1.4 1.4L10.6 12l-4.3 4.3a1 1 0 0 0 0 1.4z"/>
         </svg>

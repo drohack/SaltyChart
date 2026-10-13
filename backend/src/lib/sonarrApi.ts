@@ -303,7 +303,7 @@ export async function sonarrExclusions(cfg: SonarrConfig): Promise<SonarrExclusi
   }
 }
 
-/** Tag id -> label, so a held series' numeric tags can be matched to `cfg.tag`. */
+/** Tag id -> label, so a held series' numeric tags can be matched to `cfg.tags` / `cfg.markerTag`. */
 export async function sonarrTags(cfg: SonarrConfig): Promise<SonarrTag[] | null> {
   try {
     const { data } = await sonarrAxios(cfg).get('/api/v3/tag');

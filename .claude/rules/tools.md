@@ -97,3 +97,10 @@ Encryption (yt-dlp #10927).
 The pipeline itself - Demucs, large-v3, the qwen3.5:9b translate stage, and the
 phased VRAM handling - is documented in `backend/CLAUDE.md` under *Translation
 routes*, and in the script's own docstring.
+
+## What playback costs the server - `tools/bench_transcode_cpu.py`
+
+Measured playback CPU at **5.9x realtime for burn-in (~1.5 cores) and 11.2x for
+remux**, reading the server's CPU from the mirrored syslog (there is no SSH).
+Re-run it after a change to the Jellyfin profile or the encode settings rather
+than quoting these.

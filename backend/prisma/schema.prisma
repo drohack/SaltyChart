@@ -148,6 +148,8 @@ model AuthCode {
 model SeasonCache {
   season    String
   year      Int
+  /// Nullable in the raw SQL, required here: Prisma cannot make an @id field
+  /// optional, and nothing writes NULL - every row uses '' for "all formats".
   format    String
   data      String
   updatedAt DateTime
@@ -205,7 +207,7 @@ model SeriesIdentity {
   updatedAt DateTime @default(now())
 }
 
-/// Force-include overlay for the Sonarr Custom List: "propose this even though
+/// Force-include overlay for the Sonarr auto-add: "add this even though
 /// a filter dropped it". The ONLY direction of override this feature has -
 /// "never add this" is Sonarr's own Import List Exclusion, which is global and
 /// authoritative, so duplicating it here would be two records of one intent.

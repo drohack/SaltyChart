@@ -24,13 +24,10 @@ detail wherever the person who needs it will actually be working - but a
 prohibition goes in the root regardless, because a rule that isn't loaded when
 it matters is not a rule.
 
-**What the split is worth, measured 2026-08-06** against the 86,952-character
-single file: a session that touches neither service loads 56% less, a frontend
-session 42% less, a **backend session only 6% less**, and one touching both
-services **8% more** - pointers, preambles and the deliberately duplicated
-prohibitions cost about 7,000 characters in total. The win is real but uneven,
-so don't split further expecting a uniform saving. `test_audit_anchors.py`
-enforces the root's budget.
+The split saves most for sessions that touch neither service; a backend session
+pays for root + `backend/CLAUDE.md` together (~182k chars on 2026-10-13, more
+than the old single file), so trim before splitting further.
+`test_audit_anchors.py` enforces the root's budget.
 
 When your diff touches any of these, update the listed locations too:
 
@@ -66,19 +63,15 @@ When your diff touches any of these, update the listed locations too:
   would stop being true. `~55% coverage` and `~836 series` both survived here for
   months as live facts and were wrong by 40 points and 3x respectively.
 - **Fixed something an exploratory pass found** -> update
-  `tools/tests/EXPLORATORY.md`. This file rots faster than any other doc here,
-  because *fixing* a finding changes the behaviour the charter tells the next
-  agent to expect - a pass-1 finding was withdrawn as a measurement error while
-  the charter still instructed the reader to measure it that way, and a
-  `file.svelte:36` reference was moved by its own fix within the hour. Past-tense
+  `tools/tests/EXPLORATORY.md`. It rots fastest, because *fixing* a finding
+  changes the behaviour the charter tells the next agent to expect. Past-tense
   the finding, say what the fix was, and correct any session step whose expected
-  value changed (e.g. "availability calls must be exactly 1" became "1 on an
-  aired season, 0 on an unaired one", and later went back to 1 for both). `test_audit_anchors.py` catches only the
-  mechanical half - dead file paths and line-number references.
+  value changed. `test_audit_anchors.py` catches only the mechanical half - dead
+  file paths and line-number references.
 
 ### Measure before claiming - and check what you measured
 
-Every wrong conclusion in this repo's history has come from one of five shapes.
+Every wrong conclusion in this repo's history has come from one of six shapes.
 They are listed with the instance that produced them, because the abstract
 version is easy to nod along to and ignore.
 
@@ -123,10 +116,8 @@ separates them by three orders of magnitude; nothing else does.**
 
 **6. A warning is not a bug until a number moves.** The backend's constant
 `MaxListenersExceededWarning` is benign - **don't re-investigate unless RSS
-stops being flat.** Measured twice and dismissed twice (74 occurrences, then
-204 on 2026-08-06): always exactly 11 listeners, never climbing, with RSS and
-handle count flat under load. The full measurement and the un-proven cause are
-in `backend/CLAUDE.md`; a third pass should re-derive nothing.
+stops being flat** (always exactly 11 listeners, measured twice; the evidence
+is in `backend/CLAUDE.md`).
 
 **And two habits that aren't about measurement:**
 
@@ -157,9 +148,17 @@ door, and the key walked out of another: an axios error carries its request
 `config`, so `console.warn('...', err)` printed `Token="..."` into the backend
 log on any library-refresh timeout.
 
-**Log `jellyfinErrorInfo(err)`, never the error object.** When adding a new
-`catch`, ask where else the value could carry a header - logs, error responses,
-telemetry, a message shown to a user.
+**Log `jellyfinErrorInfo(err)`, never the error object** (`safeErrorText` where
+the caller cannot know what it called). When adding a new `catch`, ask where
+else the value could carry a header - logs, error responses, telemetry, a
+message shown to a user.
+
+**The stream proxy forwards only `/videos/<itemId>/...`** (`STREAM_PATH` in
+`routes/jellyfin.ts`). It attaches the server's key, and until 2026-10-13 it
+forwarded ANY path: a fresh signup read `/Auth/Keys` - every Jellyfin API key -
+through it. Never widen the allowlist; a new upstream need gets its own route
+built from validated parts, like `/subtitles`. The `?token=` routes go through
+`checkToken`, never a bare `jwt.verify`.
 
 Same instinct for **repo contents**: this repo is public. The match-replay
 fixtures snapshot every title in the media library plus internal item ids, so
@@ -240,8 +239,8 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 230 rows
-  now (2026-10-11) and unmeasured since.
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 246 rows
+  now (2026-10-13) and a full run is unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
   Windows loses track of it - the process then serves whatever it last compiled
@@ -270,11 +269,8 @@ whether or not that skill is loaded:
 copies in `tools/unraid/`). Read the tree rather than a copy of it; each
 `backend/src/lib/` module's job is its own header comment.
 
-Two facts about `tools/` that reading the tree won't tell you: the benches are
-composable (`bench_pipeline.py` provides swappable ASR/translate/align stages
-to `benchmark_whisper_settings.py`), and `bench_transcode_cpu.py` measured
-playback CPU at **5.9x realtime for burn-in (~1.5 cores) and 11.2x for remux**,
-reading the server's CPU from the mirrored syslog.
+The benches in `tools/` are composable (`bench_pipeline.py` provides swappable
+ASR/translate/align stages to `benchmark_whisper_settings.py`).
 
 ## Backend Service
 
@@ -295,12 +291,11 @@ reading the server's CPU from the mirrored syslog.
 `/api/options`, `/api/status` do what their names say - read
 `backend/src/routes/`. The three that don't:
 
-- `/api/anime` - AniList GraphQL proxy + cache; page 1 reveals `lastPage`, then
-  pages 2..N are fetched with a concurrency-3 pool - a mid-season cold load is
-  6-12 pages and sequential round trips dominated its latency. Concurrent cold
-  requests for the same season are coalesced, and an **expired `SeasonCache`
-  row is served stale while a background refresh runs** - only a never-fetched
-  season blocks on AniList.
+- `/api/anime` - AniList GraphQL proxy + cache; pages are fetched in waves of
+  three until a short page (`pageInfo.lastPage` is NOT trustworthy for this
+  query - see `fetchSeasonFromAniList`). Concurrent cold requests for the same
+  season are coalesced, and an **expired `SeasonCache` row is served stale while
+  a background refresh runs** - only a never-fetched season blocks on AniList.
 - `/api/jellyfin` - availability, playback, streaming; contracts in
   `backend/CLAUDE.md`.
 - `/api/sonarr` - the Sonarr auto-add. **Admin-only throughout** (there is no
@@ -347,11 +342,9 @@ rules stay here, because each binds from outside `backend/`:
   transaction and refuse at one. There is no root account - admins are peers -
   so this floor is all that stands between a mis-click and an admin panel nobody
   can open.
-- `app.set('trust proxy', 2)` **tracks the deployment**
-  (`internet -> Nginx Proxy Manager -> frontend nginx -> backend`). It was
-  `'loopback'`, which never matched - nginx is a separate container - so
-  `req.ip` was one shared address and every limiter a single global bucket.
-  Cloudflare in front, or dropping the frontend nginx, changes the number.
+- `app.set('trust proxy', 2)` **tracks the deployment** (two proxies; the
+  reasoning is at the line in `index.ts`). Cloudflare in front, or dropping the
+  frontend nginx, changes the number.
 
 ### Jellyfin integration routes (`/api/jellyfin`)
 
@@ -362,8 +355,8 @@ when you work under `backend/`.
 ### Sonarr auto-add (`/api/sonarr`)
 
 The contract is in **`backend/CLAUDE.md`**; the argument behind every predicate
-is the docstring of `backend/src/routes/sonarr.ts`. Three rules stay here, because
-both bind from outside `backend/`:
+is the docstring of `backend/src/routes/sonarr.ts`. These rules stay here, because
+each binds from outside `backend/`:
 
 - **One add per series, ever.** A terminal `SonarrPush` row (`pushed` or
   `alreadyHeld`) means that tvdbId is never considered again, so a deletion by
@@ -388,19 +381,12 @@ both bind from outside `backend/`:
 
 Before turning it on, run `tools/sonarr_dryrun.py` (read-only, needs a local
 admin token, no Sonarr credentials) or open **`/admin/sonarr`**, which adds what
-Sonarr actually holds. Config lives in `AppConfig` (`sonarrUrl`, `sonarrApiKey`,
-`sonarrTags`, `sonarrMarkerTag`, `sonarrRootFolder`, `sonarrQualityProfileId`,
-`sonarrSeriesType`, `sonarrSeasonFolder`, `sonarrPushEnabled`). The client (`lib/sonarrApi.ts`)
-exports exactly **one write verb, `addSeries`** - no delete, no update, no
+Sonarr actually holds. Config lives in `AppConfig` (`sonarr*` keys). The client
+(`lib/sonarrApi.ts`) exports exactly **one write verb, `addSeries`** - no delete, no update, no
 exclusion write. We never remove anything; Maintainerr owns cleanup.
 
-**Why this is a push and not the Custom List it used to be.** A Custom List is a
-declarative set that Sonarr reconciles every ~5 minutes, so anything deleted
-from Sonarr came straight back for as long as its season stayed in scope, and no
-achievable snapshot interval could catch it. Retiring entries from the list
-instead would have been worse: Sonarr's global `listSyncLevel` unmonitors
-library series that fall off every import list, so correctness would have hinged
-on a setting we do not own. The full argument is `lib/sonarrPush.ts`.
+**It replaced a Custom List, which re-added anything deleted from Sonarr every
+~5 minutes** - don't bring one back. The full argument is `lib/sonarrPush.ts`.
 
 ### Upstream service status (`/api/status`)
 
@@ -466,19 +452,12 @@ each one binds from outside `backend/`:
 
 1. **id** - AniList id -> TVDB id (community map from `Fribb/anime-lists`,
    ~7.2k pairs, cached in `AppConfig`) -> a library series carrying that id.
-   **Nothing on the request path waits for the map**: it is refreshed at boot
-   and daily with `If-None-Match` (usually a 304), never awaited by
-   `resolveAvailability` - a viewer used to pay for the whole 7.5 MB download
-   after a restart (fixed: 110 ms, id tier recovers ~8 s later in the
-   background). `rememberAvailability` refuses to cache until
-   `anilistTvdbMapReady()`, or a title-only answer computed before the map
-   loaded gets pinned for an hour. **TMDB rides along**: `themoviedb_id` in
-   the map is an object (`{"tv": N}` / `{"movie": N}`), never a scalar -
-   parsing it as one stringifies to `"[object Object]"` and silently yields
-   zero - and the kind is stored with the id (`tv:123`) because TMDB numbers
-   films and shows independently. It adds only 3/945 TV matches but is the
-   only usable id for movies, and it makes the id tier redundant to a single
-   nulled column.
+   **Nothing on the request path waits for the map** (refreshed at boot and
+   daily, never awaited by `resolveAvailability`), and nothing is cached
+   before it loads (`identityReady`). **TMDB rides along**, stored with its
+   kind (`tv:123`) because TMDB numbers films and shows independently - the
+   parse trap is commented in `anilistTvdbMap.ts`. It adds only 3/945 TV
+   matches but is the only usable id for movies.
 
 2. **title** - the Unicode-aware fuzzy matcher: NFKD, strip diacritics, keep
    letters/digits of **every** script, then exact > prefix with length/ratio
@@ -516,20 +495,18 @@ carries its own limiters: 120 req/min for the JSON endpoints and a separate
 **600 req/min** for `/api/jellyfin/stream/*`, `/subtitles` and `/attachments`
 (HLS playback is a playlist refresh + a segment every few seconds plus seek
 bursts - it must not eat the general budget). `/api/sonarr` deliberately adds
-**no** limiter of its own and inherits `generalLimiter`, which is now trivially
-sufficient: nothing polls it. It was sized against Sonarr's hardcoded ~5-minute
-Import List Sync (Sonarr#5927 - **not** the 6 hours an even earlier version
-claimed); with the list replaced by a daily push and an admin page, the traffic
-is a handful of requests a day.
+**no** limiter of its own and inherits `generalLimiter`, which is trivially
+sufficient: nothing polls it - a daily push and an admin page.
 
 ### Error response shape
 
-Every error is `{ error: 'human message', code: 'CODE_NAME' }`. Codes
-include `BAD_REQUEST`, `UNAUTHORIZED`, `INVALID_CREDENTIALS`,
-`INVALID_TOKEN`, `USER_NOT_FOUND`, `USER_EXISTS`, `ADMIN_REQUIRED`,
-`BATCH_RUNNING`, `RATE_LIMITED`, `UPSTREAM_ERROR`, `SERVER_ERROR`.
-Frontend code reads `data.error` (unchanged from before the unification)
-and may branch on `data.code` for programmatic handling.
+Every error is `{ error: 'human message', code: 'CODE_NAME' }` (the code list
+is in `README.md`). Frontend code reads `data.error` and may branch on
+`data.code`. **An error nothing caught is answered too**: `lib/asyncErrors.ts`
+forwards a rejected async handler to the final error handler in `index.ts`
+(500 `SERVER_ERROR`, or the 4xx body-parser meant). Before it, a throw outside
+a handler's own `try` left the request hanging - so don't rely on it, but don't
+re-add per-route `try` blocks just to avoid a hang.
 
 ### Translation routes (`/api/translate`)
 
@@ -582,9 +559,12 @@ Every table and column, and why each cached row is persisted, is in
 
 #### Reading from the API - `src/lib/remote.ts`
 
-**Every remote read goes through this.** Before it existed there were 23 silent
-`catch {}` blocks and **zero** `AbortSignal` in the whole frontend, so any hang
-was infinite by omission and any failure rendered as an empty page. That is what
+**New remote reads go through this; old raw `fetch` calls are converted as they
+are touched** (Randomize's season load, Compare, Login/SignUp, the options store
+and the playback prewarm were, on 2026-10-13; Home and some admin writes still
+are not). Before it existed there were 23 silent `catch {}` blocks and **zero**
+`AbortSignal` in the whole frontend, so any hang was infinite by omission and
+any failure rendered as an empty page. That is what
 made an outage impossible to diagnose: no timeout, no message, no retry, nothing
 in the console. The audit that found it is worth repeating before adding a new
 fetch - the question is not "does this work" but "what does the screen say when
@@ -597,9 +577,6 @@ it doesn't".
   one stall into three. `budgetMs` caps the total rather than letting attempts
   multiply worst-case.
 - `apiJson<T>(...)` - the same, parsed.
-- `createRemote<T>(label)` - `{ status, data, error, run, retry }` with the
-  request-id staleness guard extracted from `Home.fetchMainSeason`, so a late
-  response for a previous season can't overwrite a newer one.
 - `ApiError { kind: 'timeout' | 'network' | 'http', status?, unreachable }` -
   callers need to tell "couldn't reach the server" apart from "the server said
   no", because they mean different things on screen. Compare's is the clearest
@@ -612,10 +589,10 @@ it doesn't".
 loading; `SEASON` is 200s and `QUICK` (lists, options, users, availability) is
 15s.
 
-`Home.svelte` predates the helper and already does all of this correctly by
-hand - it is the shape `createRemote` was extracted from. Converting it is a
-later pass; it is the best-covered path in the suite and there is nothing to
-gain tonight but consistency.
+**Guard every read that a newer one can overtake with a request id** (Home's
+`_mainReqId`, Randomize's `_loadReqId`): a late answer for the previous season
+must not overwrite the current one. `Home.svelte` predates the helper and has
+the guard but **no timeout or retry** on its reads - converting it is still open.
 
 - The main anime grid (`AnimeGridTranslate.svelte`) handles trailer subtitles
   via `/api/translate`. If the video has YouTube English CC (checked via a
@@ -715,15 +692,13 @@ pip install youtube-transcript-api     # without it no CC check reaches a
 
 - Always load environment variables (`dotenv.config()`) before importing
   the Prisma client.
-- When modifying the DB schema, update both `schema.prisma` and raw SQL
-  logic in `backend/src/index.ts` (or add Prisma migrations). This is
-  especially important for the `Settings` table, which is created and
-  patched via raw SQL, and for new preference columns that the frontend
-  expects.
+- When modifying the DB schema, update both `schema.prisma` and the raw SQL
+  in `backend/src/index.ts` (there are no Prisma migrations - see *Database
+  schema*), especially for `Settings` columns the frontend expects.
 - Frontend routing is file-based in `src/pages`; lazy-loading requires
   updating the switch in `App.svelte`.
 - Cache season data in `SeasonCache` table (SQLite) and in-memory LRU
-  (`routes/anime.ts`), on a flat 6 h TTL (see the rationale in *Testing* -
+  (`routes/anime.ts`), on a flat 6 h TTL (rationale at `SEASON_TTL_SECONDS` -
   serve-stale hides the TTL from viewers; it only sets AniList refresh
   frequency).
 - Respect rate limits for the AniList API - retry/backoff, global pacing, and

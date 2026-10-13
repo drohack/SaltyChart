@@ -17,21 +17,26 @@ export interface AuthRequest extends Request {
   user?: User;
 }
 
-/**
- * Middleware to require a valid JWT and ensure the user exists in the database.
- */
-export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
-  }
+type TokenCheck =
+  | { ok: true; user: User }
+  | { ok: false; error: string; code: 'UNAUTHORIZED' | 'INVALID_TOKEN' | 'USER_NOT_FOUND' };
 
-  const token = auth.slice(7);
+/**
+ * Everything that makes a token a live session: signed, carrying an id, for an
+ * account that still exists, at the account's current `tokenVersion`.
+ *
+ * Shared by `requireAuth` and the `?token=` routes in `routes/jellyfin.ts`
+ * (`<video>`/`<img>`/`<track>` cannot send a header). Those used to stop at
+ * `jwt.verify`, so a deleted account, or a session a password change was meant
+ * to end, kept streaming for the token's remaining 7 days.
+ */
+export async function checkToken(token: string | undefined): Promise<TokenCheck> {
+  if (!token) return { ok: false, error: 'No token', code: 'UNAUTHORIZED' };
   let payload: { id: number; v?: number };
   try {
     payload = jwt.verify(token, JWT_SECRET) as { id: number; v?: number };
   } catch {
-    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+    return { ok: false, error: 'Invalid token', code: 'INVALID_TOKEN' };
   }
 
   // A correctly signed token still need not carry an id, and Prisma rejects on
@@ -39,14 +44,11 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   // with no catch that means Express never answers and the request hangs
   // forever instead of returning 401.
   if (typeof payload?.id !== 'number') {
-    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+    return { ok: false, error: 'Invalid token', code: 'INVALID_TOKEN' };
   }
 
-  // Verify the user still exists
   const user = await prisma.user.findUnique({ where: { id: payload.id } });
-  if (!user) {
-    return res.status(401).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
-  }
+  if (!user) return { ok: false, error: 'User not found', code: 'USER_NOT_FOUND' };
 
   // Password changes bump `tokenVersion`, which is what makes a reset actually
   // end an attacker's session - tokens live 7 days in localStorage and there is
@@ -57,21 +59,30 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   // Every token this server issues carries `v` (see `signToken`), so a stolen
   // session is still invalidated, which is the whole threat here. A claimless
   // token can therefore only come from something signing with JWT_SECRET
-  // directly: the five scripts in `tools/` that mint `{ id }` admin tokens
+  // directly: the scripts in `tools/` that mint `{ id }` admin tokens
   // (test_jellyfin, test_sonarr, test_ui_interactions, test_api_negative,
-  // sonarr_dryrun, sonarr_tag_backlog). Rejecting those buys nothing, because
-  // anything holding the secret can forge any `v` it likes.
+  // sonarr_dryrun). Rejecting those buys nothing, because anything holding the
+  // secret can forge any `v` it likes.
   //
   // Defaulting to 0 instead - the first version of this - looked equivalent and
   // was not: it worked only until the admin's password was changed once, and
   // then locked every one of those scripts out. Found when a mutation-audit run
   // bumped the dev admin to v1 and the whole suite started failing at step 12.
   if (payload.v !== undefined && payload.v !== user.tokenVersion) {
-    return res.status(401).json({ error: 'Session expired', code: 'INVALID_TOKEN' });
+    return { ok: false, error: 'Session expired', code: 'INVALID_TOKEN' };
   }
+  return { ok: true, user };
+}
 
-  req.userId = payload.id;
-  req.user = user;
+/**
+ * Middleware to require a valid JWT and ensure the user exists in the database.
+ */
+export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+  const auth = req.headers.authorization;
+  const check = await checkToken(auth?.startsWith('Bearer ') ? auth.slice(7) : undefined);
+  if (!check.ok) return res.status(401).json({ error: check.error, code: check.code });
+  req.userId = check.user.id;
+  req.user = check.user;
   return next();
 }
 
@@ -80,7 +91,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
  *
  * **This is a bootstrap value, not the policy.** Admin-ness lives on
  * `User.isAdmin`; `ensureDatabaseSchema()` sets it on this id once, when no
- * admin exists at all. It also stays the id the five scripts in `tools/` sign
+ * admin exists at all. It also stays the id the scripts in `tools/` sign
  * tokens for, so demoting that account would break them.
  */
 export const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID || '1', 10);

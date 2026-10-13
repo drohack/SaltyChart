@@ -624,7 +624,9 @@ def write_result_section(path, suite, report):
 
 def main():
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # line_buffering: a long run's ~40 progress prints carry no flush=True,
+        # so a piped or backgrounded run showed nothing for minutes at a time.
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--download", action="store_true",
@@ -874,7 +876,7 @@ def main():
     rows.sort(key=lambda r: r[6], reverse=True)
     best = rows[0][6]
     for name, segs, ov, timing, content, halluc, score in rows:
-        star = " ★" if score == best else ""
+        star = " *best" if score == best else ""
         lines.append(f"{name:<28} {segs:>5.1f} {ov:>7.1f}% {timing:>7.1f}% "
                      f"{content:>7.1f}% {halluc:>7.1f}% {score:>6.1f}{star}")
     lines.append("")

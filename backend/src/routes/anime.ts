@@ -148,7 +148,12 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
       { query, variables: { ...baseVariables, page } },
       {
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        validateStatus: () => true // handle 429 manually
+        validateStatus: () => true, // handle 429 manually
+        // A page answers in ~1-2 s. Without a timeout one stalled socket stalled
+        // every viewer of the season, since cold fetches are coalesced in
+        // `inflight`; a timeout is a thrown error, so it records a lockout like
+        // any other failure.
+        timeout: 30_000,
       }
     );
 
@@ -204,28 +209,6 @@ const PAGE_CONCURRENCY = 3;
 const MAX_SEASON_PAGES = 20;
 
 /**
- * Fetch every page of a season from AniList.
- *
- * **`pageInfo` cannot be trusted for this query, and trusting it was expensive.**
- * Measured directly against the API for SPRING 2026:
- *
- *     pageInfo: { total: 5000, lastPage: 100, hasNextPage: true, perPage: 50 }
- *     media returned on page 1: 50      <- the season really holds ~113 entries
- *
- * `Page.pageInfo` does not reflect the `media(season:, seasonYear:)` filter; it
- * reports an unfiltered, capped total. The previous implementation read
- * `lastPage` and dutifully fetched **100 pages per season refresh**, ~97 of
- * them empty. Six cache keys is ~600 requests against a shared 30/min budget,
- * which is why a single "warm once at the start" never held and why a mutation
- * audit logged 219 live 429s. The old comment here claimed "a mid-season list
- * is 6-12 pages"; that was a belief about lastPage, never a measurement.
- *
- * So paging stops on a SHORT PAGE (fewer items than `perPage`) - the standard
- * way to page an API whose counts you cannot rely on, and the only signal here
- * that actually tracks the filtered result set. `hasNextPage` is deliberately
- * not consulted: it is true on page 1 of a 113-entry season and stays true.
- */
-/**
  * Is AniList answering us?
  *
  * Deliberately routed through `fetchAniListPage`, the same function a viewer's
@@ -261,6 +244,28 @@ export async function pingAniList(): Promise<{ ok: boolean; reason?: string; ski
   }
 }
 
+/**
+ * Fetch every page of a season from AniList.
+ *
+ * **`pageInfo` cannot be trusted for this query, and trusting it was expensive.**
+ * Measured directly against the API for SPRING 2026:
+ *
+ *     pageInfo: { total: 5000, lastPage: 100, hasNextPage: true, perPage: 50 }
+ *     media returned on page 1: 50      <- the season really holds ~113 entries
+ *
+ * `Page.pageInfo` does not reflect the `media(season:, seasonYear:)` filter; it
+ * reports an unfiltered, capped total. The previous implementation read
+ * `lastPage` and dutifully fetched **100 pages per season refresh**, ~97 of
+ * them empty. Six cache keys is ~600 requests against a shared 30/min budget,
+ * which is why a single "warm once at the start" never held and why a mutation
+ * audit logged 219 live 429s. The old comment here claimed "a mid-season list
+ * is 6-12 pages"; that was a belief about lastPage, never a measurement.
+ *
+ * So paging stops on a SHORT PAGE (fewer items than `perPage`) - the standard
+ * way to page an API whose counts you cannot rely on, and the only signal here
+ * that actually tracks the filtered result set. `hasNextPage` is deliberately
+ * not consulted: it is true on page 1 of a 113-entry season and stays true.
+ */
 async function fetchSeasonFromAniList(query: string, baseVariables: Record<string, unknown>): Promise<any[]> {
   const perPage = Number(baseVariables.perPage) || 50;
   const allMedia: any[] = [];
@@ -300,6 +305,9 @@ const inflight = new Map<string, Promise<any[]>>();
 
 const SEASON_TTL_SECONDS = 6 * 60 * 60;
 
+/** AniList's `MediaFormat` enum - the only values `?format=` may carry. */
+const ANILIST_FORMATS = new Set(['TV', 'TV_SHORT', 'MOVIE', 'SPECIAL', 'OVA', 'ONA', 'MUSIC']);
+
 router.get('/', async (req, res) => {
   const { season, year, format } = req.query as SeasonQuery;
 
@@ -308,6 +316,12 @@ router.get('/', async (req, res) => {
   }
   if (!isValidSeason(season) || !isValidYear(year)) {
     return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
+  }
+  // Every distinct value is a new cache key and a new AniList request from the
+  // shared budget, and a failed one is persisted to the backoff map - so junk
+  // values must never reach AniList.
+  if (format && !ANILIST_FORMATS.has(String(format).toUpperCase())) {
+    return res.status(400).json({ error: 'Invalid format', code: 'BAD_REQUEST' });
   }
 
   const formatArg = format ? ', format: $format' : '';

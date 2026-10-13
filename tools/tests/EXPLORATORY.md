@@ -124,8 +124,9 @@ Every one of these cost real time on the first pass. Each looked like a bug.
   it reverts with `git checkout --`, which would delete uncommitted work. So you
   cannot audit a fix before committing it. To watch a new test fail beforehand,
   apply the mutation by hand with Edit, run the single test, and revert by hand.
-- **Verify a guard in both directions on real data.** For the unaired gate that
-  meant: unaired season -> 0 lookups, *and* an aired season -> still 1. A guard
+- **Verify a guard in both directions on real data.** When the unaired gate
+  existed that meant: unaired season -> 0 lookups, *and* an aired season ->
+  still 1 (the gate is gone now - both ask exactly once, session 4). A guard
   tested only where it should fire can be a guard that always fires.
 
 ---
@@ -366,9 +367,13 @@ wider and only the ~20 px *height* is under the WCAG 2.2 AA 24x24 floor -
   leftovers call lands after it. **Left alone on purpose:** the fix is to merge
   rather than replace, which weakens the staleness guard that stops two seasons
   mixing, and the saving is one DB-only request measured at ~5 ms. Not worth it.
-- Never reached: `/admin/matching` as an admin (promoting a throwaway user in the
-  **dev DB only** is pre-authorised), Randomize's nickname-panel toggles,
-  Compare's Share-as-image, and the `2cols`/`3cols` wide-desktop breakpoints.
+- Never reached by this pass: `/admin/matching` as an admin (promoting a
+  throwaway user in the **dev DB only** is pre-authorised), Randomize's
+  nickname-panel toggles, Compare's Share-as-image, and the `2cols`/`3cols`
+  wide-desktop breakpoints. Since covered by UI flows: `/admin/matching` as
+  admin ("remote accept visible", "matching shows sonarr problems") and
+  Compare's share image ("compare share image"). Still never driven by hand:
+  the nickname-panel toggles and the wide breakpoints.
 
 ### Pass 1 - 2026-08-01 (local dev, `1f5b20c`)
 

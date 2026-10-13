@@ -267,11 +267,17 @@ router.put('/', requireAuth, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: 'Invalid season or year', code: 'BAD_REQUEST' });
   }
 
-  // Validate + normalize items up front. An invalid mediaId/watchedAt would
-  // otherwise reject the $transaction below; Express 4 doesn't forward that
-  // rejection, so it would crash the Node process (one-request DoS).
+  // Validate + normalize items up front, so a malformed one is the caller's 400
+  // rather than a rejected $transaction (a 500 since `lib/asyncErrors`; before
+  // it, a request that hung for ever - `items: [null]` did exactly that).
   const normalized: Array<{ mediaId: number; customName: string | null; watched: boolean; watchedAt: Date | null }> = [];
   for (const it of items) {
+    if (typeof it !== 'number' && (it === null || typeof it !== 'object')) {
+      return res.status(400).json({ error: 'Invalid item in items', code: 'BAD_REQUEST' });
+    }
+    if (typeof it !== 'number' && it.customName != null && typeof it.customName !== 'string') {
+      return res.status(400).json({ error: 'Invalid customName in items', code: 'BAD_REQUEST' });
+    }
     const mediaId = typeof it === 'number' ? it : it.mediaId;
     if (!Number.isInteger(mediaId) || mediaId <= 0) {
       return res.status(400).json({ error: 'Invalid mediaId in items', code: 'BAD_REQUEST' });

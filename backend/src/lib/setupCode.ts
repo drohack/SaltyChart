@@ -32,10 +32,6 @@ export function ensureSetupCode(): string {
   return code;
 }
 
-export function getSetupCode(): string | null {
-  return code;
-}
-
 /** Called once an admin exists, so a stale code cannot be replayed. */
 export function clearSetupCode(): void {
   code = null;

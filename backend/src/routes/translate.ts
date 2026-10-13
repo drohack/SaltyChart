@@ -9,7 +9,7 @@ import path from 'path';
 import crypto from 'crypto';
 import prisma from '../db';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
-import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
+import { isValidSeason, isValidYear, seasonOverride, type Season } from '../lib/validateSeason';
 import { seasonsForSonarr, type SeasonRef } from '../lib/sonarrSelect';
 import { describeBatchSchedule } from '../lib/batchSchedule';
 import {
@@ -818,9 +818,9 @@ router.post('/upload', express.json({ limit: '5mb' }), requireAuth, requireAdmin
 // Batch pre-translation (admin only)
 // ---------------------------------------------------------------------------
 
-// Exported so the scheduler in index.ts can check if a batch is already running
-export let batchProcess: ChildProcess | null = null;
-export let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[] } = {
+// The running batch child, if any. index.ts reads `batchStatus.running`, not this.
+let batchProcess: ChildProcess | null = null;
+export let batchStatus: { running: boolean; season?: string; year?: number; startedAt?: string; log: string[]; trigger?: 'scheduled' | 'manual'; dryRun?: boolean } = {
   running: false,
   log: [],
 };
@@ -831,7 +831,7 @@ function getBatchScriptPath(): string {
 
 /**
  * POST /batch
- * Trigger batch pre-translation for a season. Admin only (user ID 1 by default).
+ * Trigger batch pre-translation for a season. Admin only (`requireAdmin`).
  * Body: { season?: string, year?: number, dryRun?: boolean }
  */
 router.post('/batch', express.json(), requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
@@ -846,7 +846,7 @@ router.post('/batch', express.json(), requireAuth, requireAdmin, async (req: Aut
   if (dryRun) args.push('--dry-run');
   args.push('--cutoff', '23'); // no cutoff when triggered manually (effectively)
 
-  startBatch(args, { season: season || undefined, year: year || undefined });
+  startBatch(args, { season: season || undefined, year: year || undefined, trigger: 'manual', dryRun: !!dryRun });
 
   return res.json({ ok: true, message: 'Batch started', status: batchStatus });
 });
@@ -859,7 +859,10 @@ router.post('/batch', express.json(), requireAuth, requireAdmin, async (req: Aut
  * check the 409 guard / batchStatus.running first. `args` are the batch script
  * flags after the script path (e.g. ['--cutoff','10']).
  */
-export function startBatch(args: string[], meta: { season?: string; year?: number } = {}): void {
+export function startBatch(
+  args: string[],
+  meta: { season?: string; year?: number; trigger?: 'scheduled' | 'manual'; dryRun?: boolean } = {}
+): void {
   const fullArgs = ['-u', getBatchScriptPath(), ...args]; // -u = unbuffered stdout
 
   batchStatus = {
@@ -868,6 +871,8 @@ export function startBatch(args: string[], meta: { season?: string; year?: numbe
     year: meta.year || 0,
     startedAt: new Date().toISOString(),
     log: [],
+    trigger: meta.trigger ?? 'scheduled',
+    dryRun: !!meta.dryRun,
   };
 
   console.log(`[translate/batch] Starting batch: ${fullArgs.join(' ')}`);
@@ -889,12 +894,26 @@ export function startBatch(args: string[], meta: { season?: string; year?: numbe
     console.error('[translate/batch]', chunk.toString());
   });
 
-  batchProcess.on('close', (code) => {
+  // Finish exactly once. A spawn that fails (no Python at that path) emits
+  // 'error' and may or may not emit 'close' after it; with no 'error' listener
+  // at all, Node threw it as an uncaught exception and the run stayed
+  // `running: true` until the next restart, blocking every later batch behind
+  // the 409 guard.
+  let finished = false;
+  const finish = (code: number | null) => {
+    if (finished) return;
+    finished = true;
     console.log(`[translate/batch] Batch exited with code ${code}`);
     batchStatus.running = false;
     batchProcess = null;
     void persistBatchRun(code);
+  };
+  batchProcess.on('error', (err) => {
+    console.error('[translate/batch] could not start the batch:', err.message);
+    batchStatus.log.push(`could not start: ${err.message}`);
+    setImmediate(() => finish(-1));
   });
+  batchProcess.on('close', (code) => finish(code));
 }
 
 /** `AppConfig` key holding the last completed batch run. */
@@ -946,10 +965,18 @@ async function persistBatchRun(code: number | null): Promise<void> {
   // translate_stream.py): most downloads failed, or a bot-wall abort. `null`
   // means killed by a signal, which is a failure too. Fires once per child
   // exit by construction, so a restart cannot re-send it.
-  if (code !== 0) {
+  //
+  // Not for a dry run: it downloads nothing, so its exit says nothing about the
+  // pipeline - and the deploy gate's dry run reaching the owner's inbox is a
+  // failure this codebase has already had once. A manual run still mails, but
+  // says it was manual: "the Wednesday batch" was the label on every run.
+  if (code !== 0 && !batchStatus.dryRun) {
+    const which = batchStatus.trigger === 'manual'
+      ? 'A manually started medium batch'
+      : 'The Wednesday medium batch';
     void alertAdmins(
       `server subtitle batch failed (exit ${code ?? 'signal'})`,
-      `The Wednesday medium batch for ${run.season ?? '?'} ${run.year ?? ''} exited ${code ?? 'by signal'} ` +
+      `${which} for ${run.season ?? '?'} ${run.year ?? ''} exited ${code ?? 'by signal'} ` +
       `at ${run.finishedAt}.\n\nLast lines:\n${run.tail.join('\n')}\n\n/admin/subtitles has the run record.`,
     );
   }
@@ -1208,21 +1235,6 @@ async function readCachedSeasonEntries(
   }
 }
 
-/** Both or neither, and both valid - the same contract as `/api/sonarr`'s. */
-function seasonOverride(
-  season: string | undefined,
-  year: string | undefined
-): { error: string } | { refs: SeasonRef[] | null } {
-  if ((season && !year) || (!season && year)) {
-    return { error: 'Provide both "season" and "year", or neither' };
-  }
-  if (season && year) {
-    if (!isValidSeason(season) || !isValidYear(year)) return { error: 'Invalid season or year' };
-    return { refs: [{ season: season.toUpperCase() as Season, year: Number(year) }] };
-  }
-  return { refs: null };
-}
-
 /**
  * The state of the trailer subtitle pipeline: overall totals, the schedule, and
  * this season plus the next broken down per trailer.
@@ -1232,9 +1244,10 @@ function seasonOverride(
  * irrelevant to "what have we translated", and AniList's ~30/min budget is
  * shared with every viewer.
  *
- * Everything the page shows about the *Sunday* local GPU run is inference from
- * uploaded rows, never a claimed run: that job is a Windows Scheduled Task on
- * someone's PC and this server has no record it fired.
+ * The *Sunday* local GPU run is a Windows Scheduled Task on someone's PC. What
+ * the page shows about it is the run's own report (`lastLocalRun`, posted to
+ * `/local-run` when it finishes) plus inference from uploaded rows - the server
+ * still cannot observe a run that never reported.
  */
 router.get('/report', requireAuth, requireAdmin, async (req: AuthRequest, res: Response) => {
   const { season, year } = req.query as { season?: string; year?: string };

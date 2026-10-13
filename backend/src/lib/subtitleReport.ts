@@ -68,15 +68,6 @@ export type SubtitleState =
   | 'burnedIn'
   | 'ourSubsOff';
 
-export const SUBTITLE_STATES: SubtitleState[] = [
-  'never',
-  'checkedNoSubs',
-  'translated',
-  'youtubeCc',
-  'burnedIn',
-  'ourSubsOff',
-];
-
 /** The `SubtitleCache` columns this report reads, already coerced out of SQLite. */
 export interface SubtitleRow {
   videoId: string;

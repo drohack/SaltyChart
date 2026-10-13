@@ -32,7 +32,7 @@ Finding (suite `live_cpu`, 2026-06): `small` wins on both axes - keep it.
 tiny/base are SLOWER in total wall-clock (they hallucinate into repetition
 loops) and far worse quality (tiny 86-93% halluc = garbage, base 63% vs small
 47%). Transcription is not the bottleneck either: small at 1 thread runs at
-xRT ~ 0.13 (~8× faster than playback), so thread count only shifts TTFS 1-2 s
+xRT ~ 0.13 (~8x faster than playback), so thread count only shifts TTFS 1-2 s
 while doubling cpu_s per extra thread - the latency the viewer feels is the
 audio download, which this bench excludes. `word_timestamps` stays on despite
 a ~10-20% cost: it trims the pre-speech lead-in and playback is never waiting.

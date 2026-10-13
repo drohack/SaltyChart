@@ -20,6 +20,7 @@ import concurrent.futures
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +28,20 @@ import warm_cache
 
 REPO = Path(__file__).resolve().parents[2]
 TESTS = REPO / "tools" / "tests"
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a child AND its descendants. With shell=True (the npm/npx shims)
+    proc is cmd.exe, and killing it alone leaves node running."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        proc.kill()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def step(n: int, total: int, msg: str) -> None:
@@ -71,12 +86,26 @@ def run(n: int, total: int, label: str, cmd: list[str], cwd: Path | None = None,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
-    for line in proc.stdout:
+    def pump() -> None:
         # Already-progress lines from child are well-formed (have their own
         # prefix). Pass through verbatim so the status bar sees them.
-        sys.stdout.write(line)
-        sys.stdout.flush()
-    proc.wait(timeout=timeout)
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    # The read runs on a thread so the timeout can actually fire: reading
+    # stdout on this thread blocked until the child exited, and only THEN was
+    # wait(timeout) reached - so a hung check hung the deploy gate for ever.
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        reader.join(timeout=5)
+        step(n, total, f"FAIL - {label} TIMEOUT after {timeout}s (killed)")
+        return False
+    reader.join(timeout=5)
     elapsed = time.time() - t0
     if proc.returncode != 0:
         step(n, total, f"FAIL - {label} exit {proc.returncode} after {elapsed:.1f}s")
@@ -135,9 +164,9 @@ def main():
                               "--backend", args.backend],     None, 30),
         ("Jellyfin API",     ["py", "-3.13", "-u", str(TESTS / "test_jellyfin.py"),
                               "--backend", args.backend],     None, 180),
-        # Sonarr treats this list as authoritative and has no way to tell a
-        # short one from a complete one, so the shape is asserted on every push.
-        ("Sonarr list",      ["py", "-3.13", "-u", str(TESTS / "test_sonarr.py"),
+        # The auto-add is the one thing here that writes to Sonarr, and an add
+        # cannot be taken back - so its selection is asserted on every push.
+        ("Sonarr auto-add",  ["py", "-3.13", "-u", str(TESTS / "test_sonarr.py"),
                               "--backend", args.backend],     None, 120),
         # The queue rule is unit-tested off the network; this covers the half a
         # unit test cannot - that the verdict reaches the page, over real rows.
@@ -197,7 +226,8 @@ def main():
         ("service status",   ["py", "-3.13", "-u", str(TESTS / "test_status_page.py")], None, 240),
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),
                              "--frontend", args.frontend],     None, 120),
-        # 36 flows, measured 175 s on a quiet box (2026-09-21). The budget was
+        # 36 flows, measured 175 s on a quiet box (2026-09-21; 44 now, not
+        # re-timed - re-measure before trusting the headroom). The budget was
         # 180 s against a 158 s run and seven new flows walked it to the edge -
         # a timeout here reads as a hard DO NOT deploy, so the headroom is
         # deliberate rather than tight.
@@ -254,7 +284,7 @@ def main():
     # of this comment quoted the 48.5 s as a ~19 s price for the cap, which was
     # one noisy sample read as a trend. Measured 2026-09-21 on a 16-core box.
     TALKS_TO_BACKEND = ("season lookahead", "API smoke", "API negative",
-                        "Jellyfin API", "Sonarr list", "candidate sep")
+                        "Jellyfin API", "Sonarr auto-add", "candidate sep")
     parallel_checks.sort(key=lambda c: 0 if c[0] in TALKS_TO_BACKEND else 1)
     n_parallel = len(parallel_checks)
     n_workers = min(n_parallel, max(4, (os.cpu_count() or 8) // 2))

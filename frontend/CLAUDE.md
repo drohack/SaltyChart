@@ -14,10 +14,14 @@ verification. Read it first; nothing here overrides it.
 
 ## Additional UI features (grouped by surface)
 
+### Options modal
+
 **Global *Options* modal** (gear icon in header). Persists in the `options`
 store + `/api/options` when authenticated, `localStorage` for guests. Theme
 (`LIGHT`/`NIGHT`/`SYSTEM`/`HIGH_CONTRAST`), title language, autoplay,
 hide-from-Compare. (Not the nickname picker - that is Randomize's own panel.)
+
+### Home: season toolbar and grid
 
 **Season toolbar** (`SeasonSelect.svelte`): search box (client-side fuzzy),
 Hide 18+, Hide sequels, Hide in "My List".
@@ -31,7 +35,21 @@ its own fetch - skeleton shimmer per section, per-section error + Retry, one
 failure never blanks the rest), covers blur-up (`coverImage.medium` blurred
 under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
 
+**My List (the Home sidebar) saves the whole season with `PUT /api/list`, a
+replace** - so it must never send less than the server holds. It resolves
+entries against the grid AND Leftovers (a show added from Leftovers is stored
+in this season's list), keeps any entry it could not draw (`mergeSidebarUpdate`
+- a grid still loading or a fetch that failed), and refuses to save until this
+season's list has loaded (`listLanded`). Before 2026-10-13 one rename deleted a
+Leftovers show from the server. Flow 44 pins all three.
+
+### Randomize
+
 **Randomize page**
+- **A season that fails to load says so** (`data-season-load-error` + Retry)
+  and clears the wheel, rather than leaving the previous season's shows under
+  this season's heading; reads are request-id guarded. A failed watched or rank
+  write re-reads the season and says so (`hideWriteError`), like the hide paths.
 - Wheel spin: tick sound, confetti, spinner overlay while loading. Post-watch
   ranking via drag-and-drop persists to `WatchList.watchedRank`. Pop-up shows
   other users' nicknames + ranks (nickname endpoints).
@@ -164,27 +182,33 @@ under `large`, `fadeInWhenLoaded` in `AnimeGridTranslate.svelte`).
   `on:itemGone` reopens it once on the new item.
 
 
+### The trailer player
+
 **The trailer player** (the modal in `AnimeGridTranslate.svelte`) - a YouTube
-iframe with our subtitle overlay and CC controls as siblings. Three rules, each
+iframe with our subtitle overlay and CC controls as siblings. Rules, each
 from a bug that shipped:
 
-- **We fullscreen our own wrapper, never the iframe**, and the iframe carries no
-  `allowfullscreen` so YouTube hides its own button. A fullscreen element is the
-  root of what gets rendered, so YouTube's button took the iframe and left our
-  subtitles and every control unrendered. `JellyfinPlayerModal` solves the same
-  problem by re-parenting into `player.el()`; that is not available here,
-  because a cross-origin iframe has no DOM to append to. Escape therefore has to
-  check `document.fullscreenElement` before closing the modal, or leaving
-  fullscreen also takes the trailer away - the same guard the Jellyfin player has.
+- **A refused subtitle stream ends in a message, not a spinner.** An
+  EventSource the server answered with a non-stream (a 429, a 5xx) is CLOSED
+  and never reconnects; with no segments yet, `onerror` now shows the error chip.
+- **Fullscreen keeps our subtitles and controls on screen, either way.** Our
+  button - and an invisible cover over YouTube's own, since the iframe now
+  carries `allowfullscreen` - fullscreens OUR wrapper, the only element whose
+  children (the cue row, CC toggle, settings) then receive input. If YouTube's
+  own gesture takes the iframe anyway, the cue row is promoted into the top
+  layer with `popover` and follows it. The full argument, and the two earlier
+  approaches that were wrong, are the `-- Fullscreen --` comment in
+  `AnimeGridTranslate.svelte`. Escape checks `document.fullscreenElement` before
+  closing the modal, or leaving fullscreen also takes the trailer away.
 - **The control cluster is always mounted; only the SUBTITLE controls inside
   it are gated, on `hasEnglishSubs`.** It was gated on `translationLoading ||
   translating || translationError`, which made it *unmount itself*: a failed
   translation clears the first two and the error clears after 6 s, so the CC
   toggle, the settings gear and fullscreen vanished permanently. Chrome fades
   with `controlsVisible`; it never stops existing. **Fullscreen sits outside the
-  CC gate**: the iframe carries no `allowfullscreen`, so our button is the only
-  way to fullscreen a trailer, and the first fix wrapped it in the gate and took
-  fullscreen away from every YouTube-CC trailer - an audit caught it, and Path A
+  CC gate**: our button is the fullscreen that keeps these controls usable, and
+  the first fix wrapped it in the gate and took that
+  fullscreen away from every YouTube-CC trailer - an audit caught it, and Path B
   of `test_subtitle_paths.py` now pins it (with the Escape-keeps-the-modal rule).
   A refusal during a bot-wall hold shows its `holdUntil` as minutes in the chip
   (`withHoldHint`): "try again later" is not actionable, "about 12 min" is.
@@ -198,6 +222,8 @@ from a bug that shipped:
   keeps a legibility floor or a phone gets 7px text. Do not add
   `text-wrap: balance` - it was tried, and it split one-line cues into two even
   halves using 50% of the width.
+
+### The Jellyfin player
 
 **The player** (`JellyfinPlayerModal.svelte`) - a thin wrapper around
 video.js 8, lazy-loaded in its own chunk; keep it that way. video.js owns the
@@ -282,6 +308,8 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   mark-watched underneath. Playback runs under the configured playback
   account, so progress never syncs to a viewer's Jellyfin profile.
 
+### Compare
+
 **Compare page** (mobile + desktop share the card layout)
 - One card per anime: cover, canonical title de-emphasised, 3-column rank
   strip `[your rank | diff badge | other rank]`; custom nicknames are the
@@ -295,6 +323,8 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   `calc(100vw - 40rem)` 2cols cap as Home (an older note here claimed 50rem -
   the code says otherwise); heatmap legend + Share-as-image are desktop-only.
   Pre/post-watch order is toggleable per user independently.
+
+### Accounts: /admin/users, Options Account, reset
 
 **`/admin/users`** - who can sign in, and who can administer. A fourth question
 alongside identity, scope and production: *access*. What lives nowhere else:
@@ -359,6 +389,8 @@ dead end for an admin with no address. That last step matters more than it
 looks - without it such an admin sits at a form refusing every submission,
 which reads as a broken page rather than a policy.
 
+### Admin shell and the shared status
+
 **The six admin pages share `components/AdminShell.svelte`** - one `<main>`,
 one `Admin` heading, one tab strip, one admin gate. Three of them once had three
 different widths (`max-w-2xl`, `max-w-[100rem]`, `w-full sm:w-3/4`), and the
@@ -395,6 +427,8 @@ show that has not aired, which keeps its countdown and its own colour here
 `watchable` and `unaired`) - the two counts match by construction (`test_sonarr`
 step 13). Handles: `data-level`, `data-code`, `data-chip`, `data-attention-row`,
 `data-entry-row`, `data-air`, `data-randomize-hides`.
+
+### /admin/sonarr
 
 **`/admin/sonarr`** - what is about to be added to Sonarr, and what already was.
 A separate page from `/admin/matching` on purpose: that one asks **identity** (which real
@@ -508,6 +542,8 @@ for the same reason. What lives nowhere else:
   sits beside Re-read Sonarr with a one-line status (`data-lib-status`); it runs
   the library check (also daily on the server). Handles: `data-english`,
   `data-lib-check`, `data-lib-status`.
+
+### /admin/subtitles
 
 **`/admin/subtitles`** - what the trailer subtitle pipeline has actually
 produced. A **third** question again: not identity (`/admin/matching`) and not
@@ -631,6 +667,8 @@ batch's exit is recorded** (`wait_for_batch_exit`): restoring as soon as the
 assertions passed raced the still-running dry run, and on 2026-10-12 its exit
 (9009 - the dev box cannot find the Python it spawns) mailed the owner.
 
+### /admin/matching
+
 **`/admin/matching`** - the human end of the matching pipeline. Its full UI
 contract (the filter chips, provenance rules, the changed-vs-untouched Confirm
 discriminator) is the header comment in `pages/AdminMatching.svelte`; the
@@ -670,6 +708,8 @@ the root guide. What lives nowhere else:
 - Each unmatched row captions its own standing: "auto-searched 2 d ago -
   retries in ~5 h".
 
+### Test handles
+
 **`data-*` attributes are this codebase's test handles.** Randomize's picker has
 carried a set for a long time (`data-pick-open`, `data-library-status`,
 `data-not-aired`); the surfaces that had none were exactly the ones no test had
@@ -687,7 +727,13 @@ Fixed on the way past: both drag sidebars emitted `<title id="drag-title">`
 inside *every* row, so the id was duplicated and each row's `aria-labelledby`
 pointed at the first row's title. It is `drag-title-{item.id}` now.
 
+### Misc
+
 **Misc**
+- **A tab opened before a deploy reloads once** when its next page's chunk is
+  gone (`App.svelte`, session-flagged so a genuinely broken chunk cannot loop);
+  it used to make every navigation silently do nothing. Login and SignUp are
+  bounded and say "Couldn't reach the server" instead of doing nothing.
 - The header logo's `?` badge tooltip shows the deployed version - the
   `YYYYMMDD-<sha>` tag injected by CI (`APP_VERSION` build-arg ->
   `VITE_APP_VERSION`); local builds show `dev`.
@@ -701,6 +747,8 @@ pointed at the first row's title. It is `drag-title-{item.id}` now.
   (`nextSeasonInfo()`; season starts Jan/Apr/Jul/Oct 1).
 - Ctrl+Shift+R / Ctrl+F5 hard-reloads and resets the cached season selection;
   the last selected season/year is otherwise remembered for an hour.
+
+### /admin/status
 
 **`/admin/status`** - is every upstream service still answering us? A sixth
 question, distinct from the other five tabs: not identity, scope, production or

@@ -3,7 +3,6 @@ import { options } from '../stores/options';
 import SubtitleSettings from './SubtitleSettings.svelte';
 import DOMPurify from 'dompurify';
 // Reactive trigger so title-language changes re-render grid
-$: _currentLang = $options.titleLanguage;
 
   function hexToRgb(hex: string): string {
     const r = parseInt(hex.slice(1, 3), 16);
@@ -76,7 +75,9 @@ $: _currentLang = $options.titleLanguage;
   let controlsFadeTimer: number | null = null;
 
   // -- Fullscreen ------------------------------------------------------
-  // We fullscreen OUR wrapper, never the iframe.
+  // Our button - and the invisible cover over YouTube's own - fullscreen OUR
+  // wrapper. If YouTube's own gesture takes the iframe anyway, the subtitles
+  // follow it into the top layer (below).
   //
   // A fullscreen element is the root of what the browser renders - everything
   // outside its subtree is simply not drawn. The trailer's subtitles and the CC
@@ -85,8 +86,8 @@ $: _currentLang = $options.titleLanguage;
   // no way to get the subtitles, or the controls, back. Fullscreening the
   // wrapper keeps the iframe, the overlay and the controls in one subtree.
   //
-  // ...EXCEPT that we no longer have to. YouTube's own fullscreen works, and
-  // the subtitles follow it into the TOP LAYER.
+  // And when the iframe DOES go fullscreen, the subtitles follow it into the
+  // TOP LAYER.
   //
   // A fullscreen element is promoted to the browser's top layer, which is why
   // a sibling overlay vanishes: it is not painted, and no z-index reaches it.
@@ -423,6 +424,16 @@ $: _currentLang = $options.titleLanguage;
       if (subtitleSegments.length > 0) {
         eventSource?.close();
         eventSource = null;
+        return;
+      }
+      // CLOSED means the browser will NOT reconnect - the server answered
+      // something other than a stream (a 429 from the rate limiter, a 5xx).
+      // Nothing more will arrive, so the "Downloading audio..." chip would spin
+      // for as long as the trailer stayed open. Say so instead.
+      if (eventSource?.readyState === EventSource.CLOSED) {
+        translationLoading = false;
+        showTranslationError('Subtitles are unavailable right now - try again shortly.');
+        stopTranslation();
       }
     };
   }
@@ -442,6 +453,9 @@ $: _currentLang = $options.titleLanguage;
     // Sync subtitles to YouTube's currentTime (from infoDelivery events).
     // Wall-clock fallback only if YouTube hasn't sent updates recently.
     // Freezes when video is paused.
+    // A reconnect replays `{cached: true}` and calls this again; without the
+    // clear, the first interval was orphaned and nothing could ever stop it.
+    if (subtitleTickInterval) clearInterval(subtitleTickInterval);
     subtitleTickInterval = window.setInterval(() => {
       if (!modalOpenedAt) return;
 
@@ -649,6 +663,12 @@ const dispatch = createEventDispatcher();
   onDestroy(() => {
     stopTranslation();
     window.removeEventListener('message', onMessage);
+    // Leaving the page with a trailer open (a back gesture) never reaches
+    // closeModal, so the scroll lock it set would strand on the next page.
+    if (modal) {
+      document.body.style.overflow = '';
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    }
   });
 
   function formatDate(ts: number): string {
@@ -821,7 +841,7 @@ const dispatch = createEventDispatcher();
 
 <!-- grid of horizontal cards -->
 <!-- Responsive grid: 1 column, 2 columns at >=1122px, 3 columns at >=1732px -->
-<div class="grid grid-cols-1 2cols:grid-cols-2 3cols:grid-cols-3 gap-6">
+<div class="grid grid-cols-1 2cols:grid-cols-2 3cols:grid-cols-3 gap-6" role="list">
   {#each displayedAnime as show (show.id)}
     {#key show.id}
     <!-- Card -->
@@ -1016,7 +1036,7 @@ const dispatch = createEventDispatcher();
        The backdrop is a convenience, not the keyboard path: Escape is handled
        on <svelte:window> above (it could not be handled here - this element is
        never focused, which is exactly the bug that shipped), and there is a
-       real labelled ✕ button inside the modal. -->
+       real labelled close button inside the modal. -->
   <div
   class="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]"
     role="button"
@@ -1038,7 +1058,7 @@ const dispatch = createEventDispatcher();
         class="btn btn-sm btn-circle btn-ghost absolute -top-10 right-0 text-white hover:bg-white/20 z-20"
         aria-label="Close trailer"
         on:click|stopPropagation={closeModal}
-      >✕</button>
+      >&#10005;</button>
       <iframe
         title="Trailer video"
         bind:this={iframeElement}
@@ -1084,10 +1104,10 @@ const dispatch = createEventDispatcher();
            Only the SUBTITLE controls are gated, on `hasEnglishSubs`: when YouTube
            has its own English CC we render no subtitles of ours, so a toggle and
            a settings gear for them would be controls over nothing. Fullscreen is
-           not a subtitle control and sits outside that gate - the iframe carries
-           no `allowfullscreen`, so this button is the ONLY way to fullscreen a
-           trailer, and the first version of this block wrapped it in the gate
-           and took fullscreen away from every YouTube-CC trailer. -->
+           not a subtitle control and sits outside that gate - the first version
+           of this block wrapped it in the gate and took our fullscreen (the one
+           that keeps these controls usable) away from every YouTube-CC
+           trailer. -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           class="absolute top-12 right-2 flex items-center gap-2 z-10"
@@ -1208,10 +1228,6 @@ const dispatch = createEventDispatcher();
 {/if}
 
 <style>
-  /* Fullscreen: the wrapper is the fullscreen element (never the iframe - see
-     the `playerWrap` comment), so it has to stop being a 4/5-width 16:9 box and
-     become the screen. Without this it keeps its aspect-ratio and sits as a
-     small rectangle on a black field. */
   /* The wrapper is the fullscreen element again - our cover puts it there - so
      it has to fill the screen and drop the aspect box it uses when windowed. */
   .sc-player:fullscreen {

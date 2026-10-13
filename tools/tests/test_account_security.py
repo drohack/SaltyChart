@@ -287,7 +287,15 @@ def main() -> int:
                            json={"isAdmin": True}, timeout=15)
         if r.status_code != 200:
             fail(9, f"a verified account could not be promoted: {r.status_code} {r.text[:150]}")
-        step(9, "step 9/13: PASS - promoted")
+        # The header's Admin link and the whole AdminShell gate read isAdmin off
+        # /api/jellyfin/status, which compared against ADMIN_USER_ID - so a
+        # promoted admin was shown no admin pages at all.
+        r = requests.get(f"{base}/api/jellyfin/status",
+                         headers={"Authorization": f"Bearer {bob}"}, timeout=15)
+        if r.status_code != 200 or r.json().get("isAdmin") is not True:
+            fail(9, f"/api/jellyfin/status says isAdmin={r.json().get('isAdmin') if r.ok else r.status_code} "
+                    f"for a promoted admin - the admin pages would stay locked")
+        step(9, "step 9/13: PASS - promoted, and /status reports it")
 
         # --------- 10 an admin's email cannot be cleared ---------
         step(10, "step 10/13: clearing an admin's email is refused")
@@ -304,6 +312,10 @@ def main() -> int:
                            json={"isAdmin": False}, timeout=15)
         if r.status_code != 200:
             fail(11, f"demoting one of two admins was refused: {r.status_code} {r.text[:150]}")
+        r = requests.get(f"{base}/api/jellyfin/status", headers=ah, timeout=15)
+        if r.status_code != 200 or r.json().get("isAdmin") is not False:
+            fail(11, f"/api/jellyfin/status still says isAdmin for a demoted admin - "
+                     f"the admin pages stay visible to an account that lost the role")
         bh = {"Authorization": f"Bearer {bob}"}
         r = requests.patch(f"{base}/api/admin/users/{bob_id}", headers=bh,
                            json={"isAdmin": False}, timeout=15)
@@ -328,7 +340,16 @@ def main() -> int:
             fail(12, f"a token minted before the password change still works ({r.status_code}) - "
                      f"changing a password does not sign other devices out, so a stolen "
                      f"session survives the reset meant to kill it")
-        newtok = requests.post(f"{base}/api/auth/login",
+        # The ?token= routes (<video>, <img> and <track> cannot send a header)
+        # used to stop at jwt.verify, so the same stolen session kept streaming.
+        old = bh["Authorization"][len("Bearer "):]
+        for path in ("/api/jellyfin/stream/videos/" + "0" * 32 + "/master.m3u8",
+                     "/api/jellyfin/library/image/" + "0" * 32):
+            r = requests.get(f"{base}{path}?token={old}", timeout=15)
+            if r.status_code != 401:
+                fail(12, f"{path.split('/0')[0]} still accepts a token minted before the "
+                         f"password change ({r.status_code}) - a revoked session can stream")
+        newtok =requests.post(f"{base}/api/auth/login",
                                json={"username": "bob", "password": "bob-pw-2"},
                                timeout=15)
         if newtok.status_code != 200:

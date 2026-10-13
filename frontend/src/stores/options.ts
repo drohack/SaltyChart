@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { authToken } from './auth';
+import { apiFetch, QUICK } from '../lib/remote';
 
 // Theme options
 export type Theme = 'LIGHT' | 'NIGHT' | 'SYSTEM' | 'HIGH_CONTRAST';
@@ -143,9 +144,12 @@ if (typeof window !== 'undefined') {
 
     let resolved: Options | null = null;
     try {
-      const res = await fetch('/api/options', {
+      // Bounded: `isLoading` stays true until this settles, and while it is
+      // true no change is saved - so a request that never answered made every
+      // option change for the rest of the session silently unsaved.
+      const res = await apiFetch('/api/options', {
         headers: { Authorization: `Bearer ${token}` }
-      });
+      }, { timeoutMs: QUICK, label: 'options' });
       // Superseded while we waited - leave `isLoading` to the run that replaced
       // us, or clearing it here would let this stale response through.
       if (gen !== authGen) return;

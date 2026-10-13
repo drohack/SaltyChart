@@ -85,7 +85,7 @@ class Mutation:
     extra: list[tuple[str, str, str]] = field(default_factory=list)
     # Which test_ui_interactions flows this row needs, by their registry label.
     #
-    # A T_UI row without this re-runs all 25 browser flows twice - about half
+    # A T_UI row without this re-runs every browser flow (44) twice - about half
     # this audit's wall clock for rows that touch one screen. Naming the flow
     # cuts a ~110 s child to ~15 s.
     #
@@ -646,7 +646,7 @@ MUTATIONS: list[Mutation] = [
         # no switch: someone who turns it off and still receives mail cannot
         # tell a broken control from a broken service. Found when the deploy
         # gate's fake Sunday verdict landed in the owner's real inbox.
-        find="    if (!(await (deps.settings ?? readAlertSettings)()).masterEnabled) {",
+        find="    if (!settings.masterEnabled) {",
         replace="    if (false) {  /* mutation: the switch governs nothing */",
         test=T_UNIT,
         expect="the master switch on /admin/status actually stops the mail",
@@ -1053,7 +1053,7 @@ MUTATIONS: list[Mutation] = [
                "the identity table as fact",
     ),
     Mutation(
-        name="the Sonarr list stops excluding unverified (pending) identities",
+        name="the Sonarr auto-add stops excluding unverified (pending) identities",
         path=BACKEND_SONARR,
         # Everywhere else a resolver guess is positive-only because a bad one
         # costs a Watch button that doesn't work. On this path it costs a whole
@@ -1067,7 +1067,7 @@ MUTATIONS: list[Mutation] = [
                "on the list says which rows were guesses",
     ),
     Mutation(
-        name="the Sonarr list's scope filter is replaced by the site's sequel predicate",
+        name="the Sonarr auto-add's scope filter is replaced by the site's sequel predicate",
         path=BACKEND_SONARR,
         # The exact 'correction' a future contributor is most likely to make:
         # three other files in this repo test "has ANY of SEQUEL/PREQUEL/
@@ -1082,7 +1082,7 @@ MUTATIONS: list[Mutation] = [
                "auto-added - the majority of what the list exists to catch",
     ),
     Mutation(
-        name="the Sonarr list stops deduping by tvdbId",
+        name="the Sonarr auto-add stops deduping by tvdbId",
         path=BACKEND_SONARR,
         # Seasons and split cours of one series share a TVDB id and
         # resolveIdentity does not dedupe. There were no live collisions when
@@ -1261,7 +1261,7 @@ MUTATIONS: list[Mutation] = [
                "who asks",
     ),
     Mutation(
-        name="the Sonarr list's next season stops rolling into the next year",
+        name="the Sonarr auto-add's next season stops rolling into the next year",
         path=BACKEND_SONARR,
         # FALL -> WINTER is the only season step that changes the year, so this
         # is invisible for nine months and then serves WINTER of the year that
@@ -1908,7 +1908,7 @@ MUTATIONS: list[Mutation] = [
         # The undo half of the same rule. Split from the pick row because
         # the two guards are separate code that can regress separately -
         # and because one shared anchor silently audited only this one.
-        find="""  if (existing?.confirmed || existing?.rejected) {
+        find="""  if (!viewerMayReplace(existing)) {
     return res.status(409).json({
       error: 'An admin has already settled this entry',
       code: 'ALREADY_SETTLED',
@@ -1933,7 +1933,7 @@ MUTATIONS: list[Mutation] = [
         # row spent a run proving the unpick guard while its name claimed
         # pick, leaving pick unaudited. The audit found it; nothing else
         # could have.
-        find="""  if (existing?.confirmed || existing?.rejected) {
+        find="""  if (!viewerMayReplace(existing)) {
     return res.status(409).json({
       error: 'An admin has already settled this entry',
       code: 'ALREADY_SETTLED',
@@ -2103,8 +2103,8 @@ MUTATIONS: list[Mutation] = [
         # Greedy separators are how "Re:Zero" became "Re" (-> RE: European
         # Stories), "Ouji-sama" split mid-word, and "5-Oku-nen" collapsed to
         # "5" (-> Babylon 5).
-        find=r"const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;",
-        replace=r"const SUBTITLE_SEPARATOR = /\s*[:\-–—]\s*.*$/; /* mutation */",
+        find=r"const SUBTITLE_SEPARATOR = /(:\s|\s+[-\u2013\u2014]).*$/;",
+        replace=r"const SUBTITLE_SEPARATOR = /\s*[:\-\u2013\u2014]\s*.*$/; /* mutation */",
         test=T_UNIT,
         expect="a separator must look like a separator",
         guards="search terms collapse to fragments like 'Re' and '5', which "
@@ -2281,14 +2281,17 @@ MUTATIONS: list[Mutation] = [
         name="the JWT `id` guard is removed",
         path="backend/src/middleware/auth.ts",
         find="""  if (typeof payload?.id !== 'number') {
-    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+    return { ok: false, error: 'Invalid token', code: 'INVALID_TOKEN' };
   }
 
 """,
         replace="",
         test=T_NEGATIVE,
-        expect="request hung",
-        guards="a signed token with no id hangs the request forever instead of 401",
+        # Was "request hung". Since lib/asyncErrors the Prisma rejection this
+        # causes is answered (a 500), so the test fails on the status instead -
+        # an expect still waiting for the hang would read the row as SURVIVED.
+        expect="expected 401 for a token with no id claim",
+        guards="a signed token with no id is a 500 (before asyncErrors: a hang) instead of 401",
     ),
     Mutation(
         name="an `unknown` availability verdict is treated as a definite 'no'",
@@ -3204,7 +3207,7 @@ MUTATIONS: list[Mutation] = [
         name="a signs-only first episode counts as English",
         path=BACKEND_ENTRY_STATUS,
         # Randomize hides signsOnly; the page must call it red too.
-        find="    } else if (av.english === 'none' || av.english === 'signsOnly') {",
+        find="    } else if (av.english && MISSING_STATES.has(av.english as SubState)) {",
         # Written as a list lookup so the mutant still type-checks: a bare
         # `=== 'none'` narrows the type and the later `=== 'signsOnly'` becomes
         # TS2367, which fails the compile instead of the test.
@@ -3464,6 +3467,123 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="did not fold it",
         guards="the panel beside the wheel can no longer be folded away",
+    ),
+    Mutation(
+        name="the stream proxy forwards any Jellyfin path with the server's key",
+        path=BACKEND_JF,
+        # Found 2026-10-13: a fresh signup read /Auth/Keys through this route.
+        find="  if (!STREAM_PATH.test(tail) || tail.includes('..')) {",
+        replace="  if (false) { /* mutation: no path allowlist */",
+        test=T_JELLYFIN,
+        expect="the proxy is forwarding non-stream paths",
+        guards="any account reads every Jellyfin API key, the user list and the server config",
+    ),
+    Mutation(
+        name="the ?token= routes ignore tokenVersion",
+        path=BACKEND_JF,
+        find="  const check = await checkToken(token);\n  if (!check.ok) {",
+        replace=("  const check = await checkToken(token);\n"
+                 "  if (!check.ok && check.error === 'Session expired') return true; /* mutation */\n"
+                 "  if (!check.ok) {"),
+        test=T_ACCTSEC,
+        expect="still accepts a token minted before the password change",
+        guards="a session a password reset was meant to end keeps streaming for 7 days",
+    ),
+    Mutation(
+        name="/status gates the admin shell on ADMIN_USER_ID again",
+        path=BACKEND_JF,
+        find="  const isAdmin = !!req.user?.isAdmin;",
+        replace="  const isAdmin = req.userId === 1; /* mutation: the bootstrap id */",
+        test=T_ACCTSEC,
+        expect="the admin pages would stay locked",
+        guards="a promoted admin sees no admin pages; a demoted one still does",
+    ),
+    Mutation(
+        name="a viewer pick may overwrite an admin's unconfirmed override",
+        path=BACKEND_IDENTITY,
+        find="  return grade !== 'confirmed' && grade !== 'adminOverride';",
+        replace="  return grade !== 'confirmed'; /* mutation */",
+        test=T_UNIT,
+        expect="an unconfirmed admin override is a human decision a viewer must not replace",
+        guards="any logged-in account silently replaces an admin's saved match",
+    ),
+    Mutation(
+        name="My List's sidebar only resolves the season's own grid",
+        path="frontend/src/pages/Home.svelte",
+        find="      const a = shownById.get(w.mediaId);",
+        replace="      const a = anime.find((x) => x.id === w.mediaId); /* mutation */",
+        flows=("leftover survives sidebar edit",),
+        test=T_UI,
+        expect="is on the list but not in the sidebar",
+        guards="a show added from Leftovers vanishes from My List's sidebar",
+    ),
+    Mutation(
+        name="a sidebar save drops the entries the sidebar did not draw",
+        path="frontend/src/pages/Home.svelte",
+        find="        watchList = mergeSidebarUpdate(watchList, e.detail);",
+        replace="        watchList = e.detail; /* mutation */",
+        flows=("leftover survives sidebar edit",),
+        test=T_UI,
+        expect="could not draw the Leftovers",
+        guards="any reorder or rename while a grid is loading or failed deletes list entries",
+    ),
+    Mutation(
+        name="a rejected async handler is never answered again",
+        path="backend/src/index.ts",
+        find="import './lib/asyncErrors';",
+        replace="/* mutation: import './lib/asyncErrors'; */",
+        test=T_NEGATIVE,
+        expect="a rejected async handler is never answered",
+        guards="any throw outside a handler's try leaves the request hanging until the client gives up",
+    ),
+    Mutation(
+        name="PUT /api/list accepts a null item",
+        path=BACKEND_LIST,
+        find="    if (typeof it !== 'number' && (it === null || typeof it !== 'object')) {",
+        replace="    if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="items:[null] -> expected 400",
+        guards="a malformed list save is a 500 (or, before asyncErrors, a hang) instead of a 400",
+    ),
+    Mutation(
+        name="/api/anime forwards any format to AniList",
+        path="backend/src/routes/anime.ts",
+        find="  if (format && !ANILIST_FORMATS.has(String(format).toUpperCase())) {",
+        replace="  if (false) { /* mutation */",
+        test=T_NEGATIVE,
+        expect="an unvalidated format reaches AniList",
+        guards="junk ?format= values spend the shared AniList budget and grow the persisted backoff map",
+    ),
+    Mutation(
+        name="the public post-watch list sorts unranked shows first",
+        path="backend/src/routes/publicList.ts",
+        find="          { watchedRank: { sort: 'asc', nulls: 'last' } },",
+        replace="          { watchedRank: 'asc' }, /* mutation: SQLite NULLs first */",
+        test=T_SMOKE,
+        expect="must sort last, not first",
+        guards="Compare shows a just-watched show at the top of one column and the bottom of the other",
+    ),
+    Mutation(
+        name="the download-path alerts ignore YouTube's toggle on /admin/status",
+        path="backend/src/lib/subtitleAlerts.ts",
+        find="    if (deps.service && !alertsEnabledFor(settings, deps.service.id, deps.service.kind)) {",
+        # Blanks the toggles rather than the condition: `if (false)` or
+        # `&& false` stop the block's uses of `deps.service` from narrowing, the
+        # file no longer compiles, and that reads as SURVIVED, not caught.
+        replace=("    if (deps.service && !alertsEnabledFor({ ...settings, perService: {} },"
+                 " deps.service.id, 'down')) { /* mutation: toggles ignored */"),
+        test=T_UNIT,
+        expect="switching a service off must stop its alerts",
+        guards="switching YouTube's alerts off on /admin/status still mails every download-path break",
+    ),
+    Mutation(
+        name="the crash backstop logs the raw error object",
+        path="backend/src/lib/safeError.ts",
+        find="  return [head || '(error with no message)', frames].filter(Boolean).join('\\n');",
+        replace="  return require('util').inspect(err); /* mutation: serialises config.headers */",
+        test=T_UNIT,
+        expect="the API key must never reach a log line",
+        guards="an escaped axios error prints the Jellyfin or Sonarr key into the backend log",
     ),
 ]
 

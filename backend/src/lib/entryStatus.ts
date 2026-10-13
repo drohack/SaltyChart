@@ -1,4 +1,5 @@
 import type { MatchGrade } from './seriesIdentity';
+import { MISSING_STATES, type SubState } from './libraryAudit';
 
 // ---------------------------------------------------------------------------
 // One status per AniList entry, for /admin/sonarr and /admin/matching alike.
@@ -359,7 +360,7 @@ export function sonarrFindings(f: SonarrFacts, identity: Finding): Finding[] {
           });
         }
       }
-    } else if (av.english === 'none' || av.english === 'signsOnly') {
+    } else if (av.english && MISSING_STATES.has(av.english as SubState)) {
       const ep = av.seasonNumber != null && av.episodeNumber != null ? `S${av.seasonNumber}E${av.episodeNumber}` : 'The first episode';
       out.push({
         level: 'broken', code: 'noEnglish',
@@ -388,7 +389,7 @@ export function watchable(f: Pick<SonarrFacts, 'availability'>): boolean | null 
   const av = f.availability;
   if (!av || av.unknown) return null;
   if (!av.available) return false;
-  return !(av.english === 'none' || av.english === 'signsOnly');
+  return !(av.english && MISSING_STATES.has(av.english as SubState));
 }
 
 /** The codes a not-watchable row can carry - every one of them broken. */

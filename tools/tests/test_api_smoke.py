@@ -26,7 +26,7 @@ TEST_MEDIA_ID = 158036   # Eren the Southpaw (any valid AniList ID works)
 TEST_SEASON   = "SUMMER"
 TEST_YEAR     = 2026
 
-TOTAL_STEPS = 14
+TOTAL_STEPS = 15
 
 
 def step(n: int, msg: str) -> None:
@@ -371,6 +371,40 @@ def main():
     if sorted(ranks) != list(range(len(ranks))):
         fail(14, f"watched ranks are not dense 0..n-1: {watched_ranks}")
     step(14, f"PASS - rank cleared on un-watch, dense on re-watch: {watched_ranks}")
+
+    # --------- 15/15  An unranked watched show sorts LAST for everyone ---------
+    # A sidebar save that marks a show watched (watchedAt set) stores it with no
+    # rank yet. Compare's other column reads /api/public-list, where SQLite's
+    # NULLs-first put that show at the TOP while Compare's own column put it
+    # last. A fresh user, so steps 11-14's rank state is not disturbed.
+    step(15, "an unranked watched show sorts last on /api/public-list")
+    u2 = f"smoke_test_{int(time.time())}_b"
+    r = requests.post(f"{backend}/api/auth/signup",
+                      json={"username": u2, "password": "smoke_pw_123"}, timeout=5)
+    if r.status_code != 200:
+        fail(15, f"second signup failed: {r.status_code} {r.text[:150]}")
+    h2 = {"Authorization": f"Bearer {r.json()['token']}"}
+    ids = [TEST_MEDIA_ID, TEST_MEDIA_ID + 1, TEST_MEDIA_ID + 2]
+    requests.put(f"{backend}/api/list", headers=h2, timeout=5,
+                 json={"season": TEST_SEASON, "year": TEST_YEAR,
+                       "items": [{"mediaId": m} for m in ids]})
+    for m in ids[:2]:
+        requests.patch(f"{backend}/api/list/watched", headers=h2, timeout=5,
+                       json={"season": TEST_SEASON, "year": TEST_YEAR, "mediaId": m, "watched": True})
+    r = requests.put(f"{backend}/api/list", headers=h2, timeout=5, json={
+        "season": TEST_SEASON, "year": TEST_YEAR,
+        "items": [{"mediaId": m, "watchedAt": "2026-10-13T00:00:00Z"} for m in ids]})
+    if r.status_code != 200:
+        fail(15, f"PUT marking the third show watched failed: {r.status_code} {r.text[:150]}")
+    r = requests.get(f"{backend}/api/public-list", timeout=5,
+                     params={"username": u2, "season": TEST_SEASON, "year": TEST_YEAR, "type": "post"})
+    if r.status_code != 200 or not isinstance(r.json(), list):
+        fail(15, f"public-list post: {r.status_code} {r.text[:150]}")
+    order = [(x["mediaId"], x.get("watchedRank")) for x in r.json()]
+    if len(order) != 3 or order[-1] != (ids[2], None):
+        fail(15, f"public post-watch order {order}: the unranked watched show {ids[2]} "
+                 f"must sort last, not first")
+    step(15, f"PASS - {order}")
 
     print(f"\nDone: {TOTAL_STEPS}/{TOTAL_STEPS} passed", flush=True)
 

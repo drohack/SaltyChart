@@ -358,10 +358,23 @@ def main():
                 f"{tiers['title']} by title, {tiers['missing']} missing")
 
     # --------- 7/13  Stream proxy + no credential in the manifest ---------
-    step(7, "stream proxy reaches Jellyfin, and manifests carry no API key")
-    r = requests.get(f"{backend}/api/jellyfin/stream/System/Info", headers=auth, timeout=20)
-    if r.status_code != 200 or b"ServerName" not in r.content:
-        fail(7, f"proxied /System/Info: {r.status_code} {r.content[:200]!r}")
+    step(7, "stream proxy serves only HLS paths, and manifests carry no API key")
+    # The proxy attaches the server's API key, and this fixture is an ordinary
+    # signup. It used to forward ANY path - this step asserted /System/Info came
+    # back 200 - so any account could read /Auth/Keys (every Jellyfin API key)
+    # through it. Every non-HLS path, and every way of climbing out of one, must
+    # be refused before a request leaves the server.
+    some_id = "0" * 32
+    for path in ("/System/Info", "/Auth/Keys", "/Users", "/System/Configuration",
+                 f"/videos/{some_id}/../../Auth/Keys",
+                 f"/videos/{some_id}/..%2F..%2FAuth/Keys"):
+        r = requests.Request("GET", f"{backend}/api/jellyfin/stream{path}", headers=auth).prepare()
+        r.url = f"{backend}/api/jellyfin/stream{path}"  # keep `..` unnormalised
+        r = requests.Session().send(r, timeout=20)
+        if r.status_code != 403:
+            fail(7, f"proxied {path} as a non-admin: expected 403, got {r.status_code} "
+                    f"{r.content[:120]!r} - the proxy is forwarding non-stream paths "
+                    f"with the server's API key")
     # Find something playable and pull its master playlist through the proxy.
     playable = None
     for s in requests.get(f"{backend}/api/anime?season={season}&year={year}&format=TV",
@@ -464,7 +477,7 @@ def main():
                 fail(8, f"subtitle fetch ({fmt}): {r.status_code}, {len(r.content)} bytes")
             head = r.content[:400].decode("utf-8", "replace")
             ok = ("[Script Info]" in head or "[V4+ Styles]" in head) if fmt == "ass" \
-                else head.lstrip("﻿").startswith("WEBVTT")
+                else head.lstrip("\ufeff").startswith("WEBVTT")
             if not ok:
                 fail(8, f"subtitle body does not look like {fmt}: {head[:80]!r}")
             step(8, f"PASS - {fmt} track fetched, {len(r.content):,} bytes")

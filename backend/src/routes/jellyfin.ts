@@ -3,11 +3,10 @@ import express from 'express';
 import axios, { AxiosInstance } from 'axios';
 import http from 'http';
 import https from 'https';
-import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import prisma from '../db';
 import { recordUpstream } from '../lib/upstreamHealth';
-import { requireAuth, requireAdmin, ADMIN_USER_ID, AuthRequest } from '../middleware/auth';
+import { requireAuth, requireAdmin, checkToken, AuthRequest } from '../middleware/auth';
 import {
   classifyMatch,
   detectSeasonNumber,
@@ -40,6 +39,7 @@ import {
   dateSettlesCandidates,
   isIdConfident,
   rawIdentityOverride,
+  viewerMayReplace,
   identityReady,
   setIdentityOverride,
   mergeIdentityPatch,
@@ -92,7 +92,6 @@ import { MediaStreamType } from '@jellyfin/sdk/lib/generated-client/models/media
 const router = Router();
 router.use(express.json());
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const _isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 
 const jellyfinLimiter = rateLimit({
@@ -786,6 +785,7 @@ interface JfSeries extends MatchableSeries {
 
 let _library: { series: JfSeries[]; expires: number } | null = null;
 let _libraryInFlight: Promise<JfSeries[]> | null = null;
+let _libraryInFlightForced = false;
 /** When a `fresh` re-check last forced a refetch (throttled below). */
 let _lastLibraryRefresh = 0;
 /** The DB-backed copy, so a restart doesn't refetch the whole library (2271). */
@@ -995,11 +995,6 @@ async function countSeries(api: Api): Promise<number | null> {
  */
 export async function getSeriesLibrary(api: Api, force = false): Promise<JfSeries[]> {
   if (!force && _library && _library.expires > Date.now()) return _library.series;
-  // Coalesce: the Randomize page asks about every show at once, and without
-  // this each request pulled the whole library separately - dozens of
-  // simultaneous full-library queries that all timed out, which reported
-  // every show as missing.
-  if (_libraryInFlight) return _libraryInFlight;
 
   // Stale-while-revalidate, the same rule `/api/anime` already applies to an
   // expired SeasonCache row. Expiry used to make the *next* request pay for the
@@ -1008,6 +1003,11 @@ export async function getSeriesLibrary(api: Api, force = false): Promise<JfSerie
   // was in the library - with nothing on screen to say why. The stale answer is
   // seconds-to-an-hour old and describes a library that changes when media is
   // added, so serving it while refreshing behind costs a viewer nothing.
+  //
+  // Checked BEFORE joining an in-flight refresh. The join used to come first,
+  // so only the caller that started the refresh got the stale copy - every
+  // request after it (the rest of a Randomize batch, a search, a pick) waited
+  // on the refresh it was meant to be shielded from.
   const stale = _libraryPersisted ?? (await loadPersistedLibrary());
   _libraryPersisted = stale;
   if (!force && stale?.series?.length) {
@@ -1019,7 +1019,18 @@ export async function getSeriesLibrary(api: Api, force = false): Promise<JfSerie
 
 /** The blocking refresh. Only awaited when there is no usable copy to serve. */
 async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries[]> {
-  if (_libraryInFlight) return _libraryInFlight;
+  // Coalesce: the Randomize page asks about every show at once, and without
+  // this each request pulled the whole library separately - dozens of
+  // simultaneous full-library queries that all timed out, which reported
+  // every show as missing. A FORCED caller must not settle for an unforced
+  // refresh, which may have answered from the persisted copy without asking
+  // Jellyfin at all: it waits that one out, then asks for real.
+  if (_libraryInFlight) {
+    if (!force || _libraryInFlightForced) return _libraryInFlight;
+    await _libraryInFlight.catch(() => {});
+    return getSeriesLibraryFresh(api, force);
+  }
+  _libraryInFlightForced = force;
 
   _libraryInFlight = (async () => {
     const cached = _libraryPersisted ?? (await loadPersistedLibrary());
@@ -1114,6 +1125,7 @@ async function getSeriesLibraryFresh(api: Api, force: boolean): Promise<JfSeries
     throw err;
   } finally {
     _libraryInFlight = null;
+    _libraryInFlightForced = false;
   }
 }
 
@@ -1247,7 +1259,7 @@ async function finishEpisode(api: Api, ep: any) {
 // caller the admin? (isAdmin rides along so the header's Admin link doesn't
 // need to probe an admin-only endpoint and spam 403s for everyone else.)
 router.get('/status', jellyfinLimiter, requireAuth, async (req: AuthRequest, res) => {
-  const isAdmin = req.userId === ADMIN_USER_ID;
+  const isAdmin = !!req.user?.isAdmin;
   try {
     const configured = !!(await getJellyfinConfig());
     // A false here silently removes every Watch button and disables
@@ -1640,8 +1652,7 @@ async function lookUpAvailability(
 /**
  * What the library check needs from this file: the cached series list (for
  * TVDB -> Jellyfin series id), episode reads, the refresh, and the cache
- * eviction. Built only when a check actually starts - a throttled visit never
- * gets here.
+ * eviction. Built only when a check actually starts.
  */
 async function libraryCheckDeps(): Promise<LibraryCheckDeps> {
   const [sonarr, ours, jfCfg] = await Promise.all([
@@ -1665,7 +1676,7 @@ async function libraryCheckDeps(): Promise<LibraryCheckDeps> {
     // added in the last hour is often not in it yet - and an unmatched series
     // can never be called stale. The first live run reported 29 unmatched
     // against 17 from a direct read. One forced refetch (~1.1 s for 2,343
-    // series) closes that, and a check runs at most every ten minutes.
+    // series) closes that; checks run daily or on the admin's button, one at a time.
     if ((ours ?? []).some((o) => o.episodeFileCount > 0 && !seriesByTvdb.has(String(o.tvdbId)))) {
       index(await getSeriesLibrary(api, true));
     }
@@ -1780,16 +1791,7 @@ router.get('/library/search', jellyfinLimiter, requireAuth, async (req, res) => 
  * human tells them apart at a glance.
  */
 router.get('/library/image/:itemId', streamLimiter, async (req, res) => {
-  let token: string | undefined;
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) token = auth.slice(7);
-  else if (typeof req.query.token === 'string') token = req.query.token;
-  if (!token) return res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
-  }
+  if (!(await queryTokenAuth(req as AuthRequest, res))) return;
   // Jellyfin item ids are hex; refuse anything else rather than letting a
   // crafted id build a path into the upstream.
   const itemId = String(req.params.itemId ?? '');
@@ -1820,7 +1822,8 @@ router.get('/library/image/:itemId', streamLimiter, async (req, res) => {
  *
  * An action a viewer cannot reverse is worse than no action - picking the
  * wrong show would otherwise be permanent until an admin noticed. Same guard
- * as the pick: a human decision (confirmed or rejected) is never touched.
+ * as the pick: a human decision (confirmed, rejected or an admin's manual
+ * override) is never touched.
  */
 router.post('/identity/unpick', jellyfinLimiter, requireAuth, async (req: AuthRequest, res) => {
   const mediaId = Number(req.body?.mediaId);
@@ -1828,7 +1831,7 @@ router.post('/identity/unpick', jellyfinLimiter, requireAuth, async (req: AuthRe
     return res.status(400).json({ error: 'Expected { mediaId: int }', code: 'BAD_REQUEST' });
   }
   const existing = rawIdentityOverride(mediaId);
-  if (existing?.confirmed || existing?.rejected) {
+  if (!viewerMayReplace(existing)) {
     return res.status(409).json({
       error: 'An admin has already settled this entry',
       code: 'ALREADY_SETTLED',
@@ -1850,9 +1853,9 @@ router.post('/identity/unpick', jellyfinLimiter, requireAuth, async (req: AuthRe
  *  - **The ids come from OUR library, never the request.** The client sends an
  *    itemId; everything written is read off the matching library row. A caller
  *    cannot point an entry at an arbitrary id.
- *  - **A human decision is never overwritten.** `setIdentityOverride` upserts
- *    unconditionally and nothing else guards confirmed/rejected rows - only
- *    admin-gating did. Without this check a viewer could silently undo a
+ *  - **A human decision is never overwritten** (`viewerMayReplace`).
+ *    `setIdentityOverride` upserts unconditionally and nothing else guards
+ *    settled rows - only admin-gating did. Without this check a viewer could silently undo a
  *    deliberate Reject.
  *
  * Written as `manual` with a `viewer:` note rather than a new source value: a
@@ -1867,7 +1870,7 @@ router.post('/identity/pick', jellyfinLimiter, requireAuth, async (req: AuthRequ
     return res.status(400).json({ error: 'Expected { mediaId: int, itemId: string }', code: 'BAD_REQUEST' });
   }
   const existing = rawIdentityOverride(mediaId);
-  if (existing?.confirmed || existing?.rejected) {
+  if (!viewerMayReplace(existing)) {
     return res.status(409).json({
       error: 'An admin has already settled this entry',
       code: 'ALREADY_SETTLED',
@@ -2283,6 +2286,42 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
 });
 
 /**
+ * Authenticate a route that accepts the JWT from `?token=` as well as the
+ * header (`<video>`, `<img>` and `<track>` cannot send one). Answers 401 itself
+ * and returns false on failure. Goes through `checkToken`, the same session
+ * rules as `requireAuth` - a bare `jwt.verify` here let a deleted account, or a
+ * session a password change had ended, keep streaming for 7 days.
+ */
+async function queryTokenAuth(req: AuthRequest, res: Response): Promise<boolean> {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith('Bearer ')
+    ? auth.slice(7)
+    : typeof req.query.token === 'string' ? req.query.token : undefined;
+  const check = await checkToken(token);
+  if (!check.ok) {
+    res.status(401).json({ error: check.error, code: check.code });
+    return false;
+  }
+  req.userId = check.user.id;
+  req.user = check.user;
+  return true;
+}
+
+/**
+ * The only upstream paths the stream proxy will fetch: a video's HLS tree, as
+ * named by Jellyfin's own `TranscodingUrl` (`/videos/<id>/master.m3u8`) and the
+ * manifest-relative URIs under it (`main.m3u8`, `hls1/main/0.ts`).
+ *
+ * It used to forward ANY path with the server's API key attached, and signup
+ * is open: on 2026-10-13 a freshly created non-admin account read
+ * `/System/Configuration`, the full `/Users` list and `/Auth/Keys` - every
+ * Jellyfin API key in plaintext - straight through this route. Checked on the
+ * NORMALISED pathname so `..` cannot climb out, and with no `%` allowed so an
+ * encoded separator cannot either.
+ */
+const STREAM_PATH = /^\/videos\/[0-9a-f-]{32,36}\/[A-Za-z0-9._\/-]+$/i;
+
+/**
  * Validate the caller and rebuild the upstream URL for a proxied GET.
  *
  * A `<track src>`/`fetch` from the page can't always set headers, so the JWT
@@ -2294,20 +2333,7 @@ async function prepareProxy(
   res: Response,
   prefix: string
 ): Promise<{ upstream: URL; cfg: JellyfinConfig } | null> {
-  let token: string | undefined;
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) token = auth.slice(7);
-  else if (typeof req.query.token === 'string') token = req.query.token;
-  if (!token) {
-    res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
-    return null;
-  }
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
-    res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
-    return null;
-  }
+  if (!(await queryTokenAuth(req, res))) return null;
 
   const cfg = await getJellyfinConfig();
   if (!cfg) {
@@ -2326,6 +2352,12 @@ async function prepareProxy(
     upstream = new URL(cfg.url + rest);
   } catch {
     res.status(400).json({ error: 'Bad stream path', code: 'BAD_REQUEST' });
+    return null;
+  }
+  const base = new URL(cfg.url).pathname.replace(/\/+$/, '');
+  const tail = upstream.pathname.startsWith(base) ? upstream.pathname.slice(base.length) : '';
+  if (!STREAM_PATH.test(tail) || tail.includes('..')) {
+    res.status(403).json({ error: 'Not a stream path', code: 'FORBIDDEN' });
     return null;
   }
   upstream.searchParams.delete('token'); // never forward our JWT
@@ -2487,7 +2519,7 @@ router.get('/attachments', streamLimiter, async (req, res) => {
  */
 function liftVttRegions(data: ArrayBuffer | Buffer): string {
   const text = Buffer.from(data as any).toString('utf8');
-  const m = text.match(/^(﻿?WEBVTT[^\n]*\n)\n((?:(?:Region|STYLE|NOTE):[^\n]*\n)+)/);
+  const m = text.match(/^(\uFEFF?WEBVTT[^\n]*\n)\n((?:(?:Region|STYLE|NOTE):[^\n]*\n)+)/);
   if (!m) return text;
   return m[1] + m[2] + text.slice(m[0].length);
 }
@@ -2498,16 +2530,7 @@ function liftVttRegions(data: ArrayBuffer | Buffer): string {
  * rather than taken from the caller.
  */
 async function subtitleProxy(req: AuthRequest, res: Response, kind: string) {
-  let token: string | undefined;
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) token = auth.slice(7);
-  else if (typeof req.query.token === 'string') token = req.query.token;
-  if (!token) return res.status(401).json({ error: 'No token', code: 'UNAUTHORIZED' });
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
-  }
+  if (!(await queryTokenAuth(req, res))) return;
   const cfg = await getJellyfinConfig();
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
 

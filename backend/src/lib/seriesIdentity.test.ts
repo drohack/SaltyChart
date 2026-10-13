@@ -9,6 +9,7 @@ import {
   matchGrade,
   dateSettlesCandidates,
   isIdConfident,
+  viewerMayReplace,
   RESOLVER_VERSION,
   mergeIdentityPatch,
   type Identity,
@@ -224,6 +225,25 @@ function ident(over: Partial<Identity>): Identity {
     ...over,
   };
 }
+
+test('viewerMayReplace: a viewer never overwrites a human decision', () => {
+  // The pick/unpick routes checked only confirmed/rejected, so any logged-in
+  // account could replace an override an admin saved without pressing Confirm.
+  assert.equal(
+    viewerMayReplace(ident({ source: 'manual', note: 'set by hand' })),
+    false,
+    'an unconfirmed admin override is a human decision a viewer must not replace'
+  );
+  assert.equal(viewerMayReplace(ident({ confirmed: true })), false, 'a confirmed row is settled');
+  assert.equal(viewerMayReplace(ident({ rejected: true, tvdbId: null })), false, 'a rejection is settled');
+  assert.equal(
+    viewerMayReplace(ident({ source: 'manual', note: 'viewer: picked by bob' })),
+    true,
+    'a previous viewer pick can be replaced - that is what the undo is for'
+  );
+  assert.equal(viewerMayReplace(ident({ source: 'remote' })), true, 'a resolver guess can be corrected');
+  assert.equal(viewerMayReplace(null), true, 'no stored row can be picked');
+});
 
 test('a community-map id is confident even though it is unconfirmed', () => {
   // Map rows are unconfirmed by construction. Requiring confirmation would

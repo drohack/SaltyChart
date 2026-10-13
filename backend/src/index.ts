@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { safeErrorText } from './lib/safeError';
 // Load env variables FIRST so later imports (Prisma client) see final value.
 // backend/.env provides DATABASE_URL for local dev; Docker injects it via env.
 dotenv.config();
@@ -23,11 +24,14 @@ if (
 
 // Backstop: a single rejected promise or thrown async error (e.g. a bad request
 // body reaching Prisma) must not hard-kill the whole process for every user.
+// Logged through `safeErrorText`: whatever lands here was not caught by code
+// that knew what it called, and an escaped axios error prints its request
+// headers - the Jellyfin or Sonarr key - when logged as an object.
 process.on('unhandledRejection', (reason) => {
-  console.error('[unhandledRejection]', reason);
+  console.error('[unhandledRejection]', safeErrorText(reason));
 });
 process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err);
+  console.error('[uncaughtException]', safeErrorText(err));
 });
 
 // ---------------------------------------------------------------------------
@@ -61,6 +65,8 @@ try {
 }
 
 import express from 'express';
+// Before any router exists: rejected async handlers reach the error handler.
+import './lib/asyncErrors';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
@@ -203,7 +209,7 @@ async function ensureDatabaseSchema() {
           "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
-      console.log('[DB] User table created ✅');
+      console.log('[DB] User table created');
     }
 
     // ---- Account security columns -----------------------------------------
@@ -292,7 +298,7 @@ async function ensureDatabaseSchema() {
           "hidden"     BOOLEAN NOT NULL DEFAULT 0,
           "watchedAt" DATETIME,
           "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
+          FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE
         );
       `);
 
@@ -301,7 +307,7 @@ async function ensureDatabaseSchema() {
         ON "WatchList" ("userId", "season", "year", "mediaId");
       `);
 
-      console.log('[DB] WatchList table created ✅');
+      console.log('[DB] WatchList table created');
     }
     // SeasonCache is created in its own standalone block below so fresh
     // and existing DBs take the same path.
@@ -719,11 +725,10 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/auth', authLimiter, authRouter);
   app.use('/api/list', listRouter);
   app.use('/api/public-list', publicListRouter);
-  // Mounted here, after compression() and the global generalLimiter, on
-  // purpose: Sonarr's Import List Sync is a hardcoded ~5-minute task, so ~12
-  // req/hour against 120 req/min is still several orders of magnitude more
-  // headroom than it needs and a dedicated limiter would be a knob nobody ever
-  // turns.
+  // Mounted after compression() and the global generalLimiter, with no limiter
+  // of its own: every route is admin-only and nothing polls it (the Custom List
+  // Sonarr used to poll is gone), so a dedicated limiter would be a knob nobody
+  // ever turns.
   app.use('/api/sonarr', sonarrRouter);
   app.use('/api/users', usersRouter);
   // Account administration - promote, demote, reset, delete. Admin-gated
@@ -737,6 +742,22 @@ ensureDatabaseSchema().then(() => {
   app.use('/api/options', optionsRouter);
   // Note: /api/translate and /api/jellyfin are registered before compression()
   // middleware (see above)
+
+  // The one place an error nobody caught is answered. `lib/asyncErrors` routes
+  // rejected async handlers here; without both, a throw outside a handler's own
+  // try left the request hanging until the client gave up.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    // body-parser's own errors carry the status they mean (400 malformed JSON,
+    // 413 too large) - those are the caller's mistake, not ours.
+    const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 500 ? err.status : 500;
+    if (status >= 500) console.error('[server] unhandled error:', safeErrorText(err));
+    res.status(status).json(
+      status === 500
+        ? { error: 'Something went wrong on the server', code: 'SERVER_ERROR' }
+        : { error: 'Bad request', code: 'BAD_REQUEST' },
+    );
+  });
 
   // Does this process do the server's work, or is it someone's dev copy? Every
   // timer below that acts OUTSIDE this process is gated on it - see
@@ -1006,7 +1027,7 @@ ensureDatabaseSchema().then(() => {
     // Start the batch via the shared helper so batchStatus is set (keeps the
     // 409 guard and /batch/status honest). Output is captured into batchStatus.log.
     console.log(`[batch-scheduler] Starting batch for ${next.season} ${next.year} (${next.daysUntil} days until season)`);
-    startBatch(['--cutoff', '10'], { season: next.season, year: next.year });
+    startBatch(['--cutoff', '10'], { season: next.season, year: next.year, trigger: 'scheduled' });
   }
 
   // Run the check immediately on startup (in case server starts during batch window)

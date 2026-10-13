@@ -9,12 +9,11 @@ import { onMount, tick } from 'svelte';
 import { allUsers as nicknameAllUsers, selectedUsers as nicknameSelected, toggleUser as toggleNicknameUser } from '../stores/nicknameUsers';
 import { checkAvailability, checkAvailabilityMany, forgetAvailability, mediaConfigured, libraryStatus, type MediaAvailability } from '../stores/jellyfin';
 import { loadCastSdk, loadVideoJs, prewarm, playbackInfo, isItemGone } from '../lib/jellyfinPrewarm';
-import { apiFetch, apiJson, QUICK, ApiError } from '../lib/remote';
+import { apiFetch, apiJson, QUICK, SEASON, ApiError } from '../lib/remote';
 
 /** Set when a hide/show write failed and the optimistic change was put back. */
 let hideWriteError = '';
 // Reactive trigger for title-language changes
-$: _lang = $options.titleLanguage;
 
   import type { Season } from '../stores/season';
 
@@ -42,7 +41,7 @@ $: _lang = $options.titleLanguage;
   let unwatchedSortMode: 'rank' | 'alphabetical' = 'rank';
 
   // Wheel DOM reference & animation state
-  let wheelEl: HTMLDivElement;
+  let wheelEl: SVGSVGElement;
   let rotation = 0; // degrees
   let spinning = false;
 
@@ -296,16 +295,20 @@ $: _lang = $options.titleLanguage;
     if (failed.length) revertHidden(failed, !targetHidden, 1);
   }
 
-  // Fetch nickname list whenever modal opens (and selected differs)
-  $: if (showModal && selected) {
-    (async () => {
-      try {
-        const res = await fetch(`/api/list/nicknames?mediaId=${selected.id}`);
-        nicknameList = res.ok ? await res.json() : [];
-      } catch {
-        nicknameList = [];
-      }
-    })();
+  // Fetch nickname list whenever modal opens (and selected differs). Guarded by
+  // the id it was asked for: opening a second show before the first answered
+  // let the first show's nicknames land last.
+  $: if (showModal && selected) loadNicknames(selected.id);
+
+  async function loadNicknames(mediaId: number) {
+    try {
+      const list = await apiJson<any[]>(`/api/list/nicknames?mediaId=${mediaId}`, {}, {
+        timeoutMs: QUICK, label: 'nicknames'
+      });
+      if (selected?.id === mediaId) nicknameList = list;
+    } catch {
+      if (selected?.id === mediaId) nicknameList = [];
+    }
   }
 
   // -- Library availability (never blocks the modal) -------------------
@@ -677,30 +680,49 @@ $: _lang = $options.titleLanguage;
     }
   }
 
-  // Fetch list from backend
-  async function fetchList() {
-    if (!$authToken) {
-      watchList = [];
-      return;
-    }
-    const res = await fetch(`/api/list?season=${season}&year=${year}`, {
-      headers: { Authorization: `Bearer ${$authToken}` }
+  // Both reads go through `lib/remote`, and land only if they are still for
+  // the season on screen. They were bare fetches with no catch and no request
+  // id: a network error was an unhandled rejection that left the previous
+  // season's shows on the wheel with nothing on screen to say so, and switching
+  // seasons quickly let an older response land last.
+  let loadError = false;
+  let _loadReqId = 0;
+
+  async function fetchList(): Promise<any[]> {
+    if (!$authToken) return [];
+    return apiJson<any[]>(
+      `/api/list?season=${season}&year=${year}`,
+      { headers: { Authorization: `Bearer ${$authToken}` } },
+      { timeoutMs: QUICK, label: 'randomize list' }
+    );
+  }
+
+  async function fetchAnime(): Promise<any[]> {
+    // A cold season can take minutes under AniList rate-limiting (see SEASON).
+    return apiJson<any[]>(`/api/anime?season=${season}&year=${year}`, {}, {
+      timeoutMs: SEASON, retries: 1, label: 'randomize season'
     });
-    if (res.ok) watchList = await res.json();
   }
-
-  async function fetchAnime() {
-    const res = await fetch(`/api/anime?season=${season}&year=${year}`);
-    if (res.ok) anime = await res.json();
-  }
-
 
   const fetchBoth = async () => {
+    const reqId = ++_loadReqId;
     loading = true;
+    loadError = false;
     try {
-      await Promise.all([fetchList(), fetchAnime()]);
+      const [list, shows] = await Promise.all([fetchList(), fetchAnime()]);
+      if (reqId !== _loadReqId) return;
+      watchList = list;
+      anime = Array.isArray(shows) ? shows : [];
+    } catch (err) {
+      if (reqId !== _loadReqId) return;
+      console.warn('[Randomize] season load failed', err);
+      // Never leave the previous season's shows on the wheel under this
+      // season's heading.
+      watchList = [];
+      anime = [];
+      loadError = true;
     } finally {
-      loading = false;
+      if (reqId === _loadReqId) loading = false;
     }
   };
 
@@ -1280,7 +1302,7 @@ const sliceWorker: Worker = new SliceWorker();
     }
     const segAngle = 360 / wheelItems.length;
 
-    const POINTER_OFFSET = 0; // pointer located at 12 o’clock (top-center)
+    const POINTER_OFFSET = 0; // pointer located at 12 o'clock (top-center)
 
     // Desired angle of selected slice centre relative to pointer
     const targetAngle = (wheelItems.length - idx - 0.5) * segAngle + POINTER_OFFSET;
@@ -1313,7 +1335,7 @@ const sliceWorker: Worker = new SliceWorker();
     const durationMs = 4000; // CSS transition duration
 
     // Limit audible ticks so they don’t become an overwhelming buzz when many
-    // slices are present.  We cap to ~25 clicks by skipping evenly.
+    // slices are present.  We cap to MAX_AUDIBLE_TICKS clicks by skipping evenly.
     const MAX_AUDIBLE_TICKS = 40;
     const skipFactor = Math.max(1, Math.ceil(ticks / MAX_AUDIBLE_TICKS));
 
@@ -1379,6 +1401,10 @@ function handleModalKey(e: KeyboardEvent) {
 // Clean-up in case the component is destroyed while the modal is open
 onDestroy(() => {
   window.removeEventListener('keydown', handleModalKey);
+  // Both are created per visit; without these every trip to /random left one
+  // more worker thread and audio context running behind the page.
+  sliceWorker.terminate();
+  audioCtx?.close().catch(() => {});
 });
 
 // Dynamically attach / detach the listener whenever modal visibility changes.
@@ -1597,15 +1623,27 @@ $: {
     }
 
     if ($authToken) {
+      // The screen already shows the change, so a failed save has to be said
+      // out loud and undone - these used to ignore the status entirely, so a
+      // rejected write left the screen and the server disagreeing until the
+      // next reload quietly put it back. Re-reading the season is the undo: the
+      // server is the truth, and the optimistic state above touched two lists.
+      const fail = (err: unknown) => {
+        console.error('[Randomize] watched change not saved', err);
+        hideWriteError = "Couldn't save that change - put back.";
+        setTimeout(() => (hideWriteError = ''), 8000);
+        void fetchBoth();
+      };
       try {
-        await fetch('/api/list/watched', {
+        const res = await apiFetch('/api/list/watched', {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${$authToken}`
           },
           body: JSON.stringify({ season, year, mediaId: id, watched })
-        });
+        }, { timeoutMs: QUICK, retries: 0, label: 'mark watched' });
+        if (!res.ok) return fail(`HTTP ${res.status}`);
 
         // Persist the full watched-rank ordering too. /watched alone always
         // stores the new row at the bottom server-side, which would discard the
@@ -1613,17 +1651,18 @@ $: {
         // just saw. Mirrors the drag handler's rank PATCH.
         const idOrder = watchedRank.map((it) => it.id);
         if (idOrder.length) {
-          await fetch('/api/list/rank', {
+          const rank = await apiFetch('/api/list/rank', {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${$authToken}`
             },
             body: JSON.stringify({ season, year, ids: idOrder })
-          });
+          }, { timeoutMs: QUICK, retries: 0, label: 'watched rank' });
+          if (!rank.ok) return fail(`rank HTTP ${rank.status}`);
         }
       } catch (err) {
-        console.error('Failed to update watched flag', err);
+        fail(err);
       }
     }
   }
@@ -1702,6 +1741,11 @@ $: {
     <div class="flex flex-col items-center mx-auto">
       {#if loading}
         <LoadingSpinner size="lg" />
+      {:else if loadError}
+        <div class="mt-24 text-center" data-season-load-error>
+          <p class="opacity-70 mb-3">Couldn't load this season - the server didn't answer.</p>
+          <button class="btn btn-sm btn-outline" on:click={fetchBoth}>Retry</button>
+        </div>
       {:else if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
       {:else}
@@ -1757,7 +1801,7 @@ $: {
         {#each wheelItems as item, i (item.id)}
           {#key $options.titleLanguage + '-' + item.id}
           <!-- rotate label to centre of slice.
-               Polar helper uses 0° at 12 o’clock, but CSS/SVG rotate() uses 0° at 3 o’clock -> offset -90° -->
+               Polar helper uses 0 deg at 12 o'clock, but CSS/SVG rotate() uses 0 deg at 3 o'clock -> offset -90 deg -->
           <g transform={`rotate(${sliceAngle * i + sliceAngle / 2 - 90})`}>
             <text
               fill="white"
@@ -2069,16 +2113,24 @@ $: {
           return idx !== -1 ? { ...entry, watchedRank: idx } : entry;
         });
 
-        // Persist watched ranking via dedicated endpoint
+        // Persist watched ranking via dedicated endpoint. A failure re-reads the
+        // season (the server is the truth) and says so, as `toggleWatched` does.
         if ($authToken) {
-          fetch('/api/list/rank', {
+          apiFetch('/api/list/rank', {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${$authToken}`
             },
             body: JSON.stringify({ season, year, ids: idOrder })
-          });
+          }, { timeoutMs: QUICK, retries: 0, label: 'watched rank (drag)' })
+            .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); })
+            .catch((err) => {
+              console.error('[Randomize] rank order not saved', err);
+              hideWriteError = "Couldn't save the new order - put back.";
+              setTimeout(() => (hideWriteError = ''), 8000);
+              void fetchBoth();
+            });
         }
       }}
           on:unwatch={(e) => toggleWatched(e.detail, false)}
@@ -2293,7 +2345,7 @@ $: {
                     <!-- "Nothing matched" reads as a broken search. Name the
                          term and the honest reason: the library really may not
                          have it, and no amount of retyping will change that. -->
-                    No match for “{pickTerm.trim()}” in your library - try a
+                    No match for &ldquo;{pickTerm.trim()}&rdquo; in your library - try a
                     shorter word, or the show may simply not be there yet.
                   {:else}
                     Type part of a title to search your library.
@@ -2512,8 +2564,8 @@ $: {
   {#if showImageUploadModal}
     <dialog open class="modal">
       <div class="modal-box w-full max-w-2xl">
-        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2"
-                on:click={() => showImageUploadModal = false}>✕</button>
+        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" aria-label="Close"
+                on:click={() => showImageUploadModal = false}>&#10005;</button>
 
         <h3 class="font-bold text-lg mb-4">Upload Custom Images</h3>
 
@@ -2530,8 +2582,8 @@ $: {
             {#if spinButtonImage}
               <div class="relative w-32 h-32 mx-auto">
                 <img src={spinButtonImage} alt="Spin button preview" class="w-full h-full object-cover rounded-full" />
-                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2"
-                        on:click={() => spinButtonImage = null}>✕</button>
+                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2" aria-label="Remove spin button image"
+                        on:click={() => spinButtonImage = null}>&#10005;</button>
               </div>
             {:else}
               <div
@@ -2557,8 +2609,8 @@ $: {
             {#if backgroundImage}
               <div class="relative w-48 h-48 mx-auto">
                 <img src={backgroundImage} alt="Background preview" class="w-full h-full object-cover rounded" />
-                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2"
-                        on:click={() => backgroundImage = null}>✕</button>
+                <button class="btn btn-xs btn-circle btn-error absolute -top-2 -right-2" aria-label="Remove background image"
+                        on:click={() => backgroundImage = null}>&#10005;</button>
               </div>
             {:else}
               <div

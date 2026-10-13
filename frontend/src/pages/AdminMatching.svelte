@@ -349,7 +349,7 @@
   }
 
   async function runLookup(mediaId: number, term: string) {
-    // Request-id staleness guard, same reason as createRemote's: a slow
+    // Request-id staleness guard (the same one Home's season load carries): a slow
     // response for an earlier term must not overwrite a newer one's results.
     const reqId = (lookupReqIds[mediaId] = (lookupReqIds[mediaId] ?? 0) + 1);
     lookupBusy[mediaId] = true;
@@ -1107,7 +1107,7 @@
                   <button type="button" class="btn btn-ghost btn-xs"
                     aria-label={`Reset the match for ${r.title}`}
                     on:click={() => resetPick(r.mediaId)}
-                  >↺</button>
+                  >&#8634;</button>
                 </p>
               {:else if selected[r.mediaId] && !selected[r.mediaId]?.library && !r.libraryTitle}
                 <p class="text-xs opacity-60">

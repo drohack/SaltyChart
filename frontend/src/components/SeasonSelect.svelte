@@ -2,7 +2,7 @@
   import { createEventDispatcher } from 'svelte';
 
   // --- Props ---
-  export type Season = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL';
+  import type { Season } from '../stores/season';
   export let season: Season;
   export let year: number;
   export let hideSequels: boolean = false;

@@ -16,13 +16,11 @@ green test suite.
 `svelte-check` catches all three - it type-checks the script blocks, where
 `vite build` only transforms them.
 
-Ratchet, not a clean gate: the frontend carries pre-existing type noise in
-components unrelated to this (sort comparators typed `0 | 1 | -1`, svelte-select
-props, an SVG bound to an HTMLDivElement). Those are worth fixing, but blocking
-on them today would mean either fixing untested components at speed or ignoring
-the check entirely - and a check that always reports errors is one nobody reads.
-So this fails only when the count *rises*. Lower BASELINE as they get fixed;
-never raise it to make a failure go away.
+A ratchet: it fails only when the count *rises* above BASELINE. It started at 7
+pre-existing errors (an auto-scroll direction typed `0 | 1 | -1`, a `Season`
+type exported from a component's instance script, an SVG bound as a div); all
+were fixed on 2026-10-13, so BASELINE is 0 and this is now a clean gate. Never
+raise it to make a failure go away.
 
 Usage:
   py -3.13 -u tools/tests/test_svelte_check.py
@@ -33,7 +31,7 @@ import sys
 from pathlib import Path
 
 FRONTEND = Path(__file__).resolve().parent.parent.parent / "frontend"
-BASELINE = 7
+BASELINE = 0
 
 
 def main() -> int:

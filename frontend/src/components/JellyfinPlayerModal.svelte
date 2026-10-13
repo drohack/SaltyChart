@@ -748,7 +748,7 @@
       <button
         class="btn btn-sm btn-circle btn-ghost shrink-0"
         aria-label="Close player"
-        on:click={() => dispatch('close')}>✕</button
+        on:click={() => dispatch('close')}>&#10005;</button
       >
     </div>
 
@@ -812,7 +812,7 @@
          the modal's `p-3`), so the hint sits in an evenly balanced band and the
          video gets the space instead. -->
     <p class="shrink-0 text-xs opacity-50 m-0 text-center">
-      <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10×
+      <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10&times;
     </p>
   </div>
 </dialog>

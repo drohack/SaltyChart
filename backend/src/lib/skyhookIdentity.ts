@@ -244,11 +244,6 @@ export async function skyhookEpisodes(tvdbId: string): Promise<SkyhookEpisode[]>
   return (await skyhookShow(tvdbId)).episodes;
 }
 
-/** TVDB's own TMDB cross-reference - the evidence a candidate merge needs. */
-export async function skyhookTmdbId(tvdbId: string): Promise<string | null> {
-  return (await skyhookShow(tvdbId)).tmdbId;
-}
-
 /**
  * May this search result be date-checked at all?
  *

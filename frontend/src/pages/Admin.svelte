@@ -384,7 +384,7 @@
             id="jf-key"
             type="password"
             class="input input-bordered w-full"
-            placeholder={jfKeySet ? '•••••••••• (saved - leave blank to keep)' : 'Paste a Jellyfin API key'}
+            placeholder={jfKeySet ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (saved - leave blank to keep)' : 'Paste a Jellyfin API key'}
             autocomplete="new-password"
             data-bwignore="true"
             data-1p-ignore="true"
@@ -393,7 +393,7 @@
           />
           <div class="col-start-2">
             <span class="label-text-alt opacity-60">
-              Jellyfin &rarr; Dashboard &rarr; API Keys &rarr; “+” to create one.
+              Jellyfin &rarr; Dashboard &rarr; API Keys &rarr; &ldquo;+&rdquo; to create one.
             </span>
           </div>
         </div>
@@ -438,7 +438,7 @@
             <div class="alert alert-success">
               <div>
                 <p class="font-semibold">
-                  Connected to “{jfTestResult.serverName}”
+                  Connected to &ldquo;{jfTestResult.serverName}&rdquo;
                   {#if jfTestResult.version}<span class="opacity-70 font-normal"> - Jellyfin {jfTestResult.version}</span>{/if}
                 </p>
                 <ul class="list-disc list-inside text-sm mt-1">

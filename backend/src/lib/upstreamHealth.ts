@@ -482,10 +482,6 @@ async function writeAll(map: HealthMap): Promise<void> {
   });
 }
 
-export async function getRecord(id: string): Promise<UpstreamRecord> {
-  return (await readAll())[id] ?? { ...EMPTY_RECORD };
-}
-
 // --- Recording ---------------------------------------------------------------
 
 /**

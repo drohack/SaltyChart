@@ -841,7 +841,7 @@ export function pickCandidate(all: RemoteCandidate[], airDateMs: number | null):
  */
 const SEASON_MARKER =
   /\s+(season\s*\d+|\d+(st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+|\d+)$/i;
-const SUBTITLE_SEPARATOR = /(:\s|\s+[-–—]).*$/;
+const SUBTITLE_SEPARATOR = /(:\s|\s+[-\u2013\u2014]).*$/;
 
 export function baseTitles(t: string): string[] {
   const out: string[] = [];

@@ -134,3 +134,26 @@ test('alerts are ON unless somebody switched them off', () => {
     assert.match(mailer.sent[0].subject, /^\[SaltyChart\] /);
   });
 });
+
+test("a service's own toggle on /admin/status stops its alerts", async () => {
+  // The per-service toggles reached only upstreamHealth's own mails, so
+  // switching YouTube off on that page left the download-path alerts mailing.
+  const on = { masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] };
+  const youtubeOff = { ...on, perService: { youtube: false } };
+  const send = (settings: any, kind: 'down' | 'recovered') => {
+    const mailer = captureMailer();
+    return alertAdmins('trailer downloads broken', 'body', {
+      mailer,
+      recipients: async () => ['owner@example.com'],
+      settings: async () => settings,
+      service: { id: 'youtube', kind },
+    }).then((r) => ({ r, mailer }));
+  };
+  const off = await send(youtubeOff, 'down');
+  assert.strictEqual(off.r.skipped, 'service-alerts-disabled', 'switching a service off must stop its alerts');
+  assert.strictEqual(off.mailer.sent.length, 0);
+  const still = await send(on, 'down');
+  assert.strictEqual(still.r.sent, 1, 'an untouched service still mails its outage');
+  const quietRecovery = await send(on, 'recovered');
+  assert.strictEqual(quietRecovery.r.sent, 0, 'recovery mail follows the recovery toggle, which defaults off');
+});

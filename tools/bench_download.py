@@ -8,7 +8,7 @@ the levers are extraction-side: which player_client, skipping extra requests,
 picking a format directly, warm player cache. (aria2c multi-connection is tested
 too, though it parallelises bytes of which there are almost none here.)
 
-For each config × video we download twice (run1 = cold-ish, run2 = warm, since
+For each config x video we download twice (run1 = cold-ish, run2 = warm, since
 yt-dlp caches the player JS) and report download seconds, the selected format_id,
 protocol (https vs fragmented m3u8/dash), and file size. Fastest *reliable* config
 (no errors, no fragmented/throttled format) wins.

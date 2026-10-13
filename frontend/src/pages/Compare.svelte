@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import SeasonSelect, { type Season } from '../components/SeasonSelect.svelte';
+  import SeasonSelect from '../components/SeasonSelect.svelte';
+  import type { Season } from '../stores/season';
   import { authToken, userName } from '../stores/auth';
 import { seasonYear } from '../stores/season';
 import { get } from 'svelte/store';
 import { options } from '../stores/options';
 import LoadingSpinner from '../components/LoadingSpinner.svelte';
-import { apiJson, QUICK } from '../lib/remote';
+import { apiFetch, apiJson, QUICK, SEASON } from '../lib/remote';
 // Reactive trigger for title-language changes
-$: _lang = $options.titleLanguage;
   // combobox component
   import Select from 'svelte-select';
   import 'svelte-select/tailwind.css';
@@ -353,8 +353,14 @@ let rankTypeB: 'pre' | 'post' = 'pre';
 
   // Fetch helper -------------------------------------------------------------
 
+  // Every read is bounded, and lands only if it is still for the selection on
+  // screen: season, user B and pre/post all change often, and these were bare
+  // fetches with no request id, so an older answer could overwrite a newer one.
+  let _listsReqId = 0;
+
   async function fetchLists() {
     if (!userA) return;
+    const reqId = ++_listsReqId;
 
     loading = true;
     error = null;
@@ -367,17 +373,23 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       // (the public endpoint now 404s opted-out users, which would otherwise
       // break the user's own Compare page). User B (someone else) still uses
       // public-list, which correctly 404s a user who opted out.
-      const animePromise = fetch(`/api/anime?season=${season}&year=${year}`);
+      const quick = (label: string) => ({ timeoutMs: QUICK, label });
+      const animePromise = apiFetch(`/api/anime?season=${season}&year=${year}`, {}, {
+        timeoutMs: SEASON, retries: 1, label: 'compare season'
+      });
       const aPromise = $authToken
-        ? fetch(`/api/list?season=${season}&year=${year}`, { headers: { Authorization: `Bearer ${$authToken}` } })
-        : fetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`);
+        ? apiFetch(`/api/list?season=${season}&year=${year}`, { headers: { Authorization: `Bearer ${$authToken}` } }, quick('compare your list'))
+        : apiFetch(`/api/public-list?username=${encodeURIComponent(usernameA)}&season=${season}&year=${year}&type=${rankTypeA}`, {}, quick('compare your list'));
       const bPromise = usernameB
-        ? fetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`)
+        ? apiFetch(`/api/public-list?username=${encodeURIComponent(usernameB)}&season=${season}&year=${year}&type=${rankTypeB}`, {}, quick('compare other list'))
         : Promise.resolve(null);
 
       const [aResp, bResp, animeResp] = await Promise.all([aPromise, bPromise, animePromise]);
+      if (reqId !== _listsReqId) return;
 
       if (!aResp.ok) throw new Error(`Failed to fetch your list (${aResp.status})`);
+      // A 4xx body is `{ error, code }`, and it used to become `animeData`.
+      if (!animeResp.ok) throw new Error(`Failed to fetch the season (${animeResp.status})`);
 
       // A saved comparison target who has since enabled hideFromCompare now
       // 404s - clear the stale selection and drop the comparison rather than
@@ -405,14 +417,20 @@ let rankTypeB: 'pre' | 'post' = 'pre';
           rowsA = [...rowsA].sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
         }
       }
+      const rowsB = bResp && bResp.ok ? ((await bResp.json()) ?? []) : (listB ?? []);
+      const shows = (await animeResp.json()) ?? [];
+      if (reqId !== _listsReqId) return;
       listA = rowsA;
-      listB = bResp && bResp.ok ? ((await bResp.json()) ?? []) : (listB ?? []);
-      animeData = (await animeResp.json()) ?? [];
+      listB = rowsB;
+      animeData = shows;
     } catch (e: any) {
+      if (reqId !== _listsReqId) return;
       console.error(e);
-      error = e.message ?? 'Failed to fetch';
+      error = e?.unreachable || e?.kind === 'timeout' || e?.kind === 'network'
+        ? "Couldn't reach the server"
+        : e.message ?? 'Failed to fetch';
     } finally {
-      loading = false;
+      if (reqId === _listsReqId) loading = false;
     }
   }
 
@@ -464,8 +482,9 @@ let rankTypeB: 'pre' | 'post' = 'pre';
       } catch {
         /* ignore */
       }
-
-      fetchLists();
+      // No explicit fetchLists() here: setting selectedOther changes the
+      // reactive fetch key above, which fetches - calling it too fired the
+      // same three requests twice on every restore.
     }
   });
 
@@ -520,7 +539,7 @@ let rankTypeB: 'pre' | 'post' = 'pre';
     cover: string;
     rankA: number | null; // 1-based rank in listA (null = not present)
     rankB: number | null; // 1-based rank in listB
-    diff: number | null;  // |rankA‒rankB|
+    diff: number | null;  // |rankA-rankB|
     // custom names from each user's list
     customA: string | null;
     customB: string | null;

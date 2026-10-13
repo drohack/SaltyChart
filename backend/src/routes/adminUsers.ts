@@ -272,10 +272,13 @@ router.post('/:id/clear-email', requireAuth, requireAdmin, async (req: AuthReque
 /**
  * Delete an account and everything hanging off it.
  *
- * The children are cleared explicitly rather than by a cascade: `WatchList` has
- * no `onDelete: Cascade`, SQLite cannot add one to an existing foreign key
- * without rebuilding the table, and rebuilding a live table is not worth it for
- * an operation that runs a handful of times ever.
+ * The children are cleared explicitly rather than by a cascade: `WatchList`'s
+ * foreign key is `ON DELETE RESTRICT` (the long-lived databases were created by
+ * the original Prisma migration, and `ensureDatabaseSchema` now creates fresh
+ * ones the same way - it said CASCADE, so two deployments deleted differently).
+ * SQLite cannot change an existing foreign key without rebuilding the table,
+ * and rebuilding a live table is not worth it for an operation that runs a
+ * handful of times ever.
  */
 router.delete('/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
   const id = parseId(req.params.id);

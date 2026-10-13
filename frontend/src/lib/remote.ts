@@ -1,4 +1,3 @@
-import { writable, type Readable } from 'svelte/store';
 
 /**
  * One way to read from the API.
@@ -103,60 +102,4 @@ export async function apiJson<T>(path: string, init?: RequestInit, opts?: ApiFet
   const res = await apiFetch(path, init, opts);
   if (!res.ok) throw new ApiError('http', `${opts?.label ?? path}: HTTP ${res.status}`, res.status);
   return (await res.json()) as T;
-}
-
-export type RemoteStatus = 'idle' | 'loading' | 'ok' | 'failed';
-
-export interface Remote<T> {
-  status: Readable<RemoteStatus>;
-  data: Readable<T | null>;
-  error: Readable<ApiError | null>;
-  /** Run a loader, tracking status and discarding stale responses. */
-  run: (fn: () => Promise<T>) => Promise<T | null>;
-  /** Re-run whatever `run` was last given. Powers every Retry button. */
-  retry: () => Promise<T | null>;
-}
-
-/**
- * The `Home.fetchMainSeason` shape, extracted so a page gets it for free.
- *
- * The request-id guard is the non-obvious part: without it a slow response for
- * the *previous* season can land after a newer one and overwrite it. Home
- * already carried that guard by hand; nothing else did.
- */
-export function createRemote<T>(label: string): Remote<T> {
-  const status = writable<RemoteStatus>('idle');
-  const data = writable<T | null>(null);
-  const error = writable<ApiError | null>(null);
-  let reqId = 0;
-  let lastFn: (() => Promise<T>) | null = null;
-
-  const run = async (fn: () => Promise<T>): Promise<T | null> => {
-    lastFn = fn;
-    const id = ++reqId;
-    status.set('loading');
-    error.set(null);
-    try {
-      const value = await fn();
-      if (id !== reqId) return null; // superseded; do not clobber newer data
-      data.set(value);
-      status.set('ok');
-      return value;
-    } catch (err: any) {
-      if (id !== reqId) return null;
-      const e = err instanceof ApiError ? err : new ApiError('network', `${label}: ${err?.message ?? err}`);
-      console.warn(`[remote] ${label} failed:`, e.message);
-      error.set(e);
-      status.set('failed');
-      return null;
-    }
-  };
-
-  return {
-    status: { subscribe: status.subscribe },
-    data: { subscribe: data.subscribe },
-    error: { subscribe: error.subscribe },
-    run,
-    retry: () => (lastFn ? run(lastFn) : Promise.resolve(null)),
-  };
 }

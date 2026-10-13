@@ -1,6 +1,11 @@
 # Admin account security - design
 
-Status: proposed, not implemented. Written 2026-08-16.
+Status: implemented (`lib/authCodes.ts`, `routes/adminUsers.ts`,
+`lib/setupCode.ts`). Written 2026-08-16. This is the design record, not the
+contract: where they differ, `backend/CLAUDE.md` *Accounts and admin access*
+wins. Superseded details: the admin "set password" endpoint became
+`clear-password` / `clear-email` (an admin never sets a credential), and a
+token with no `v` claim skips the version check rather than reading as 0.
 
 ## The problem
 

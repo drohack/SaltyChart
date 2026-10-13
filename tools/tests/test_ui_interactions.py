@@ -182,7 +182,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 43
+TOTAL = 44
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -738,7 +738,7 @@ def test_trailer_modal_escape(page, frontend: str):
         "Check the <svelte:window on:keydown> handler in AnimeGridTranslate.svelte."
     )
 
-    step(9, "step 4/4: reopening and closing with the ✕ button")
+    step(9, "step 4/4: reopening and closing with the close (X) button")
     trailer.click()
     page.wait_for_selector('iframe[src*="youtube"]', timeout=10_000)
     close_btn = page.locator('button[aria-label="Close trailer"]')
@@ -748,8 +748,8 @@ def test_trailer_modal_escape(page, frontend: str):
     )
     close_btn.click()
     page.wait_for_timeout(600)
-    assert page.locator('iframe[src*="youtube"]').count() == 0, "✕ button did not close the modal"
-    step(9, "PASS - Escape and the ✕ button both close the trailer")
+    assert page.locator('iframe[src*="youtube"]').count() == 0, "close (X) button did not close the modal"
+    step(9, "PASS - Escape and the close (X) button both close the trailer")
 
 
 # -----------------------------------------------------------------------------
@@ -2302,6 +2302,79 @@ def test_my_list_reorder(page, backend: str, frontend: str, token: str):
     step(30, f"PASS - {before} -> {expected}, persisted across a reload")
 
 
+def test_leftover_survives_sidebar_edit(page, backend: str, frontend: str, token: str):
+    """A Leftovers entry on My List survives an edit in the sidebar.
+
+    Adding a show from the Leftovers section stores it in THIS season's list,
+    but the sidebar only resolved entries against the season's own grid - so
+    the show was invisible there, and the next reorder or rename (which sends
+    the whole visible list to `PUT /api/list`, a replace) deleted it from the
+    server. Reproduced 2026-10-13: seeded [a, b, leftover], renamed a, and the
+    server held [a, b].
+    """
+    step(44, "step 1/5: seeding two season shows and one Leftovers show")
+    season_list = requests.get(f"{backend}/api/anime", timeout=120,
+                               params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+    prev_season, prev_year = {"WINTER": ("FALL", SEEDED_YEAR - 1), "SPRING": ("WINTER", SEEDED_YEAR),
+                              "SUMMER": ("SPRING", SEEDED_YEAR), "FALL": ("SUMMER", SEEDED_YEAR)}[SEEDED_SEASON]
+    prev = requests.get(f"{backend}/api/anime", timeout=120,
+                        params={"season": prev_season, "year": prev_year}).json()
+    in_season = {a["id"] for a in season_list}
+    # The same filter as Home's `leftovers` - anything else never renders there.
+    left = [a["id"] for a in prev
+            if a.get("format") == "TV" and a.get("status") == "RELEASING" and a["id"] not in in_season]
+    assert left, (f"{prev_season} {prev_year} has no RELEASING TV show left over into "
+                  f"{SEEDED_SEASON} {SEEDED_YEAR} - this flow needs one; move SEEDED_SEASON on")
+    ids = season_ids(backend, 2) + [left[0]]
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(frontend)
+    wait_for_grids(page)
+    page.wait_for_selector("[data-list-row]", timeout=15_000)
+
+    step(44, "step 2/5: the Leftovers show is in the sidebar")
+    shown = row_order(page, "[data-list-row]")
+    assert left[0] in shown, (f"the Leftovers show {left[0]} is on the list but not in the "
+                              f"sidebar ({shown}) - and the next sidebar edit will delete it")
+
+    step(44, "step 3/5: renaming another row")
+    page.dblclick(f"[data-list-row='{ids[0]}'] button[title]")
+    page.fill("dialog[open] input", "renamed by flow 44")
+    page.click("dialog[open] button.btn-primary")
+    page.wait_for_timeout(1500)
+
+    step(44, "step 4/5: the server still holds the Leftovers show")
+    after = [w["mediaId"] for w in requests.get(
+        f"{backend}/api/list", timeout=15, headers={"Authorization": f"Bearer {token}"},
+        params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()]
+    assert left[0] in after, (f"a sidebar rename deleted the Leftovers show {left[0]} from "
+                              f"the server: list is now {after}")
+
+    step(44, "step 5/5: with the Leftovers fetch failing, a rename still keeps it")
+    # Now the sidebar CANNOT resolve the show, which is the general case: a grid
+    # still loading or a fetch that failed. A save must keep what it did not draw.
+    pattern = f"**/api/anime?season={prev_season}*"
+    page.route(pattern, lambda r: r.abort())
+    try:
+        page.reload()
+        page.wait_for_selector(f"[data-list-row='{ids[1]}']", timeout=60_000)
+        page.wait_for_timeout(1000)
+        page.dblclick(f"[data-list-row='{ids[1]}'] button[title]")
+        page.fill("dialog[open] input", "renamed again by flow 44")
+        page.click("dialog[open] button.btn-primary")
+        page.wait_for_timeout(1500)
+    finally:
+        page.unroute(pattern)
+    after = [w["mediaId"] for w in requests.get(
+        f"{backend}/api/list", timeout=15, headers={"Authorization": f"Bearer {token}"},
+        params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()]
+    assert left[0] in after, (f"a rename made while the sidebar could not draw the Leftovers "
+                              f"show {left[0]} deleted it: list is now {after}")
+    step(44, f"PASS - Leftovers show {left[0]} shown, and kept through both renames")
+
+
 def test_watched_rank_reorder(page, backend: str, frontend: str, token: str):
     """Reordering the Randomize watched list persists.
 
@@ -2893,6 +2966,7 @@ SELECTABLE_FLOWS = {
     "options panel collapse",
     "phone sidebars reach the wheel",
     "wheel fits between lists",
+    "leftover survives sidebar edit",
 }
 
 
@@ -3724,6 +3798,7 @@ def main():
                 ("options panel collapse", lambda: test_options_panel_collapse(page, args.backend, frontend, token_a)),
                 ("phone sidebars reach the wheel", lambda: test_phone_sidebars_reach_the_wheel(page, args.backend, frontend, token_a)),
                 ("wheel fits between lists", lambda: test_wheel_fits_between_lists(page, args.backend, frontend, token_a)),
+                ("leftover survives sidebar edit", lambda: test_leftover_survives_sidebar_edit(page, args.backend, frontend, token_a)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

@@ -25,6 +25,7 @@
 import prisma from '../db';
 import { getMailer, mailErrorInfo, type Mailer } from './mailer';
 import {
+  alertsEnabledFor,
   readAlertSettings,
   resolveRecipients,
   type AlertSettings,
@@ -128,6 +129,15 @@ export async function alertAdmins(
     recipients?: () => Promise<string[]>;
     /** Injected so the OFF path is testable without a database. */
     settings?: () => Promise<AlertSettings>;
+    /**
+     * The upstream service this alert is about, if any. Given, the alert obeys
+     * that service's toggles on /admin/status (`alertsEnabledFor`) as well as
+     * the master switch. The download-path mails pass YouTube: until they did,
+     * switching YouTube's alerts off on that page left them mailing - the same
+     * "control that lies" the master switch once was. Alerts about our own jobs
+     * (the batch, the Sunday run) have no service and obey the master alone.
+     */
+    service?: { id: string; kind: 'down' | 'recovered' };
   } = {},
 ): Promise<{ sent: number; skipped: string | null }> {
   const mailer = deps.mailer ?? getMailer();
@@ -141,9 +151,14 @@ export async function alertAdmins(
     // OFF path is a unit test rather than a database row - and note the read
     // FAILS OPEN (readAlertSettings returns the default on any error), because
     // a broken settings row must not silence the alerts it governs.
-    if (!(await (deps.settings ?? readAlertSettings)()).masterEnabled) {
+    const settings = await (deps.settings ?? readAlertSettings)();
+    if (!settings.masterEnabled) {
       console.log(`[alerts] alerts are switched off on /admin/status; not sending: ${full}`);
       return { sent: 0, skipped: 'alerts-disabled' };
+    }
+    if (deps.service && !alertsEnabledFor(settings, deps.service.id, deps.service.kind)) {
+      console.log(`[alerts] ${deps.service.id} ${deps.service.kind} alerts are off on /admin/status; not sending: ${full}`);
+      return { sent: 0, skipped: 'service-alerts-disabled' };
     }
     if (!mailer.configured()) {
       console.log(`[alerts] SMTP not configured; would have sent: ${full}`);

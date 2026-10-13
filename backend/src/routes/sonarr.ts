@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { safeErrorText } from '../lib/safeError';
 import prisma from '../db';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
 import { resolveIdentity, identityReady, matchGrade, isIdConfident } from '../lib/seriesIdentity';
@@ -56,7 +57,7 @@ import {
   type SkipReason,
   type Orphan,
 } from '../lib/sonarrPush';
-import { isValidSeason, isValidYear, type Season } from '../lib/validateSeason';
+import { isValidSeason, isValidYear, seasonOverride, type Season } from '../lib/validateSeason';
 import { alreadyRanToday } from '../lib/scheduling';
 import { readLibraryAudit, libraryCheckRunning } from '../lib/libraryCheck';
 import { englishSummary } from '../lib/libraryAudit';
@@ -260,7 +261,7 @@ async function readCachedSeason(ref: SeasonRef): Promise<unknown[]> {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     // A corrupt row degrades to "this season contributes nothing", never a 500
-    // on a list Sonarr treats as authoritative.
+    // on the report or a push.
     console.warn(`[sonarr] unparseable SeasonCache row for ${ref.season} ${ref.year}`);
     return [];
   }
@@ -576,21 +577,6 @@ export async function runSonarrSnapshot(): Promise<SnapshotStatus> {
   return status;
 }
 
-/** Both or neither, and both valid. Shared by `/push`, `/push/preview` and `/report`. */
-function seasonOverride(
-  season: string | undefined,
-  year: string | undefined
-): { error: string } | { refs: SeasonRef[] | null } {
-  if ((season && !year) || (!season && year)) {
-    return { error: 'Provide both "season" and "year", or neither' };
-  }
-  if (season && year) {
-    if (!isValidSeason(season) || !isValidYear(year)) return { error: 'Invalid season or year' };
-    return { refs: [{ season: season.toUpperCase() as Season, year: Number(year) }] };
-  }
-  return { refs: null };
-}
-
 /**
  * Fields the admin page reads that `sonarrSelect.ts` does not filter on, so they
  * are not in `SonarrCandidate`: the episode count sizes the download estimate,
@@ -787,7 +773,7 @@ router.get('/push/preview', requireAuth, requireAdmin, async (req, res) => {
     void raw; void skippedRaw; void priorIds;
     return res.json(shown);
   } catch (err) {
-    console.error('[sonarr] push preview failed', err);
+    console.error('[sonarr] push preview failed', safeErrorText(err));
     return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
@@ -1012,7 +998,7 @@ router.post('/push', requireAuth, requireAdmin, async (req, res) => {
   try {
     return res.json(await runScheduledPush(capFrom(req.body?.cap)));
   } catch (err) {
-    console.error('[sonarr] push failed', err);
+    console.error('[sonarr] push failed', safeErrorText(err));
     return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
@@ -1022,7 +1008,7 @@ router.post('/push', requireAuth, requireAdmin, async (req, res) => {
  *
  * **Degradation is load-bearing.** When Sonarr is unreachable this still
  * returns the whole proposal side - which needs no Sonarr at all - with
- * `sonarr.reachable: false`. The page must not go blank because Sonarr is down,
+ * `sonarr.observed: false`. The page must not go blank because Sonarr is down,
  * the same discipline as the Jellyfin availability path where `unknown` means
  * "couldn't ask" and never "not in the library".
  */
@@ -1355,7 +1341,7 @@ router.get('/report', requireAuth, requireAdmin, async (req, res) => {
       library: { ...library, running: libraryCheckRunning() },
     });
   } catch (err) {
-    console.error('[sonarr] report failed', err);
+    console.error('[sonarr] report failed', safeErrorText(err));
     return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
@@ -1388,7 +1374,7 @@ router.put('/enabled', requireAuth, requireAdmin, async (req, res) => {
  *
  * Waits for the first pass (audit stored, refreshes requested) but not for
  * Jellyfin to finish rescanning, which is watched in the background and lands
- * in the stored audit within about two minutes. A snapshot written before the
+ * in the stored audit within about five minutes. A snapshot written before the
  * snapshot recorded our series has no list to check, so one is taken first.
  */
 router.post('/library/check', requireAuth, requireAdmin, async (_req, res) => {
@@ -1400,7 +1386,7 @@ router.post('/library/check', requireAuth, requireAdmin, async (_req, res) => {
     const result = await started.firstPass;
     return res.json({ status: started.status, ...result });
   } catch (err) {
-    console.error('[sonarr] library check failed', err);
+    console.error('[sonarr] library check failed', safeErrorText(err));
     return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
@@ -1410,7 +1396,7 @@ router.post('/snapshot', requireAuth, requireAdmin, async (_req, res) => {
   try {
     return res.json(await runSonarrSnapshot());
   } catch (err) {
-    console.error('[sonarr] snapshot failed', err);
+    console.error('[sonarr] snapshot failed', safeErrorText(err));
     return res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });

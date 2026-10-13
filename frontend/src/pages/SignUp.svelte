@@ -1,5 +1,6 @@
 <script lang="ts">
 import { authToken, userName } from '../stores/auth';
+import { apiFetch, QUICK } from '../lib/remote';
 import { options } from '../stores/options';
 import { get } from 'svelte/store';
 
@@ -11,19 +12,35 @@ import { get } from 'svelte/store';
   import { onMount } from 'svelte';
   onMount(() => userInput?.focus());
 
+  let busy = false;
+
   async function submit() {
+    if (busy) return;
     error = '';
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      error = data.error || 'Sign-up failed';
+    busy = true;
+    let data: any;
+    // Bounded and caught: a bare fetch here meant a backend that was down (or a
+    // proxy's HTML 502, which `res.json()` cannot parse) produced an unhandled
+    // rejection and NOTHING on screen - the button just did nothing.
+    try {
+      const res = await apiFetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      }, { timeoutMs: QUICK, retries: 0, label: 'signup' });
+      data = await res.json().catch(() => null);
+      if (!res.ok) {
+        error = data?.error || `Sign-up failed (the server answered ${res.status})`;
+        return;
+      }
+    } catch (err: any) {
+      error = err?.unreachable
+        ? "Couldn't reach the server - check your connection and try again."
+        : 'Sign-up failed - please try again.';
       return;
+    } finally {
+      busy = false;
     }
-    const data = await res.json();
 
     // Carry the choices made as a guest onto the new account, BEFORE the token
     // lands. Setting the token makes the options store fetch this account's row -
@@ -69,6 +86,6 @@ import { get } from 'svelte/store';
   {/if}
   <input bind:this={userInput} class="input w-full" placeholder="Username" bind:value={username} />
   <input class="input w-full" type="password" placeholder="Password" bind:value={password} />
-  <button class="btn btn-primary w-full" type="submit">Create Account</button>
+  <button class="btn btn-primary w-full" type="submit" disabled={busy}>Create Account</button>
   <p class="text-sm text-center">Already have an account? <a href="/login" class="link" on:click|preventDefault={() => { window.history.pushState({}, '', '/login'); dispatchEvent(new PopStateEvent('popstate')); }}>Log in here</a></p>
 </form>

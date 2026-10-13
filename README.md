@@ -321,8 +321,9 @@ nicknames + ranks. Endpoints:
 `GET /api/list/users-with-nicknames`, `GET /api/list/nicknames?mediaId=`,
 `GET /api/list/users-with-ratings?season=&year=`, `GET /api/list/user-ratings?username=&season=&year=`.
 
-**Nickname user filter** - the global *Options* modal's **Nickname User Picker**
-lets you choose whose nicknames are displayed.
+**Nickname user filter** - Randomize's own **Nicknames from** panel (desktop)
+lets you choose whose nicknames are displayed; it auto-checks everyone with
+entries for the season.
 
 **Real-time subtitle translation** - click a Japanese trailer and get live
 English subtitles streamed via SSE. If the video has YouTube English CC
@@ -339,16 +340,17 @@ boundaries rather than Whisper's coarser segment estimates - eliminates the
 "subtitle appears before speech" issue. Users can dismiss subtitles via the CC
 toggle and the preference persists for all users.
 
-**Pre-translation pipeline** - two-tier system covering the previous, current,
-and next seasons on every run:
+**Pre-translation pipeline** - two tiers:
 - **Local GPU** (`tools/local_translate.py`): runs every Sunday at 5am via
   Windows Scheduled Task ("SaltyChart Translate"). No window gate - always runs
   and caches new trailers for all 3 seasons. Uses the **split pipeline**:
   Demucs vocal isolation -> `large-v3` Japanese transcription -> LLM translation
   (`qwen3.5:9b` via Ollama), tagged `large-v3-split`.
 - **Server batch** (`backend/scripts/batch_translate.py`, `medium` int8 CPU):
-  runs automatically on Wednesdays 2-4am when within 50 days of a season start.
-  Fallback only - skips anything already cached at higher quality. Stops at 10am.
+  runs automatically on Wednesdays 2-4am when within 50 days of a season start,
+  covering **only the displayed season** (one season's downloads per run keeps
+  it off YouTube's bot wall; `--all-seasons` restores the old sweep). Fallback
+  only - skips anything already cached at higher quality. Stops at 10am.
 
 Both scripts detect model rank and never downgrade a higher-quality translation.
 
@@ -386,9 +388,11 @@ iframe and would leave the subtitles behind.)
   form, because the admin pages hold the Jellyfin and Sonarr credentials. An
   admin with no verified address has no self-service reset at all - another
   admin removes their admin access first.
-- **Admin -> Users** manages accounts: promote, demote, reset a non-admin's
-  password, delete. Admins are peers, except that the last one cannot be removed
-  and promoting someone requires a verified email on their account.
+- **Admin -> Users** manages accounts: promote, demote, clear a password or an
+  email (the owner then sets a new one - an admin never sets one), delete. An
+  admin's password can be cleared only if that admin has a verified email, and an
+  admin's email can never be cleared. Admins are peers, except that the last one
+  cannot be removed and promoting someone requires a verified email.
 - Changing your password (also in *Options -> Account*) signs out every other
   device.
 - Sending mail needs SMTP configured - see *Environment variables* below.
@@ -412,12 +416,14 @@ iframe and would leave the subtitles behind.)
 - All error responses use a unified shape: `{ error: 'message', code: 'CODE_NAME' }`.
   Codes include `BAD_REQUEST`, `UNAUTHORIZED`, `INVALID_CREDENTIALS`,
   `INVALID_TOKEN`, `USER_NOT_FOUND`, `USER_EXISTS`, `ADMIN_REQUIRED`,
-  `BATCH_RUNNING`, `RATE_LIMITED`, `UPSTREAM_ERROR`, `SERVER_ERROR`.
+  `BATCH_RUNNING`, `RATE_LIMITED`, `UPSTREAM_ERROR`, `SERVER_ERROR`, `FORBIDDEN`
+  (the stream proxy refusing a non-video path). An error nothing caught is
+  answered with `SERVER_ERROR` rather than left hanging.
 - `dom-to-image-more` is bundled as a lazy chunk (previously a CDN import).
 
 These features are fully documented in the contributor guides - `CLAUDE.md` at
-the repo root, with the `/api/jellyfin` and `/api/translate` contracts in
-`backend/CLAUDE.md` and the per-surface UI detail in `frontend/CLAUDE.md`.
+the repo root, with the backend route contracts, matching internals and schema
+in `backend/CLAUDE.md` and the per-surface UI detail in `frontend/CLAUDE.md`.
 Remember to update them when expanding the API or database schema.
 
 The **frontend** Vite dev-server proxies all `/api/*` requests to the **backend**
@@ -441,7 +447,7 @@ deploying**; there is no manual build/transfer step.
    py -3.13 -u tools/tests/run_all.py
 
    # Expect the final line: "Pre-deploy: 24/24 passed - ready to build"
-   # (17/17 with --skip-burned-in - use it if no CUDA)
+   # (23/23 with --skip-burned-in - use it if no CUDA)
    ```
 
 2. **Push to `master`.** The `deploy` workflow

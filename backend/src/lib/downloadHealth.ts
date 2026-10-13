@@ -209,6 +209,7 @@ export async function recordDownloadOk(): Promise<void> {
       'trailer downloads recovered',
       `Trailer audio downloads are working again after ${h.consecutiveFailures} consecutive failures.\n` +
       `Last failure: ${h.lastFailReason ?? 'unknown'}\n\n/admin/subtitles has the details.`,
+      { service: { id: 'youtube', kind: 'recovered' } },
     );
   }
 }
@@ -271,6 +272,7 @@ export async function recordDownloadFailure(reason: string, kind: unknown = 'oth
         'persists past a day, upgrade it by hand.\n\n'
       : '') +
     '/admin/subtitles shows the live state and will announce recovery.',
+    { service: { id: 'youtube', kind: 'down' } },
   );
 }
 

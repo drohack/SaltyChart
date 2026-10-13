@@ -58,11 +58,14 @@ router.get('/', async (req, res) => {
 
     let list;
     if (rankType === 'post') {
-      // Only watched items; order by watchedRank if set else watchedAt
+      // Only watched items; order by watchedRank if set else watchedAt. Unranked
+      // rows go LAST: SQLite sorts NULLs first on ASC, which put a just-watched,
+      // not-yet-ranked show at the top of this column while Compare's own
+      // column (and `compactWatchedRanks` in list.ts) put it at the bottom.
       list = await prisma.watchList.findMany({
         where: { ...whereBase, watched: true },
         orderBy: [
-          { watchedRank: 'asc' },
+          { watchedRank: { sort: 'asc', nulls: 'last' } },
           { watchedAt: 'asc' }
         ],
         select

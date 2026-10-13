@@ -32,7 +32,8 @@
     if (e.key === 'Escape') close();
   }
 
-  // Ensure global listener is removed if the component unmounts while open
+  // Escape handling only while open; onDestroy below removes it if the
+  // component unmounts while open.
   $: {
     if (open) {
       window.addEventListener('keydown', handleKey);

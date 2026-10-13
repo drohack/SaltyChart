@@ -25,7 +25,7 @@
   const EDGE_PX = 32;
   let scrollInterval: any = null;
 
-  function startAutoScroll(dir: -1 | 0 | 1) {
+  function startAutoScroll(dir: number) {
     stopAutoScroll();
     if (!dir) return;
     scrollInterval = setInterval(() => {
@@ -65,7 +65,6 @@
   }
 
   // Helpers to obtain the display title respecting user preference.
-  $: _lang = $options.titleLanguage; // reactive trigger
   function getDisplayTitle(item: any): string {
     if (item.customName) return item.customName;
     const lang = $options.titleLanguage;
@@ -292,7 +291,7 @@
             class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
             on:click={() => dispatch('unwatch', item.id)}
             aria-label="Mark as unwatched"
-          >✕</button>
+          >&#10005;</button>
         </li>
       {/each}
 
