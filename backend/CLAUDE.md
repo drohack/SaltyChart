@@ -170,6 +170,10 @@ Routes (contracts here; each guard's story is commented at its code):
   library"; every consumer must refuse to hide on it.
 - `GET  /playback/:itemId` - one call: `playSessionId`, `mediaSourceId`,
   subtitle streams (with the file's own flags + codec), font attachments.
+  **`subtitleIndex` requires `mediaSourceId`** (400 otherwise): Jellyfin
+  applies a track choice only when the request names the source, and without
+  it silently burns in the default track - a probe that omitted it was once
+  read as "subtitles Off is broken" (2026-10-12; the player always sends it).
   **A Jellyfin 404 answers 404 `ITEM_GONE`**, and drops every cached
   availability verdict carrying that itemId. Jellyfin derives item ids from the
   file path, so when Sonarr replaces a file and Jellyfin rescans, the episode

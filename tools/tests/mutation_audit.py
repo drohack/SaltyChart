@@ -2397,6 +2397,16 @@ MUTATIONS: list[Mutation] = [
         settle=0.0,
     ),
     Mutation(
+        name="a subtitle choice without mediaSourceId is passed on again",
+        path=BACKEND_JF,
+        find="  const subtitleStated = req.query.subtitleIndex !== undefined;",
+        replace="  const subtitleStated = req.query.subtitleIndex === '__never__'; /* mutation */",
+        test=T_JELLYFIN,
+        expect="subtitleIndex without mediaSourceId answered",
+        guards="Jellyfin silently drops the track choice and burns in the default "
+               "track, which reads exactly like a broken subtitles-Off",
+    ),
+    Mutation(
         name="Auto sends the source's own bitrate as its ceiling again",
         path=BACKEND_JF,
         find="      autoTier({",

@@ -409,6 +409,14 @@ def main():
                     f"{src_br} - Jellyfin downscales the picture below its own bitrate")
         if src_w and tq.get("MaxWidth") != str(src_w):
             fail(7, f"Auto planned MaxWidth={tq.get('MaxWidth')} for a {src_w}-wide source")
+        # Jellyfin drops a track choice that arrives without mediaSourceId and
+        # burns in the default track instead - which read as a broken "Off"
+        # once. The route must refuse that request rather than pass it on.
+        amb = requests.get(f"{backend}/api/jellyfin/playback/{playable['itemId']}"
+                           f"?subtitleIndex=-1", headers=auth, timeout=30)
+        if amb.status_code != 400:
+            fail(7, f"subtitleIndex without mediaSourceId answered {amb.status_code}, "
+                    f"not 400 - Jellyfin would silently burn in the default track")
         psid = pb.json()["playSessionId"]
         # Registered before the stream is started, not after the assertions.
         # `fail()` exits via SystemExit, so on any failure below the stop call at

@@ -2121,6 +2121,18 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
     return res.status(400).json({ error: 'Unknown quality', code: 'BAD_REQUEST' });
   }
   const subtitleIndex = Number(req.query.subtitleIndex);
+  // Jellyfin applies a track choice only when the request names the media
+  // source (`SetDeviceSpecificData` compares mediaSourceId with the source's
+  // id); without it the choice is dropped silently and the default track is
+  // burned in. That read exactly like a broken "Off" and cost a wrong
+  // diagnosis (2026-10-12), so the ambiguous request is refused, not guessed.
+  const subtitleStated = req.query.subtitleIndex !== undefined;
+  if (subtitleStated && typeof req.query.mediaSourceId !== 'string') {
+    return res.status(400).json({
+      error: 'subtitleIndex needs mediaSourceId - Jellyfin ignores the track choice without it',
+      code: 'BAD_REQUEST',
+    });
+  }
   const cfg = await getJellyfinConfig();
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
   try {
@@ -2178,6 +2190,7 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
       // -1 is Jellyfin's "no subtitles", and it has to be sent: omitting
       // the parameter makes Jellyfin choose a default track, which with
       // burn-in puts subtitles on screen for a viewer who turned them off.
+      // It only counts alongside mediaSourceId - see the 400 above.
       ...(Number.isInteger(subtitleIndex) && subtitleIndex >= -1
         ? { subtitleStreamIndex: subtitleIndex }
         : {}),
