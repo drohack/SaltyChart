@@ -37,6 +37,7 @@ import os
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -104,7 +105,14 @@ try:
     write_row(c, json.dumps(h))
     print("[2/5] injected a bot wall just now; /stream on an uncached id", flush=True)
 
-    _, _, body = get(f"{BASE}/api/translate/stream?videoId={FAKE_STREAM}")
+    # A refusal is immediate. No answer at all means the request went through to
+    # the daemon, which is the failure being tested - so it must be reported as
+    # that check failing, not as a crash before any check ran.
+    try:
+        _, _, body = get(f"{BASE}/api/translate/stream?videoId={FAKE_STREAM}", timeout=10)
+    except (TimeoutError, urllib.error.URLError) as e:
+        body = ""
+        print(f"  /stream gave no answer in 10 s ({e!r}) - it was not refused", flush=True)
     events = sse_events(body)
     err = next((e for e in events if "error" in e), None)
     check("stream refused while holding",

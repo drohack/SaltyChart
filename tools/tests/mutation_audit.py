@@ -692,7 +692,9 @@ MUTATIONS: list[Mutation] = [
         # looking settled, which is worse than looking unverified - nothing
         # downstream would ever question it again.
         find="  return (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)",
-        replace="  return true || (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)",
+        # `true ||` no longer compiles (TS2872, a constant-truthy left operand), and
+        # a mutant that does not compile audits the compiler, not this guard.
+        replace="  return !process.env.MUTATION_OFF || (!!stored.tvdbId && winner.tvdbId === stored.tvdbId)",
         test=T_UNIT,
         expect="a stored pick the date REFUTES is never settled",
         guards="settling a row on evidence that points at a DIFFERENT candidate "
@@ -3070,7 +3072,7 @@ MUTATIONS: list[Mutation] = [
         replace="    return info.english !== 'fullEng'; /* mutation */",
         test=T_UI,
         flows=("hide not english",),
-        expect="only none/signsOnly or not-in-library may hide",
+        expect="only none/signsOnly, not-in-library or not-aired may hide",
         guards="Hide Not English empties the wheel of dubs and of every show it has no answer for",
     ),
     Mutation(

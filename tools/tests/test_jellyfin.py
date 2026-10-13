@@ -762,9 +762,17 @@ def main():
                               timeout=20, json={"mediaIds": [playable["mediaId"]]}).json()
         row = (ident.get("identities") or {}).get(str(playable["mediaId"])) or {}
         tvdb = row.get("tvdbId")
+        # The control show often has no TVDB id, and a PASS without a paste
+        # left the id-paste half unguarded: its mutation row survived a full
+        # audit that way (2026-10-13). A held series from the name search
+        # above is just as good a subject.
         if not tvdb:
-            step(12, "PASS - name search offers id-bearing picks (the control show "
-                     "has no tvdb id, so the paste path had no subject this run)")
+            held = next((x for x in results
+                         if x.get("tvdbId") and (x.get("library") or {}).get("title")), None)
+            tvdb = held and held["tvdbId"]
+        if not tvdb:
+            step(12, "SKIP - neither the control show nor the name search has a held "
+                     "series with a tvdb id, so the id paste had no subject this run")
         else:
             r = requests.get(f"{backend}/api/jellyfin/identity/lookup",
                              params={"term": f"tvdb:{tvdb}"}, headers=ah, timeout=90)
