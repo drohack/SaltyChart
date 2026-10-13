@@ -139,4 +139,6 @@ is removed.
 
 - Watchtower, LAN registry, moving models to a runtime volume (base-image
   pinning already guarantees small deploys).
-- GHCR old-tag pruning (optional later via `actions/delete-package-versions`).
+- GHCR old-tag pruning - since done (2026-10-13): `deploy.yml` keeps the last
+  10 versions of each app image via `actions/delete-package-versions`; the
+  base image is never pruned.

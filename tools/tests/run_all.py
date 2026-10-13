@@ -226,7 +226,7 @@ def main():
         ("service status",   ["py", "-3.13", "-u", str(TESTS / "test_status_page.py")], None, 240),
         ("frontend smoke",  ["py", "-3.13", "-u", str(TESTS / "test_frontend_smoke.py"),
                              "--frontend", args.frontend],     None, 120),
-        # 36 flows, measured 175 s on a quiet box (2026-09-21; 44 now, not
+        # 36 flows, measured 175 s on a quiet box (2026-09-21; 46 now, not
         # re-timed - re-measure before trusting the headroom). The budget was
         # 180 s against a 158 s run and seven new flows walked it to the edge -
         # a timeout here reads as a hard DO NOT deploy, so the headroom is

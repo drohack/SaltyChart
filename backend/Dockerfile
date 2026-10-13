@@ -34,15 +34,15 @@ FROM ghcr.io/drohack/saltychart-backend-base:v1 AS runtime
 WORKDIR /app
 
 # Always provide DATABASE_URL so Prisma connects even when not passed via
-# docker run or compose.
-# The Prisma SQLite connection string must use the `file:` URL scheme. Using an
-# *absolute* path (e.g. `file:/app/prisma/data.db`) triggers the Rust `url`
-# parser inside Prisma to reject the string with "Error parsing connection
-# string". Switching to a *relative* path solves the issue while still pointing
-# at the same location at runtime (`/app/prisma/data.db`).
+# docker run or compose. ABSOLUTE on purpose: Prisma resolves a relative SQLite
+# path against the schema file's directory, not the working directory, so the
+# old default `file:./prisma/data.db` meant /app/prisma/prisma/data.db - outside
+# the /app/prisma bind mount, a fresh empty DB lost on the next recreate. (It is
+# also why the local dev DB is the nested backend/prisma/prisma/data.db.)
+# Compose sets this same value, so this default only matters without compose.
 
 ENV NODE_ENV=production \
-    DATABASE_URL=file:./prisma/data.db
+    DATABASE_URL=file:/app/prisma/data.db
 
 # copy pruned production deps and compiled JS
 COPY --from=builder /app/node_modules ./node_modules

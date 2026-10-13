@@ -501,7 +501,9 @@ rebuilding the base for it is the procedure that let it age for six months):
 
 ### Rollback
 
-Every deploy leaves an immutable tag and a fresh DB backup:
+Every deploy leaves an immutable tag and a fresh DB backup. GHCR keeps the
+**last 10** versions of each image (CI prunes older ones after each deploy),
+so the rollback window is the last 10 deploys:
 
 ```bash
 # On the server: pin compose to the previous tag...

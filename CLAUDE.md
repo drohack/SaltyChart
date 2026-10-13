@@ -239,7 +239,7 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 246 rows
+  Last measured: **86 rows in 21 min** (2026-08-06); the table is 252 rows
   now (2026-10-13) and a full run is unmeasured since.
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
@@ -283,7 +283,7 @@ ASR/translate/align stages to `benchmark_whisper_settings.py`).
     **fails fast at startup** (`[FATAL]`, `process.exit(1)`) if it's unset or
     left as the insecure `'dev-secret'` default. Supplied via an untracked
     `.env` (`JWT_SECRET: ${JWT_SECRET}` in the compose files), never committed.
-  - `DATABASE_URL` (defaults to `file:./prisma/data.db` in production)
+  - `DATABASE_URL` (defaults to `file:/app/prisma/data.db` in the image)
 
 ### API routes mounted under `/api/*`
 
@@ -560,9 +560,9 @@ Every table and column, and why each cached row is persisted, is in
 #### Reading from the API - `src/lib/remote.ts`
 
 **New remote reads go through this; old raw `fetch` calls are converted as they
-are touched** (Randomize's season load, Compare, Login/SignUp, the options store
-and the playback prewarm were, on 2026-10-13; Home and some admin writes still
-are not). Before it existed there were 23 silent `catch {}` blocks and **zero**
+are touched** (Home, Randomize's season load, Compare, Login/SignUp, the
+options store and the playback prewarm were, on 2026-10-13; the grid's
+translation calls, the Options modal and ResetPassword still are not). Before it existed there were 23 silent `catch {}` blocks and **zero**
 `AbortSignal` in the whole frontend, so any hang was infinite by omission and
 any failure rendered as an empty page. That is what
 made an outage impossible to diagnose: no timeout, no message, no retry, nothing
@@ -591,8 +591,7 @@ loading; `SEASON` is 200s and `QUICK` (lists, options, users, availability) is
 
 **Guard every read that a newer one can overtake with a request id** (Home's
 `_mainReqId`, Randomize's `_loadReqId`): a late answer for the previous season
-must not overwrite the current one. `Home.svelte` predates the helper and has
-the guard but **no timeout or retry** on its reads - converting it is still open.
+must not overwrite the current one.
 
 - The main anime grid (`AnimeGridTranslate.svelte`) handles trailer subtitles
   via `/api/translate`. If the video has YouTube English CC (checked via a
@@ -621,7 +620,9 @@ What the schema can't tell you:
 - **Indexes are also created at runtime** with `CREATE INDEX IF NOT EXISTS`,
   because production never runs `prisma migrate`.
 - **Locally the real DB is at `backend/prisma/prisma/data.db`** - nested, not
-  the path `DATABASE_URL` suggests. In the container it is `./prisma/data.db`.
+  the path `DATABASE_URL` suggests: Prisma resolves a relative SQLite path
+  against the schema's directory. The container uses the absolute
+  `/app/prisma/data.db` for exactly that reason.
 - Run `npx prisma generate` after schema changes, and mirror any column or
   index work in the raw SQL in `backend/src/index.ts`.
 
@@ -671,8 +672,8 @@ The file states the images, ports and health checks. What it can't:
   never touched by deploys, and every applied update is preceded by a DB
   backup. Backup/restore User Scripts snapshot the **live** DB via the
   SQLite online-backup API - reference copies in `tools/unraid/`. Rollback =
-  pin compose to a previous `YYYYMMDD-<sha>` tag (+ `restore_saltychart_db`
-  if needed).
+  pin compose to one of the last 10 `YYYYMMDD-<sha>` tags (CI prunes older),
+  plus `restore_saltychart_db` if needed.
 - Design spec: `docs/superpowers/specs/2026-07-09-cicd-deployment-design.md`.
   README has the user-facing walkthrough incl. offline tar fallback.
 

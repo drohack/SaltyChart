@@ -41,7 +41,10 @@ entries against the grid AND Leftovers (a show added from Leftovers is stored
 in this season's list), keeps any entry it could not draw (`mergeSidebarUpdate`
 - a grid still loading or a fetch that failed), and refuses to save until this
 season's list has loaded (`listLanded`). Before 2026-10-13 one rename deleted a
-Leftovers show from the server. Flow 44 pins all three.
+Leftovers show from the server. Flow 44 pins all three. **A list that fails to
+load or save says so** (`data-list-load-error` + Retry, `data-list-save-error`):
+an unloaded list looks empty and every edit to it is skipped, which used to
+happen with only a console line. Flow 45.
 
 ### Randomize
 
@@ -478,8 +481,8 @@ for the same reason. What lives nowhere else:
 - The size estimate is a **median** (0.38 GB/episode, measured 2026-08-04 over a
   random 500-episode sample) with a p90 alongside it, and entries with no episode
   count are labelled as assumed rather than folded silently into the total. It
-  also states that it assumes today's mixed-quality library - a 720p-only Sonarr
-  profile makes it an over-estimate.
+  says the figure is likely low - see *A quality profile invalidates the size
+  estimate* in `backend/CLAUDE.md`.
 - **Grouped by season, alphabetical inside.** A season with nothing on the list
   says why *and when that changes* ("0 on the list, 38 waiting to air - the
   earliest joins around 16 Sept"), which turns the most alarming number on the

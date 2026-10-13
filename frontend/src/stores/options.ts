@@ -102,6 +102,8 @@ if (typeof window !== 'undefined') {
 
   // Debounce save to avoid spamming backend when dragging range sliders
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The debounced save itself, so an auth change can send it early. */
+  let pendingSave: (() => void) | null = null;
 
   /**
    * Bumped on every auth change, so work started for one identity can tell that
@@ -120,12 +122,17 @@ if (typeof window !== 'undefined') {
   // Load stored options on auth change (login/logout)
   authToken.subscribe(async (token) => {
     const gen = ++authGen;
-    // A save queued for the previous identity must never fire against the new
-    // one - the PUT closes over a token read when it was scheduled.
+    // A save still waiting out its debounce is SENT now, not dropped. It closes
+    // over both the token and the value of the identity that made the change,
+    // so it can only ever write that account's own row. Cancelling it - the
+    // first fix here - lost a change made just before logging out: reproduced
+    // 2026-10-13, theme changed then Logout 110 ms later, server unchanged.
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
+      pendingSave?.();
     }
+    pendingSave = null;
     isLoading = true;
 
     const mirrored = readMirror();
@@ -191,14 +198,13 @@ if (typeof window !== 'undefined') {
 
     const token = get(authToken);
     if (token) {
-      // Which identity this save belongs to. Checked again when it fires, because
-      // 500 ms is long enough to log out or switch account in between and the
-      // token below is the one captured now.
-      const genAtSave = authGen;
-      // Debounce backend saves (500ms) to handle rapid slider changes
+      // Debounce backend saves (500ms) to handle rapid slider changes. The token
+      // is captured here with the value, so the PUT always goes to the account
+      // that made the change - an auth change flushes it early (see above).
       if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
-        if (genAtSave !== authGen) return;
+      pendingSave = () => {
+        pendingSave = null;
+        saveTimer = null;
         fetch('/api/options', {
           method: 'PUT',
           headers: {
@@ -213,7 +219,8 @@ if (typeof window !== 'undefined') {
         }).catch(err => {
           console.error('[OPTIONS] Error saving to backend:', err);
         });
-      }, 500);
+      };
+      saveTimer = setTimeout(pendingSave, 500);
     }
   });
 }

@@ -103,3 +103,27 @@ jobs:
           docker push ghcr.io/drohack/saltychart-backend:${{ steps.tags.outputs.date_sha }}
           docker push ghcr.io/drohack/saltychart-frontend:latest
           docker push ghcr.io/drohack/saltychart-frontend:${{ steps.tags.outputs.date_sha }}
+
+      # ---- keep the last 10 versions of each app image ---------------------
+      # The rollback window: pin compose to any of the last 10 YYYYMMDD-<sha>
+      # tags. One deploy is exactly one version per package - the images are
+      # `load`ed and `docker push`ed, which carries no buildx attestation
+      # manifests to count against the 10. NEVER add saltychart-backend-base:
+      # backend/Dockerfile pins it by tag, and it is only rebuilt by hand.
+      # continue-on-error: the images are already live, so a failed prune must
+      # not paint a successful deploy red.
+      - name: Prune old backend versions
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: saltychart-backend
+          package-type: container
+          min-versions-to-keep: 10
+
+      - name: Prune old frontend versions
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: saltychart-frontend
+          package-type: container
+          min-versions-to-keep: 10

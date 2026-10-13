@@ -42,9 +42,11 @@ export function clearSetupCode(): void {
  *
  * `timingSafeEqual` throws on a length mismatch, so the lengths are checked
  * first - and returning early on that is fine, since the length is not secret.
+ * `unknown` because the input is a request body field: `Buffer.from` throws on a
+ * number, which would turn a malformed claim into a 500.
  */
-export function verifySetupCode(input: string): boolean {
-  if (!code || !input) return false;
+export function verifySetupCode(input: unknown): boolean {
+  if (!code || typeof input !== 'string' || !input) return false;
   const a = Buffer.from(input);
   const b = Buffer.from(code);
   if (a.length !== b.length) return false;

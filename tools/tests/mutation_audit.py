@@ -2800,6 +2800,29 @@ MUTATIONS: list[Mutation] = [
                "rule that forbids it is still correct",
     ),
     Mutation(
+        name="claim-admin stops checking the first-run setup code",
+        path=BACKEND_AUTH_ROUTE,
+        # Spec row #8 (2026-08-16 admin-account-security design). Step 4 sends
+        # a wrong code of the RIGHT length, so the mutant cannot be caught by the
+        # length check inside verifySetupCode instead of this call.
+        find="  if (!code || !verifySetupCode(code)) {",
+        replace="  if (!code || (!verifySetupCode(code) && !!process.env.MUTATION_OFF)) {",
+        test=T_ACCTSEC,
+        expect="a wrong setup code was accepted",
+        guards="on a server with no admin yet, whoever signs up first can claim it "
+               "without reading the backend log - a land-grab on a public domain",
+    ),
+    Mutation(
+        name="claim-admin answers a non-string code with a 500",
+        path=BACKEND_AUTH_ROUTE,
+        find="  if (code !== undefined && typeof code !== 'string') {",
+        replace="  if (code !== undefined && typeof code !== 'string' && !!process.env.MUTATION_OFF) {",
+        test=T_ACCTSEC,
+        expect="a non-string setup code was not refused as a bad request",
+        guards="a malformed claim is reported as a server fault instead of a bad "
+               "request (verifySetupCode now refuses it too, so this is a 403)",
+    ),
+    Mutation(
         name="requireAdmin stops reading the isAdmin column",
         path=BACKEND_MIDDLEWARE,
         # Admin-ness moved from an env id to a column. If this check degrades to
@@ -3526,6 +3549,51 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="could not draw the Leftovers",
         guards="any reorder or rename while a grid is loading or failed deletes list entries",
+    ),
+    Mutation(
+        name="a My List read that fails is not shown",
+        path="frontend/src/pages/Home.svelte",
+        find="      if (!listLanded) listError = 'load';",
+        replace="      /* mutation */",
+        flows=("list load failure visible",),
+        test=T_UI,
+        expect="My List failed to load and the page says nothing",
+        guards="an unloaded list looks empty and every sidebar edit is silently dropped",
+    ),
+    Mutation(
+        name="a My List save that fails is not shown",
+        path="frontend/src/pages/Home.svelte",
+        find="      console.error('[Home] saveList failed', err);\n"
+             "      listError = 'save';",
+        replace="      console.error('[Home] saveList failed', err); /* mutation */",
+        flows=("list load failure visible",),
+        test=T_UI,
+        expect="a My List save failed and the page says nothing",
+        guards="an edit shows on screen but never reached the server, with no sign of it",
+    ),
+    Mutation(
+        name="an options GET for a previous identity is applied anyway",
+        path="frontend/src/stores/options.ts",
+        # Both checks: either one alone discards the stale response.
+        find="      if (gen !== authGen) return;\n      if (res.ok)",
+        replace="      if (res.ok) /* mutation */",
+        also=[("    if (gen !== authGen) return;\n\n    if (resolved)",
+               "    /* mutation */\n\n    if (resolved)")],
+        flows=("options auth races",),
+        test=T_UI,
+        expect="the previous account's options reached a logged-out guest",
+        guards="a logout mid-login shows the guest the last account's options, and an "
+               "account switch can write one user's options onto another's row",
+    ),
+    Mutation(
+        name="a debounced options save is dropped on logout",
+        path="frontend/src/stores/options.ts",
+        find="      pendingSave?.();\n",
+        replace="      /* mutation */\n",
+        flows=("options auth races",),
+        test=T_UI,
+        expect="a theme change made just before logging out was never saved",
+        guards="an option changed in the last half-second before Logout is silently lost",
     ),
     Mutation(
         name="a rejected async handler is never answered again",

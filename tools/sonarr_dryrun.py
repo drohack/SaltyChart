@@ -71,7 +71,9 @@ import requests
 # Measured 2026-08-04 against the live Anime library (23,631 episodes; random
 # 500-episode sample): median 0.38 GB, mean 0.58, p90 1.35. The median is used
 # for the headline and p90 for the "could be as much as" figure, because the
-# distribution has a long tail and the mean hides it.
+# distribution has a long tail and the mean hides it. Likely LOW under the current
+# Sonarr profile, which grabs mostly 1080p - see "A quality profile invalidates
+# the size estimate" in backend/CLAUDE.md before trusting or changing it.
 GB_PER_EPISODE_MEDIAN = 0.38
 GB_PER_EPISODE_P90 = 1.35
 # AniList leaves `episodes` null for plenty of not-yet-aired entries. One cour

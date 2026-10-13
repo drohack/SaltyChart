@@ -11,6 +11,7 @@ import { onMount } from 'svelte';
 
 import type { Season } from '../stores/season';
 import { nextSeasonInfo } from '../stores/season';
+import { apiFetch, apiJson, QUICK, SEASON } from '../lib/remote';
 
 
   // ------------------------------------------------------------------
@@ -101,8 +102,8 @@ import { nextSeasonInfo } from '../stores/season';
     }
     Promise.all(
       chunks.map(chunk =>
-        fetch(`/api/translate/check-batch?videoIds=${chunk.join(',')}`)
-          .then(r => r.json() as Promise<Record<string, boolean>>)
+        apiJson<Record<string, boolean>>(`/api/translate/check-batch?videoIds=${chunk.join(',')}`,
+          undefined, { timeoutMs: QUICK, label: 'check-batch' })
       )
     )
       .then((parts) => {
@@ -380,7 +381,8 @@ let autoRename = false;
       return;
     }
     try {
-      const res = await fetch(`/api/list/users-with-ratings?season=${season}&year=${year}`);
+      const res = await apiFetch(`/api/list/users-with-ratings?season=${season}&year=${year}`,
+        undefined, { timeoutMs: QUICK, label: 'catch-up users' });
       if (res.ok) {
         let users: string[] = await res.json();
         if ($userName) users = users.filter((u) => u !== $userName);
@@ -404,7 +406,7 @@ let autoRename = false;
     }
     try {
       const url = `/api/list/user-ratings?username=${encodeURIComponent(catchUpUser)}&season=${season}&year=${year}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url, undefined, { timeoutMs: QUICK, label: 'catch-up ratings' });
       if (res.ok) {
         const ids: number[] = await res.json();
         otherUserRatedIds = new Set(ids);
@@ -463,6 +465,13 @@ let autoRename = false;
   // nothing (or, before the reset below, the previous season's list under the
   // new season's heading), and a save would write that into the new season.
   let listLanded = false;
+  /**
+   * Shown above the grid. A list that failed to load looks exactly like an
+   * empty one, and while it is unloaded every sidebar edit is skipped (see
+   * `saveList`) - so without this, edits vanished with only a console line.
+   * 'save' is the other half: the change is on screen but not on the server.
+   */
+  let listError: 'load' | 'save' | null = null;
 
   async function saveList() {
     if (!$authToken) return;
@@ -473,25 +482,28 @@ let autoRename = false;
     const payload = watchList.map(({ mediaId, customName, watchedAt }) => ({ mediaId, customName, watchedAt }));
 
     try {
-      const res = await fetch('/api/list', {
+      // No retry: a PUT that timed out may still have landed, and the next
+      // edit sends the whole list again anyway.
+      const res = await apiFetch('/api/list', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${$authToken}`
         },
         body: JSON.stringify({ season, year, items: payload })
-      });
+      }, { timeoutMs: QUICK, retries: 0, label: 'save list' });
       if (res.status === 401) {
         // Expired/invalid token: clear auth so the UI reflects logged-out state.
         authToken.set(null);
         userName.set(null);
         return;
       }
-      if (!res.ok) {
-        console.error(`[Home] saveList failed: ${res.status}`);
-      }
+      // apiFetch already throws on a 5xx; this sends a 4xx the same way.
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (listError === 'save') listError = null;
     } catch (err) {
-      console.error('[Home] saveList network error', err);
+      console.error('[Home] saveList failed', err);
+      listError = 'save';
     }
   }
 
@@ -514,7 +526,9 @@ let autoRename = false;
     errorMain = false;
     _mainLanded = false; // this season's list isn't in yet
     try {
-      const res = await fetch(`/api/anime?season=${season}&year=${year}`);
+      // A cold season can take minutes under AniList rate-limiting (see SEASON).
+      const res = await apiFetch(`/api/anime?season=${season}&year=${year}`, undefined,
+        { timeoutMs: SEASON, retries: 1, label: 'home season' });
       if (reqId !== _mainReqId) return;
       // Only assign on a successful array response. On an API error the body
       // is { error, code }; assigning that to `anime` makes the reactive
@@ -548,7 +562,8 @@ let autoRename = false;
     errorLeftovers = false;
     try {
       const prev = prevSeasonYear(season, year);
-      const res = await fetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`);
+      const res = await apiFetch(`/api/anime?season=${prev.season}&year=${prev.year}&format=TV`,
+        undefined, { timeoutMs: SEASON, retries: 1, label: 'home leftovers' });
       if (reqId !== _leftoversReqId) return;
       const data = res.ok ? await res.json() : null;
       if (reqId !== _leftoversReqId) return;
@@ -579,21 +594,28 @@ let autoRename = false;
   async function fetchList(): Promise<void> {
     if (!$authToken) return;
     const key = `${season}-${year}`;
-    const res = await fetch(`/api/list?season=${season}&year=${year}`, {
-      headers: { Authorization: `Bearer ${$authToken}` }
-    });
-    if (key !== `${season}-${year}`) return; // the season changed mid-flight
-    if (res.status === 401) {
-      // Invalid or expired token: clear auth and exit
-      authToken.set(null);
-      userName.set(null);
-      return;
-    }
-    if (res.ok) {
+    try {
+      const res = await apiFetch(`/api/list?season=${season}&year=${year}`, {
+        headers: { Authorization: `Bearer ${$authToken}` }
+      }, { timeoutMs: QUICK, label: 'my list' });
+      if (key !== `${season}-${year}`) return; // the season changed mid-flight
+      if (res.status === 401) {
+        // Invalid or expired token: clear auth and exit
+        authToken.set(null);
+        userName.set(null);
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (key !== `${season}-${year}`) return;
       watchList = data;
       listLanded = true;
+      listError = null;
+    } catch (err) {
+      if (key !== `${season}-${year}`) return;
+      console.error('[Home] my list fetch failed', err);
+      // A list that did land stays editable; only a never-loaded one is fatal.
+      if (!listLanded) listError = 'load';
     }
   }
 
@@ -635,6 +657,7 @@ let autoRename = false;
       // The previous season's list must not be shown - or saved - as this one's.
       watchList = [];
       listLanded = false;
+      listError = null;
       fetchAnime(); // no debounce needed - user interaction is limited
       fetchCatchUpUsers();
     }
@@ -667,6 +690,17 @@ let autoRename = false;
         </span>
       {/if}
     </div>
+  {#if $authToken && listError === 'load'}
+    <div class="alert alert-warning" data-list-load-error>
+      <span>Couldn't load My List for {season} {year}, so changes to it are paused.</span>
+      <button class="btn btn-sm" on:click={fetchList}>Retry</button>
+    </div>
+  {:else if $authToken && listError === 'save'}
+    <div class="alert alert-warning" data-list-save-error>
+      <span>Your last change to My List wasn't saved.</span>
+      <button class="btn btn-sm" on:click={saveList}>Try again</button>
+    </div>
+  {/if}
   {#if loadingMain}
     <h2 class="text-2xl font-bold mt-8 mb-4">TV</h2>
     <SkeletonGrid count={6} />

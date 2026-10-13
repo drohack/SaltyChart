@@ -132,7 +132,13 @@ Routes (contracts here; each guard's story is commented at its code):
     availability. On FALL 2026 all 33 unaired entries answered correctly.
   - The series list is cached 1 h and served stale-while-revalidate
     (`getSeriesLibraryFresh` is the blocking variant for `fresh: true`
-    callers). **`Fields=ProviderIds,OriginalTitle` is mandatory** on that query
+    callers). The stale check must come **before** joining an in-flight
+    refresh: measured 2026-10-13 on a forced full read (~1 s locally), the old
+    order made every request after the first wait for it (0.13-1.02 s for 7
+    staggered requests) while the current order served all 8 in 10-20 ms. No
+    pipeline test guards it - emptying the in-memory copy needs a backend
+    restart - so re-measure with an aged `jellyfinLibraryAt` if you reorder it.
+    **`Fields=ProviderIds,OriginalTitle` is mandatory** on that query
     or Jellyfin returns `ProviderIds: null`, silently disabling the id tier.
     **So is `userId`** (the playback account): a user-less listing silently
     omits real series, each then reading "not in the library" - measured at
@@ -540,8 +546,14 @@ still holds: a show added once and deleted is not re-added because it is still
 listed.
 
 **A quality profile invalidates the size estimate.** The 0.38 GB median comes
-from the current mixed-quality library, so under a 720p-only profile the page
-reads high. The page says so; re-measure rather than quietly trusting it.
+from the mixed-quality library (500 episodes, 2026-08-04). "Anime Dual Audio
+(720p)" is a 720p *floor*, not a cap: re-measured 2026-10-13 read-only against
+Sonarr, the 215 files it grabbed in its first four days (53 series) were median
+0.69 GB, p90 1.43, mostly Bluray/WEBDL-1080p (median of per-series medians
+0.48). Too young and clustered (one backfill was 56 of them) to replace the
+constant, so the page says the estimate is likely low. Re-measure once a season
+of new shows has been grabbed under it, and update `GB_MEDIAN`/`GB_P90` in
+`AdminSonarr.svelte` and `tools/sonarr_dryrun.py` together.
 
 **The profile must allow upgrades, and even then it is not the whole fix.** Until
 2026-10-09 the auto-add sent "Prefer Smaller (At least 720p)"

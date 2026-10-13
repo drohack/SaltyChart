@@ -970,8 +970,8 @@
             {#if assumedCount}
               {assumedCount} have no episode count yet, assumed {ASSUMED_EPISODES} each.
             {/if}
-            Assumes today's mixed-quality library - a 720p-only profile in Sonarr makes this an
-            over-estimate.
+            Likely low: the first 215 episodes grabbed under the current profile (2026-10-09 to
+            10-13) had a median of 0.69 GB, mostly 1080p.
           </p>
         {/if}
       {/if}

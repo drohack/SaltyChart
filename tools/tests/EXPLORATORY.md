@@ -314,6 +314,29 @@ six seconds. Module-level constants used during module initialisation must be
 declared at the top of the file, and this is the fourth runtime-only failure in
 this repo that no type check could see.
 
+### Pass 3 - 2026-10-13 (local dev, after the Randomize rework)
+
+Randomize driven by hand (load, a failed season load + Retry, a failed watched
+write, the nickname-panel toggles), the 2cols/3cols breakpoints measured, and
+the four unverified `stores/options.ts` defects from pass 2 reproduced in a
+browser with their guards removed (route-held `GET /api/options`, real
+login/logout clicks - a `page.goto` between logins reloads the page and kills
+the request being raced, which first made D2 look unreproducible).
+
+| # | finding | outcome |
+|---|---|---|
+| 1 | options: a logout landing mid-login painted the previous account's theme for the guest and wrote it to the guest mirror | **reproduced** without the `authGen` GET checks; the existing guard holds. Flow 46 step 1, mutation row |
+| 2 | options: A -> logout -> B with A's GET answering last saved A's options onto B's row | **reproduced** the same way; same guard. Flow 46 step 2 |
+| 3 | options: a save still inside its 500 ms debounce at logout | **the pass-2 fix was the bug**: cancelling it lost a theme picked 110 ms before Logout (server unchanged). The PUT closes over that account's own token and value, so it is now *flushed* on an auth change instead. Flow 46 step 3, mutation row |
+| 4 | options: a `null` body reset the user to defaults | **unreachable** - `GET /api/options` always answers an object (defaults when there is no row). The type guard stays; no row |
+| 5 | Home: a My List read that failed left the sidebar empty and every edit silently skipped | fixed - load/save banners with Retry (flow 45, two rows) |
+| 6 | Randomize: the reworked season load error + Retry, and a failed watched write ("put back", row restored) | **behave as designed**, nothing to fix |
+| 7 | the multi-column grid starts one column early: `tailwind.config.js` computes 1122 px as where ONE 610 px card fits and 1732 px where TWO fit, but uses them to START 2 and 3 columns. At 1122 px a card is 213 px and the trailer beside the cover is a ~17 px sliver (56 px at 1200, 96 at 1280); at 1732 px cards are 337 px | **open - a design decision for droha**: moving the breakpoints changes common widths (1920 px would show 2 wide cards, not 3 narrow ones) |
+| 8 | Randomize's nickname picker: a manual untick is saved to the server and localStorage, then overwritten on the next page load by the by-ratings auto-select | **open - documented intent** ("manual toggles persist only until the next season/year change"), but the persisted choice is never read back. Decide whether manual picks should survive a reload |
+
+Not reached: the phone layouts (flows 39-43 cover them since pass 2) and a
+cold-season load (AniList budget).
+
 ### Pass 2 - 2026-08-06 (local dev)
 
 Sessions 1, 2, 3, 4, 6, 7, 8 and most of 9. Session 5 skipped (`test_player.py`
@@ -351,18 +374,9 @@ wider and only the ~20 px *height* is under the WCAG 2.2 AA 24x24 floor -
 
 **Still open after pass 2:**
 
-- Four more defects in `stores/options.ts`, **found by reading while tracing the
-  theme bug, and fixed alongside it because they live in the same code - but NONE
-  of them was reproduced in a browser first.** Treat them as unverified: a logout
-  landing mid-login applied the previous account's options; there was no
-  request-id guard on the `/api/options` fetch, so a rapid account switch could
-  PUT one user's options onto another's row; the debounced save was not cancelled
-  on an auth change and fired with a stale token; and a `null` JSON body threw
-  inside `deepMergeOptions` and silently reset the user to defaults. An `authGen`
-  counter and a `clearTimeout` cover the first three and a type guard the fourth.
-  **They have no mutation rows**, deliberately - a row for a bug nobody has
-  reproduced is a guess with a test wrapped round it. Reproducing them is the
-  obvious next piece of work here.
+- Four more defects in `stores/options.ts`, fixed by reading but never reproduced.
+  **Settled in pass 3:** two reproduced, one was caused by its own fix, one is
+  unreachable - see the pass 3 table.
 - `check-batch` sends ~91 ids whose response is always discarded when the
   leftovers call lands after it. **Left alone on purpose:** the fix is to merge
   rather than replace, which weakens the staleness guard that stops two seasons
@@ -372,8 +386,8 @@ wider and only the ~20 px *height* is under the WCAG 2.2 AA 24x24 floor -
   nickname-panel toggles, Compare's Share-as-image, and the `2cols`/`3cols`
   wide-desktop breakpoints. Since covered by UI flows: `/admin/matching` as
   admin ("remote accept visible", "matching shows sonarr problems") and
-  Compare's share image ("compare share image"). Still never driven by hand:
-  the nickname-panel toggles and the wide breakpoints.
+  Compare's share image ("compare share image"). The nickname-panel toggles and
+  the wide breakpoints were driven in pass 3.
 
 ### Pass 1 - 2026-08-01 (local dev, `1f5b20c`)
 

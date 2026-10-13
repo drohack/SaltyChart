@@ -198,7 +198,14 @@ def main() -> int:
         if r.status_code != 403 or r.json().get("code") != "SETUP_CODE_INVALID":
             fail(4, f"a wrong setup code was accepted: {r.status_code} {r.text[:150]} - "
                     f"anyone who can sign up could claim the server")
-        step(4, "step 4/13: PASS - 403 SETUP_CODE_INVALID")
+        # A non-string code reached Buffer.from(), which throws on a number: a 500
+        # for a malformed body instead of saying what was wrong with it.
+        r = requests.post(f"{base}/api/auth/claim-admin", headers=ah,
+                          json={"code": 12345678}, timeout=15)
+        if r.status_code != 400 or r.json().get("code") != "BAD_REQUEST":
+            fail(4, f"a non-string setup code was not refused as a bad request: "
+                    f"{r.status_code} {r.text[:150]}")
+        step(4, "step 4/13: PASS - 403 SETUP_CODE_INVALID, 400 for a non-string code")
 
         # --------- 5 claiming works, once ---------
         step(5, "step 5/13: the real code claims admin, and only once")

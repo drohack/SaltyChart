@@ -6,6 +6,8 @@ contract: where they differ, `backend/CLAUDE.md` *Accounts and admin access*
 wins. Superseded details: the admin "set password" endpoint became
 `clear-password` / `clear-email` (an admin never sets a credential), and a
 token with no `v` claim skips the version check rather than reading as 0.
+All eight mutation rows listed below exist; #8 (the setup code) was added
+2026-10-13.
 
 ## The problem
 

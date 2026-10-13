@@ -177,12 +177,13 @@ import subprocess
 import tempfile
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 44
+TOTAL = 46
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -2375,6 +2376,189 @@ def test_leftover_survives_sidebar_edit(page, backend: str, frontend: str, token
     step(44, f"PASS - Leftovers show {left[0]} shown, and kept through both renames")
 
 
+def test_list_load_failure_visible(page, backend: str, frontend: str, token: str):
+    """A My List read that fails says so, and Retry recovers it.
+
+    `fetchList` had no `try` and no timeout: a failed or hung read left the
+    sidebar empty and `listLanded` false, so every sidebar edit afterwards was
+    dropped with nothing but a console warning - indistinguishable from an
+    empty list. Reproduced 2026-10-13 with the GET answering 500.
+    """
+    step(45, "step 1/4: seeding two shows, then failing every My List read")
+    ids = season_ids(backend, 2)
+    seed_list(backend, token, ids)
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    # The season list only: users-with-ratings and the PUT must still work.
+    list_read = re.compile(r"/api/list\?season=")
+    page.route(list_read, lambda r: r.fulfill(status=500, content_type="application/json",
+                                               body='{"error":"injected","code":"SERVER_ERROR"}'))
+    try:
+        page.goto(frontend)
+        wait_for_grids(page)
+
+        step(45, "step 2/4: the page says the list did not load")
+        try:
+            page.wait_for_selector("[data-list-load-error]", timeout=20_000)
+        except Exception:
+            raise AssertionError("My List failed to load and the page says nothing - the "
+                                 "sidebar just looks empty, and edits are silently dropped")
+    finally:
+        page.unroute(list_read)
+
+    step(45, "step 3/4: Retry loads it")
+    page.click("[data-list-load-error] button")
+    page.wait_for_selector(f"[data-list-row='{ids[0]}']", timeout=15_000)
+    assert page.locator("[data-list-load-error]").count() == 0, \
+        "the list loaded after Retry but the error banner is still shown"
+
+    step(45, "step 4/4: a save that fails says so too")
+    def fail_put(route):
+        if route.request.method == "PUT":
+            route.fulfill(status=500, content_type="application/json",
+                          body='{"error":"injected","code":"SERVER_ERROR"}')
+        else:
+            route.continue_()
+    list_write = re.compile(r"/api/list$")
+    page.route(list_write, fail_put)
+    try:
+        page.dblclick(f"[data-list-row='{ids[0]}'] button[title]")
+        page.fill("dialog[open] input", "renamed by flow 45")
+        page.click("dialog[open] button.btn-primary")
+        try:
+            page.wait_for_selector("[data-list-save-error]", timeout=10_000)
+        except Exception:
+            raise AssertionError("a My List save failed and the page says nothing - the "
+                                 "rename is on screen but not on the server")
+    finally:
+        page.unroute(list_write)
+    step(45, "PASS - load and save failures are both shown, and Retry brings the list back")
+
+
+def test_options_auth_races(page, backend: str, frontend: str):
+    """Options never cross between identities, and a change made just before
+    logging out is still saved.
+
+    `stores/options.ts` loads options on every auth change, and that GET is the
+    only async step. Reproduced 2026-10-13 with its `authGen` guards removed,
+    holding the GET with a route: a logout landing mid-login painted the previous
+    account's NIGHT theme for the guest and wrote it into the guest mirror; and
+    A -> logout -> B with A's GET answering last wrote A's options onto B's row.
+    The third step is the other direction: the first fix CANCELLED a save still
+    in its 500 ms debounce on any auth change, so a theme picked 110 ms before
+    Logout was never saved. It is flushed now. Runs in its own browser context,
+    because it logs in and out repeatedly.
+    """
+    pw = "ui_test_pw_123"
+
+    def user(theme: str) -> tuple[str, str]:
+        name = f"ui_test_race_{uuid.uuid4().hex[:8]}"
+        tok = requests.post(f"{backend}/api/auth/signup", timeout=15,
+                            json={"username": name, "password": pw}).json()["token"]
+        body = {"theme": theme, "titleLanguage": "ENGLISH", "videoAutoplay": True,
+                "hideFromCompare": True, "nicknameUserSel": [], "addWatchedTo": "BOTTOM"}
+        r = requests.put(f"{backend}/api/options", json=body, timeout=15,
+                         headers={"Authorization": f"Bearer {tok}"})
+        assert r.ok, f"could not seed options for {name}: {r.status_code}"
+        return name, tok
+
+    def server_theme(tok: str) -> str:
+        return requests.get(f"{backend}/api/options", timeout=15,
+                            headers={"Authorization": f"Bearer {tok}"}).json()["theme"]
+
+    def login(pg, name: str):
+        # In-app navigation: a reload would kill the very request being raced.
+        link = pg.locator("a.link:has-text('Login')")
+        if link.count():
+            link.click()
+        else:
+            pg.goto(f"{frontend}/login")
+        pg.wait_for_selector("input[placeholder=Username]", timeout=10_000)
+        pg.fill("input[placeholder=Username]", name)
+        pg.fill("input[type=password]", pw)
+        pg.click("button[type=submit]")
+
+    def logout(pg):
+        pg.click("button.link:has-text('Logout')")
+
+    def held_get(pg, only_first: bool):
+        held: list = []
+        def handler(route):
+            if route.request.method == "GET" and not (only_first and handler.n):
+                handler.n += 1
+                held.append(route)
+            else:
+                route.continue_()
+        handler.n = 0
+        pg.route("**/api/options", handler)
+        return held
+
+    def wait_held(pg, held):
+        for _ in range(100):
+            if held:
+                return
+            pg.wait_for_timeout(100)
+        raise AssertionError("the options GET never went out after login")
+
+    browser = page.context.browser
+    ctx = browser.new_context()
+    try:
+        pg = ctx.new_page()
+        pg.goto(frontend)
+        pg.evaluate("() => localStorage.setItem('options', JSON.stringify({theme: 'LIGHT'}))")
+        pg.reload()
+
+        step(46, "step 1/3: a logout landing mid-login leaves the guest's theme alone")
+        a, _ = user("NIGHT")
+        held = held_get(pg, only_first=False)
+        login(pg, a)
+        wait_held(pg, held)
+        logout(pg)
+        pg.wait_for_timeout(300)
+        held.pop().continue_()
+        pg.wait_for_timeout(1500)
+        theme = pg.evaluate("document.documentElement.getAttribute('data-theme')")
+        mirror = pg.evaluate("JSON.parse(localStorage.getItem('options') || '{}').theme")
+        assert theme == "light" and mirror == "LIGHT", (
+            f"the previous account's options reached a logged-out guest: data-theme={theme}, "
+            f"mirror={mirror} (expected light / LIGHT)")
+        pg.unroute("**/api/options")
+
+        step(46, "step 2/3: A's late options GET is not applied - or saved - as B's")
+        a, _ = user("NIGHT")
+        b, bt = user("LIGHT")
+        held = held_get(pg, only_first=True)
+        login(pg, a)
+        wait_held(pg, held)
+        logout(pg)
+        login(pg, b)
+        pg.wait_for_timeout(1500)
+        held.pop().continue_()
+        pg.wait_for_timeout(2000)  # past the 500 ms save debounce
+        got = server_theme(bt)
+        assert got == "LIGHT", (f"A's late options response was saved onto B's account: B's "
+                                f"theme is now {got}, it was LIGHT")
+        pg.unroute("**/api/options")
+        logout(pg)
+
+        step(46, "step 3/3: a theme changed just before Logout is still saved")
+        c, ct = user("LIGHT")
+        login(pg, c)
+        pg.wait_for_timeout(2500)
+        pg.click("[aria-label=Options]")
+        pg.select_option("#themeSelect", "NIGHT")
+        pg.keyboard.press("Escape")
+        logout(pg)  # well inside the 500 ms debounce
+        pg.wait_for_timeout(2000)
+        got = server_theme(ct)
+        assert got == "NIGHT", (f"a theme change made just before logging out was never saved: "
+                                f"server still says {got}")
+    finally:
+        ctx.close()
+    step(46, "PASS - no options cross accounts, and a last-moment change is kept")
+
+
 def test_watched_rank_reorder(page, backend: str, frontend: str, token: str):
     """Reordering the Randomize watched list persists.
 
@@ -2967,6 +3151,8 @@ SELECTABLE_FLOWS = {
     "phone sidebars reach the wheel",
     "wheel fits between lists",
     "leftover survives sidebar edit",
+    "list load failure visible",
+    "options auth races",
 }
 
 
@@ -3799,6 +3985,8 @@ def main():
                 ("phone sidebars reach the wheel", lambda: test_phone_sidebars_reach_the_wheel(page, args.backend, frontend, token_a)),
                 ("wheel fits between lists", lambda: test_wheel_fits_between_lists(page, args.backend, frontend, token_a)),
                 ("leftover survives sidebar edit", lambda: test_leftover_survives_sidebar_edit(page, args.backend, frontend, token_a)),
+                ("list load failure visible", lambda: test_list_load_failure_visible(page, args.backend, frontend, token_a)),
+                ("options auth races", lambda: test_options_auth_races(page, args.backend, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

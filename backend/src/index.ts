@@ -6,7 +6,10 @@ dotenv.config();
 
 if (!process.env.DATABASE_URL) {
   console.error('[FATAL] DATABASE_URL is not set.');
-  console.error('[FATAL] Create backend/.env containing: DATABASE_URL=file:./prisma/prisma/data.db');
+  // Copy .env.example. Prisma resolves this against the schema's directory, so
+  // it means backend/prisma/prisma/data.db - spelling that path here would nest
+  // one level deeper still.
+  console.error('[FATAL] Create backend/.env containing: DATABASE_URL=file:./prisma/data.db');
   process.exit(1);
 }
 

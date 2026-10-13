@@ -554,7 +554,12 @@ router.delete('/email', requireAuth, async (req: AuthRequest, res) => {
  * server log at startup. See `lib/setupCode.ts` for why this exists at all.
  */
 router.post('/claim-admin', requireAuth, async (req: AuthRequest, res) => {
-  const { code } = req.body as { code?: string };
+  const { code } = req.body as { code?: unknown };
+  // Say what is wrong with a malformed body; verifySetupCode would only call it
+  // the wrong code.
+  if (code !== undefined && typeof code !== 'string') {
+    return res.status(400).json({ error: 'The setup code must be text.', code: 'BAD_REQUEST' });
+  }
 
   const admins = await prisma.user.count({ where: { isAdmin: true } });
   if (admins > 0) {
