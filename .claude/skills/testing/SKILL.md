@@ -185,13 +185,34 @@ phase plus 353 s of sequential checks) and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin - an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate - it edits tracked source, restarts the
-backend twice per row (252 rows as of 2026-10-13) and starts real transcodes, which is not
+backend twice per row (253 rows as of 2026-10-13) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
-line is the only figure worth quoting. Last measured: **86 rows in 21 min**
-(2026-08-06) - the whole table, on a quiet box. Earlier points on the same
-curve: 74 rows in 19 min (2026-08-05), down from 47 min at 73 rows the same
+line is the only figure worth quoting. Last measured: **252 rows in 54 min**
+(2026-10-13). Earlier points on the same curve: 86 rows in 21 min
+(2026-08-06), 74 rows in 19 min (2026-08-05), down from 47 min at 73 rows the same
 night.
+
+**A mutant's side effects are real, because the dev backend is not a
+sandbox.** It has the server's SMTP credentials, the owner's account row, and
+the live AniList, Jellyfin, Sonarr and skyhook. An audit breaks guards on
+purpose, so whatever a broken guard lets out of the process goes out for real.
+On 2026-10-13 the full audit's `/api/anime forwards any format to AniList` row
+did what it exists to prove is possible: junk reached AniList, its 400s crossed
+the health threshold, and the owner was mailed "AniList is not responding" while
+production was fine. The agent running the audit knew that row talks to AniList
+and never asked what it would trip downstream; it learned about the mail from
+another session's fix. `alertAdmins` now refuses outside production (row "a dev
+backend mails the owner"), which closes that one door. So, before a full run or
+any row you have not run before:
+
+- read what its mutant sends outside the process - upstream requests, mail,
+  Sonarr or Jellyfin writes - and what that trips here: health counters, the
+  persisted backoff map, cooldowns;
+- never start the dev backend with `NODE_ENV=production` to "match prod" - that
+  reopens every gate at once: the mail, the Sonarr push, the timers;
+- afterwards, search the backend's output for `[alerts] not production`. Each
+  line is a mail the gate stopped, and a question about which row caused it.
 
 **Don't start an audit straight after `run_all.py`.** The first attempt at that
 86-row run wedged at row 34 - the first row that edits a backend *route* file,

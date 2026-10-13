@@ -654,6 +654,21 @@ MUTATIONS: list[Mutation] = [
                "would lie about who is being emailed",
     ),
     Mutation(
+        name="a dev backend mails the owner",
+        path="backend/src/lib/subtitleAlerts.ts",
+        # How it was before: only the timers asked scheduledJobsAllowed, so an
+        # alert raised on the request path mailed from any process with SMTP in
+        # its .env. This audit's own `/api/anime forwards any format` row made
+        # AniList answer 400 five times and the owner got "AniList is not
+        # responding" while production was fine.
+        find="    if (!(deps.production ?? scheduledJobsAllowed())) {",
+        replace="    if (false) {  /* mutation: every process mails */",
+        test=T_UNIT,
+        expect="a dev backend never mails, whatever the settings say",
+        guards="every test run that trips a health threshold mails the owner a "
+               "false outage indistinguishable from a real one",
+    ),
+    Mutation(
         name="an undated sibling counts as refuted",
         path="backend/src/lib/seriesIdentity.ts",
         # The tempting simplification: treat a candidate with no premiere date

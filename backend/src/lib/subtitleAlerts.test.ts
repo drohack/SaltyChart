@@ -28,6 +28,7 @@ test('alertAdmins sends one mail per verified admin through the injected mailer'
   const mailer = captureMailer();
   const r = await alertAdmins('trailer downloads broken', 'body', {
     mailer,
+    production: true,
     recipients: async () => ['a@example.test', 'b@example.test'],
   });
   assert.equal(r.sent, 2);
@@ -38,10 +39,27 @@ test('alertAdmins sends one mail per verified admin through the injected mailer'
 
 test('alertAdmins never throws when the mailer is not configured or has nobody to send to', async () => {
   const off = { ...captureMailer(), configured: () => false };
-  assert.deepEqual(await alertAdmins('x', 'y', { mailer: off }), { sent: 0, skipped: 'smtp-not-configured' });
+  assert.deepEqual(await alertAdmins('x', 'y', { mailer: off, production: true }), { sent: 0, skipped: 'smtp-not-configured' });
   const on = captureMailer();
-  assert.deepEqual(await alertAdmins('x', 'y', { mailer: on, recipients: async () => [] }), { sent: 0, skipped: 'no-recipients' });
+  assert.deepEqual(await alertAdmins('x', 'y', { mailer: on, recipients: async () => [], production: true }), { sent: 0, skipped: 'no-recipients' });
   assert.equal(on.sent.length, 0);
+});
+
+test('a dev backend never mails, whatever the settings say', async () => {
+  // 2026-10-13: a mutation-audit row sent a junk ?format= through a dev backend,
+  // AniList answered 400, and the fifth one mailed the owner "AniList is not
+  // responding". Everything else was on - SMTP, a verified owner, the master
+  // switch - which is exactly the state a dev box is in, so nothing else here
+  // may be what stops it.
+  const mailer = captureMailer();
+  const r = await alertAdmins('AniList is not responding', 'body', {
+    mailer,
+    recipients: async () => ['owner@example.com'],
+    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
+    production: false,
+  });
+  assert.deepEqual(r, { sent: 0, skipped: 'not-production' });
+  assert.strictEqual(mailer.sent.length, 0, 'nothing may reach the mailer from a dev process');
 });
 
 test('a silence already alerted is not alerted again', () => {
@@ -109,6 +127,7 @@ test('the master switch on /admin/status actually stops the mail', () => {
   const mailer = captureMailer();
   return alertAdmins('anything', 'body', {
     mailer,
+    production: true,
     recipients: async () => ['owner@example.com'],
     settings: async () => ({ masterEnabled: false, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
   }).then((r) => {
@@ -126,6 +145,7 @@ test('alerts are ON unless somebody switched them off', () => {
   const mailer = captureMailer();
   return alertAdmins('the download path is broken', 'body', {
     mailer,
+    production: true,
     recipients: async () => ['owner@example.com'],
     settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
   }).then((r) => {
@@ -144,6 +164,7 @@ test("a service's own toggle on /admin/status stops its alerts", async () => {
     const mailer = captureMailer();
     return alertAdmins('trailer downloads broken', 'body', {
       mailer,
+      production: true,
       recipients: async () => ['owner@example.com'],
       settings: async () => settings,
       service: { id: 'youtube', kind },

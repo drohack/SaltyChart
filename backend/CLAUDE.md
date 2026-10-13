@@ -1102,7 +1102,8 @@ master switch, per-service toggles, extra recipients.
   once - **a control that lies is worse than no control** (reasoning at
   `alertAdmins`). The switch once went unread and the deploy gate's fake Sunday
   verdict reached the owner's real inbox; `test_local_run_report.py` now turns
-  it off around that verdict and restores it in a `finally`.
+  it off around that verdict and restores it in a `finally`. It is also where
+  **only production mails** - see *A dev backend runs no scheduled jobs*.
 - The read **fails open** - a missing or unparseable row yields the defaults,
   alerts ON.
 - **Per-service toggles reach an alert that names its service**
@@ -1163,6 +1164,15 @@ identity sweep, the snapshot, the yt-dlp updater, the probe sweep and the
 Sunday-silence check. The id-map refresh is left alone (a 304, no side effect,
 and local matching needs a current map). The incident that made it code is at
 the top of `scheduling.ts`.
+
+**Alert mail asks the same question, in `alertAdmins`**, because gating the
+timers did not cover alerts raised on the request path: a mutation-audit row
+sent a junk `?format=` through a dev backend, AniList's 400s crossed the
+health threshold, and the owner was mailed "AniList is not responding" while
+production was fine. A dev backend still *records* upstream health (so
+`/admin/status` is red locally) and logs `[alerts] not production ...` instead
+of sending. Password-reset and verification codes do not go through
+`alertAdmins` and still send.
 
 **`NODE_ENV === 'production'` and nothing else counts** - the opposite question
 the rate limiters ask, because the safe side differs ("protect" for a limiter,

@@ -24,6 +24,7 @@
  */
 import prisma from '../db';
 import { getMailer, mailErrorInfo, type Mailer } from './mailer';
+import { scheduledJobsAllowed } from './scheduling';
 import {
   alertsEnabledFor,
   readAlertSettings,
@@ -115,7 +116,8 @@ async function defaultRecipients(): Promise<string[]> {
 /**
  * Send one plain-text mail to each resolved recipient - by default the OWNER
  * alone (see `defaultRecipients`), plus any extras configured on /admin/status.
- * Deliberately not every verified admin.
+ * Deliberately not every verified admin. **Production only**: anywhere else it
+ * logs what it would have sent and returns `not-production`.
  *
  * Returns what happened rather than throwing: callers are on the translation
  * path or a timer, and an alert failing must never become a second failure.
@@ -138,11 +140,24 @@ export async function alertAdmins(
      * (the batch, the Sunday run) have no service and obey the master alone.
      */
     service?: { id: string; kind: 'down' | 'recovered' };
+    /** Injected so tests can stand in for the server; defaults to `scheduledJobsAllowed()`. */
+    production?: boolean;
   } = {},
 ): Promise<{ sent: number; skipped: string | null }> {
   const mailer = deps.mailer ?? getMailer();
   const full = SUBJECT_PREFIX + subject;
   try {
+    // Only the server mails. A dev backend has the same SMTP credentials and
+    // the same owner row, and gating the TIMERS (lib/scheduling.ts) did not
+    // cover alerts raised on the request path: on 2026-10-13 a mutation-audit
+    // row forwarded `format=NOT_A_FORMAT` to AniList, the 400 counted as an
+    // outage, and the fifth one mailed the owner "AniList is not responding"
+    // while production was fine. Same predicate as the timers, same reasoning:
+    // for a side effect that leaves this process, the safe side is "don't".
+    if (!(deps.production ?? scheduledJobsAllowed())) {
+      console.log(`[alerts] not production (NODE_ENV=${process.env.NODE_ENV ?? 'unset'}); not sending: ${full}`);
+      return { sent: 0, skipped: 'not-production' };
+    }
     // The master switch on /admin/status, honoured HERE because this is the one
     // funnel every alert in the codebase goes through - the download-path
     // break, the Wednesday batch, the Sunday report and its silence. It was

@@ -209,7 +209,8 @@ cd backend && npm run dev   # terminal 1
 cd frontend && npm run dev  # terminal 2
 # A dev backend runs NO scheduled jobs - batch, Sonarr push, sweeps, probes,
 # yt-dlp update and the alert timers are gated on NODE_ENV=production
-# (lib/scheduling.ts). Stop it when you are done anyway; it holds :3000 and
+# (lib/scheduling.ts), and it sends no alert mail at all (alertAdmins asks the
+# same question). Stop it when you are done anyway; it holds :3000 and
 # writes to the same SQLite file as every other copy.
 
 # 2. Run the suite
@@ -239,8 +240,13 @@ whether or not that skill is loaded:
   backend twice per row and starts real transcodes. Run it when you changed a
   test or the code a row points at - `--only 3,7,12` (one comma-separated list;
   repeating the flag silently keeps only the last) makes checking a few cheap.
-  Last measured: **86 rows in 21 min** (2026-08-06); the table is 252 rows
-  now (2026-10-13) and a full run is unmeasured since.
+  Last full run: **252 rows in 54 min** (2026-10-13); the table is 253 rows
+  now.
+- **A mutant's side effects are real.** The dev backend has the server's SMTP,
+  the owner's row and the live upstreams, so whatever a broken guard lets out
+  goes out: on 2026-10-13 an audit row's junk AniList query mailed the owner a
+  false outage. Alert mail is now production-only; before running a row, ask
+  what its mutant sends outside the process (detail in the `testing` skill).
 - **Restart the dev backend before an audit run, and again after one.** Its
   `git checkout --` restore replaces the file, and ts-node-dev's watcher on
   Windows loses track of it - the process then serves whatever it last compiled
