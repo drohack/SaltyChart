@@ -62,6 +62,7 @@ import argparse
 import atexit
 import subprocess
 import sys
+import urllib.parse
 from datetime import date
 from pathlib import Path
 
@@ -393,6 +394,21 @@ def main():
             if leak in turl.lower():
                 fail(7, f"/playback returned a transcodingUrl containing a credential "
                         f"({leak}) - it would be handed to every viewer")
+        # Auto must never ask for less than the source carries. Jellyfin keeps
+        # the resolution only while the video bitrate it plans is at least the
+        # source's; below it, ResolutionNormalizer downscales - PSYREN S01E01
+        # played at 960x540 that way when Auto sent the source's own bitrate.
+        tq = dict(urllib.parse.parse_qsl(turl.split("?", 1)[-1]))
+        src_br = pb.json().get("sourceBitrate") or 0
+        src_w = pb.json().get("sourceWidth") or 0
+        if "VideoBitrate" not in tq:
+            fail(7, f"Auto's transcodingUrl carries no VideoBitrate ({sorted(tq)}) - "
+                    f"if Jellyfin chose a stream copy, teach this step that branch")
+        if int(tq["VideoBitrate"]) < src_br:
+            fail(7, f"Auto planned VideoBitrate={tq['VideoBitrate']} below the source's "
+                    f"{src_br} - Jellyfin downscales the picture below its own bitrate")
+        if src_w and tq.get("MaxWidth") != str(src_w):
+            fail(7, f"Auto planned MaxWidth={tq.get('MaxWidth')} for a {src_w}-wide source")
         psid = pb.json()["playSessionId"]
         # Registered before the stream is started, not after the assertions.
         # `fail()` exits via SystemExit, so on any failure below the stop call at
@@ -417,7 +433,8 @@ def main():
                 fail(7, f"manifest contains a credential ({leak}) - it would reach the browser")
         requests.post(f"{backend}/api/jellyfin/playback/stop", headers=auth,
                       json={"playSessionId": psid}, timeout=20)
-        step(7, "PASS - proxy works, manifest carries no credential")
+        step(7, f"PASS - proxy works, manifest carries no credential; Auto plans "
+                f"{tq['VideoBitrate']} for a {src_br} source at MaxWidth={tq.get('MaxWidth')}")
 
     # --------- 8/10  Subtitles ---------
     step(8, "subtitle track fetch")

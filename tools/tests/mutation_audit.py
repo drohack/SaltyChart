@@ -2375,6 +2375,39 @@ MUTATIONS: list[Mutation] = [
         settle=0.0,
     ),
     Mutation(
+        name="Auto loses its floor for the source's width",
+        path="backend/src/lib/jellyfinApi.ts",
+        find="  if (width >= 1920) return QUALITY_TIERS['1080p']!.bitrate;",
+        replace="  if (width >= 0) return 0; /* mutation */",
+        test=T_UNIT,
+        expect="auto keeps a starved HEVC source",
+        guards="a low-bitrate HEVC file (PSYREN S01E01) is re-encoded with no room "
+               "for Jellyfin's own compensation and plays blocky",
+        settle=0.0,
+    ),
+    Mutation(
+        name="Auto loses its audio headroom",
+        path="backend/src/lib/jellyfinApi.ts",
+        find="export const AUDIO_HEADROOM = 256_000;",
+        replace="export const AUDIO_HEADROOM = 0; /* mutation */",
+        test=T_UNIT,
+        expect="auto never budgets video below the source",
+        guards="Jellyfin's audio share pushes the video budget under a high-bitrate "
+               "source, and ResolutionNormalizer downscales it",
+        settle=0.0,
+    ),
+    Mutation(
+        name="Auto sends the source's own bitrate as its ceiling again",
+        path=BACKEND_JF,
+        find="      autoTier({",
+        replace="      ({ width: dims?.width || 1920, bitrate: dims?.bitrate || 8_000_000 }) ?? "
+                "/* mutation */ autoTier({",
+        test=T_JELLYFIN,
+        expect="below the source's",
+        guards="PSYREN S01E01 played at 960x540 and 376 kb/s: Jellyfin's audio share "
+               "takes the budget under the source and it downscales",
+    ),
+    Mutation(
         name="requests can hang forever again (abort timeout removed)",
         path="frontend/src/lib/remote.ts",
         find="      const res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });",

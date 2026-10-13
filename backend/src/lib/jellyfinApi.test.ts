@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEVICE_ID,
+  autoTier,
   deviceProfile,
   jellyfinApi,
   jellyfinAuthHeader,
@@ -86,6 +87,49 @@ test('the quality tiers reach the profile', () => {
   const conds = p.CodecProfiles?.[0]?.Conditions ?? [];
   assert.equal(conds.find((c) => c.Property === 'Width')?.Value, '854');
   assert.equal(conds.find((c) => c.Property === 'VideoBitrate')?.Value, '1500000');
+});
+
+// The file that played at 960x540: MeGusta HDTV, HEVC 10-bit, 616 kbps video.
+// Real numbers from Jellyfin's PlaybackInfo, 2026-10-12.
+const PSYREN_E1 = { width: 1280, videoBitrate: 615_688, containerBitrate: 807_688 };
+
+test('auto keeps a starved HEVC source at its own width', () => {
+  const t = autoTier(PSYREN_E1);
+  assert.equal(t.width, 1280);
+  assert.ok(t.bitrate >= 4_000_000, `auto asked for ${t.bitrate} - Jellyfin downscales below the 720p tier`);
+});
+
+// Jellyfin keeps the resolution only while the video budget (our ceiling minus
+// its audio share) is at least the source's video bitrate; below it,
+// ResolutionNormalizer shrinks the picture. The audio share is Jellyfin's, as
+// observed in its TranscodingUrl (AudioBitrate=192000, 2026-10-12) - a literal,
+// so this cannot pass by subtracting our own headroom from itself.
+const JELLYFIN_AUDIO_SHARE = 192_000;
+
+test('auto never budgets video below the source', () => {
+  const sources = [
+    PSYREN_E1,
+    { width: 1280, videoBitrate: 2_172_733, containerBitrate: 2_397_473 }, // Erai CR 720p
+    { width: 1920, videoBitrate: 5_700_000, containerBitrate: 5_980_315 }, // AMZN 1080p
+    { width: 1920, videoBitrate: 12_000_000, containerBitrate: 12_400_000 },
+    { width: 1280, videoBitrate: 0, containerBitrate: 3_100_000 }, // no per-stream figure
+  ];
+  for (const s of sources) {
+    const t = autoTier(s);
+    const budget = t.bitrate - JELLYFIN_AUDIO_SHARE;
+    assert.ok(
+      budget >= Math.max(s.videoBitrate, s.containerBitrate),
+      `${JSON.stringify(s)}: video budget ${budget} is below the source`
+    );
+    assert.equal(t.width, s.width);
+  }
+});
+
+test('auto with unknown dims falls back to 1080p', () => {
+  assert.deepEqual(autoTier({ width: 0, videoBitrate: 0, containerBitrate: 0 }), {
+    width: 1920,
+    bitrate: 8_000_000,
+  });
 });
 
 test('a logged Jellyfin error never carries the API key', () => {

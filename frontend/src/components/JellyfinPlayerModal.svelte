@@ -62,7 +62,7 @@
   /** The video has enough data to play, so any remaining wait really is ours. */
   let videoReady = false;
   let playbackStarted = false;
-  /** Quality tier; 'auto' means the source's own bitrate. */
+  /** Quality tier; 'auto' means the source's own resolution (the server picks the ceiling). */
   export let quality = 'auto';
   let sourceWidth: number | null = null;
   let sourceBitrate: number | null = null;
@@ -175,8 +175,9 @@
    * the tier is baked into the stream Jellyfin produces, so changing it means
    * asking for a different stream.
    *
-   * "Auto" is the source's own bitrate. Jellyfin will not encode above it, so
-   * that is the honest ceiling rather than a number we invented.
+   * "Auto" keeps the source's resolution; the server sends a ceiling with room
+   * above the file (`autoTier` in backend lib/jellyfinApi.ts). The label still
+   * shows the file's own bitrate, because that describes the source.
    */
   let qualityMenu: any = null;
   const QUALITY_TIERS = ['auto', '1080p', '720p', '480p'];

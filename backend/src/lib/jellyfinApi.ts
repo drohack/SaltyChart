@@ -143,15 +143,17 @@ export async function jellyfinApi(cfg: JellyfinConfig): Promise<Api> {
  * Sending a profile is not optional politeness: Jellyfin has no "assume
  * everything is supported" fallback, so a client that declares nothing gets the
  * most conservative option it can construct - which is how a stream request
- * without `videoBitRate` came back as **416×234**. Hand-tuning query parameters
+ * without `videoBitRate` came back as **416x234**. Hand-tuning query parameters
  * was reverse-engineering this structure badly.
  *
  * `SubtitleProfiles: [{ Format: 'ass', Method: 'Encode' }]` is the entire
  * burn-in switch. Jellyfin renders the ASS with libass and the episode's own
- * extracted fonts (`-vf subtitles=...:fontsdir=...`), composites it on the GPU via
- * `overlay_qsv`, and encodes with `h264_qsv` - so the picture the viewer gets is
- * what libass would have drawn in the browser, minus every way the browser can
- * fail to draw it.
+ * extracted fonts (`-vf subtitles=...:fontsdir=...`) and re-encodes the result -
+ * so the picture the viewer gets is what libass would have drawn in the browser,
+ * minus every way the browser can fail to draw it. Which encoder does that is
+ * Jellyfin's setting, not ours: on this deployment hardware acceleration is
+ * `none`, and every session log reads `libx264` (checked 2026-10-12; this
+ * comment used to claim `h264_qsv`).
  *
  * Every value below is an SDK enum member carrying the exact string we used to
  * write by hand, so this is byte-identical on the wire (asserted in the tests)
@@ -211,5 +213,61 @@ export function deviceProfile(width: number, bitrate: number): DeviceProfile {
       },
     ],
     SubtitleProfiles: [{ Format: 'ass', Method: SubtitleDeliveryMethod.Encode }],
+  };
+}
+
+/**
+ * Quality tiers the player offers. `auto` is resolved per item by `autoTier`.
+ */
+export const QUALITY_TIERS: Record<string, { width: number; bitrate: number } | null> = {
+  auto: null,
+  '1080p': { width: 1920, bitrate: 8_000_000 },
+  '720p': { width: 1280, bitrate: 4_000_000 },
+  '480p': { width: 854, bitrate: 1_500_000 },
+};
+
+/**
+ * Room for the audio Jellyfin carves out of our ceiling before video gets its
+ * share (its stereo AAC target: 128k and 189k observed). Without it the video
+ * budget lands below the source, and that alone makes Jellyfin downscale.
+ */
+export const AUDIO_HEADROOM = 256_000;
+
+/** The named tier's bitrate for a source this wide - Auto never asks for less. */
+function floorFor(width: number): number {
+  if (width >= 1920) return QUALITY_TIERS['1080p']!.bitrate;
+  if (width >= 1280) return QUALITY_TIERS['720p']!.bitrate;
+  return QUALITY_TIERS['480p']!.bitrate;
+}
+
+/**
+ * The ceiling "Auto" sends: the source's own resolution, and a bitrate with
+ * room above the source - never the source's bitrate itself.
+ *
+ * Auto used to send the file's video bitrate, on the theory that Jellyfin will
+ * not encode above it anyway. That is backwards: Jellyfin already decides how
+ * far above the source to go (`GetVideoBitrateParamValue` gives a source under
+ * 2 Mbps up to 2.5x, and scales HEVC to H.264 by 1/0.6), then clamps the result
+ * to OUR ceiling - so a ceiling equal to the source cancels the compensation.
+ * And once the requested bitrate is below the source's video bitrate,
+ * `ResolutionNormalizer` downscales too. PSYREN S01E01 (MeGusta HDTV, HEVC
+ * 10-bit, 616 kbps video) got `-maxrate 487688` and **960x540** on 2026-10-11,
+ * while every other episode that night kept its resolution.
+ *
+ * Above the source it costs little: the encode is CRF 23 and the ceiling only a
+ * cap - that night, generously capped streams averaged 0.7 to 2.7 Mbps. It also
+ * stops the cap sitting below the CONTAINER bitrate, which made Jellyfin re-encode
+ * every file (`ContainerBitrateExceedsLimit`) even where a remux would do.
+ */
+export function autoTier(src: {
+  width: number;
+  videoBitrate: number;
+  containerBitrate: number;
+}): { width: number; bitrate: number } {
+  const sourceBitrate = Math.max(src.videoBitrate || 0, src.containerBitrate || 0);
+  if (!src.width || !sourceBitrate) return { width: 1920, bitrate: 8_000_000 };
+  return {
+    width: src.width,
+    bitrate: Math.max(sourceBitrate + AUDIO_HEADROOM, floorFor(src.width)),
   };
 }

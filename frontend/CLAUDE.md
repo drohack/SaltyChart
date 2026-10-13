@@ -224,8 +224,9 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   the watchdog in the component - each one was learned by watching an
   uncapped restart loop or a false recovery.
 - **Subtitles are burned in by Jellyfin** (`SubtitleProfiles: [{ Format:
-  'ass', Method: 'Encode' }]`), composited on the GPU with libass and the
-  episode's own fonts. This replaced a client-side renderer whose every
+  'ass', Method: 'Encode' }]`), rendered with libass and the episode's own
+  fonts and re-encoded (on the CPU: Jellyfin's hardware acceleration is off
+  on this deployment). This replaced a client-side renderer whose every
   failure was silent (an opaque canvas over healthy video, a double-unwrapped
   `.default` downgrading ASS to WebVTT, empty frames reporting success) -
   pixels can be *tested*, which is what `test_player` step 8 does. Measured
@@ -242,8 +243,10 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   `test_ui_interactions` flow 37 pins it on the real track shapes.
   **"Off" must be sent as `subtitleStreamIndex=-1`** -
   omitting the parameter makes Jellyfin pick a default and burn it back in.
-  Quality: auto (the source's own ceiling, from a probe PlaybackInfo), 1080p,
-  720p, 480p. A rebuild **stops the session it abandons** - before that,
+  Quality: auto (the source's own resolution, from a probe PlaybackInfo, with
+  a bitrate ceiling the server sets above the file - `autoTier`, see
+  `backend/CLAUDE.md`), 1080p, 720p, 480p. A rebuild **stops the session it
+  abandons** - before that,
   every track change left an orphan ffmpeg remuxing ~1 GB for nobody, and
   `/Sessions` can't reveal it (this proxy never reports playback, which is
   also what keeps it out of watch history). The two bugs that once made

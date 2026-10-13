@@ -51,6 +51,8 @@ import {
 import { identityStatus, isUnaired, withAiring } from '../lib/entryStatus';
 import {
   DEVICE_ID,
+  QUALITY_TIERS,
+  autoTier,
   deviceProfile,
   jellyfinApi,
   jellyfinAuthHeader,
@@ -838,18 +840,21 @@ async function loadPersistedEntries<K, V>(key: string): Promise<Array<[K, V]>> {
 }
 
 /**
- * A file's own width and bitrate, cached.
+ * A file's own width and bitrates, cached. `bitrate` is the video stream's (what
+ * the quality menu shows); `containerBitrate` is the whole file's, which is what
+ * Jellyfin compares our ceiling against.
  *
  * These describe the media on disk, so they cannot change while the item id
  * stays the same - replacing a release gives a new id. Bounded because a long
  * session of wheel spins would otherwise grow it without limit.
  */
-const sourceDims = new Map<string, { dims: { width: number; bitrate: number }; at: number }>();
+type SourceDims = { width: number; bitrate: number; containerBitrate: number };
+const sourceDims = new Map<string, { dims: SourceDims; at: number }>();
 const SOURCE_DIMS_TTL_MS = 30 * 60 * 1000;
 const SOURCE_DIMS_MAX = 200;
 const SOURCE_DIMS_KEY = 'jellyfinSourceDims';
 
-function rememberSourceDims(key: string, dims: { width: number; bitrate: number }): void {
+function rememberSourceDims(key: string, dims: SourceDims): void {
   const now = Date.now();
   for (const [k, v] of sourceDims) {
     if (now - v.at > SOURCE_DIMS_TTL_MS) sourceDims.delete(k);
@@ -1375,7 +1380,11 @@ void (async () => {
       console.log(`[jellyfin] dropped ${dropped} availability entries from an older matcher`);
     }
     for (const [k, v] of await loadPersistedEntries<string, { dims: any; at: number }>(SOURCE_DIMS_KEY)) {
-      if (v?.at && now - v.at < SOURCE_DIMS_TTL_MS) sourceDims.set(String(k), v);
+      // An entry without containerBitrate predates autoTier; re-probing beats
+      // resolving Auto from half the answer.
+      if (v?.at && now - v.at < SOURCE_DIMS_TTL_MS && typeof v.dims?.containerBitrate === 'number') {
+        sourceDims.set(String(k), v);
+      }
     }
     if (availabilityCache.size || sourceDims.size) {
       console.log(`[jellyfin] restored ${availabilityCache.size} availability + ${sourceDims.size} source-dims entries`);
@@ -2052,16 +2061,8 @@ router.post('/availability/batch', jellyfinLimiter, requireAuth, async (req, res
 // Playback
 // ---------------------------------------------------------------------------
 
-/**
- * Quality tiers the player offers. `auto` is resolved per item from the
- * source's own bitrate, because Jellyfin will not encode above it anyway.
- */
-const QUALITY: Record<string, { width: number; bitrate: number } | null> = {
-  auto: null,
-  '1080p': { width: 1920, bitrate: 8_000_000 },
-  '720p': { width: 1280, bitrate: 4_000_000 },
-  '480p': { width: 854, bitrate: 1_500_000 },
-};
+/** The tiers live with `autoTier` in lib/jellyfinApi.ts, where they are tested. */
+const QUALITY = QUALITY_TIERS;
 
 
 /**
@@ -2124,8 +2125,8 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
   if (!cfg) return res.status(503).json({ error: 'Jellyfin not configured', code: 'UPSTREAM_ERROR' });
   try {
     const api = await jellyfinApi(cfg);
-    // The source's own dimensions, for `auto`. Two things make this cheaper
-    // than it was:
+    // The source's own dimensions, which `autoTier` turns into a ceiling with
+    // headroom above the source. Two things make this cheaper than it was:
     //
     //   * an explicit tier (1080p/720p/480p) doesn't need them at all - the
     //     numbers come from QUALITY - yet this used to probe anyway and throw
@@ -2135,7 +2136,9 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
     //     learn the tracks, one for the chosen track), which was four upstream
     //     PlaybackInfo requests where two will do.
     const dimsKey = `${itemId}:${req.query.mediaSourceId ?? ''}`;
-    let dims = sourceDims.get(dimsKey)?.dims;
+    let dims: SourceDims | undefined = sourceDims.get(dimsKey)?.dims;
+    // An entry cached before containerBitrate existed is a miss, not a half-answer.
+    if (dims && typeof dims.containerBitrate !== 'number') dims = undefined;
     if (!dims && QUALITY[quality] == null) {
       const probe = await getMediaInfoApi(api).getPostedPlaybackInfo({
         itemId,
@@ -2150,13 +2153,17 @@ router.get('/playback/:itemId', jellyfinLimiter, requireAuth, async (req, res) =
       dims = {
         width: Number(probeVideo?.Width) || 0,
         bitrate: Number(probeVideo?.BitRate) || Number(probeSrc?.Bitrate) || 0,
+        containerBitrate: Number(probeSrc?.Bitrate) || 0,
       };
       rememberSourceDims(dimsKey, dims);
     }
-    const tier = QUALITY[quality] ?? {
-      width: dims?.width || 1920,
-      bitrate: dims?.bitrate || 8_000_000,
-    };
+    const tier =
+      QUALITY[quality] ??
+      autoTier({
+        width: dims?.width || 0,
+        videoBitrate: dims?.bitrate || 0,
+        containerBitrate: dims?.containerBitrate || 0,
+      });
 
     const userId = await jellyfinUserId(cfg);
     // The profile goes in the body; everything else stays a query parameter.

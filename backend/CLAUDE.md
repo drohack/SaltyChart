@@ -76,8 +76,27 @@ cheap on CPU, identical on disk to a real transcode:
 | mode | ffmpeg | re-encodes video | writes to transcode dir |
 |---|---|---|---|
 | direct play | no | no | no |
-| **direct stream (remux)** <- what we do | **yes** | no | **yes** |
-| transcode | yes | yes | yes |
+| **direct stream (remux)** <- H.264 8-bit source, no subtitle burned in | **yes** | no | **yes** |
+| **transcode** <- everything else: HEVC, Hi10P, any burned-in subtitle | yes | yes | yes |
+
+Transcodes run on the CPU (`libx264`): Jellyfin's hardware acceleration is
+`none` on this deployment (checked 2026-10-12), which is a Jellyfin dashboard
+setting, not ours.
+
+**Auto's ceiling sits above the source, never at it** (`autoTier`,
+`lib/jellyfinApi.ts`). It used to be the file's video bitrate, and on
+2026-10-11 PSYREN S01E01 (MeGusta HDTV, HEVC 10-bit, 616 kbps video) played at
+**960x540, 376 kb/s**. Two Jellyfin rules did it: it compensates for a
+low-bitrate or HEVC source (up to 2.5x, and 1/0.6 for HEVC->H.264) and then
+clamps to our ceiling, so a ceiling equal to the source cancels the
+compensation; and once the video budget (ceiling minus its audio share) is
+below the source's video bitrate, `ResolutionNormalizer` downscales. So Auto
+sends the source's width and `max(source + 256k audio headroom, the named
+tier's bitrate for that width)`. The encode is CRF 23, so the ceiling is a cap,
+not a target. A cap below the CONTAINER bitrate also forced
+`ContainerBitrateExceedsLimit`, i.e. a full re-encode of every file. After the
+change PSYREN S01E01 encodes at 1280x720 under a 3.8 Mbps ceiling (checked
+from Jellyfin's own ffmpeg log, 2026-10-12).
 
 Two consequences that have both bitten: Jellyfin's ffmpeg **writes segments
 until the whole file is done regardless of the playhead**, and its cleanup
@@ -1992,7 +2011,8 @@ Tables / columns:
   wondering whether the job ran; written at **both** exits, clean and failed,
   because "ran and failed" must stay distinguishable from "never ran"),
   `jellyfinAvailability` /
-  `jellyfinSourceDims` (the two per-item caches), and `remoteSweepStatus` (the
+  `jellyfinSourceDims` (the two per-item caches; a source-dims entry without
+  `containerBitrate` predates `autoTier` and is re-probed), and `remoteSweepStatus` (the
   last identity sweep's summary - persisted because "did the background
   resolver run, and what did it do" must survive the restart that follows a
   deploy, which is exactly when someone wonders; its `remaining` counts only
