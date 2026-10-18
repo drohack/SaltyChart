@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { captureMailer } from './mailer';
 import { localRunSilence, alertAdmins, SUBJECT_PREFIX, LOCAL_RUN_SILENT_DAYS, ownerEmail } from './subtitleAlerts';
+import { DEFAULT_MAINTENANCE } from './alertSettings';
 
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 3600 * 1000;
@@ -55,7 +56,7 @@ test('a dev backend never mails, whatever the settings say', async () => {
   const r = await alertAdmins('AniList is not responding', 'body', {
     mailer,
     recipients: async () => ['owner@example.com'],
-    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
+    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [], maintenance: { ...DEFAULT_MAINTENANCE } }),
     production: false,
   });
   assert.deepEqual(r, { sent: 0, skipped: 'not-production' });
@@ -129,7 +130,7 @@ test('the master switch on /admin/status actually stops the mail', () => {
     mailer,
     production: true,
     recipients: async () => ['owner@example.com'],
-    settings: async () => ({ masterEnabled: false, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
+    settings: async () => ({ masterEnabled: false, perService: {}, perServiceRecovery: {}, extraRecipients: [], maintenance: { ...DEFAULT_MAINTENANCE } }),
   }).then((r) => {
     assert.strictEqual(r.sent, 0);
     assert.strictEqual(r.skipped, 'alerts-disabled');
@@ -147,7 +148,7 @@ test('alerts are ON unless somebody switched them off', () => {
     mailer,
     production: true,
     recipients: async () => ['owner@example.com'],
-    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] }),
+    settings: async () => ({ masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [], maintenance: { ...DEFAULT_MAINTENANCE } }),
   }).then((r) => {
     assert.strictEqual(r.sent, 1);
     assert.strictEqual(r.skipped, null);
@@ -158,7 +159,7 @@ test('alerts are ON unless somebody switched them off', () => {
 test("a service's own toggle on /admin/status stops its alerts", async () => {
   // The per-service toggles reached only upstreamHealth's own mails, so
   // switching YouTube off on that page left the download-path alerts mailing.
-  const on = { masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [] };
+  const on = { masterEnabled: true, perService: {}, perServiceRecovery: {}, extraRecipients: [], maintenance: { ...DEFAULT_MAINTENANCE } };
   const youtubeOff = { ...on, perService: { youtube: false } };
   const send = (settings: any, kind: 'down' | 'recovered') => {
     const mailer = captureMailer();

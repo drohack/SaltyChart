@@ -30,6 +30,8 @@ import {
 import { PROBES, runDueProbes } from '../lib/upstreamProbes';
 import {
   alertsEnabledFor,
+  maintenanceStartedAt,
+  nextMaintenance,
   readAlertSettings,
   sanitizeSettings,
   writeAlertSettings,
@@ -93,6 +95,7 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
         alertsEnabled: alertsEnabledFor(settings, spec.id, 'down'),
         // Separate switch, and off unless asked for - see `perServiceRecovery`.
         recoveryAlertsEnabled: alertsEnabledFor(settings, spec.id, 'recovered'),
+        maintenanceAware: !!spec.maintenanceAware,
         state: stateOf(rec, spec.brokenAfter, now, outageWindowFor(spec)),
         ...rec,
       };
@@ -107,9 +110,19 @@ router.get('/report', requireAuth, requireAdmin, async (_req: AuthRequest, res: 
       }),
     );
 
+    // The next start is computed here so the page shows a DATE: a mistyped
+    // cron then reads as a wrong day on screen instead of an unexpected mail.
+    const startedAt = maintenanceStartedAt(settings.maintenance, new Date(now));
+    const nextStart = nextMaintenance(settings.maintenance, new Date(now));
+
     res.json({
       services,
       settings,
+      maintenance: {
+        active: startedAt !== null,
+        startedAt: startedAt?.toISOString() ?? null,
+        nextStart: nextStart?.toISOString() ?? null,
+      },
       owner,
       // The circular case, stated rather than implied: with SMTP down nothing
       // can mail to say so, which is why the page shows this directly.
@@ -140,7 +153,10 @@ router.put('/alerts', express.json({ limit: '16kb' }), requireAuth, requireAdmin
       console.log(
         `[status] alert settings saved: master ${settings.masterEnabled ? 'on' : 'OFF'}, ` +
         `${off} service(s) silenced, ${rec} announcing recovery, ` +
-        `${settings.extraRecipients.length} extra recipient(s)`,
+        `${settings.extraRecipients.length} extra recipient(s), maintenance ` +
+        (settings.maintenance.enabled
+          ? `'${settings.maintenance.cron}' for ${settings.maintenance.durationMinutes} min (${settings.maintenance.timeZone})`
+          : 'off'),
       );
       res.json({ ok: true, settings });
     } catch (err: any) {

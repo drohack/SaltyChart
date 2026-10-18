@@ -1095,7 +1095,23 @@ blindest failure in the codebase (`upstreamProbes.ts`). A blanket axios
 interceptor would have merged the two.
 
 Alert settings live in `AppConfig.alertSettings` (`lib/alertSettings.ts`):
-master switch, per-service toggles, extra recipients.
+master switch, per-service toggles, extra recipients, and the maintenance window.
+
+**Scheduled maintenance holds the mail for our own boxes, never drops it**
+(`MaintenanceWindow`, applied to specs marked `maintenanceAware` - Jellyfin and
+Sonarr only). The Unraid Appdata Backup plugin stops every container in turn;
+on 2026-10-18 it stopped Jellyfin 05:52-06:30 and mailed a false outage. The
+window is the plugin's own cron line (`0 5 18 */3 *` on this server - read
+from `/boot/config/plugins/appdata.backup/config.json`, not guessed) plus a
+duration, **read in an explicit IANA zone**: the server's crontab runs in local
+time and the backend container in UTC. A failure inside the window does not
+cross (`failureTransition`'s `inMaintenanceNow`), so `downAlertedAt` stays null:
+a recovery inside the window sends nothing, and a service still failing after
+it crosses on its next failure and mails, saying the mail was held. Do not
+"fix" a backup alert by widening `MIN_OUTAGE_MS` instead - a window long enough
+to sit out a 40-minute stop hides every real crash for as long. A schedule that
+changes without this one costs one unnecessary mail, never a missed one. Two
+mutation rows guard the hold and the zone.
 
 - **`alertAdmins` (`lib/subtitleAlerts.ts`) is the one funnel every alert goes
   through**, so the master switch and the extra recipients are honoured there,
@@ -1625,8 +1641,10 @@ Tables / columns:
     refusal leaves it untouched, so a transient one does not consume the day.
   - `upstreamHealth` - one row holding every upstream service's record (one
     read, one atomic write, no per-service key sprawl).
-  - `alertSettings` - master switch, per-service toggles and extra recipients;
-    deliberately NOT the SMTP connection, which stays in `.env`.
+  - `alertSettings` - master switch, per-service toggles, extra recipients and
+    the maintenance window (a row saved before that field existed reads as the
+    default schedule, on); deliberately NOT the SMTP connection, which stays in
+    `.env`.
   - `remoteSweepStatus` - the last identity sweep's summary, persisted because
     "did the resolver run, and what did it do" must survive the restart that
     follows a deploy. `remaining` / `retired` as on `/identity/resolve`,

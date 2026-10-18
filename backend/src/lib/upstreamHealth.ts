@@ -30,7 +30,7 @@
  */
 import prisma from '../db';
 import { alertAdmins, ownerEmail } from './subtitleAlerts';
-import { alertsEnabledFor, readAlertSettings, resolveRecipients } from './alertSettings';
+import { alertsEnabledFor, inMaintenance, readAlertSettings, resolveRecipients } from './alertSettings';
 
 export const UPSTREAM_HEALTH_KEY = 'upstreamHealth';
 
@@ -125,6 +125,13 @@ export interface UpstreamSpec {
   recordSource?: 'downloadHealth';
   /** Remedy line for a specific failure, when one is known. */
   hint?: (reason: string | null, status: number | null) => string | null;
+  /**
+   * Stopped by our own scheduled maintenance, so its outage mail waits for the
+   * window to close (`MaintenanceWindow` in `alertSettings.ts`). Only boxes the
+   * backup actually stops: a third-party API failing during a backup is a
+   * coincidence worth hearing about.
+   */
+  maintenanceAware?: boolean;
 }
 
 const MINUTE = 60_000;
@@ -263,6 +270,8 @@ export const UPSTREAMS: UpstreamSpec[] = [
     // It is also free: one call to a box on the LAN.
     minProbeIntervalMs: 15 * MINUTE,
     adminPath: '/admin',
+    // The appdata backup stopped it 05:52-06:30 on 2026-10-18 and mailed.
+    maintenanceAware: true,
   },
   {
     id: 'sonarr',
@@ -272,6 +281,9 @@ export const UPSTREAMS: UpstreamSpec[] = [
     // Same reasoning as Jellyfin: our own box, ordinary failure modes, free.
     minProbeIntervalMs: 15 * MINUTE,
     adminPath: '/admin/sonarr',
+    // The backup stops it too (about 05:35 on 2026-10-18); it came back inside
+    // the outage window that time, which is luck rather than design.
+    maintenanceAware: true,
   },
   {
     id: 'smtp',
@@ -367,7 +379,12 @@ export function failureTransition(
   nowIso: string,
   brokenAfter: number,
   windowMs: number,
-): { next: UpstreamRecord; crossed: boolean } {
+  /**
+   * Inside a scheduled maintenance window for this service. Optional, and the
+   * default is the safe side: a caller that forgets it mails as before.
+   */
+  inMaintenanceNow = false,
+): { next: UpstreamRecord; crossed: boolean; heldBack: boolean } {
   const streak = rec.consecutiveFailures + 1;
   // How long has it been failing? A burst seconds long is a flaky upstream or
   // a brief block, not an outage - see MIN_OUTAGE_MS.
@@ -377,7 +394,11 @@ export function failureTransition(
   // conditions become true in either order: the streak reaches the threshold
   // in seconds, and the window opens later. The flag is what keeps it to one
   // mail, and okTransition clears it.
-  const crossed = streak >= brokenAfter && lasted && !rec.downAlertedAt;
+  const due = streak >= brokenAfter && lasted && !rec.downAlertedAt;
+  // Held, not dropped: `downAlertedAt` stays null, so the first failure after
+  // the window closes is `due` again and mails, and a recovery inside the
+  // window has nothing to announce.
+  const crossed = due && !inMaintenanceNow;
   return {
     next: {
       ...rec,
@@ -392,6 +413,7 @@ export function failureTransition(
       downAlertedAt: crossed ? nowIso : rec.downAlertedAt,
     },
     crossed,
+    heldBack: due && inMaintenanceNow,
   };
 }
 
@@ -531,9 +553,19 @@ export async function recordUpstream(
 
     const reason = detail.reason ?? 'unknown error';
     const status = detail.status ?? null;
-    const { next, crossed } = failureTransition(rec, reason, status, nowIso, spec.brokenAfter, outageWindowFor(spec));
+    const maintenance = spec.maintenanceAware ? (await readAlertSettings()).maintenance : null;
+    const held = !!maintenance && inMaintenance(maintenance, new Date(nowIso));
+    const { next, crossed, heldBack } = failureTransition(
+      rec, reason, status, nowIso, spec.brokenAfter, outageWindowFor(spec), held,
+    );
     map[id] = next;
     await writeAll(map);
+    if (heldBack && maintenance) {
+      console.log(
+        `[upstream] ${spec.label} looks down during scheduled maintenance (${maintenance.label}); ` +
+        'holding the mail - it goes out if this is still failing when the window closes',
+      );
+    }
     if (!crossed) return;
     console.error(
       `[upstream] ${spec.label} LOOKS DOWN - ${next.consecutiveFailures} consecutive failures, ` +
@@ -594,6 +626,14 @@ async function announce(
     const subject =
       kind === 'down' ? `${spec.label} is not responding` : `${spec.label} is working again`;
     const hint = kind === 'down' ? spec.hint?.(after.lastFailReason, after.lastFailStatus) : null;
+    // A held mail says so, or "failing for 150 minutes" arriving at 07:30
+    // reads as an alert that was slow rather than one that waited on purpose.
+    const started = after.failingSince ? new Date(after.failingSince) : null;
+    const heldNote = kind === 'down' && spec.maintenanceAware && started && inMaintenance(settings.maintenance, started)
+      ? `This started during scheduled maintenance (${settings.maintenance.label}), which stops this ` +
+        "service on purpose, so the mail waited for the window to close. It is still failing now, " +
+        'so the maintenance does not explain it.\n\n'
+      : '';
     const text =
       kind === 'down'
         ? `${spec.label} has been failing for ${minutesSince(after.failingSince)} minutes ` +
@@ -602,6 +642,7 @@ async function announce(
           `Latest failure${after.lastFailStatus ? ` (HTTP ${after.lastFailStatus})` : ''}: ` +
           `${after.lastFailReason ?? 'unknown'}\n\n` +
           (hint ? `${hint}\n\n` : '') +
+          heldNote +
           'A status code like 400 or 403 means the service is up and refusing us - either it ' +
           'changed what it accepts, or it is blocking our address.\n\n' +
           '/admin/status shows every service and will announce recovery.'

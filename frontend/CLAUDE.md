@@ -772,6 +772,11 @@ status code, and whether that service's alerts are on; plus the alert settings
 - **The SMTP row states the circular case out loud**: with mail down, nothing
   can mail to say mail is down, so while that row is red the absence of alerts
   means nothing.
+- **The maintenance window shows its next start as a date** (`data-maint-next`,
+  computed on the server), in the schedule's own zone - a mistyped cron then
+  reads as a wrong day on screen rather than an unexpected email. While a window
+  is open, maintenance-aware rows show a `held` badge (`data-svc-held`) in the
+  Alerts column; the state badge still says what the service is doing.
 - A TypeScript cast cannot appear in a template expression - `lang="ts"` applies
   to the `<script>` block only, so an inline `as HTMLInputElement` is a *syntax*
   error, not a type error. Handlers that need one live in the script block.

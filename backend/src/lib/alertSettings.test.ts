@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_MAINTENANCE,
+  inMaintenance,
+  nextMaintenance,
+  parseCron,
   DEFAULT_ALERT_SETTINGS,
   alertsEnabledFor,
   looksLikeEmail,
@@ -146,4 +150,81 @@ test('recovery settings survive rubbish input', () => {
   assert.deepEqual(sanitizeSettings({ perServiceRecovery: 7 }).perServiceRecovery, {});
   assert.deepEqual(sanitizeSettings({}).perServiceRecovery, {});
   assert.deepEqual(sanitizeSettings(null).perServiceRecovery, {});
+});
+
+// --- Scheduled maintenance -------------------------------------------------
+// Times are the real 2026-10-18 incident: the appdata backup started at 05:00
+// CDT (10:00Z), Jellyfin was stopped 05:52-06:30, and the down mail went out at
+// 06:30. The cron is the plugin's own line from that server.
+
+const BACKUP = { ...DEFAULT_MAINTENANCE };
+const cdt = (hhmm: string, day = '2026-10-18') => new Date(`${day}T${hhmm}:00-05:00`);
+
+test('the backup window covers the stop that mailed on 2026-10-18', () => {
+  assert.equal(inMaintenance(BACKUP, cdt('05:00')), true, 'opens at the cron minute');
+  assert.equal(inMaintenance(BACKUP, cdt('05:52')), true, 'Jellyfin stopped');
+  assert.equal(inMaintenance(BACKUP, cdt('06:30')), true, 'when the mail went out');
+  assert.equal(inMaintenance(BACKUP, cdt('07:29')), true, 'last minute of 150');
+  assert.equal(inMaintenance(BACKUP, cdt('07:30')), false, 'closed after durationMinutes');
+  assert.equal(inMaintenance(BACKUP, cdt('04:59')), false, 'not before it starts');
+});
+
+test('the window is read in its own zone, not the container clock', () => {
+  // The backend container runs in UTC; the server's crontab in local time.
+  // 05:52 CDT is 10:52Z - the same instant must be inside the window whatever
+  // the process TZ is, and 05:52Z (00:52 CDT) must not be.
+  assert.equal(inMaintenance(BACKUP, new Date('2026-10-18T10:52:00Z')), true);
+  assert.equal(inMaintenance(BACKUP, new Date('2026-10-18T05:52:00Z')), false);
+});
+
+test('a quarterly cron matches only its months and day', () => {
+  // `*/3` on months starts at 1: Jan, Apr, Jul, Oct - and Jul 18 is the other
+  // run in the syslog. Aug 18 and Sep 18 have syslog data and no backup.
+  assert.equal(inMaintenance(BACKUP, cdt('05:30', '2026-07-18')), true);
+  assert.equal(inMaintenance(BACKUP, cdt('05:30', '2026-08-18')), false);
+  assert.equal(inMaintenance(BACKUP, cdt('05:30', '2026-09-18')), false);
+  assert.equal(inMaintenance(BACKUP, cdt('05:30', '2026-10-17')), false);
+  assert.equal(inMaintenance(BACKUP, cdt('05:30', '2026-10-19')), false);
+  // Standard time: Jan 18 05:00 CST is 11:00Z.
+  assert.equal(inMaintenance(BACKUP, new Date('2027-01-18T11:10:00Z')), true);
+  assert.equal(inMaintenance(BACKUP, new Date('2027-01-18T10:10:00Z')), false);
+});
+
+test('the next start is the date the page shows', () => {
+  const next = nextMaintenance(BACKUP, cdt('16:00'));
+  assert.equal(next?.toISOString(), '2027-01-18T11:00:00.000Z', 'Jan 18 05:00 CST');
+  assert.equal(nextMaintenance({ ...BACKUP, enabled: false }, cdt('16:00')), null);
+});
+
+test('day-of-month and day-of-week follow cron: either one when both are set', () => {
+  const c = parseCron('0 5 1 * 1');
+  assert.ok(c);
+  const w = { ...BACKUP, cron: '0 5 1 * 1', durationMinutes: 1 };
+  assert.equal(inMaintenance(w, cdt('05:00', '2026-10-01')), true, 'the 1st, a Thursday');
+  assert.equal(inMaintenance(w, cdt('05:00', '2026-10-05')), true, 'a Monday, not the 1st');
+  assert.equal(inMaintenance(w, cdt('05:00', '2026-10-06')), false, 'neither');
+});
+
+test('a switched-off or unparseable window never holds anything', () => {
+  assert.equal(inMaintenance({ ...BACKUP, enabled: false }, cdt('05:30')), false);
+  assert.equal(inMaintenance({ ...BACKUP, cron: 'every quarter' }, cdt('05:30')), false);
+  assert.equal(parseCron('0 5 18 */3'), null, 'four fields');
+  assert.equal(parseCron('0 25 * * *'), null, 'hour out of range');
+});
+
+test('maintenance settings are coerced, and a row from before them reads as the default', () => {
+  // Production already has a stored alertSettings row with no maintenance key.
+  assert.deepEqual(sanitizeSettings({ masterEnabled: true }).maintenance, DEFAULT_MAINTENANCE);
+  const s = sanitizeSettings({ maintenance: {
+    enabled: false, label: '  ', cron: 'nonsense', durationMinutes: -5, timeZone: 'Mars/Olympus',
+  } }).maintenance;
+  assert.equal(s.enabled, false, 'an explicit off is kept');
+  assert.equal(s.cron, DEFAULT_MAINTENANCE.cron, 'a cron that does not parse is not stored');
+  assert.equal(s.timeZone, DEFAULT_MAINTENANCE.timeZone, 'an unknown zone is not stored');
+  assert.equal(s.durationMinutes, DEFAULT_MAINTENANCE.durationMinutes);
+  assert.equal(s.label, DEFAULT_MAINTENANCE.label);
+  const ok = sanitizeSettings({ maintenance: { cron: ' 30  2 * * 1 ', durationMinutes: 99999, timeZone: 'Europe/London' } }).maintenance;
+  assert.equal(ok.cron, '30 2 * * 1');
+  assert.equal(ok.durationMinutes, 24 * 60, 'capped at a day');
+  assert.equal(ok.timeZone, 'Europe/London');
 });

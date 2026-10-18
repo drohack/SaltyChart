@@ -256,7 +256,12 @@ chronological order; all features listed are live.
   like 400 or 403 means the service is up and refusing us: it changed what it
   accepts, or it is blocking our address. The same page turns those alerts on
   or off, per service, and takes extra recipients; the SMTP connection itself
-  is set on the server.
+  is set on the server. It also holds a **scheduled maintenance window** - by
+  default the Unraid appdata backup's own schedule (`0 5 18 */3 *`, 05:00 on
+  the 18th of Jan/Apr/Jul/Oct, America/Chicago, 150 minutes), which stops every
+  container in turn. A Jellyfin or Sonarr outage inside it is not mailed; if
+  the service is still down when the window closes, the mail goes out then.
+  The page shows the next window's date, so a mistyped schedule is visible.
 - **/admin/subtitles** - the state of trailer subtitles: how many trailers we
   have translated and at what quality, which have YouTube captions or burned-in
   subs, when the batch next runs, and a per-trailer table for this season and

@@ -34,6 +34,8 @@
     passiveOnly: boolean;
     alertsEnabled: boolean;
     recoveryAlertsEnabled: boolean;
+    /** Stopped by our own scheduled maintenance, so its outage mail waits. */
+    maintenanceAware: boolean;
     state: State;
     lastOkAt: string | null;
     lastFailAt: string | null;
@@ -51,11 +53,22 @@
     perService: Record<string, boolean>;
     perServiceRecovery: Record<string, boolean>;
     extraRecipients: string[];
+    maintenance: Maintenance;
+  }
+
+  interface Maintenance {
+    enabled: boolean;
+    label: string;
+    cron: string;
+    durationMinutes: number;
+    timeZone: string;
   }
 
   interface Report {
     services: Service[];
     settings: Settings;
+    /** Decided on the server, so a mistyped cron shows up as a wrong date here. */
+    maintenance: { active: boolean; startedAt: string | null; nextStart: string | null };
     /**
      * The first admin with a VERIFIED address - derived, never configured.
      * `null` means no admin has one, which means alerts reach nobody; that has
@@ -114,6 +127,7 @@
   /** Opt-ins for "it is working again". Absent means off - see perServiceRecovery. */
   let announceRecovery: Record<string, boolean> = {};
   let extraText = '';
+  let maint: Maintenance = { enabled: true, label: '', cron: '', durationMinutes: 150, timeZone: '' };
   let saving = false;
   let saveMsg = '';
   let saveErr = '';
@@ -128,6 +142,7 @@
     masterEnabled = s.masterEnabled;
     silenced = { ...s.perService };
     announceRecovery = { ...s.perServiceRecovery };
+    maint = { ...s.maintenance };
     extraText = s.extraRecipients.join('\n');
   }
 
@@ -170,7 +185,7 @@
       const res = await apiFetch('/api/status/alerts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({ masterEnabled, perService, perServiceRecovery, extraRecipients }),
+        body: JSON.stringify({ masterEnabled, perService, perServiceRecovery, extraRecipients, maintenance: maint }),
       }, { timeoutMs: QUICK, label: 'status-alerts-save' });
       const data = await res.json();
       if (res.ok) {
@@ -268,6 +283,20 @@
     (a, b) => ORDER.indexOf(a.state) - ORDER.indexOf(b.state) || a.label.localeCompare(b.label),
   ) : [];
   $: downCount = rows.filter((r) => r.state === 'down').length;
+  $: maintServices = rows.filter((r) => r.maintenanceAware).map((r) => r.label).join(' and ');
+
+  /** The window as a reader would say it, in the zone it is written in. */
+  function maintWhen(iso: string | null, timeZone: string): string {
+    if (!iso) return 'never - check the schedule';
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        timeZone, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+      });
+    } catch {
+      return when(iso);
+    }
+  }
   $: smtpDown = rows.some((r) => r.id === 'smtp' && r.state === 'down');
 
   onMount(load);
@@ -390,7 +419,10 @@
                   {/if}
                 </td>
                 <td class="text-right whitespace-nowrap">
-                  {#if !masterEnabled}
+                  {#if masterEnabled && s.alertsEnabled && s.maintenanceAware && report.maintenance.active}
+                    <span class="badge badge-info badge-sm" data-svc-held={s.id}
+                      title="Scheduled maintenance is running. A failure now is held, and mailed only if it is still failing when the window closes.">held</span>
+                  {:else if !masterEnabled}
                     <span class="badge badge-ghost badge-sm opacity-60" title="The master switch below is off.">all off</span>
                   {:else if s.alertsEnabled}
                     <span class="badge badge-outline badge-sm opacity-70">on</span>
@@ -469,6 +501,55 @@
             serving from cache while they are down, so there is usually nothing waiting on
             the news that one is back.
           </p>
+        </div>
+
+        <div class="flex flex-col gap-2" data-maintenance>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" class="toggle toggle-sm" data-maint-enabled bind:checked={maint.enabled} />
+            <span class="text-sm">Hold outage mail during scheduled maintenance</span>
+          </label>
+          <p class="text-xs opacity-60">
+            A scheduled job stops {maintServices || 'our own services'} on purpose (the Unraid appdata
+            backup stops every container in turn). A failure inside the window does not mail; if the
+            service is still failing when the window closes, the mail goes out then. Nothing is
+            dropped, and the status above stays honest the whole time.
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2" class:opacity-50={!maint.enabled}>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70">What runs</span>
+              <input class="input input-bordered input-sm" data-maint-label bind:value={maint.label} disabled={!maint.enabled} />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70">Schedule (cron, copied from the job)</span>
+              <input class="input input-bordered input-sm font-mono" data-maint-cron bind:value={maint.cron}
+                placeholder="0 5 18 */3 *" disabled={!maint.enabled} />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70">Window length (minutes)</span>
+              <input type="number" min="1" max="1440" class="input input-bordered input-sm" data-maint-duration
+                bind:value={maint.durationMinutes} disabled={!maint.enabled} />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs opacity-70">Time zone the schedule is in</span>
+              <input class="input input-bordered input-sm font-mono" data-maint-tz bind:value={maint.timeZone}
+                placeholder="America/Chicago" disabled={!maint.enabled} />
+            </label>
+          </div>
+          {#if report.settings.maintenance.enabled}
+            <p class="text-sm" data-maint-next>
+              {#if report.maintenance.active}
+                <span class="badge badge-info badge-sm">running now</span>
+                since {maintWhen(report.maintenance.startedAt, report.settings.maintenance.timeZone)}.
+              {/if}
+              Next window opens <span class="font-medium">{maintWhen(report.maintenance.nextStart, report.settings.maintenance.timeZone)}</span>
+              for {report.settings.maintenance.durationMinutes} min.
+            </p>
+            <p class="text-xs opacity-60">
+              The schedule is the job's own cron line (Unraid: Settings -> Appdata Backup). If that
+              schedule changes and this one does not, the cost is one unnecessary email, never a
+              missed one. A schedule or zone that does not parse is not saved.
+            </p>
+          {/if}
         </div>
 
         <div class="flex flex-col gap-1">

@@ -211,6 +211,33 @@ def main():
               jf.get("recoveryAlertsEnabled") is True,
               f"alertsEnabled={jf.get('alertsEnabled')} recovery={jf.get('recoveryAlertsEnabled')}")
 
+        # Scheduled maintenance: the window that holds Jellyfin/Sonarr outage
+        # mail while the appdata backup has them stopped. A cron that does not
+        # parse must not be stored - the page would show a window that never
+        # opens and the reader would believe they were covered.
+        r = requests.put(f"{BASE}/api/status/alerts", headers=ah, timeout=15, json={
+            "maintenance": {"enabled": True, "label": "test backup", "cron": "0 5 18 */3 *",
+                            "durationMinutes": 150, "timeZone": "America/Chicago"},
+        })
+        m = ((r.json() or {}).get("settings") or {}).get("maintenance") or {}
+        check("a maintenance schedule round-trips",
+              m.get("cron") == "0 5 18 */3 *" and m.get("timeZone") == "America/Chicago"
+              and m.get("durationMinutes") == 150, repr(m))
+        back = requests.get(f"{BASE}/api/status/report", headers=ah, timeout=30).json()
+        nxt = (back.get("maintenance") or {}).get("nextStart") or ""
+        # 05:00 Chicago is 10:00Z in daylight time (Jul, Oct) and 11:00Z in
+        # standard time (Jan, Apr) - either way the 18th, in a quarter month.
+        check("the report names the next window on the 18th of a quarter month at 05:00 local",
+              nxt[5:7] in ("01", "04", "07", "10") and nxt[8:10] == "18" and nxt[11:16] in ("10:00", "11:00"),
+              repr(nxt))
+        aware = sorted(s["id"] for s in back.get("services") or [] if s.get("maintenanceAware"))
+        check("only Jellyfin and Sonarr wait for maintenance", aware == ["jellyfin", "sonarr"], repr(aware))
+        r = requests.put(f"{BASE}/api/status/alerts", headers=ah, timeout=15, json={
+            "maintenance": {"cron": "every quarter", "timeZone": "Mars/Olympus"}})
+        m = ((r.json() or {}).get("settings") or {}).get("maintenance") or {}
+        check("an unparseable cron or zone is not stored",
+              m.get("cron") != "every quarter" and m.get("timeZone") != "Mars/Olympus", repr(m))
+
         print("[6/6] rubbish input is coerced, never a 500", flush=True)
         for junk in ({"masterEnabled": "yes", "perService": 7, "extraRecipients": "no"},
                      {"perServiceRecovery": 7}, {"perServiceRecovery": {"x": "yes"}},

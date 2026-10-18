@@ -315,3 +315,40 @@ test('the badge and the alert are driven by ONE duration rule, not two copies', 
     assert.equal(badgeSaysDown, alertWouldFire, `badge and alert disagree for failingSince=${failingSince}`);
   }
 });
+
+// --- Scheduled maintenance holds the mail; it never drops it -----------------
+
+test('a crossing during maintenance is held, and mails at the first failure after it', () => {
+  // 2026-10-18: Jellyfin failing for the whole window during the appdata backup.
+  const long = rec({ consecutiveFailures: 2, failCount: 2, failingSince: LONG_AGO });
+  const held = failureTransition(long, 'ECONNREFUSED', null, NOW, 3, W, true);
+  assert.equal(held.crossed, false, 'no mail inside the window');
+  assert.equal(held.heldBack, true, 'and the caller is told it was held');
+  assert.equal(held.next.downAlertedAt, null, 'nothing stamped, so it can still cross');
+  assert.equal(held.next.consecutiveFailures, 3, 'the streak is still counted');
+
+  const after = failureTransition(held.next, 'HTTP 503', 503, at(5 * 60_000), 3, W, false);
+  assert.equal(after.crossed, true, 'still down after the window: mail now');
+  assert.equal(after.heldBack, false);
+});
+
+test('a service that recovers inside the window sends nothing at all', () => {
+  const long = rec({ consecutiveFailures: 2, failCount: 2, failingSince: LONG_AGO });
+  const held = failureTransition(long, 'ECONNREFUSED', null, NOW, 3, W, true);
+  const ok = okTransition(held.next, at(60_000), 3);
+  assert.equal(ok.recovered, false, 'no "working again" for an outage nobody was told about');
+});
+
+test('outside maintenance nothing changes', () => {
+  const long = rec({ consecutiveFailures: 2, failCount: 2, failingSince: LONG_AGO });
+  const t = failureTransition(long, 'boom', 500, NOW, 3, W);
+  assert.equal(t.crossed, true);
+  assert.equal(t.heldBack, false);
+});
+
+test('only our own boxes wait for maintenance', () => {
+  // The backup stops containers on this server. A third-party API failing
+  // during it is a coincidence worth hearing about straight away.
+  const aware = UPSTREAMS.filter((u) => u.maintenanceAware).map((u) => u.id).sort();
+  assert.deepEqual(aware, ['jellyfin', 'sonarr']);
+});

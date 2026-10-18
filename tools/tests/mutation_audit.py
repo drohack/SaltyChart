@@ -407,8 +407,8 @@ MUTATIONS: list[Mutation] = [
         # quiet window arrived: the streak and the window can become true in
         # either order, so an equality can no longer express "exactly one mail".
         # Dropping the flag is the same bug in its new clothes.
-        find="  const crossed = streak >= brokenAfter && lasted && !rec.downAlertedAt;",
-        replace="  const crossed = streak >= brokenAfter && lasted;  /* mutation: mails on every failure */",
+        find="  const due = streak >= brokenAfter && lasted && !rec.downAlertedAt;",
+        replace="  const due = streak >= brokenAfter && lasted;  /* mutation: mails on every failure */",
         test=T_UNIT,
         expect="the down alert fires once, at the crossing, not on every failure after it",
         guards="an alert that repeats is an alert that gets muted, and a muted "
@@ -3674,6 +3674,31 @@ MUTATIONS: list[Mutation] = [
         test=T_UNIT,
         expect="the API key must never reach a log line",
         guards="an escaped axios error prints the Jellyfin or Sonarr key into the backend log",
+    ),
+    Mutation(
+        name="scheduled maintenance stops holding the outage mail",
+        path="backend/src/lib/upstreamHealth.ts",
+        # 2026-10-18: the quarterly appdata backup stopped Jellyfin 05:52-06:30
+        # and mailed "Jellyfin is not responding" for a planned stop. Ignoring
+        # the window puts that mail back.
+        find="  const crossed = due && !inMaintenanceNow;",
+        replace="  const crossed = due;  /* mutation: maintenance ignored */",
+        test=T_UNIT,
+        expect="no mail inside the window",
+        guards="every quarterly backup mailing a false Jellyfin outage",
+    ),
+    Mutation(
+        name="the maintenance window is read in the container's clock",
+        path="backend/src/lib/alertSettings.ts",
+        # The container runs in UTC and the server's crontab in local time, so
+        # reading the cron in UTC opens the window five or six hours early and
+        # holds mail for an outage the backup does not explain.
+        find="      timeZone, hourCycle: 'h23', weekday: 'short',",
+        replace="      timeZone: 'UTC', hourCycle: 'h23', weekday: 'short',  /* mutation: container clock */",
+        test=T_UNIT,
+        expect="the window is read in its own zone",
+        guards="the window opening at the wrong hour, holding real outage mail and "
+               "letting the backup's own stop mail anyway",
     ),
 ]
 
