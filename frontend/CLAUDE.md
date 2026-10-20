@@ -53,9 +53,37 @@ happen with only a console line. Flow 45.
   and clears the wheel, rather than leaving the previous season's shows under
   this season's heading; reads are request-id guarded. A failed watched or rank
   write re-reads the season and says so (`hideWriteError`), like the hide paths.
-- Wheel spin: tick sound, confetti, spinner overlay while loading. Post-watch
-  ranking via drag-and-drop persists to `WatchList.watchedRank`. Pop-up shows
-  other users' nicknames + ranks (nickname endpoints).
+- **Copy a trailer list** (`CopyListPanel.svelte`, rules in `lib/copyList.ts`,
+  unit-tested in `frontend/tests/copyList.test.ts`, flow 50): with NO list for the
+  season, the wheel area offers another account's list instead of "My List for
+  this season is empty." Why: the group often ranks trailers together on one
+  account and a different account does the 1st episodes. One "Copy from"
+  account gives the shows, order and nicknames; the other accounts' extra shows
+  ("Plus these shows from other users", one checkbox per account) go at the
+  bottom in their own account's order, never interleaved, with no nickname.
+  Reads `users-with-ratings` + `/api/public-list`, so hide-from-Compare
+  accounts never appear (an account that turns it on between the two reads,
+  a 404, is dropped rather than failing the panel). Choosing the "Copy from"
+  account is the decision; the extras are a smaller secondary block, still
+  shown and ticked by default. The card is capped to the area it stands in
+  (`.copy-card`; on a phone the screen less the header) and scrolls in the
+  middle with the title and Copy list pinned - every account with a list is
+  offered, and ten ran the button off a 1366x768 laptop. The pinned footer says
+  where the total comes from ("15 from X + 5 from 2 others"), because the
+  extras can scroll out of view. From `xl` it is centred LEFT of the options
+  panel (absolute, z-30), which otherwise covered Copy list; below `xl` it sits
+  above that panel instead. The save re-reads your list
+  first and aborts if it is no longer empty, because `PUT /api/list` replaces
+  the whole season. A list whose shows are all watched or hidden is not empty
+  and gets no offer.
+- Wheel spin: tick sound, confetti, spinner overlay while loading (Spin is
+  refused while the season re-reads: the wheel's svg is unmounted then, and a
+  spin with no transition left `spinning` stuck). **Double-clicking a slice
+  opens that show** (`openSliceAt`, from the pointer's angle and the wheel's
+  rotation; flow 49 clicks at a slice's own label, since a sign error opens a
+  different show and looks like it worked). After the first spin the page is
+  "in session": the Unwatched list tucks behind a pull-out strip (`sessionMode`)
+  and a season change docks it again.
 - Hide controls: per-show context menu, plus **Hide All / Show All / Hide Not
   in Library / Hide Not English** (the last two only when Jellyfin is
   configured, using the batch availability cache), and a "N shown, M hidden"
@@ -75,7 +103,7 @@ happen with only a console line. Flow 45.
     slow moment must not empty the wheel;
   * "not in the library" means no video file, aired or not. Unaired shows are
     asked like any other (with AniList's `status`), and the server's "no"
-    carries `notAired` so the pop-up can say why. They used to be answered in
+    carries `notAired` so the show pane can say why. They used to be answered in
     the browser and never asked: DARK MACHINE, four days out, survived both
     buttons while Chitose 2nd Cour already had its episode on disk;
   * title-only matches report `available: true`, so bulk-hide can only ever
@@ -104,7 +132,7 @@ happen with only a console line. Flow 45.
   Randomize's `<style>`). `--area-size` follows the window's height only; the
   area's min-height and the background read it, and the docked lists stretch
   to it. `--wheel-size` is that, and from `lg` also no wider than the space
-  between the DOCKED lists (window less 37rem + 14px, 41rem from `3cols`, less
+  between the DOCKED lists and the 2rem pull-out strip (window less 39rem + 14px, 43rem from `3cols`, less
   2rem); the area's padding centres the wheel in that gap. The wheel used to
   follow the height alone, so narrowing a desktop window slid it under the
   lists (247px at 1100x950). **Keep them two variables**: the first fix used
@@ -115,70 +143,101 @@ happen with only a console line. Flow 45.
   tab sat exactly under the other list's restore tab (both pinned to the same
   edge): tapping "hide" opened the other list, and the wheel could never be
   reached. Flow 42 taps by coordinate, as a finger does.
-- **The pop-up body has a fixed height on `sm`+** (`--body-h`, the poster
-  actually drawn): Watch and the actions are its `auto` bottom row and never
-  move, and the titles + nicknames above scroll in what is left. With six
-  nickname rows the column was ~548px and pushed Hide and Mark out of view on
-  every window up to 1366x768; flow 40 seeds six nicknamers to hold that.
-- **The show pop-up's layout is a grid**: one column on a phone (nicknames,
-  cover, then Watch and the actions), and from `sm` the cover on the left with
-  the English/romaji names and nicknames at the top of the right column - only
-  the main title spans the box - and Watch + the actions together at its foot. Stacked it was ~705px tall with a Watch button and two nickname
-  rows, which put Watch and Mark as watched below the fold on a 1366x768 laptop
-  (~657px of page) inside a box 768px wide. **Side by side, it is sized from
-  the video player's pop-up and is never the taller of the two** (by request):
-  `.show-popup` in Randomize's `<style>` mirrors `JellyfinPlayerModal`'s box
-  (16:9 video plus 81px of chrome, measured at nine window sizes), the poster
-  takes that height less 7.5rem for the padding and a two-line title, and the
-  box is `w-fit` around it. Caps: 460px wide (AniList serves every cover 460
-  wide - more would upscale into blur), 40vw (keeps Hide and Mark on one row),
-  ratio 0.68 (the narrowest cover measured). Measured 2026-10-11: 288x409 at
-  1366x657 (pop-up 501px vs the player's 544px), 460x652 at 1920x969 (744px vs
-  831px). Where the player is shorter than the right column's text (~428px, at
-  640x700, 768x1024 and 1280x520) the box stops at the player's height and its
-  foot scrolls by under 20px, buttons still in view. **Change the player's box
-  and this follows only if `.show-popup` is changed too** - flow 40 step 7
-  opens the real player (stream aborted) to catch the drift. **The
-  close X is `sticky`, not `absolute`**: `.modal-box` scrolls its own overflow,
-  and on a phone the absolute X scrolled away with the content (y=-114 at
-  375x667), leaving only Mark as watched and Hide Series, which both write.
-  Hide and Mark sit in normal flow at either end of the action row - Hide used
-  to be `absolute left-0` beside a centred Mark, and on a phone the two
-  overlapped by 37px. The box is capped at `100dvh`, not DaisyUI's `100vh`,
-  which on a phone is the viewport with the address bar hidden. Flow 40 pins the
-  phone close, the overlap, and the laptop fit.
-- When Jellyfin is configured, the show pop-up gains a **Watch here - SxEy** button
-  (`JellyfinPlayerModal.svelte`) plus a "Library: <matched title>" caption so
-  a bad match is visible; title-only matches are marked **unconfirmed**.
-  Season-aware: a "2nd Season" entry resolves to that season's E1 and is
-  honestly unavailable if the library lacks it. A **"Not the right show?"**
-  control - offered only when the identity is *uncertain* (a resolver guess or
-  a title match), since a community-map id or a human decision needs no
-  correcting. That keys off `idConfident` on the availability verdict, not on
-  availability itself: the question is "do we know what this is", not "can you
-  watch it", so an entry we're sure of shows no control even when the library
-  doesn't hold it. Reading "Find it in my library" when nothing matched, it searches the
-  held library and pins the entry to what the viewer picks - remembered for
-  everyone and queued for admin review. It **replaces the pop-up body** rather
-  than opening a menu inside it: `.modal-box` is its own scroll container, so a
-  floating panel produced two competing scrollbars, clipped the results and
-  pushed *Mark as watched* out of reach. The results list owns the only
-  scrollbar and is bounded, so a long list scrolls in place. The AniList cover
-  stays on screen beside it and each option shows its **library poster** -
-  matching is a comparison, and hiding either side made it guesswork. It states
-  what the entry resolves to now and tags that option `current`, so a viewer
-  can tell a correction from a no-op. *Reset to
-  the automatic match* undoes a pick. Enter belongs to the search box, not the
-  pop-up's mark-watched handler (a window listener; the player guards the same
-  way), and pick mode never survives the pop-up it belongs to. Logged-in viewers only: the write needs
-  a token, and a control that 401s is worse than no control. Availability for all wheel
-  items comes from **one `/availability/batch` request** through
-  `checkAvailabilityMany()` (`stores/jellyfin.ts`), which omits any entry it
-  couldn't definitely answer - so `?.available === false` refuses to act on
-  an unanswered show.
+- **The show REPLACES the wheel** (the `[data-inline-card]` pane, flow 47).
+  It used to be a modal pop-up over the whole page. It is one fixed layout from
+  the moment the spin lands, sized from `--area-size` so it never scrolls: the
+  title and X on top; the video box (16:9, a CSS size container so it is as big
+  as its cell allows) with the **poster as its cover until Watch** - the
+  poster's job is recognising the show, the video's is watching, and they are
+  never needed at the same moment; the nicknames beside it (they scroll on their
+  own - `min-height: 0` on the grid's children is what stops six nicknames
+  pushing the buttons out, and the pane is `overflow: hidden`, so a button that
+  does not fit is CUT OFF, not scrolled to); the episode line, speed-key hint
+  and match warning under the video; Hide / Spin again / Rank it at the foot.
+  An unconfirmed match shows "Might be the wrong show" (the matched title in
+  its tooltip) and the "Not the right show?" picker below.
+- **The pane is a PC layout. Below `sm` it is a full-screen sheet** (fixed,
+  z-60, over the lists and their edge tabs), stacking video -> episode ->
+  buttons -> nicknames and scrolling under a sticky title row - as the pop-up
+  was on a phone. At 375px the PC grid left the video 95px wide, Hide 31px
+  off-screen, and a show opened from the Unwatched list UNDER that list (z-40).
+  The pane was designed for PC only; the phone sheet is the agreed fallback
+  (2026-10-20), not a second design to grow. Flow 40 pins the phone sheet and
+  the 1366x768 laptop fit.
+- **Rank it marks the show watched WITHOUT closing the pane** - the episode
+  keeps playing - and starts placing it (`placingId`): Spin next takes Spin
+  again's slot and Rank it's slot becomes a "Ranked #n" label, so the second
+  click of a double-click lands on nothing. Placing happens in the Watched
+  rail (`WatchedRankingSidebar.svelte`): the arrows, or click the show it
+  beats. Below `lg` the rail is a drawer that would cover the pane, so Rank it
+  leaves it shut; placement survives closing the pane and is finished in the
+  drawer. **Opening a different show ends the last one's placement**
+  (`endPlacementUnless`) - left running, the new show had no Enter and its
+  arrows moved the old show. Only spin, Spin next, a season change or another
+  show end it.
+- **The expanded ranking** (`RankingExpanded.svelte`, the rail's "Expand
+  ranking", PC only, flow 48): the whole Watched list over the wheel area,
+  sized so every show fits without scrolling at laptop size. Posters or List
+  (`randomizeRankView` in `localStorage`), a drop line, "put it last" (the
+  space after the last show - a click only puts a show in front of another, so
+  nothing else meant "last"), arrows while placing, and **pointer-event drag**
+  of any show: the browser's HTML5 drag showed a ghost and never drew the drop
+  line on a real mouse, and Playwright fakes that path, so it passed while
+  broken. Opening it pauses the episode; Collapse resumes only what it paused.
+  Rows are pointer-only (no keyboard reorder outside placing) and a touch drag
+  scrolls instead - both known, PC-mouse is the use.
+- **Every reorder goes through `lib/rankPlacement.ts`** (`moveIndex`,
+  `nudgeTarget`; unit-tested, `npm run test:unit`) and is saved by
+  `applyRankOrder` -> `queueRankSave`: **debounced 400 ms and sent one at a
+  time**, carrying the season it was made in. Each arrow press used to PATCH at
+  once - a held arrow outruns production's 120/min per-IP limit, shared by the
+  group on one connection - and two saves could land in either order. A failed
+  save re-reads the season and rebuilds the rail from it (`watchedRank = []`;
+  re-reading alone kept the unsaved order, since the rebuild keys on the SET
+  of ids).
+- **Keys and exits.** `handleModalKey` is a window listener while the pane,
+  the upload modal or the expanded ranking is open. **Enter on a focused
+  control is that control's own** (a list row, the X, Hide): the lists stay
+  usable beside the pane, and Enter on an Unwatched row used to open that show
+  AND rank it unseen. Straight after a spin focus is dropped, so Enter means
+  Rank it. While an episode plays the keys belong to the video - **Escape does
+  not close the player** (one stray key would end the episode) - except Up/Down
+  while placing, which move the show unless focus is in the player (the rail
+  says "use the arrows", and they did nothing mid-episode); the pane's X,
+  Hide, Spin again, a season change, leaving the page and opening another show
+  all unmount it, and its `onDestroy` sends `/playback/stop`. Opening another
+  show also resets `showPlayer` (`closePlayer` in the selection block): the
+  new show's player otherwise mounted itself the moment its lookup resolved -
+  a transcode nobody pressed Watch for.
+- **Watch** (`[data-watch]`, on the poster) when Jellyfin holds the episode;
+  otherwise the poster says why (not in library, not aired, couldn't reach the
+  media server). Season-aware: a "2nd Season" entry resolves to that season's
+  E1 and is honestly unavailable if the library lacks it. A **"Not the right
+  show?"** control - offered only when the identity is *uncertain* (a resolver
+  guess or a title match), since a community-map id or a human decision needs
+  no correcting. That keys off `idConfident` on the availability verdict, not
+  on availability itself: the question is "do we know what this is", not "can
+  you watch it", so an entry we're sure of shows no control even when the
+  library doesn't hold it. Reading "Find it in my library" when nothing
+  matched, it searches the held library and pins the entry to what the viewer
+  picks - remembered for everyone and queued for admin review. It **replaces
+  the pane's body** rather than opening a menu inside it (a dropdown in a
+  scrolling box produced two competing scrollbars and clipped the results);
+  the results list owns the only scrollbar. The AniList cover stays on screen
+  beside it and each option shows its **library poster** - matching is a
+  comparison, and hiding either side made it guesswork. It states what the
+  entry resolves to now and tags that option `current`, so a viewer can tell a
+  correction from a no-op. *Reset to the automatic match* undoes a pick. Enter
+  belongs to the search box, not the pane's Rank-it handler, and pick mode
+  never survives the show it belongs to. Logged-in viewers only: the write
+  needs a token, and a control that 401s is worse than no control.
+  Availability for all wheel items comes from **one `/availability/batch`
+  request** through `checkAvailabilityMany()` (`stores/jellyfin.ts`), which
+  omits any entry it couldn't definitely answer - so `?.available === false`
+  refuses to act on an unanswered show.
 - **A replaced episode heals before Watch is pressed.** Jellyfin re-ids a file
   Sonarr replaced, so a cached `itemId` can die while the page is open. The
-  pop-up's prewarm already asks `/playback`; on `ITEM_GONE` (`isItemGone` in
+  pane's prewarm already asks `/playback`; on `ITEM_GONE` (`isItemGone` in
   `lib/jellyfinPrewarm.ts`) it drops the session's cached answer
   (`forgetAvailability`), re-asks with `fresh: true` and repoints Watch. If the
   player itself hits it, it shows a message instead of a black screen and
@@ -285,9 +344,9 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
 - **Warm-up is two-staged** (`lib/jellyfinPrewarm.ts`): the video.js chunk on
   landing at `/random` (idle-callback, skipped on saveData/2G - Home browsers
   never pay for a player they don't open), and the episode's PlaybackInfo
-  when the pop-up opens, cached by itemId+quality+track. **It never touches
+  when the show pane opens, cached by itemId+quality+track. **It never touches
   the HLS manifest** - a pre-started stream would remux a whole episode to
-  disk for a pop-up nobody plays (jellyfin#16608 again). With both, Watch
+  disk for a show nobody plays (jellyfin#16608 again). With both, Watch
   costs only the stream start (~2.4 s, of which ~1.7 s is Jellyfin's segment
   0). `loadVideoJs()` must stay shared - a private `import('video.js')`
   wouldn't be covered by the preload.
@@ -307,9 +366,12 @@ options: `skipButtons` +/-10s, `enableSmoothSeeking`, `experimentalSvgIcons`,
   locally is the guard doing its job, not a regression - confirm against the
   deployed site before chasing it. The SDK is warmed on `/random` and never
   awaited (it is the one asset whose latency is someone else's internet).
-- While the player is open, `handleModalKey` is suppressed so Enter can't
-  mark-watched underneath. Playback runs under the configured playback
-  account, so progress never syncs to a viewer's Jellyfin profile.
+- The player renders inline in Randomize's pane only (its modal shell is
+  gone); the pane owns its size, title, close button and the speed-key hint,
+  and out of fullscreen the bar drops skip/remaining-time to fit ~430px. While
+  it plays, `handleModalKey` stands down so Enter can't rank and Escape can't
+  close underneath it. Playback runs under the configured playback account, so
+  progress never syncs to a viewer's Jellyfin profile.
 
 ### Compare
 
@@ -500,7 +562,7 @@ for the same reason. What lives nowhere else:
   unchanged, and auto-including on that signal is a separate decision.
 - **The match grade is part of the status**, not its own column: a `weak` or
   `viewerPick` identity is yellow with its reason in Why. The grade itself is
-  still `matchGrade` (`lib/seriesIdentity.ts`), shared with the Watch pop-up.
+  still `matchGrade` (`lib/seriesIdentity.ts`), shared with Randomize's show pane.
 - **"Ours" is counted from BOTH the marker tag and our own push record**, and the
   line says so, because neither is complete: the record does not follow a new
   database, and a series since deleted carries no tag. It must be the *marker*

@@ -127,14 +127,15 @@ chronological order; all features listed are live.
   later can't quietly degrade playback for everyone. Nothing is written to its
   watch history either way - SaltyChart never reports progress. If left unset,
   an administrator is used.
-- On the Randomize page, the show pop-up gains a **Watch here** button with the
-  season and episode it will start on, playing in-page through the backend -
-  when the series is found in your library. Matching goes by **id first** - a
+- On the Randomize page, the rolled show's poster carries a **Watch** button
+  with the season and episode it will start on, playing in that same box through
+  the backend - when the series is found in your library. Matching goes by **id first** - a
   show is identified before it is looked for - and falls back to English *and*
   Japanese titles only when no id exists anywhere. It is season-aware, and picks
   the episode by air date, so a "Part 2" or a mid-season cour opens where it
-  actually starts. The matched library title is shown under the button, and a
-  "Not in library" note appears otherwise.
+  actually starts. A match no id confirms says **Might be the wrong show**
+  (hover for the library title it matched), and the poster says "Not in
+  library" otherwise.
 - If the media server can't be reached, the page **says so and offers Retry**
   rather than just showing no Watch buttons - which used to look exactly like
   "none of these are in your library". Bulk Hide/Show changes that the server
@@ -184,8 +185,8 @@ chronological order; all features listed are live.
   second or so; that's how every Jellyfin client works, because the choice is
   baked into what the server sends.
 - The player loads itself ahead of time: the video code is fetched quietly when
-  you open the Randomize page, and a show's playback details when you open its
-  pop-up - so pressing **Watch** only has to start the stream. Skipped entirely
+  you open the Randomize page, and a show's playback details when it opens -
+  so pressing **Watch** only has to start the stream. Skipped entirely
   on metered or 2G connections.
 
 **Sonarr auto-add (optional)**
@@ -242,7 +243,7 @@ chronological order; all features listed are live.
   with the **Adds to Sonarr** toggle on /admin/users; admins always count, and
   new signups never do until you say so.
 - **Replaced episodes heal themselves in the player.** When Sonarr upgrades a
-  file, Jellyfin gives the episode a new id; the Randomize pop-up notices and
+  file, Jellyfin gives the episode a new id; Randomize's show pane notices and
   points *Watch* at the new one instead of opening a black player. Series whose
   Jellyfin listing hid them from SaltyChart (17 on this server) now show their
   Watch button.
@@ -296,6 +297,21 @@ chronological order; all features listed are live.
   weight, up to 2-line clamp).
 
 **Randomize enhancements**
+- **The rolled show replaces the wheel** instead of popping up over the page:
+  the poster is the video's cover until you press Watch, the episode plays in
+  the same box, and other people's nicknames sit beside it. On a phone it opens
+  as a full-screen sheet. Escape doesn't close a playing episode - the X does.
+- **Rank it** marks the show watched without closing it (the episode keeps
+  playing) and starts placing it in the Watched list: use the arrows, or click
+  the show it beats. **Expand ranking** shows the whole Watched list at once
+  over the wheel, as posters or a list - drag any show to a new place, click
+  the space after the last show to put one last.
+- Double-click a slice of the wheel to open that show without spinning.
+- **Copy a trailer list** - if you have no list for the season, Randomize offers
+  to copy someone else's: pick whose shows, order and nicknames to start from,
+  and the shows other people ranked that it lacks are added at the bottom
+  (untick a person to leave theirs out). Handy when the group ranked trailers on
+  one account and you are doing the 1st episodes on yours.
 - The Unwatched list says how many shows are on the wheel and how many are
   hidden ("12 shown, 4 hidden").
 - **Hide Not English** hides every show you cannot watch in English: ones not
@@ -308,10 +324,6 @@ chronological order; all features listed are live.
   season or year changes.
 - The options panel beside the wheel ("Add Watched to" + "Nicknames from")
   folds to a single line from its top row, and remembers that in the browser.
-- The show pop-up puts the cover beside everything else on anything wider than
-  a phone, so Watch here and Mark as watched fit on a laptop screen without
-  scrolling. On a phone it stacks, and its close button stays in reach however
-  far you scroll - closing changes nothing about the show.
 - Season row left-aligned to match Home and Compare.
 
 **Hide from Wheel** - right-click a show in *My List* -> **Hide from Randomize**.
@@ -321,7 +333,7 @@ Persists the `WatchList.hidden` boolean and is toggled via
 **Bulk list replace** - `PUT /api/list` can replace an entire season's list
 in one request. Powers the CSV importer and third-party integrations.
 
-**Nickname sharing** - pop-ups on Randomize/Compare show friends' custom
+**Nickname sharing** - Randomize's show pane and Compare show friends' custom
 nicknames + ranks. Endpoints:
 `GET /api/list/users-with-nicknames`, `GET /api/list/nicknames?mediaId=`,
 `GET /api/list/users-with-ratings?season=&year=`, `GET /api/list/user-ratings?username=&season=&year=`.
@@ -451,8 +463,8 @@ deploying**; there is no manual build/transfer step.
    # Backend on :3000, Vite frontend strictly on :5173 (strictPort=true)
    py -3.13 -u tools/tests/run_all.py
 
-   # Expect the final line: "Pre-deploy: 24/24 passed - ready to build"
-   # (23/23 with --skip-burned-in - use it if no CUDA)
+   # Expect the final line: "Pre-deploy: 25/25 passed - ready to build"
+   # (24/24 with --skip-burned-in - use it if no CUDA)
    ```
 
 2. **Push to `master`.** The `deploy` workflow

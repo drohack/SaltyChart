@@ -478,7 +478,7 @@ each one binds from outside `backend/`:
 The id tier finds a strict **subset** of what titles find; its value is
 **confidence**, not reach. Coverage is uneven by *format*, not season age:
 94% of TV entries have a TVDB id (81% even mid-season) but ONA is 40%,
-TV_SHORT 32%, MOVIE 3%, OVA 1%. The response says `matchedBy`; the pop-up
+TV_SHORT 32%, MOVIE 3%, OVA 1%. The response says `matchedBy`; the show pane
 marks title-only matches unconfirmed; bulk actions refuse to act on them.
 
 #### Matching internals - how identities get made

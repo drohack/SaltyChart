@@ -95,7 +95,7 @@ Every one of these cost real time on the first pass. Each looked like a bug.
   reload; a fresh `goto` recovered the page completely. If a reload appears not
   to help, navigate instead before believing it.
 - **Your own script can create the bug you then report.** A loop that clicked
-  "Mark as watched" and then X faster than a human left rows in a state a real
+  the old pop-up's "Mark as watched" and then X faster than a human left rows in a state a real
   user can't produce. If a defect only appears under automation timing, say so
   rather than filing it.
 - **Setting a `<select>`'s `.value` in JS skips handlers a real change would
@@ -144,8 +144,9 @@ Every one of these cost real time on the first pass. Each looked like a bug.
   `lastPage: 100` for a 3-page season and the paging was changed to stop on a
   short page. If you ever see a burst of `AniList 429 for <key> pNN` lines with
   NN above ~5, that regressed and the whole budget guardrail is void.
-- **Player budget: 2-3 short sessions, each explicitly stopped.** Escape closes
-  the player *and* fires `POST /api/jellyfin/playback/stop` - verify that request
+- **Player budget: 2-3 short sessions, each explicitly stopped.** The show
+  pane's X closes the player *and* fires `POST /api/jellyfin/playback/stop`
+  (Escape deliberately does NOT close a playing episode) - verify that request
   actually goes out. Jellyfin's ffmpeg writes segments until the whole episode is
   done regardless of the playhead, so an orphaned session remuxes ~1 GB for
   nobody. No seek-heavy scrubbing, no restart loops.
@@ -181,20 +182,25 @@ remove from the sidebar; mark watched -> reorder by drag -> reload. Validate by
 reading the same fact off three surfaces - grid highlight, sidebar, and
 `GET /api/list` - and requiring all three to agree.
 
-**4. Randomize.** Spin several times. Open the pop-up, hide a show, then Hide
-All / Show All / Hide Not in Library, checking the wheel matches the visible list
-after each. **There is no nickname control in the pop-up** - its only controls are
-X, HIDE SERIES (UNWATCHED) and MARK AS WATCHED; nicknames are set from Home's
-sidebar by **double-clicking** a row (single and right click do nothing). Open
-it at 375x667 and at 1366x657 as well: on the phone it scrolls and the X must
-stay in view at the bottom, and on the laptop nothing should need scrolling -
-the stacked layout once hid Watch and Mark as watched below the fold there.
-At 320 wide, open and close each side list by its edge tab: both lists once
-covered the other's tab there, so one was always open and the wheel unreachable. And
-**you cannot change season, or log out, with the pop-up open**: it is a real
-`<dialog open class="modal">` and it intercepts pointer events on the toolbar.
-Confirm that as a property rather than trying to perform it - Playwright reports
-it as a 30 s click timeout naming the dialog. Try the custom
+**4. Randomize.** Spin several times. The rolled show REPLACES the wheel (a
+pane, not a dialog - the season row, the lists and Logout all stay usable while
+it is open, so try each of them with a show open, and with an episode
+playing). Hide a show, then Hide All / Show All / Hide Not in Library, checking
+the wheel matches the visible list after each. **There is no nickname control in
+the pane** - its controls are X, Watch, HIDE SERIES (UNWATCHED), SPIN AGAIN and
+RANK IT; nicknames are set from Home's sidebar by **double-clicking** a row
+(single and right click do nothing). Rank it keeps the pane open and starts
+placing the show in the Watched rail (arrows, or click the show it beats);
+Expand ranking shows the whole list - drag, the arrows and the "put it last"
+space, in both Posters and List. Double-click a wheel slice. Every control in
+every state it can be reached from: the spike that built this lost a round to
+a handler written for one state (show from the docked list) firing in another.
+Open it at 375x667 (a full-screen sheet: X, Watch and all three buttons on
+screen, nothing over them) and at 1366x657 (nothing cut off - the pane does not
+scroll, it clips). At 320 wide, open and close each side list by its edge tab:
+both lists once covered the other's tab there, so one was always open and the
+wheel unreachable. With an empty season list, the copy panel offers the
+season's other lists. Try the custom
 Spin button image (drag-drop into `sessionStorage`; a 3 MB data URL stores fine,
 so the quota worry pass 1 raised was unfounded - a much larger one may still
 throw).
@@ -208,10 +214,12 @@ depends on the season:
   episode is dated at the premiere (Chitose 2nd Cour's was, on disk early);
   a next-season sequel can title-match its parent, which is accepted.
 
-**5. Watching an episode.** Pop-up -> the *Watch here* button -> playback advances. Speed-step
+**5. Watching an episode.** The show pane -> *Watch* on the poster -> playback advances. Speed-step
 with `[` and `]`, switch subtitle track, switch quality, seek forward and back,
-Escape out. Confirm the stop request fires. Reopen to see whether the second open
-is quicker.
+close with the pane's X. Confirm the stop request fires - and that it fires for
+every other way out too (Spin again, Hide, another show from the list, a season
+change), and that opening another show mid-episode does NOT start that show's
+episode by itself. Reopen to see whether the second open is quicker.
 
 **6. Comparing.** Compare a throwaway account against a seeded one. Check the
 diff badges against what the two lists actually contain. Flip each side between
@@ -313,6 +321,34 @@ so the `const` was still in its temporal dead zone: `Cannot access
 six seconds. Module-level constants used during module initialisation must be
 declared at the top of the file, and this is the fourth runtime-only failure in
 this repo that no type check could see.
+
+### Pass 4 - 2026-10-20 (local dev, the Randomize pane)
+
+An agent drove the new show pane by hand for ~50 min at 1600x900, 1366x657,
+1100x900, 375x667 and 320x568: every control in every state it can be reached
+from (no pane, pane, episode playing, placing, expanded ranking, list docked
+or tucked), three short episodes each stopped by the X (3 sessions, 3
+`playback/stop`), the copy panel looked at on the demo account and run for real
+on a throwaway one. No 4xx/5xx and no looping requests: rank saves were one
+PATCH per action, `availability/batch` once per load.
+
+| # | finding | outcome |
+|---|---|---|
+| 1 | at 1366x768 the options panel (absolute, z-30) covered Copy list - only its leftmost ~43 px could be clicked | fixed - the panel is centred left of the options panel from `xl` and above it below; flow 50 step 2, row "the options panel covers Copy list on a laptop" |
+| 2 | while an episode played, the arrows did nothing to a show being placed, though the rail's hint says to use them | fixed - they place it unless focus is in the player; flow 47 step 6, row "the arrows stop placing a show while its episode plays" |
+| 3 | with the list tucked, the strip that reads "show the Unwatched list" closes the open show, and a playing episode with it (`stripClick`, by design) | **open - raised with the owner** |
+| 4 | at 1100x900 with the list docked the video box is 182x103 with ~470 px empty under it: the grid's first column is `min(..., 100% - 15rem)` | **open - raised with the owner** (PC layout) |
+| 5 | the copy panel grew with the accounts: Copy list below the fold at 1366x768, and Upload Images over its edge | fixed - capped to the area, scrolls in the middle, title and button pinned; flow 50 step 2, row "the copy panel grows past the window instead of scrolling" |
+| 6 | the expanded ranking's hint ends "...or" with the arrows it means ~400 px away | open - cosmetic |
+| 7 | a Posters tile breaks a long word mid-word ("MARRIAGETOXI / N") | **by design** - `[overflow-wrap:anywhere]` keeps a word wider than a narrow poster readable rather than clipped |
+| 8 | the Watch button's `&#9654;` drew as a blue emoji tile on Windows | fixed - an SVG triangle |
+| 9 | phone: Rank it gives no cue that placing continues in the Watched drawer; placement buttons 24x24 and edge tabs 20x68 are under 44 px; the speed-key hint shows on a phone | **open - raised with the owner** |
+| 10 | an empty season leaves both side columns as blank cards with no heading | open - cosmetic, predates the pane |
+| 11 | an empty season asks `users-with-ratings` twice (the nickname auto-select and the copy panel) | open - note; one extra request per empty season |
+
+Not reached: opening another show from the strip or a season change mid-episode
+(each goes through `closePlayer`, and flow 47 covers the list route), the
+player's own controls, Logout with the pane open, the custom Spin image.
 
 ### Pass 3 - 2026-10-13 (local dev, after the Randomize rework)
 
