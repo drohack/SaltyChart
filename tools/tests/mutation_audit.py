@@ -3650,15 +3650,15 @@ MUTATIONS: list[Mutation] = [
                "clickable through its edge",
     ),
     Mutation(
-        name="Watch goes back over the poster on a phone",
+        name="Watch is the full button over the poster on a phone",
         path=RANDOMIZE,
-        # The owner's call: on a phone Watch has its own row, so the poster -
-        # how a show is recognised - is not hidden behind a full-size button.
+        # The owner's call: on a phone Watch is a round play button, so the
+        # poster - how a show is recognised - is not hidden behind the full one.
         find="    const sync = () => (isPhone = mq.matches);",
         replace="    const sync = () => (isPhone = false && mq.matches);",
         flows=("phone show sheet",),
         test=T_UI,
-        expect="Watch covers the poster on a phone",
+        expect="Watch is a big button over the poster on a phone",
         guards="on a phone the Watch button hides most of the poster",
     ),
     Mutation(

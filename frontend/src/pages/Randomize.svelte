@@ -664,8 +664,8 @@ let hideWriteError = '';
   }
   $: if (showModal) closeListsForShow();
 
-  // Below `sm` the show is a full-screen sheet, and Watch moves off the poster
-  // onto its own row above the buttons: a big button over the poster hid most
+  // Below `sm` the show is a full-screen sheet, and Watch is a plain round play
+  // button on the poster instead of the full "Watch S1E1" one, which hid most
   // of it on a phone (the owner's call). The query matches the sheet's CSS
   // breakpoint exactly, so the two can never disagree about which layout this is.
   const PHONE_QUERY = '(max-width: 639.98px)';
@@ -2623,11 +2623,9 @@ $: {
                 <!-- The poster IS the video's cover until Watch. -->
                 <img class="absolute inset-y-0 left-1/2 -translate-x-1/2 h-full w-auto shadow-2xl" alt={getDisplayTitle(selected)}
                   src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} />
-                {#if !isPhone}
-                  <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4">
-                    <WatchControl {watchInfo} {openingPlayer} mediaConfigured={$mediaConfigured} on:watch={openPlayer} />
-                  </div>
-                {/if}
+                <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4 {isPhone ? 'text-sm' : ''}">
+                  <WatchControl variant={isPhone ? 'icon' : 'full'} {watchInfo} {openingPlayer} mediaConfigured={$mediaConfigured} on:watch={openPlayer} />
+                </div>
               {/if}
             </div>
           </div>
@@ -2659,11 +2657,6 @@ $: {
               </div>
             {/if}
           </div>
-          {#if isPhone && !showPlayer}
-            <div class="pg-watch flex justify-center text-sm text-center" data-watch-row>
-              <WatchControl variant="row" {watchInfo} {openingPlayer} mediaConfigured={$mediaConfigured} on:watch={openPlayer} />
-            </div>
-          {/if}
           <div class="pg-nicks min-h-0 overflow-y-auto text-sm" data-nickname-col>
             <h4 class="font-semibold mb-1">Other users' nicknames</h4>
             <ul class="flex flex-col gap-1">
@@ -2929,10 +2922,9 @@ $: {
     .pg-video .pane-video { width: 100%; }
     .pg-ep { order: 2; }
     .ep-row { height: auto; flex-wrap: wrap; }
-    .pg-watch { order: 3; }
-    .pg-acts { order: 4; align-self: stretch; }
+    .pg-acts { order: 3; align-self: stretch; }
     .pg-acts > :global(*) { flex: 1 1 0; min-width: 0; margin: 0; padding-inline: 0.5rem; }
-    .pg-nicks { order: 5; overflow: visible; }
+    .pg-nicks { order: 4; overflow: visible; }
   }
 
   /* Button background image via pseudo-element to layer above triangle */

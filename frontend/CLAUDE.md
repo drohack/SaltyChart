@@ -169,13 +169,13 @@ happen with only a console line. Flow 45.
   was on a phone. At 375px the PC grid left the video 95px wide, Hide 31px
   off-screen, and a show opened from the Unwatched list UNDER that list (z-40).
   The pane was designed for PC only; the phone sheet is the agreed fallback
-  (2026-10-20), not a second design to grow. **On the phone Watch is its own
-  full-width row under the episode line**, above Hide / Spin again / Rank it,
-  not on the poster: a full-size button there hid most of it (the owner's
-  call). `WatchControl.svelte` is rendered in one place or the other by
-  `isPhone` - the same 640px query as the sheet's CSS - so the two layouts can
-  never say different things. Flow 40 pins the phone sheet, Watch's row and the
-  1366x768 laptop fit.
+  (2026-10-20), not a second design to grow. **On the phone Watch is a plain
+  round play button in the middle of the poster**, not the full "Watch S1E1"
+  one, which hid most of it (the owner's call). A row of its own under the
+  video was tried first and rejected: it vanished when the episode started and
+  everything below it jumped up. `WatchControl.svelte` picks the variant from
+  `isPhone` - the same 640px query as the sheet's CSS. Flow 40 pins the phone
+  sheet, the round button and the 1366x768 laptop fit.
 - **Rank it marks the show watched WITHOUT closing the pane** - the episode
   keeps playing - and starts placing it (`placingId`): Spin next takes Spin
   again's slot and Rank it's slot becomes a "Ranked #n" label, so the second

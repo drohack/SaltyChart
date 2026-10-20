@@ -3689,7 +3689,11 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
     reach, not how it is built.
     """
     step(40, "step 1/6: seeding an unwatched list and opening /random at 375x667")
+    # A show the library holds goes first, so the sheet opens with Watch on it.
+    held = held_show(backend, token)
     ids = season_ids(backend, 3)
+    if held is not None:
+        ids = ([held] + [m for m in ids if m != held])[:3]
     seed_list(backend, token, ids)
     unhide(backend, token, ids)
     original = page.viewport_size
@@ -3726,18 +3730,22 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         assert video_w >= 375 * 0.8, (
             f"the video is squeezed on a phone ({video_w:.0f}px of 375) - the PC grid's "
             "nickname column is taking the width")
-        # Watch - or the reason there is nothing to watch - has its own row on a
-        # phone. Over the poster, a full-size button hid most of it.
-        cover = page.evaluate("""() => {
-            const v = document.querySelector('[data-video-box]').getBoundingClientRect();
-            const row = document.querySelector('[data-watch-row]');
-            return { onPoster: !!document.querySelector('[data-video-box] [data-watch], [data-video-box] [data-not-aired]')
-                       || [...document.querySelectorAll('[data-video-box] .loading, [data-video-box] span.opacity-80')].length > 0,
-                     row: !!row, rowTop: row ? Math.round(row.getBoundingClientRect().top) : null, videoBottom: Math.round(v.bottom) };
-        }""")
-        assert cover["row"] and not cover["onPoster"] and cover["rowTop"] >= cover["videoBottom"], (
-            f"Watch covers the poster on a phone ({cover}) - it belongs on its own row "
-            "under the video")
+        # On a phone Watch is a plain round play button on the poster. The full
+        # "Watch S1E1" button hid most of it, and a row of its own under the
+        # video vanished when the episode started and moved everything up.
+        if held is None:
+            step(40, "step 3/6: Watch check SKIPPED - Jellyfin not configured or nothing in the season is held")
+        else:
+            page.wait_for_selector("[data-watch]", timeout=30_000)
+            play = page.evaluate("""() => {
+                const v = document.querySelector('[data-video-box]').getBoundingClientRect();
+                const w = document.querySelector('[data-watch]'), b = w.getBoundingClientRect();
+                return { inPoster: !!w.closest('[data-video-box]'), w: Math.round(b.width),
+                         h: Math.round(b.height), videoW: Math.round(v.width) };
+            }""")
+            assert play["inPoster"] and play["w"] <= play["videoW"] * 0.3 and abs(play["w"] - play["h"]) <= 4, (
+                f"Watch is a big button over the poster on a phone ({play}) - it should be a "
+                "round play button")
         reach = page.evaluate("""() => [...document.querySelectorAll(
                 '[data-popup-close], [data-pane-actions] button, [data-watch]')]
             .map(b => { const r = b.getBoundingClientRect();
