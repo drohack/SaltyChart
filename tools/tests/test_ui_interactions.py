@@ -1,5 +1,5 @@
 """
-Pre-deploy smoke test: frontend UI interactions - 43 flows.
+Pre-deploy smoke test: frontend UI interactions - 50 flows.
 
 Beyond `test_frontend_smoke.py` (which only checks pages render), this tests
 that clicking buttons triggers the right behavior - and that every failure
@@ -135,17 +135,17 @@ One status vocabulary across the admin pages (39):
   while the same problem on a show nothing wants does not. The report is
   stubbed so all three shapes are present on any season.
 
-The Randomize pop-up and panel on the sizes people use them at (40-41):
-- the pop-up on a phone (40): at 375x667 the box scrolls, and the X used to
-  scroll away with it, leaving only Mark as watched and Hide Series - which
-  also overlapped by 37px. Asserts the box really scrolls first (or the flow
-  proves nothing), then that the X is on screen when scrolled to the bottom,
-  the two buttons don't overlap, and closing writes nothing. Then the laptop
-  half: at 1366x657 (a 1366x768 screen minus browser chrome) the stacked
-  pop-up was ~705px, putting Watch and Mark as watched below the fold; it is
-  side by side from `sm` up now, and must fit without scrolling - and be no
-  taller than the video player's pop-up, measured by opening the real player
-  with its stream route aborted (no transcode starts).
+The Randomize show pane and panel on the sizes people use them at (40-41):
+- the show on a phone (40). The pane replacing the wheel is a PC layout; at
+  375x667 it left the video 95px wide, Hide Series 31px off-screen, and a show
+  opened from the Unwatched list UNDER that list. Phones get a full-screen
+  sheet: asserts it covers the screen, that the X, Watch and all three actions
+  are on screen, on top and not overlapping, and that closing writes nothing.
+  Then the laptop half: at 1366x657 (a 1366x768 screen minus browser chrome),
+  with six people's nicknames on the show, nothing in the pane is cut off - it
+  is `overflow: hidden` and sized to the wheel area, so a button that does not
+  fit is silently clipped rather than scrolled to. (Until the pane, this was
+  the scrolling pop-up whose X scrolled away and whose two buttons overlapped.)
 - the options panel beside the wheel (41) folds to one line, stays folded
   across a reload, and unfolds to exactly its original height.
 - both side lists close on a 320px phone (42). The lists are 20rem wide, so on
@@ -158,6 +158,26 @@ The Randomize pop-up and panel on the sizes people use them at (40-41):
   247px of it at 1100x950. Asserted at that size: nothing hidden, centred in
   the space between them - and the lists the same height as at 1600x950,
   because the first fix shrank them along with the wheel.
+
+The show pane and its ranking (47-50), each a defect the pane exposed by
+leaving the lists usable beside an open show, or a control nothing else used:
+- the pane replaces the wheel (47): a spin opens it in place, Rank it keeps
+  it open, Enter on a focused list row opens that row without ranking it,
+  opening another show ends the last one's placement, and with the stream
+  route aborted (no ffmpeg starts): another show never starts its episode by
+  itself, and both switching and the X send /playback/stop - Escape no longer
+  closes the player, so these are the exits.
+- the expanded ranking (48): Posters and List draw every show and the choice
+  survives a reload; a REAL mouse drag (pointer events) draws the drop line
+  and lands exactly there on the server; the arrows and "put it last" move
+  the show being placed. Read back from the server, because an off-by-one
+  drop reads as "one place from where I let go", which nobody reports.
+- double-clicking a wheel slice opens THAT slice's show (49), clicked at the
+  slice's own label - a sign error in the angle opens another show, which
+  looks like it worked.
+- the copy-list panel (50) on throwaway accounts: copies the source's shows,
+  order and nicknames plus a ticked account's extras, leaves an unticked one
+  out, and never overwrites a list made in another tab after it opened.
 
 Seeds from live season data - the old hardcoded mediaIds aged out of the
 season entirely, so every seeded list joined against zero shows and the
@@ -183,7 +203,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-TOTAL = 46
+TOTAL = 50
 # `stores/season.ts` restores the last selection from this key (1h TTL). The
 # pages open on the *look-ahead* season otherwise, which is not the one these
 # tests seed - and a list whose ids aren't in the displayed season renders
@@ -232,24 +252,6 @@ def unhide(backend: str, token: str, ids: list[int]) -> None:
         assert r.status_code == 200, f"unhiding {m} failed: {r.status_code} {r.text[:120]}"
 
 
-def open_first_popup(page) -> None:
-    """Open the Randomize pop-up from the first row that CAN open one.
-
-    Watched and hidden rows ignore clicks on purpose, so "the first row" is not
-    good enough; `tabindex="0"` is exactly the rows whose click opens it.
-    """
-    row = page.locator('aside li[role=button][tabindex="0"]').first
-    row.wait_for(timeout=30_000)
-    row.click()
-    try:
-        page.wait_for_selector("dialog .modal-box", timeout=15_000)
-    except Exception:
-        raise AssertionError("clicking an unwatched, unhidden row did not open the pop-up")
-    page.wait_for_function(
-        "() => [...document.querySelectorAll('dialog .modal-box img')]"
-        ".every(i => i.complete)", timeout=15_000)
-
-
 def pin_season(page) -> None:
     page.evaluate(
         "([k, s, y]) => localStorage.setItem(k, JSON.stringify("
@@ -259,7 +261,7 @@ def pin_season(page) -> None:
 
 UNKNOWN_BODY = '{"available": false, "unknown": true}'
 
-# Availability is asked two ways - one show at a time for the pop-up, and a
+# Availability is asked two ways - one show at a time for the show pane, and a
 # whole page at once for the wheel - so a pattern that only matches the single
 # route lets the batch call through to the real server. That would not fail
 # loudly: the wheel would get genuine answers, most shows would be available,
@@ -642,7 +644,7 @@ def test_theme_change(page):
 # -----------------------------------------------------------------------------
 def test_wheel_spin(page, backend: str, frontend: str, token: str):
     """Verify Randomize page is interactive - wheel renders (if items in
-    current season) or empty-state shows. Spin if possible, verify modal."""
+    current season) or empty-state shows. Spin if possible, verify the show pane."""
     step(7, "step 1/3: navigating to /random")
     page.goto(f"{frontend}/random")
     page.wait_for_timeout(3_000)
@@ -662,7 +664,7 @@ def test_wheel_spin(page, backend: str, frontend: str, token: str):
       return { state: 'unknown', sample: bodyText.slice(0, 200) };
     }""")
     if state.get("state") == "wheel":
-        step(7, "step 3/3: clicking Spin button -> expect result modal")
+        step(7, "step 3/3: clicking Spin button -> expect the show pane")
         page.evaluate("""() => {
           const b = Array.from(document.querySelectorAll('button'))
             .find(b => (b.textContent || '').trim() === 'Spin');
@@ -671,8 +673,8 @@ def test_wheel_spin(page, backend: str, frontend: str, token: str):
         page.wait_for_timeout(5_500)
         has_modal = page.locator('button').filter(
             has_text=re.compile(r"mark.*watched|hide.*series", re.I)).count() > 0
-        assert has_modal, f"result modal didn't appear after spin"
-        step(7, "PASS - wheel spun, result modal appeared")
+        assert has_modal, f"the show pane didn't appear after spin"
+        step(7, "PASS - wheel spun, the show pane appeared")
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
     elif state.get("state") == "empty":
@@ -2042,7 +2044,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
     """The viewer's own correction path, on the page where a bad match is seen.
 
     /admin/matching can fix a wrong match and nobody goes there; the Watch
-    pop-up is where it's noticed every season. The backend contract (the 409
+    pane is where it's noticed every season. The backend contract (the 409
     over an admin decision, the write, the provenance) is test_jellyfin step
     13 - what this guards is the wiring in between: that the control exists for
     a logged-in viewer, that it searches the LIBRARY, and that choosing an
@@ -2119,7 +2121,7 @@ def test_viewer_can_pick_the_right_show(page, backend: str, frontend: str, token
         return
 
     # Enter belongs to the search box while picking. `handleModalKey` is a
-    # WINDOW listener that marks the show watched and closes the pop-up, so
+    # WINDOW listener that ranks the show (marks it watched), so
     # typing a query and pressing Enter used to mark-watch the very show being
     # corrected - the trap the player already guards against, reached from a
     # second direction. A search with no hits is used deliberately: the failure
@@ -3048,7 +3050,7 @@ def test_nicknames_set_and_shown(page, backend: str, frontend: str, token: str):
     one: saving re-PUTs the entire list, so a bug in the mapping silently drops
     the name while every request still returns 200. The reading half is the four
     unauthenticated `/api/list/*` endpoints, rendered only inside the Randomize
-    pop-up and only for users the viewer has selected.
+    show pane and only for users the viewer has selected.
     """
     step(36, "step 1/4: seeding a list and naming one entry through the UI")
     ids = season_ids(backend, 3)
@@ -3150,13 +3152,17 @@ SELECTABLE_FLOWS = {
     "compare share image",
     "nicknames set and shown",
     "matching shows sonarr problems",
-    "phone popup close",
+    "phone show sheet",
     "options panel collapse",
     "phone sidebars reach the wheel",
     "wheel fits between lists",
     "leftover survives sidebar edit",
     "list load failure visible",
     "options auth races",
+    "pane replaces the wheel",
+    "expanded ranking",
+    "slice double-click",
+    "copy list",
 }
 
 
@@ -3595,167 +3601,556 @@ def test_subtitle_track_picker(page, frontend: str):
     step(37, "PASS - forced-but-full English is used; signs lose to dialogue")
 
 
-def test_phone_popup_close(page, backend: str, frontend: str, token: str):
-    """On a phone, the Randomize pop-up can be closed without changing anything.
+def open_random(page, frontend: str, token: str, size: dict) -> None:
+    """Sign in, pin the seeded season, and open /random at `size`."""
+    page.set_viewport_size(size)
+    page.goto(frontend)
+    page.evaluate("t => localStorage.setItem('token', t)", token)
+    pin_season(page)
+    page.goto(f"{frontend}/random")
 
-    Measured at 375x667 before the fix: the pop-up's content (749px) is taller
-    than its box (587px), so `.modal-box` scrolls - and the X was `absolute`
-    inside it, so scrolling down to the action buttons took the X to y=-114.
-    What was left on screen were Mark as watched and Hide Series, both of which
-    write to the list. Those two also overlapped by 37px, because Hide was
-    pinned `absolute left-0` beside a centred button in a box too narrow for
-    both - so the pop-up's only exits were two buttons stacked on each other.
+
+def open_show(page, text: str | None = None) -> None:
+    """Open a show's pane from the Unwatched list.
+
+    Watched and hidden rows ignore clicks on purpose, so "the first row" is not
+    good enough; `tabindex="0"` is exactly the rows whose click opens one. The
+    click is dispatched on the element: after a spin the list is tucked
+    off-screen on a PC, and a coordinate click would land on whatever is there.
     """
-    step(40, "step 1/7: seeding an unwatched list and opening /random at 375x667")
+    rows = page.locator('aside li[role=button][tabindex="0"]')
+    row = rows.filter(has_text=text).first if text else rows.first
+    row.wait_for(state="attached", timeout=30_000)
+    row.evaluate("el => el.click()")
+    try:
+        page.wait_for_selector("[data-inline-card]", timeout=15_000)
+    except Exception:
+        raise AssertionError("clicking an unwatched, unhidden row did not open the show pane")
+
+
+def pane_title(page) -> str:
+    return page.evaluate("() => document.querySelector('[data-inline-card] h3')?.innerText ?? ''")
+
+
+def held_show(backend: str, token: str) -> int | None:
+    """A show in the seeded season that the library HOLDS, or None.
+
+    None when Jellyfin is not configured or holds nothing from the season - the
+    steps that need a player skip then, and say so.
+    """
+    auth = {"Authorization": f"Bearer {token}"}
+    if not requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json().get("configured"):
+        return None
+    anime = requests.get(f"{backend}/api/anime", timeout=120,
+                         params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+    items = [{"mediaId": a["id"], "titles": [t for t in ((a.get("title") or {}).get("english"),
+                                                      (a.get("title") or {}).get("romaji")) if t],
+              "status": a.get("status"), "startDate": a.get("startDate")}
+             for a in anime[:40]]
+    verdicts = requests.post(f"{backend}/api/jellyfin/availability/batch", headers=auth,
+                             json={"items": items}, timeout=120).json()
+    return next((int(k) for k, v in verdicts.items()
+                 if isinstance(v, dict) and v.get("available")), None)
+
+
+def server_list(backend: str, token: str) -> list[dict]:
+    r = requests.get(f"{backend}/api/list", timeout=15,
+                     headers={"Authorization": f"Bearer {token}"},
+                     params={"season": SEEDED_SEASON, "year": SEEDED_YEAR})
+    assert r.status_code == 200, f"could not read the list back: {r.status_code}"
+    return r.json()
+
+
+def watched_order(backend: str, token: str) -> list[int]:
+    rows = [w for w in server_list(backend, token) if w.get("watched")]
+    return [w["mediaId"] for w in sorted(rows, key=lambda w: w.get("watchedRank") or 0)]
+
+
+def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
+    """On a phone the show is a full-screen sheet; on a laptop the pane fits.
+
+    The show pane is a PC layout - a 16:9 video with the nicknames beside it,
+    replacing the wheel. Measured at 375x667 before the phone sheet existed:
+    the nickname column left the video 95px wide, Hide Series started 31px off
+    the left edge, and a show opened from the Unwatched list stayed UNDER that
+    list (z-40) with Watch, Hide and Rank it all covered. The old pop-up's
+    failures here were the same class - an X that scrolled away and two
+    buttons on top of each other - so this asserts what a phone user can
+    reach, not how it is built.
+    """
+    step(40, "step 1/6: seeding an unwatched list and opening /random at 375x667")
     ids = season_ids(backend, 3)
     seed_list(backend, token, ids)
     unhide(backend, token, ids)
     original = page.viewport_size
-    page.set_viewport_size({"width": 375, "height": 667})
     writes: list = []
     def on_req(req):
         if req.method == "PATCH" and re.search(r"/api/list/(watched|hidden)", req.url):
             writes.append(req.url)
     page.on("request", on_req)
     try:
-        page.goto(frontend)
-        page.evaluate("t => localStorage.setItem('token', t)", token)
-        pin_season(page)
-        page.goto(f"{frontend}/random")
+        open_random(page, frontend, token, {"width": 375, "height": 667})
         page.click('button[aria-label="Show Unwatched list"]', timeout=30_000)
-        # The cover decides the content height; open_first_popup waits for it.
-        open_first_popup(page)
+        page.wait_for_timeout(400)
+        open_show(page)
+        page.wait_for_timeout(800)
 
-        step(40, "step 2/7: the pop-up must scroll - otherwise this flow tests nothing")
-        sizes = page.evaluate("() => { const b = document.querySelector('dialog .modal-box');"
-                              " return [b.scrollHeight, b.clientHeight]; }")
-        assert sizes[0] > sizes[1], (
-            f"the pop-up no longer scrolls at 375x667 (content {sizes[0]}px, box "
-            f"{sizes[1]}px) - the close button cannot be tested for staying in view")
-
-        step(40, "step 3/7: scrolled to the action buttons, the X is still on screen")
-        page.evaluate("() => { const b = document.querySelector('dialog .modal-box');"
-                      " b.scrollTop = b.scrollHeight; }")
-        page.wait_for_timeout(200)
-        seen = page.evaluate("""() => {
-            const x = document.querySelector('dialog [data-popup-close]');
-            if (!x) return { missing: true };
-            const r = x.getBoundingClientRect();
-            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-            return { top: r.top, bottom: r.bottom, onTop: !!hit && (hit === x || x.contains(hit)) };
+        step(40, "step 2/6: the sheet covers the whole screen, over the lists")
+        cover = page.evaluate("""() => {
+            const c = document.querySelector('[data-inline-card]').getBoundingClientRect();
+            const pts = [[20, 20], [innerWidth - 20, innerHeight / 2], [20, innerHeight - 20]];
+            const on = pts.filter(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-inline-card]')).length;
+            return { l: c.left, t: c.top, r: c.right, b: c.bottom, on, of: pts.length };
         }""")
-        assert not seen.get("missing"), "the pop-up has no [data-popup-close] button"
-        assert seen["top"] >= 0 and seen["bottom"] <= 667 and seen["onTop"], (
-            f"the pop-up's close button scrolled out of view on a phone ({seen}) - "
-            "the only exits left on screen are Mark as watched and Hide Series, "
-            "which both change the list")
+        assert cover["on"] == cover["of"] and cover["l"] <= 0 and cover["t"] <= 0 \
+            and cover["r"] >= 375 and cover["b"] >= 667, (
+            f"the show sheet does not cover a phone screen ({cover}) - the list it was "
+            "opened from, or the page, shows through and takes the taps")
 
-        step(40, "step 4/7: the two action buttons sit side by side, not on each other")
-        boxes = page.evaluate("""() => [...document.querySelectorAll('dialog .modal-action button')]
+        step(40, "step 3/6: the video spans the screen; the X and every button are on screen and on top")
+        video_w = page.evaluate("() => document.querySelector('[data-video-box]').getBoundingClientRect().width")
+        assert video_w >= 375 * 0.8, (
+            f"the video is squeezed on a phone ({video_w:.0f}px of 375) - the PC grid's "
+            "nickname column is taking the width")
+        reach = page.evaluate("""() => [...document.querySelectorAll(
+                '[data-popup-close], [data-pane-actions] button, [data-watch]')]
             .map(b => { const r = b.getBoundingClientRect();
-                        return { l: r.left, r: r.right, t: r.top, b: r.bottom }; })""")
-        assert len(boxes) == 2, f"expected Hide Series + Mark as watched, found {len(boxes)} buttons"
-        a, b = boxes
-        overlap_x = min(a["r"], b["r"]) - max(a["l"], b["l"])
-        overlap_y = min(a["b"], b["b"]) - max(a["t"], b["t"])
-        assert overlap_x <= 0 or overlap_y <= 0, (
-            f"Hide Series and Mark as watched overlap by {overlap_x:.0f}px on a phone - "
-            "a tap meant for one can land on the other")
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return { name: (b.innerText || b.getAttribute('aria-label') || '').trim().slice(0, 20),
+                         l: Math.round(r.left), r: Math.round(r.right),
+                         t: Math.round(r.top), b: Math.round(r.bottom),
+                         onTop: !!hit && (hit === b || b.contains(hit)) }; })""")
+        assert len(reach) >= 4, f"expected X, Watch and three actions, found {reach}"
+        off = [b for b in reach if b["l"] < 0 or b["r"] > 375]
+        assert not off, f"a pane button is off the edge of a phone screen: {off}"
+        hidden = [b for b in reach if not b["onTop"] or b["t"] < 0 or b["b"] > 667]
+        assert not hidden, f"a pane button is covered or below the fold on a phone: {hidden}"
 
-        step(40, "step 5/7: X closes it and writes nothing")
+        step(40, "step 4/6: the three actions sit side by side, not on each other")
+        acts = [b for b in reach if b["name"] and b["name"] not in ("Back to the wheel",)
+                and "WATCH" not in b["name"].upper()]
+        for i, a in enumerate(acts):
+            for b in acts[i + 1:]:
+                ox = min(a["r"], b["r"]) - max(a["l"], b["l"])
+                oy = min(a["b"], b["b"]) - max(a["t"], b["t"])
+                assert ox <= 0 or oy <= 0, f"{a['name']} and {b['name']} overlap on a phone"
+
+        step(40, "step 5/6: X closes it and writes nothing")
         writes.clear()
-        page.click("dialog [data-popup-close]")
-        page.wait_for_selector("dialog .modal-box", state="detached", timeout=5_000)
+        page.click("[data-popup-close]")
+        page.wait_for_selector("[data-inline-card]", state="detached", timeout=5_000)
         page.wait_for_timeout(1000)
-        assert not writes, f"closing the pop-up wrote to the list: {writes}"
-        stored = requests.get(f"{backend}/api/list", timeout=15,
-                              headers={"Authorization": f"Bearer {token}"},
-                              params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
-        changed = [w["mediaId"] for w in stored if w.get("watched") or w.get("hidden")]
-        assert not changed, f"closing the pop-up left entries watched or hidden: {changed}"
+        assert not writes, f"closing the show sheet wrote to the list: {writes}"
+        changed = [w["mediaId"] for w in server_list(backend, token) if w.get("watched") or w.get("hidden")]
+        assert not changed, f"closing the show sheet left entries watched or hidden: {changed}"
 
-        # A 1366x768 laptop leaves ~657px of page. Stacked, the pop-up was ~705px
-        # with a Watch button, so Watch and Mark as watched sat below the fold in
-        # a box 768px wide with the cover alone in the middle of it. The cover
-        # now grows with the window's height, so this also guards that it never
-        # grows past what the screen can hold.
-        step(40, "step 6/7: on a 1366x768 laptop the whole pop-up fits without scrolling")
-        # Put a show the library HOLDS first, so the pop-up has its Watch button
-        # (the tallest version of it) and step 7 has a player to open.
-        held = None
-        auth = {"Authorization": f"Bearer {token}"}
-        if requests.get(f"{backend}/api/jellyfin/status", headers=auth, timeout=15).json().get("configured"):
-            anime = requests.get(f"{backend}/api/anime", timeout=120,
-                                 params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
-            items = [{"mediaId": a["id"], "titles": [t for t in ((a.get("title") or {}).get("english"),
-                                                              (a.get("title") or {}).get("romaji")) if t]}
-                     for a in anime[:40]]
-            verdicts = requests.post(f"{backend}/api/jellyfin/availability/batch", headers=auth,
-                                     json={"items": items}, timeout=120).json()
-            held = next((int(k) for k, v in verdicts.items()
-                         if isinstance(v, dict) and v.get("available")), None)
-            if held is not None:
-                seed_list(backend, token, [held] + [m for m in ids if m != held])
-                unhide(backend, token, [held])
-        # Six other people nickname that show, so the right column is as tall as
-        # real data makes it: with six nickname rows it was ~548px and pushed
-        # Hide and Mark out of view on every window up to 1366x768. Throwaway
-        # `ui_test_` accounts - cleanup_users.py removes them.
-        first = held if held is not None else ids[0]
+        # A 1366x768 laptop leaves ~657px of page. The pane replaces the wheel
+        # and is sized from the wheel area, so everything in it has to fit that
+        # height: nothing scrolls, and `overflow: hidden` would silently CUT a
+        # button off rather than scroll to it. Twelve people nickname the show -
+        # six fit the pane's nickname column without scrolling, which would
+        # leave its own scrollbar untested; it must scroll, not push the buttons
+        # out. Throwaway `ui_test_` accounts - cleanup_users.py removes them.
+        step(40, "step 6/6: on a 1366x768 laptop the whole pane fits, nothing cut off")
         stamp = int(time.time())
-        for k in range(6):
+        for k in range(12):
             r = requests.post(f"{backend}/api/auth/signup", timeout=15,
                               json={"username": f"ui_test_nk{k}_{stamp}", "password": "pw"})
             assert r.status_code == 200, f"nickname fixture signup failed: {r.status_code}"
             requests.put(f"{backend}/api/list", timeout=15,
                          headers={"Authorization": f"Bearer {r.json()['token']}"},
                          json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
-                               "items": [{"mediaId": first, "customName": f"nickname number {k}"}]}
+                               "items": [{"mediaId": ids[0], "customName": f"nickname number {k}"}]}
                          ).raise_for_status()
         page.set_viewport_size({"width": 1366, "height": 657})
         page.reload()
-        open_first_popup(page)
+        page.wait_for_selector('aside li[role=button][tabindex="0"]', timeout=30_000)
+        open_show(page)
         page.wait_for_timeout(1500)
         fit = page.evaluate("""() => {
-            const b = document.querySelector('dialog .modal-box');
-            const off = [...b.querySelectorAll('.modal-action button')]
-                .filter(x => x.getBoundingClientRect().bottom > innerHeight).length;
-            return { content: b.scrollHeight, box: b.clientHeight, off };
+            const box = document.querySelector('.pane-box').getBoundingClientRect();
+            const parts = [...document.querySelectorAll('[data-pane-actions] button, [data-video-box], [data-popup-close]')];
+            const cut = parts.filter(p => { const r = p.getBoundingClientRect();
+                return r.top < box.top - 1 || r.bottom > box.bottom + 1 || r.bottom > innerHeight; })
+                .map(p => (p.innerText || p.getAttribute('aria-label') || p.tagName).trim().slice(0, 20));
+            return { cut, parts: parts.length, boxBottom: Math.round(box.bottom) };
         }""")
-        assert fit["content"] <= fit["box"] and not fit["off"], (
-            f"the pop-up scrolls on a 1366x768 laptop (content {fit['content']}px, box "
-            f"{fit['box']}px, {fit['off']} action button(s) below the fold)")
-
-        # The show pop-up is sized from the player's pop-up (`.show-popup` in
-        # Randomize.svelte mirrors JellyfinPlayerModal's box), so it must never be
-        # the taller of the two. This compares against the REAL player, which is
-        # what catches the mirror drifting when the player's box changes.
-        # The stream route is aborted: opening the player must not start a
-        # transcode on the server for a size check.
-        step(40, "step 7/7: and it is no taller than the video player's pop-up")
-        if held is None:
-            step(40, "step 7/7: SKIP - Jellyfin not configured or nothing in the season is held")
-        else:
-            page.route("**/api/jellyfin/stream/**", lambda r: r.abort())
-            try:
-                page.wait_for_selector("dialog button:has-text('Watch here')", timeout=20_000)
-                page.locator("dialog button", has_text="Watch here").first.click()
-                page.wait_for_selector(".video-js", timeout=20_000)
-                page.wait_for_timeout(1000)
-                player_h = page.evaluate(
-                    "() => [...document.querySelectorAll('dialog .modal-box')].pop()"
-                    ".getBoundingClientRect().height")
-                page.keyboard.press("Escape")
-            finally:
-                page.unroute("**/api/jellyfin/stream/**")
-            assert fit["content"] <= player_h + 1, (
-                f"the show pop-up is taller than the video player's pop-up at 1366x657 "
-                f"({fit['content']}px vs {player_h:.0f}px) - `.show-popup` no longer "
-                f"mirrors JellyfinPlayerModal's box")
+        assert fit["parts"] >= 4, f"the pane is missing its video or buttons: {fit}"
+        last = page.evaluate("""() => {
+            const col = document.querySelector('[data-nickname-col]');
+            col.scrollTop = col.scrollHeight;
+            const rows = col.querySelectorAll('[data-nickname-row]');
+            const c = col.getBoundingClientRect(), r = rows[rows.length - 1].getBoundingClientRect();
+            return { rows: rows.length, rowBottom: Math.round(r.bottom), colBottom: Math.round(c.bottom) };
+        }""")
+        assert last["rows"] >= 12, f"expected twelve nickname rows, the pane shows {last['rows']}"
+        assert last["rowBottom"] <= last["colBottom"] + 1, (
+            f"the last nicknames cannot be reached on a laptop - scrolled to the end, "
+            f"the last row ends at {last['rowBottom']}px, past its column's {last['colBottom']}px")
+        assert not fit["cut"], (
+            f"the pane's buttons are cut off on a 1366x768 laptop: {fit['cut']} "
+            f"(pane ends at {fit['boxBottom']}px)")
     finally:
         page.remove_listener("request", on_req)
         page.set_viewport_size(original)
-    step(40, "PASS - the X stays in view on a phone, closing changes nothing, a laptop needs no scroll, and it is no taller than the player")
+    step(40, "PASS - a full-screen sheet on a phone with every button reachable, closing changes nothing, and the laptop pane fits")
+
+
+def test_pane_replaces_the_wheel(page, backend: str, frontend: str, token: str):
+    """The show replaces the wheel, Rank it keeps it open, and the keys and
+    episodes stay with the show that is open.
+
+    The pane leaves the lists usable beside it, which the modal pop-up never
+    did, and each of these was a real defect of that:
+    - Enter on a focused Unwatched row opened that show AND ranked it unseen,
+      because the window's Enter-means-Rank-it handler ran too.
+    - Ranking one show, then opening another, left the first one "being placed"
+      - the new show had no Enter, its arrows moved the old show in the rail.
+    - Opening another show mid-episode started the NEW show's episode by itself:
+      a transcode nobody asked for.
+    - Closing the pane is the one thing that stops the transcode now (Escape
+      deliberately does not), so it is asserted here too. The stream route is
+      aborted throughout: the player gets its session from PlaybackInfo, which
+      is all the stop needs, and no ffmpeg starts on the server.
+    """
+    step(47, "step 1/6: seeding an unwatched list and spinning at 1600x950")
+    ids = season_ids(backend, 4)
+    held = held_show(backend, token)
+    order = ([held] + [m for m in ids if m != held])[:4] if held else ids
+    seed_list(backend, token, order)
+    unhide(backend, token, order)
+    original = page.viewport_size
+    sent: list = []
+    def on_req(req):
+        if re.search(r"/api/list/watched|/api/jellyfin/playback/stop", req.url) and req.method in ("PATCH", "POST"):
+            sent.append(req.url)
+    page.on("request", on_req)
+    page.route("**/api/jellyfin/stream/**", lambda r: r.abort())
+    try:
+        open_random(page, frontend, token, {"width": 1600, "height": 950})
+        page.wait_for_selector(".spin-button", timeout=30_000)
+        page.wait_for_timeout(800)
+        page.click(".spin-button")
+        try:
+            page.wait_for_selector("[data-inline-card]", timeout=15_000)
+        except Exception:
+            raise AssertionError("a spin did not open the show pane")
+
+        step(47, "step 2/6: the pane sits where the wheel was, and nothing is a dialog")
+        where = page.evaluate("""() => {
+            const w = document.getElementById('wheel-wrapper').getBoundingClientRect();
+            const hit = document.elementFromPoint(w.left + w.width / 2, w.top + w.height / 2);
+            return { onPane: !!hit?.closest('[data-inline-card]'), dialogs: document.querySelectorAll('dialog[open]').length };
+        }""")
+        assert where["onPane"], "the show pane does not cover the wheel - the wheel shows through it"
+        assert not where["dialogs"], "the show opened as a dialog over the page, not in place of the wheel"
+
+        step(47, "step 3/6: Enter on another focused Unwatched row opens it and ranks nothing")
+        first = pane_title(page)
+        other = page.locator('aside li[role=button][tabindex="0"]').filter(
+            has_not_text=first.split(" (#")[0][:20]).first
+        other.focus()
+        sent.clear()
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(1200)
+        assert not [u for u in sent if "/watched" in u], (
+            "Enter on an Unwatched row ranked a show - the row opened it and the "
+            "page's Enter-means-Rank-it handler marked it watched, unseen")
+        assert pane_title(page) != first, "Enter on an Unwatched row did not open that show"
+
+        step(47, "step 4/6: Rank it marks it watched and keeps the pane open")
+        ranked = pane_title(page)
+        page.click("[data-rank-it]")
+        page.wait_for_timeout(1500)
+        assert page.locator("[data-inline-card]").count(), "Rank it closed the pane - it must stay open"
+        assert page.locator("[data-spin-next]").count(), "Rank it did not offer Spin next in its place"
+        assert [u for u in sent if "/watched" in u], "Rank it sent no PATCH /api/list/watched"
+
+        step(47, "step 5/6: opening another show ends the last one's placement")
+        open_show(page, None)
+        if pane_title(page) == ranked:
+            page.locator('aside li[role=button][tabindex="0"]').nth(1).evaluate("el => el.click()")
+        page.wait_for_timeout(1000)
+        assert pane_title(page) != ranked, "could not open a second show to test placement"
+        assert page.locator("[data-rank-it]").count() and not page.locator("[data-placing]").count(), (
+            "opening another show kept the last one's placement - this show offers no "
+            "Rank it, and the rail is still moving the previous show")
+
+        step(47, "step 6/6: episodes - another show never starts by itself, the X stops it")
+        if held is None:
+            step(47, "step 6/6: SKIP - Jellyfin not configured or nothing in the season is held")
+        else:
+            # Step 4 may have ranked the held show; it has to be on the wheel again.
+            requests.patch(f"{backend}/api/list/watched", timeout=15,
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                                 "mediaId": held, "watched": False}).raise_for_status()
+            page.reload()
+            page.wait_for_selector('aside li[role=button][tabindex="0"]', timeout=30_000)
+            title_of = requests.get(f"{backend}/api/anime", timeout=120,
+                                    params={"season": SEEDED_SEASON, "year": SEEDED_YEAR}).json()
+            held_name = next(((a.get("title") or {}).get("english") or (a.get("title") or {}).get("romaji")
+                              for a in title_of if a["id"] == held), None)
+            open_show(page, (held_name or "")[:20] or None)
+            page.wait_for_selector("[data-watch]", timeout=30_000)
+            page.click("[data-watch]")
+            page.wait_for_selector("[data-video-box] .video-js", timeout=30_000)
+            page.wait_for_timeout(2500)
+            sent.clear()
+            nxt = page.locator('aside li[role=button][tabindex="0"]').filter(
+                has_not_text=(held_name or "")[:20]).first
+            nxt.evaluate("el => el.click()")
+            page.wait_for_timeout(5000)
+            assert not page.locator("[data-video-box] .video-js").count(), (
+                "opening another show started its episode unasked - a transcode nobody "
+                "pressed Watch for")
+            assert [u for u in sent if "playback/stop" in u], (
+                "opening another show mid-episode did not stop the old transcode")
+            open_show(page, (held_name or "")[:20] or None)
+            page.wait_for_selector("[data-watch]", timeout=30_000)
+            page.click("[data-watch]")
+            page.wait_for_selector("[data-video-box] .video-js", timeout=30_000)
+            page.wait_for_timeout(2500)
+            sent.clear()
+            page.click("[data-popup-close]")
+            page.wait_for_timeout(2000)
+            assert [u for u in sent if "playback/stop" in u], (
+                "closing the pane did not stop the transcode - Jellyfin's ffmpeg keeps "
+                "writing the whole episode to the transcode cache")
+    finally:
+        page.unroute("**/api/jellyfin/stream/**")
+        page.remove_listener("request", on_req)
+        page.set_viewport_size(original)
+    step(47, "PASS - the pane replaces the wheel, Rank it keeps it open, Enter and placement stay with the open show, and episodes start and stop only when asked")
+
+
+def test_expanded_ranking(page, backend: str, frontend: str, token: str):
+    """The expanded ranking: both views, a pointer drag, the arrows and "put it last".
+
+    Every change here is saved as a whole new order, so the assertions read the
+    order back from the server - an off-by-one in where a drop lands reads to a
+    viewer as "it went one place from where I let go", which nobody reports.
+    The drag is a REAL mouse drag (pointer events, which Playwright's mouse
+    drives natively). The rail's older HTML5 drag passed in Playwright and did
+    not work on a real mouse; the pointer version exists because of that.
+    """
+    step(48, "step 1/6: seeding five ranked shows and one to watch, at 1600x950")
+    ids = season_ids(backend, 6)
+    seed_list(backend, token, ids)
+    unhide(backend, token, ids)
+    mark_watched(backend, token, ids[:5])
+    original = page.viewport_size
+    try:
+        open_random(page, frontend, token, {"width": 1600, "height": 950})
+        page.evaluate("() => localStorage.removeItem('randomizeRankView')")
+        page.wait_for_selector("[data-rank-expand]", timeout=30_000)
+        page.click("[data-rank-expand]")
+        page.wait_for_selector("[data-rank-collapse]", timeout=10_000)
+
+        step(48, "step 2/6: Posters and List both draw every show, and the choice is remembered")
+        page.click("[data-rank-view] button:has-text('Posters')")
+        page.wait_for_selector("[data-rank-posters]", timeout=5_000)
+        assert page.locator("[data-rank-board-card]").count() == 5, "Posters view does not show every ranked show"
+        page.reload()
+        page.wait_for_selector("[data-rank-expand]", timeout=30_000)
+        page.click("[data-rank-expand]")
+        page.wait_for_selector("[data-rank-collapse]", timeout=10_000)
+        assert page.locator("[data-rank-posters]").count(), (
+            "the expanded ranking forgot the Posters view on reload")
+        page.click("[data-rank-view] button:has-text('List')")
+        page.wait_for_selector("[data-rank-list]", timeout=5_000)
+        assert page.locator("[data-rank-board-row]").count() == 5, "List view does not show every ranked show"
+
+        step(48, "step 3/6: a mouse drag shows the drop line and lands exactly there")
+        before = watched_order(backend, token)
+        rows = page.locator("[data-rank-board-row]")
+        src = rows.nth(0).bounding_box()
+        dst = rows.nth(2).bounding_box()
+        page.mouse.move(src["x"] + 40, src["y"] + src["height"] / 2)
+        page.mouse.down()
+        for k in range(1, 9):
+            y = src["y"] + src["height"] / 2 + (dst["y"] + dst["height"] * 0.8 - src["y"] - src["height"] / 2) * k / 8
+            page.mouse.move(dst["x"] + 40, y)
+            page.wait_for_timeout(30)
+        line = page.evaluate("() => !!document.querySelector('[data-rank-board-row].drop-after, [data-rank-board-row].drop-before')")
+        page.mouse.up()
+        assert line, "dragging a show drew no drop line - the viewer cannot see where it will land"
+        page.wait_for_timeout(1500)
+        after = watched_order(backend, token)
+        expected = [before[1], before[2], before[0], before[3], before[4]]
+        assert after == expected, (
+            f"the dragged show landed in the wrong place: dropped below #3, the server "
+            f"has {after}, expected {expected}")
+
+        step(48, "step 4/6: Rank it on the sixth show, then the arrows move it")
+        page.click("[data-rank-collapse]")
+        open_show(page)
+        page.click("[data-rank-it]")
+        page.wait_for_timeout(1500)
+        page.click("[data-rank-expand]")
+        page.wait_for_selector("[data-rank-collapse]", timeout=10_000)
+        placing = ids[5]
+        start = watched_order(backend, token).index(placing)
+        # Where Rank it puts the show is the account's "Add Watched to" option,
+        # which other flows may have changed - so move away from whichever end.
+        key, d = ("ArrowUp", -2) if start >= 2 else ("ArrowDown", 2)
+        page.keyboard.press(key)
+        page.wait_for_timeout(80)
+        page.keyboard.press(key)
+        page.wait_for_timeout(1500)
+        moved = watched_order(backend, token).index(placing)
+        assert moved == start + d, f"two {key}s moved the show from #{start + 1} to #{moved + 1}"
+
+        step(48, "step 5/6: \"put it last\" puts it last")
+        page.wait_for_timeout(600)  # past the repeated-press guard
+        page.click("[data-rank-list] [data-place-last]")
+        page.wait_for_timeout(1500)
+        final = watched_order(backend, token)
+        assert final[-1] == placing, (
+            f"\"put it last\" did not put the show last: the server has it at "
+            f"#{final.index(placing) + 1} of {len(final)}")
+
+        step(48, "step 6/6: Collapse goes back to the pane")
+        page.click("[data-rank-collapse]")
+        page.wait_for_selector("[data-rank-collapse]", state="detached", timeout=5_000)
+        assert page.locator("[data-inline-card]").count(), "Collapse closed the show pane as well"
+    finally:
+        page.evaluate("() => localStorage.removeItem('randomizeRankView')")
+        page.set_viewport_size(original)
+    step(48, "PASS - both views, a real drag, the arrows and put-it-last all land where they say")
+
+
+def test_slice_double_click(page, backend: str, frontend: str, token: str):
+    """Double-clicking a wheel slice opens that slice's show.
+
+    The slice is computed from the pointer's angle and the wheel's rotation, so
+    a sign error opens a DIFFERENT show - which looks like it worked. This clicks
+    at a slice's own label and checks the pane is that show.
+    """
+    step(49, "step 1/2: seeding a list and opening /random at 1600x950")
+    ids = season_ids(backend, 5)
+    seed_list(backend, token, ids)
+    unhide(backend, token, ids)
+    original = page.viewport_size
+    try:
+        open_random(page, frontend, token, {"width": 1600, "height": 950})
+        page.wait_for_selector("#wheel-wrapper svg text", timeout=30_000)
+        page.wait_for_timeout(800)
+
+        step(49, "step 2/2: double-clicking two different slices opens each one's show")
+        labels = page.evaluate("""() => [...document.querySelectorAll('#wheel-wrapper svg text')]
+            .map(t => { const r = t.getBoundingClientRect();
+                return { text: t.textContent.trim(), x: r.left + r.width / 2, y: r.top + r.height / 2 }; })
+            .filter(l => l.text)""")
+        assert len(labels) >= 2, f"the wheel has {len(labels)} labelled slices"
+        for lab in (labels[0], labels[len(labels) // 2]):
+            page.mouse.dblclick(lab["x"], lab["y"])
+            try:
+                page.wait_for_selector("[data-inline-card]", timeout=5_000)
+            except Exception:
+                raise AssertionError(f"double-clicking the slice {lab['text']!r} did not open its show")
+            want = lab["text"].replace("...", "").replace("\u2026", "").strip()
+            got = pane_title(page)
+            assert got.startswith(want[:12]), (
+                f"double-clicking the slice {lab['text']!r} opened {got!r} - a different show")
+            page.click("[data-popup-close]")
+            page.wait_for_selector("[data-inline-card]", state="detached", timeout=5_000)
+    finally:
+        page.set_viewport_size(original)
+    step(49, "PASS - each double-clicked slice opened its own show")
+
+
+def untick_all(page, keep: str | None = None) -> None:
+    """Untick every copy-list bonus account except `keep`.
+
+    One pass is not enough: an unticked account claims nothing, so a show it
+    shared with a later account is that account's to offer - which can bring a
+    new, ticked account onto the panel. Repeat until nothing else is ticked.
+    """
+    for _ in range(20):
+        boxes = [b for b in page.locator("[data-copy-bonus]").all()
+                 if b.get_attribute("data-copy-bonus") != keep and b.is_checked()]
+        if not boxes:
+            return
+        boxes[0].uncheck()
+        page.wait_for_timeout(100)
+    raise AssertionError("bonus accounts kept appearing ticked after 20 unticks")
+
+
+def test_copy_list(page, backend: str, frontend: str):
+    """An empty season offers another account's list, and copying never overwrites.
+
+    Throwaway accounts (`ui_test_`, removed by cleanup_users.py): a source with
+    three nicknamed shows, a bonus account sharing one of them and adding two,
+    and two empty viewers. Every OTHER bonus account in the season is unticked,
+    so the expected list is exact whatever else lives in the dev database.
+    The guard matters more than the copy: `PUT /api/list` replaces the whole
+    season, so a list made in another tab after the panel opened must survive.
+    """
+    step(50, "step 1/4: seeding a source list, a bonus list and two empty viewers")
+    ids = season_ids(backend, 6)
+    stamp = int(time.time())
+    def account(name: str) -> str:
+        r = requests.post(f"{backend}/api/auth/signup", timeout=15,
+                          json={"username": f"{name}_{stamp}", "password": "pw"})
+        assert r.status_code == 200, f"signup {name} failed: {r.status_code}"
+        return r.json()["token"]
+    src_user, bonus_user = f"ui_test_cpsrc_{stamp}", f"ui_test_cpbon_{stamp}"
+    src = account("ui_test_cpsrc")
+    bonus = account("ui_test_cpbon")
+    viewer = account("ui_test_cpview")
+    viewer2 = account("ui_test_cpview2")
+    for tok, items in ((src, [{"mediaId": ids[0], "customName": "first nick"},
+                              {"mediaId": ids[1]},
+                              {"mediaId": ids[2], "customName": "third nick"}]),
+                       (bonus, [{"mediaId": ids[4]}, {"mediaId": ids[1]}, {"mediaId": ids[3]}])):
+        requests.put(f"{backend}/api/list", timeout=15, headers={"Authorization": f"Bearer {tok}"},
+                     json={"season": SEEDED_SEASON, "year": SEEDED_YEAR, "items": items}).raise_for_status()
+    original = page.viewport_size
+    puts: list = []
+    def on_req(req):
+        if req.method == "PUT" and req.url.rstrip("/").endswith("/api/list"):
+            puts.append(req.url)
+    page.on("request", on_req)
+    try:
+        step(50, "step 2/4: the panel offers the source, and copies it plus the bonus shows")
+        open_random(page, frontend, viewer, {"width": 1600, "height": 950})
+        page.wait_for_selector(f"[data-copy-main='{src_user}']", timeout=30_000)
+        page.check(f"[data-copy-main='{src_user}']")
+        untick_all(page, keep=bonus_user)
+        assert page.locator(f"[data-copy-bonus='{bonus_user}']").is_checked(), \
+            "the bonus account is not ticked by default"
+        page.click("[data-copy-save]")
+        page.wait_for_selector("[data-copy-list]", state="detached", timeout=15_000)
+        got = [(w["mediaId"], w.get("customName")) for w in sorted(server_list(backend, viewer),
+                                                                    key=lambda w: w.get("order") or 0)]
+        expected = [(ids[0], "first nick"), (ids[1], None), (ids[2], "third nick"), (ids[4], None), (ids[3], None)]
+        assert got == expected, (
+            f"the copied list is wrong: the server has {got}, expected {expected} - the "
+            "source's shows, order and nicknames, then the bonus account's new shows in its own order")
+
+        step(50, "step 3/4: unticking an account leaves its shows out")
+        open_random(page, frontend, viewer2, {"width": 1600, "height": 950})
+        page.wait_for_selector(f"[data-copy-main='{src_user}']", timeout=30_000)
+        page.check(f"[data-copy-main='{src_user}']")
+        untick_all(page)
+        total = page.inner_text("[data-copy-total]")
+        assert total.strip().startswith("3 "), f"with every extra unticked the total reads {total!r}, not 3"
+
+        step(50, "step 4/4: a list made in another tab before Copy is never overwritten")
+        requests.put(f"{backend}/api/list", timeout=15, headers={"Authorization": f"Bearer {viewer2}"},
+                     json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                           "items": [{"mediaId": ids[5]}]}).raise_for_status()
+        puts.clear()
+        page.click("[data-copy-save]")
+        page.wait_for_timeout(2500)
+        assert not puts, "Copy overwrote a list made since the panel opened - PUT /api/list replaces the whole season"
+        left = [w["mediaId"] for w in server_list(backend, viewer2)]
+        assert left == [ids[5]], f"the other tab's list was replaced: the server has {left}"
+    finally:
+        page.remove_listener("request", on_req)
+        page.set_viewport_size(original)
+    step(50, "PASS - copies the source with its nicknames plus ticked extras, leaves unticked ones out, and never overwrites a list")
 
 
 def test_phone_sidebars_reach_the_wheel(page, backend: str, frontend: str, token: str):
@@ -3984,13 +4379,17 @@ def main():
                 ("subtitle track picker", lambda: test_subtitle_track_picker(page, frontend)),
                 ("hide not english",    lambda: test_hide_not_english(page, args.backend, frontend, token_a)),
                 ("matching shows sonarr problems", lambda: test_matching_shows_sonarr_problems(page, args.backend, frontend)),
-                ("phone popup close",   lambda: test_phone_popup_close(page, args.backend, frontend, token_a)),
+                ("phone show sheet",    lambda: test_phone_show_sheet(page, args.backend, frontend, token_a)),
                 ("options panel collapse", lambda: test_options_panel_collapse(page, args.backend, frontend, token_a)),
                 ("phone sidebars reach the wheel", lambda: test_phone_sidebars_reach_the_wheel(page, args.backend, frontend, token_a)),
                 ("wheel fits between lists", lambda: test_wheel_fits_between_lists(page, args.backend, frontend, token_a)),
                 ("leftover survives sidebar edit", lambda: test_leftover_survives_sidebar_edit(page, args.backend, frontend, token_a)),
                 ("list load failure visible", lambda: test_list_load_failure_visible(page, args.backend, frontend, token_a)),
                 ("options auth races", lambda: test_options_auth_races(page, args.backend, frontend)),
+                ("pane replaces the wheel", lambda: test_pane_replaces_the_wheel(page, args.backend, frontend, token_a)),
+                ("expanded ranking",    lambda: test_expanded_ranking(page, args.backend, frontend, token_a)),
+                ("slice double-click",  lambda: test_slice_double_click(page, args.backend, frontend, token_a)),
+                ("copy list",           lambda: test_copy_list(page, args.backend, frontend)),
             ]
             if args.only_flows:
                 want = [x.strip() for x in args.only_flows.split(",") if x.strip()]

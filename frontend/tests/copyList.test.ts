@@ -27,12 +27,13 @@ test('a show an earlier bonus account holds is not repeated', () => {
   assert.deepEqual(bonus, [
     { user: 'alex', mediaIds: [9, 8] },
     { user: 'sam', mediaIds: [7] },
-  ]);
+  ], 'a later account offered a show an earlier list already holds');
 });
 
 test('an excluded account is listed but not saved, and claims nothing', () => {
   const { items, bonus } = buildCopiedList(lists, 'group', new Set(['alex']));
-  assert.deepEqual(items.map((i) => i.mediaId), [1, 2, 3, 4, 8, 7]);
+  assert.deepEqual(items.map((i) => i.mediaId), [1, 2, 3, 4, 8, 7],
+    "an unticked account's shows were saved anyway");
   assert.deepEqual(bonus, [
     { user: 'alex', mediaIds: [9, 8] },
     { user: 'sam', mediaIds: [8, 7] },

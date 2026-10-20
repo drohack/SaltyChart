@@ -13,7 +13,8 @@ const abcd = ['a', 'b', 'c', 'd'];
 
 test('moving down lands in front of the item at `to`, not on its index', () => {
   // Dropped on the line above 'c': 'a' ends up between 'b' and 'c'.
-  assert.deepEqual(moveIndex(abcd, 0, 2), ['b', 'a', 'c', 'd']);
+  assert.deepEqual(moveIndex(abcd, 0, 2), ['b', 'a', 'c', 'd'],
+    'a show moved down landed ON the target index instead of in front of it');
   assert.deepEqual(moveIndex(abcd, 1, 3), ['a', 'c', 'b', 'd']);
 });
 

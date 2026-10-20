@@ -130,6 +130,10 @@ BACKEND_ENTRY_STATUS = "backend/src/lib/entryStatus.ts"
 SONARR_ENTRY_ROW = "frontend/src/components/SonarrEntryRow.svelte"
 PREWARM = "frontend/src/lib/jellyfinPrewarm.ts"
 RANDOMIZE = "frontend/src/pages/Randomize.svelte"
+RANKING_EXPANDED = "frontend/src/components/RankingExpanded.svelte"
+COPY_PANEL = "frontend/src/components/CopyListPanel.svelte"
+COPY_LIB = "frontend/src/lib/copyList.ts"
+RANK_LIB = "frontend/src/lib/rankPlacement.ts"
 
 PY = ["py", "-3.13", "-u"]
 T_JELLYFIN = PY + [str(TESTS / "test_jellyfin.py")]
@@ -153,6 +157,9 @@ T_ACCTSEC = PY + [str(TESTS / "test_account_security.py")]
 T_SMOKE = PY + [str(TESTS / "test_api_smoke.py")]
 T_UI = PY + [str(TESTS / "test_ui_interactions.py")]
 T_UNIT = ["npm", "run", "test:unit"]
+# The frontend's pure helpers (node --test over frontend/tests). Offline like
+# T_UNIT; `--prefix` runs the script in frontend/ from the repo root.
+T_FE_UNIT = ["npm", "--prefix", "frontend", "run", "test:unit"]
 T_REPLAY = PY + [str(TESTS / "test_match_replay.py")]
 # Runs in about a second against no servers, so the doc rows below are the
 # cheapest in the table.
@@ -1527,7 +1534,7 @@ MUTATIONS: list[Mutation] = [
         flows=("unaired season asked",),
         test=T_UI,
         expect="lack notAired",
-        guards="the Watch pop-up says 'Not in library' for a show that simply is not out yet",
+        guards="the show pane says 'Not in library' for a show that simply is not out yet",
     ),
     Mutation(
         name="a notAired flag stored in the cache outlives the premiere",
@@ -1891,7 +1898,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="Enter in the library search marks the show watched",
         path="frontend/src/pages/Randomize.svelte",
-        # handleModalKey is a WINDOW listener, so the pop-up's Enter = "mark
+        # handleModalKey is a WINDOW listener, so the pane's Enter = "mark
         # watched" fires wherever the keystroke came from - including a text
         # box the viewer is typing a search into. The player already guards
         # against this; pick mode reached the same trap from another direction,
@@ -1902,7 +1909,7 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="closed the picker",
         guards="typing a query and pressing Enter marks the very show being "
-               "corrected as watched and closes the pop-up",
+               "corrected as watched",
     ),
     Mutation(
         name="title text counts as date evidence",
@@ -1936,7 +1943,7 @@ MUTATIONS: list[Mutation] = [
         test=T_JELLYFIN,
         expect="a viewer cleared an admin's rejection",
         guards="any signed-up user can wipe an admin's Reject from the Watch "
-               "pop-up, putting the wrong Watch button back for everyone",
+               "pane, putting the wrong Watch button back for everyone",
     ),
     Mutation(
         name="a viewer pick can overwrite an admin's decision",
@@ -1961,7 +1968,7 @@ MUTATIONS: list[Mutation] = [
         test=T_JELLYFIN,
         expect="a viewer overwrote an admin-confirmed row",
         guards="any signed-up user can silently undo an admin's Confirm or "
-               "Reject from the Watch pop-up",
+               "Reject from the show pane",
     ),
     Mutation(
         name="the picker offers library items that cannot be pinned",
@@ -2478,7 +2485,7 @@ MUTATIONS: list[Mutation] = [
         flows=("failed hide write reverts",),
         test=T_UI,
         expect="the eye toggle is the one hide path",
-        guards="hiding one show from the list or pop-up looks applied, the server "
+        guards="hiding one show from the list or pane looks applied, the server "
                "never saved it, and the next reload silently undoes it",
     ),
     Mutation(
@@ -3397,57 +3404,6 @@ MUTATIONS: list[Mutation] = [
         guards="a held-back show waits silently instead of asking for a Confirm",
     ),
     Mutation(
-        name="the pop-up's X scrolls away with the content on a phone again",
-        path=RANDOMIZE,
-        # `.modal-box` scrolls its own overflow; without `sticky` the X sits at
-        # the top of the content and leaves with it (y=-114 at 375x667), so the
-        # only exits on screen both write to the list.
-        find='<div class="sticky top-0 z-10 h-0 flex justify-end">',
-        replace='<div class="h-0 flex justify-end"><!-- mutation -->',
-        flows=("phone popup close",),
-        test=T_UI,
-        expect="close button scrolled out of view on a phone",
-        guards="a phone user can only leave a rolled show by marking it watched "
-               "or hiding it",
-    ),
-    Mutation(
-        name="Hide Series is pinned left on a phone again",
-        path=RANDOMIZE,
-        find='<button class="btn btn-secondary" data-popup-hide',
-        replace='<button class="btn btn-secondary absolute left-0" data-popup-hide',
-        flows=("phone popup close",),
-        test=T_UI,
-        expect="Hide Series and Mark as watched overlap",
-        guards="the pop-up's two action buttons sit on top of each other on a "
-               "phone, so a tap meant for one lands on the other",
-    ),
-    Mutation(
-        name="the pop-up stacks into one column on a laptop again",
-        path=RANDOMIZE,
-        find='<div class="grid grid-cols-1 sm:grid-cols-[var(--poster-w)_minmax(0,28rem)] sm:grid-rows-[minmax(0,1fr)_auto] sm:h-[var(--body-h)] sm:gap-x-6"',
-        # Not `grid grid-cols-1`: the children's `sm:col-start-2` would grow an
-        # implicit second column and leave it side by side. Flex ignores grid
-        # placement, which is exactly the old stacked layout.
-        replace='<div class="flex flex-col" data-mutation',
-        flows=("phone popup close",),
-        test=T_UI,
-        expect="the pop-up scrolls on a 1366x768 laptop",
-        guards="on a 1366x768 laptop Watch and Mark as watched sit below the "
-               "fold of the pop-up",
-    ),
-    Mutation(
-        name="the player's pop-up shrinks and the show pop-up does not follow",
-        path="frontend/src/components/JellyfinPlayerModal.svelte",
-        # The show pop-up mirrors this box in CSS rather than measuring it, so a
-        # change here silently makes the show pop-up the taller of the two.
-        find="max-w-[calc((92vh-8rem)*16/9)]",
-        replace="max-w-[calc((70vh-8rem)*16/9)]",
-        flows=("phone popup close",),
-        test=T_UI,
-        expect="the show pop-up is taller than the video player's pop-up",
-        guards="the show pop-up outgrows the video player it opens",
-    ),
-    Mutation(
         name="a list's restore tab covers the other list's hide tab on a 320px phone",
         path=RANDOMIZE,
         find="    {#if watchedCollapsed && unwatchedCollapsed}",
@@ -3459,27 +3415,201 @@ MUTATIONS: list[Mutation] = [
                "cannot be reached",
     ),
     Mutation(
-        name="many nicknames push the pop-up's buttons out of view again",
-        path=RANDOMIZE,
-        # Without the fixed body height the right column grows with its
-        # nickname rows, and the box (capped at the player's height) scrolls.
-        find=" sm:h-[var(--body-h)] sm:gap-x-6",
-        replace=" sm:gap-x-6 data-mutation",
-        flows=("phone popup close",),
-        test=T_UI,
-        expect="the pop-up scrolls on a 1366x768 laptop",
-        guards="a show many people have nicknamed has its Watch / Hide / Mark "
-               "buttons below the fold on a laptop",
-    ),
-    Mutation(
         name="the wheel's size ignores the docked lists again",
         path=RANDOMIZE,
-        find="      --wheel-size: min(var(--area-size), calc(100vw - 37rem - 14px - 2rem));",
+        find="      --wheel-size: min(var(--area-size), calc(100vw - 39rem - 14px - 2rem));",
         replace="      --wheel-size: var(--area-size); /* mutation */",
         flows=("wheel fits between lists",),
         test=T_UI,
         expect="the wheel slides under the docked lists at 1100x950",
         guards="narrowing a desktop window slides the wheel under the side lists",
+    ),
+    # -- Randomize's show pane, its ranking and the copy-list panel ----------
+    Mutation(
+        name="the phone's show sheet stops covering the screen",
+        path=RANDOMIZE,
+        # Without it the PC pane is squeezed into the wheel area, UNDER the
+        # Unwatched list it was opened from (z-40), with every button covered.
+        find="    .inline-card { position: fixed; inset: 0; z-index: 60; padding: 0; }",
+        replace="    .inline-card { padding: 0; } /* mutation */",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="the show sheet does not cover a phone screen",
+        guards="a show opened on a phone sits under the list it came from, "
+               "with Watch, Hide and Rank it covered",
+    ),
+    Mutation(
+        name="the phone's show sheet keeps the PC grid",
+        path=RANDOMIZE,
+        # The PC grid gives nicknames 14rem+, which at 375px left the video 95px
+        # wide. (The buttons still fit: the phone rule makes them share the row.)
+        find="    .pane-grid { display: flex; flex-direction: column; flex: none; }",
+        replace="    .pane-grid { flex: none; } /* mutation */",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="the video is squeezed on a phone",
+        guards="on a phone the video is a thumbnail and Hide Series is cut off "
+               "the left edge",
+    ),
+    Mutation(
+        name="many nicknames spill out of the pane on a laptop",
+        path=RANDOMIZE,
+        # Not scrolling, twelve nicknames spill out of their column - over the
+        # buttons and past the pane's clipped edge - and the last ones can never
+        # be read. (The buttons themselves stay put: every grid child has
+        # `min-height: 0`. Dropping that alone is a no-op, since a scroll
+        # container's automatic minimum height is already 0.)
+        find="<div class=\"pg-nicks min-h-0 overflow-y-auto text-sm\" data-nickname-col>",
+        replace="<div class=\"pg-nicks text-sm\" data-nickname-col>",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="the last nicknames cannot be reached on a laptop",
+        guards="a show many people have nicknamed spills names over its "
+               "buttons on a laptop, and the last ones cannot be read",
+    ),
+    Mutation(
+        name="Rank it closes the pane",
+        path=RANDOMIZE,
+        find="    placingId = selected.id;\n    // The rail sits beside",
+        replace="    placingId = selected.id; showModal = false; // mutation\n    // The rail sits beside",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="Rank it closed the pane",
+        guards="ranking a show mid-episode ends the episode",
+    ),
+    Mutation(
+        name="Enter on a focused list row also ranks a show",
+        path=RANDOMIZE,
+        find="    if (e.defaultPrevented || target?.closest?.('button, a, input, select, textarea, [role=\"button\"]')) return;",
+        replace="    void target; // mutation: no focus guard",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="Enter on an Unwatched row ranked a show",
+        guards="a keyboard user opening a show from the list marks it watched "
+               "without ever seeing it",
+    ),
+    Mutation(
+        name="opening another show keeps the last one being placed",
+        path=RANDOMIZE,
+        find="    if (placingId != null && placingId !== id) placingId = null;",
+        replace="    if (false && placingId != null && placingId !== id) placingId = null; // mutation",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="opening another show kept the last one's placement",
+        guards="the next show has no Rank it, and its arrows move the previous "
+               "show around the rail",
+    ),
+    Mutation(
+        name="opening another show mid-episode starts its episode unasked",
+        path=RANDOMIZE,
+        find="    closePlayer();\n    endPlacementUnless(id);",
+        replace="    endPlacementUnless(id); // mutation: player flag kept",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="opening another show started its episode unasked",
+        guards="clicking another show in the list starts a transcode nobody "
+               "pressed Watch for",
+    ),
+    Mutation(
+        name="an unmounted player no longer stops its transcode",
+        path=PLAYER,
+        # The pane's X, another show, Spin again, a season change - every way
+        # out of an episode ends here. Jellyfin's ffmpeg otherwise writes the
+        # whole episode to the transcode cache, which once filled the disk.
+        find="    // out on a box that is also serving everyone else.\n    stopSession(playSessionId);\n  });",
+        replace="    // out on a box that is also serving everyone else.\n    /* mutation: no stop */\n  });",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="mid-episode did not stop the old transcode",
+        guards="every episode left behind keeps an ffmpeg encoding to disk",
+    ),
+    Mutation(
+        name="a dragged show lands one place off its drop line",
+        path=RANKING_EXPANDED,
+        find="  $: dropTo = lineAt ? lineAt.i + (lineAt.after ? 1 : 0) : -1;",
+        replace="  $: dropTo = lineAt ? lineAt.i : -1; // mutation",
+        flows=("expanded ranking",),
+        test=T_UI,
+        expect="the dragged show landed in the wrong place",
+        guards="a show dropped below a line lands above it",
+    ),
+    Mutation(
+        name="\"put it last\" puts the show second to last",
+        path=RANKING_EXPANDED,
+        find="            style=\"grid-row: span {listRows - (n % listRows)}\"\n"
+             "            on:pointerenter={() => (hoverIdx = n)}\n"
+             "            on:pointerleave={() => { if (hoverIdx === n) hoverIdx = -1; }}\n"
+             "            on:click={() => clickItem(n)}></div>",
+        replace="            style=\"grid-row: span {listRows - (n % listRows)}\"\n"
+                "            on:pointerenter={() => (hoverIdx = n)}\n"
+                "            on:pointerleave={() => { if (hoverIdx === n) hoverIdx = -1; }}\n"
+                "            on:click={() => clickItem(n - 1)}></div>",
+        flows=("expanded ranking",),
+        test=T_UI,
+        expect="\"put it last\" did not put the show last",
+        guards="the worst show of the season can never be ranked last",
+    ),
+    Mutation(
+        name="the expanded ranking forgets its view",
+        path=RANKING_EXPANDED,
+        find="    try { localStorage.setItem(VIEW_KEY, v); } catch",
+        replace="    try { void VIEW_KEY; /* mutation */ } catch",
+        flows=("expanded ranking",),
+        test=T_UI,
+        expect="the expanded ranking forgot the Posters view on reload",
+        guards="the group's chosen view resets to List on every visit",
+    ),
+    Mutation(
+        name="double-clicking a wheel slice opens the mirrored slice",
+        path=RANDOMIZE,
+        find="    const screenDeg = (Math.atan2(dx, -dy) * 180) / Math.PI;",
+        replace="    const screenDeg = (Math.atan2(-dx, -dy) * 180) / Math.PI; // mutation",
+        flows=("slice double-click",),
+        test=T_UI,
+        expect="- a different show",
+        guards="double-clicking a slice opens some other show, which looks "
+               "like it worked",
+    ),
+    Mutation(
+        name="Copy list overwrites a list made in another tab",
+        path=COPY_PANEL,
+        # PUT /api/list replaces the whole season.
+        find="      if (mine.length) {",
+        replace="      if (false && mine.length) { // mutation",
+        flows=("copy list",),
+        test=T_UI,
+        expect="Copy overwrote a list made since the panel opened",
+        guards="a list ranked on another device is wiped by a copy",
+    ),
+    Mutation(
+        name="copy list repeats a show two accounts both ranked",
+        path=COPY_LIB,
+        find="    const fresh = list.entries.map((e) => e.mediaId).filter((id) => !seen.has(id));",
+        replace="    const fresh = list.entries.map((e) => e.mediaId); // mutation",
+        test=T_FE_UNIT,
+        # Not the test's name: node prints "# Subtest: <name>" for every test,
+        # passing or not, so a name would match a red run for any reason.
+        expect="a later account offered a show an earlier list already holds",
+        guards="the copied wheel holds the same show twice",
+    ),
+    Mutation(
+        name="copy list saves an unticked account's shows",
+        path=COPY_LIB,
+        find="    if (excluded.has(list.user)) continue;",
+        replace="    if (false && excluded.has(list.user)) continue; // mutation",
+        test=T_FE_UNIT,
+        expect="an unticked account's shows were saved anyway",
+        guards="unticking an account in the copy panel does nothing",
+    ),
+    Mutation(
+        name="a reorder lands one place below where it was dropped",
+        path=RANK_LIB,
+        find="  const dest = from < to ? to - 1 : to;",
+        replace="  const dest = to; // mutation",
+        test=T_FE_UNIT,
+        expect="a show moved down landed ON the target index instead of in front of it",
+        guards="every downward move in the rail and the expanded ranking lands "
+               "one place too low",
     ),
     Mutation(
         name="the wheel area shrinks with the wheel, taking the lists with it",
@@ -3866,7 +3996,7 @@ def wait_for_backend(timeout: float = 90.0) -> None:
 #: Tests that read the mutated file off disk and compile it themselves, never
 #: talking to :3000. `npm run test:unit` is node --test over the .test.ts files;
 #: the replay is pure and makes zero HTTP calls (asserted: no requests import).
-OFFLINE_TESTS = (T_UNIT, T_REPLAY, T_YTGUARD, T_VERDICT)
+OFFLINE_TESTS = (T_UNIT, T_FE_UNIT, T_REPLAY, T_YTGUARD, T_VERDICT)
 
 
 def _is_offline(m: Mutation) -> bool:
@@ -3919,6 +4049,12 @@ def restore(m: Mutation, wait: bool = True) -> None:
     global _backend_pending
     git("checkout", "--", *m.paths)
     if not any(p.startswith("backend/") for p in m.paths):
+        # A frontend revert needs Vite to see it before the next row edits the
+        # same file. Without this wait, the next CSS-only row on Randomize
+        # (row 243 then 244) was served the CLEAN file and SURVIVED every time
+        # through the audit, while caught by the same flow run alone.
+        if wait and m.settle and not _is_offline(m):
+            time.sleep(m.settle)
         return
     if wait and m.settle and not _is_offline(m):
         wait_for_backend()
@@ -3936,6 +4072,8 @@ def _describe(m: Mutation) -> str:
     """
     if m.test is T_UNIT:
         return "backend unit suite"
+    if m.test is T_FE_UNIT:
+        return "frontend unit suite"
     if m.test is T_JELLYFIN:
         return "jellyfin, 13 live steps"
     if m.test is T_REPLAY:

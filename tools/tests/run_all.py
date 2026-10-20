@@ -173,6 +173,9 @@ def main():
         ("candidate sep",    ["py", "-3.13", "-u", str(TESTS / "test_candidate_separation.py"),
                               "--backend", args.backend],     None, 60),
         ("title match",      ["npm", "run", "test:unit"],     REPO / "backend",  60),
+        # Pure frontend helpers (node --test, no servers): Randomize's reorder
+        # arithmetic and the copy-list rules, which decide what is saved.
+        ("frontend unit",    ["npm", "run", "test:unit"],     REPO / "frontend", 60),
         # `vite build` does not type-check .svelte script blocks, so a reference
         # to a deleted identifier compiles and ships. This is the only check
         # that catches it.

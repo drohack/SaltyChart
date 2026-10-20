@@ -18,13 +18,13 @@ inferred from a canvas nothing could read. Step 8 compares the same frames
 with subtitles on and off; step 9 covers the stream restart that a quality
 or track change costs.
 
-So this drives the real thing: pop-up -> Watch -> playing, and asserts the
-parts that can regress silently. The steps: pop-up pre-warm fires (no stream
+So this drives the real thing: Randomize's show pane -> Watch -> playing, and
+asserts the parts that can regress silently. The steps: the pane's pre-warm fires (no stream
 starts early, no libass/font requests come back), playback advances, exactly
 one subtitle menu with a plain-English default, `[`/`]` stepping 0.10 with
 the control bar hidden, burned-in subtitles verified in the pixels (12 frames
 sampled with subtitles on and off), the quality menu reaching 480p in exactly
-one restart, Escape stopping the transcode.
+one restart, closing the pane stopping the transcode.
 
 Three structural rules, each learned the hard way:
 
@@ -256,26 +256,27 @@ def main():
             btn.first.click()
             page.wait_for_timeout(2500)
 
-        step(3, "open the pop-up and confirm the Watch button")
+        step(3, "open the show pane and confirm the Watch button")
         item = page.locator("li", has_text=target["title"][:24]).first
         try:
             item.wait_for(timeout=20_000)
             item.click()
         except Exception:
             fail(3, f"never found {target['title'][:32]!r} in the unwatched list")
-        watch = page.locator("button", has_text="Watch here (via Jellyfin)").first
+        # The poster is the video's cover, and Watch sits on it (`[data-watch]`).
+        watch = page.locator("[data-watch]").first
         try:
             watch.wait_for(timeout=30_000)
         except Exception:
             fail(3, "the Watch button never appeared for a series known to be available")
-        step(3, "PASS - '> Watch here (via Jellyfin)' shown")
+        step(3, "PASS - Watch shown on the poster")
 
-        # -- 4  Pre-warm happened while the pop-up sat open --
+        # -- 4  Pre-warm happened while the pane sat open --
         if want(4):
-         step(4, "pop-up pre-warmed the player before Watch was pressed")
+         step(4, "the pane pre-warmed the player before Watch was pressed")
          page.wait_for_timeout(2500)
          # With subtitles burned in there is nothing client-side left to warm -
-         # no wasm, no fonts, no subtitle body. What the pop-up buys is the
+         # no wasm, no fonts, no subtitle body. What the pane buys is the
          # PlaybackInfo round trip, and the assertion is now also that the
          # deleted stack has stayed deleted: a stray jassub or /attachments
          # request means the old path crept back in.
@@ -299,7 +300,7 @@ def main():
 
          # Pre-starting the stream is deliberately NOT done: Jellyfin's ffmpeg
          # writes segments until the file is done regardless of the playhead,
-         # so an abandoned pop-up would remux a whole episode to disk.
+         # so an abandoned pane would remux a whole episode to disk.
          if page.evaluate("() => performance.getEntriesByType('resource')"
                           ".filter(e => /jellyfin\\/stream/.test(e.name)).length"):
              fail(4, "the stream was started before Watch was pressed")
@@ -442,7 +443,7 @@ def main():
          # carries a different playSessionId, so every segment URL is new and the
          # HTTP cache cannot serve the old ones either. It costs one extra stream
          # start; determinism here is worth more than the ~40s.
-         page.keyboard.press("Escape")
+         page.click("[data-popup-close]")
          page.wait_for_timeout(1500)
          page.reload()
          page.wait_for_timeout(2000)
@@ -454,7 +455,7 @@ def main():
          try:
              _item.wait_for(timeout=20_000)
              _item.click()
-             _watch = page.locator("button", has_text="Watch here (via Jellyfin)").first
+             _watch = page.locator("[data-watch]").first
              _watch.wait_for(timeout=30_000)
              _watch.click()
              page.wait_for_function(
@@ -668,31 +669,32 @@ def main():
                  f"({playing['frames']} frames), old session stopped, no play-button "
                  f"flash, seek bar held at {(bar_min or 0) * 100:.0f}%")
 
-        # Always runs, even when steps are filtered: Escape is what tells
+        # Always runs, even when steps are filtered: closing is what tells
         # Jellyfin to tear the transcode down, and skipping it would leave an
         # ffmpeg writing out the rest of the episode after every targeted run.
-        step(10, "Escape closes and stops the transcode; the episode reopens")
+        # The player lives in the show pane, and Escape deliberately does not
+        # close it (one stray key would end the episode) - the pane's X does.
+        step(10, "closing the pane stops the transcode; the episode reopens")
         stops: list[str] = []
         page.on("request", lambda r: stops.append(r.url)
                 if "playback/stop" in r.url else None)
-        page.keyboard.press("Escape")
+        page.click("[data-popup-close]")
         page.wait_for_timeout(2000)
         if page.locator("video").count():
-            fail(10, "the player is still open after Escape")
+            fail(10, "the player is still open after closing the pane")
         if not stops:
             fail(10, "closing did not tell Jellyfin to stop the transcode")
 
         # Reopening the SAME episode reuses a cached playbackInfo - including
         # the playSessionId we just told Jellyfin to tear down. It works, but
         # only because Jellyfin is lenient about it, so pin the behaviour.
-        # Closing the player leaves the show pop-up open behind it, so the
-        # Watch button is still there - no need to reselect the series.
         if not want(10):
             step(10, "PASS - closed and transcode stopped (reopen check not selected)")
             browser.close()
             print(f"Player: steps {sorted(ONLY or [])} passed - OK", flush=True)
             return
-        watch2 = page.locator("button", has_text="Watch here (via Jellyfin)").first
+        page.locator("li", has_text=target["title"][:24]).first.click()
+        watch2 = page.locator("[data-watch]").first
         watch2.wait_for(timeout=30_000)
         watch2.click()
         try:
@@ -702,7 +704,7 @@ def main():
                 timeout=60_000)
         except Exception:
             fail(10, "reopening the same episode did not play (stale playSessionId?)")
-        page.keyboard.press("Escape")
+        page.click("[data-popup-close]")
         page.wait_for_timeout(1500)
         step(10, "PASS - closed, transcode stopped, and the same episode reopens")
 
