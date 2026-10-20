@@ -197,7 +197,7 @@ phase plus 353 s of sequential checks) and `test_player`
 starts real transcodes on the box that also serves Plex and Jellyfin - an
 agent ran it three times in one evening during which nothing was deployed,
 which is exactly the load this schedule exists to avoid. The audit is **not** a gate - it edits tracked source, restarts the
-backend twice per row (269 rows as of 2026-10-20) and starts real transcodes, which is not
+backend twice per row (272 rows as of 2026-10-20) and starts real transcodes, which is not
 something to do casually on a box that also serves Plex and Jellyfin. **It
 times itself**: a full run ends with `N rows, M min, measured <date>`, and that
 line is the only figure worth quoting. Last measured: **253 rows in 53 min**

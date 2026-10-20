@@ -635,18 +635,34 @@ let hideWriteError = '';
   /** The just-watched show being placed in the rank list, or null. */
   let placingId: number | null = null;
   let rankSidebar: any;
-  $: unwatchedOnScreen = !sessionMode;
   function stripClick() {
-    // A show opened from the docked list: the strip reads "hide the list", so
-    // it tucks the list and the show keeps the room. Closing the show here is
-    // only for when the list is already tucked away.
-    if (showModal && !unwatchedOnScreen) {
+    // With a show open the list is always tucked (closeListsForShow), so
+    // reaching for it means going back to the wheel: close the show - and its
+    // episode - and dock the list. With no show it docks or tucks the list.
+    if (showModal) {
       showModal = false; // closes the player with it
       sessionMode = false;
     } else {
       sessionMode = !sessionMode;
     }
   }
+  // Whatever opens a show - a spin, an Unwatched row, a wheel slice, the
+  // Watched rail or the expanded ranking - closes the lists behind it, so
+  // nothing is left open in the background (the owner's rule, 2026-10-20). On
+  // a PC that is the same tucked Unwatched list a spin gives; the Watched rail
+  // stays, because the pane is laid out beside it and Rank it places the show
+  // there. On a phone both drawers shut. The strip reads `sessionMode` itself,
+  // never a `$:` copy of it: Svelte orders reactive statements by the
+  // assignments it can SEE, and one made inside this function ran after such a
+  // copy, so the list tucked while the strip still said "Hide".
+  function closeListsForShow() {
+    if (window.matchMedia('(min-width: 1024px)').matches) sessionMode = true;
+    else {
+      unwatchedCollapsed = true;
+      watchedCollapsed = true;
+    }
+  }
+  $: if (showModal) closeListsForShow();
   function tuckUnwatched() {
     // Phones: the list slides over the page and this just closes it. Desktop:
     // the same tucked state the first spin produces, without spinning.
@@ -1659,6 +1675,7 @@ $: {
     const v = inlineVideo();
     pausedByExpand = !!v && !v.paused;
     if (pausedByExpand) v!.pause();
+    closeListsForShow();
     rankExpanded = true;
   }
   function collapseRanking() {
@@ -2278,18 +2295,18 @@ $: {
 
     <!-- On desktop this strip is the ONE control for the Unwatched list:
          it docks the list (the wheel glides over to make room) and tucks it away
-         again (the wheel glides back to the middle). Every spin tucks it. With a
-         show's pane up and the list tucked, a click closes the pane and docks
-         the list beside the wheel - the wheel is what matters if someone reaches
-         for the list. With the list docked beside a pane, it only tucks the list. -->
+         again (the wheel glides back to the middle). Every spin - and every
+         other way of opening a show - tucks it. With a show's pane up, a click
+         closes the pane and docks the list beside the wheel - the wheel is what
+         matters if someone reaches for the list. -->
     <button
       class="hidden lg:flex absolute z-[45] left-0 top-0 bottom-0 w-8 bg-base-200 hover:bg-base-300 shadow items-center justify-center"
-      aria-label={unwatchedOnScreen ? 'Hide the Unwatched list' : 'Show the Unwatched list'}
+      aria-label={sessionMode ? 'Show the Unwatched list' : 'Hide the Unwatched list'}
       data-unwatched-drawer
       on:click={stripClick}
     >
       <span class="[writing-mode:vertical-rl] rotate-180 text-xs tracking-widest opacity-70 whitespace-nowrap">
-        {@html unwatchedOnScreen ? '&lsaquo;' : '&rsaquo;'} UNWATCHED ({unwatchedShownCount})
+        {@html sessionMode ? '&rsaquo;' : '&lsaquo;'} UNWATCHED ({unwatchedShownCount})
       </span>
     </button>
 
@@ -2841,9 +2858,9 @@ $: {
     .wheel-area { padding-left: calc(20rem + 7px + 2rem); }
     .wheel-area.session-pad { padding-left: 2.5rem; }
   }
-  /* The show pane starts beside the Unwatched list when it is docked
-     (opening a show from the list during setup put the pane UNDER the list,
-     hiding the poster) and beside the strip when tucked - same glide. */
+  /* The show pane sits beside the strip: opening it tucks the Unwatched list
+     (closeListsForShow), and the pane glides with the list's own slide. The
+     docked padding is what it glides from. */
   @media (min-width: 1024px) {
     .inline-card { padding-left: calc(16rem + 7px + 2rem); transition: padding-left 300ms cubic-bezier(0.4, 0, 0.2, 1); }
     .inline-card.pane-tucked { padding-left: 2.5rem; }

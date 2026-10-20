@@ -83,7 +83,14 @@ happen with only a console line. Flow 45.
   rotation; flow 49 clicks at a slice's own label, since a sign error opens a
   different show and looks like it worked). After the first spin the page is
   "in session": the Unwatched list tucks behind a pull-out strip (`sessionMode`)
-  and a season change docks it again.
+  and a season change docks it again. **Every way of opening a show closes the
+  lists behind it** (`closeListsForShow`, the owner's rule): a spin, an
+  Unwatched row, a wheel slice, the rail, the expanded ranking (which tucks the
+  list too). On a PC that is the tucked Unwatched list - the Watched rail stays,
+  the pane is laid out beside it; on a phone both drawers shut. The strip reads
+  `sessionMode` itself, never a `$:` copy: Svelte orders reactive statements by
+  the assignments it can see, and the one inside that function ran after such a
+  copy, so the list tucked while the strip still said "Hide". Flows 40/48/49.
 - Hide controls: per-show context menu, plus **Hide All / Show All / Hide Not
   in Library / Hide Not English** (the last two only when Jellyfin is
   configured, using the batch availability cache), and a "N shown, M hidden"

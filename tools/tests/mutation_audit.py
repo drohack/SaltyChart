@@ -3616,6 +3616,40 @@ MUTATIONS: list[Mutation] = [
                "episode is closed",
     ),
     Mutation(
+        name="opening a show leaves the Unwatched list open behind it",
+        path=RANDOMIZE,
+        # Every way of opening a show closes the lists (the owner's rule). A
+        # spin always did; a list row and a wheel slice did not.
+        find="  $: if (showModal) closeListsForShow();",
+        replace="  $: if (false && showModal) closeListsForShow();",
+        flows=("slice double-click",),
+        test=T_UI,
+        expect="opening a show from the Unwatched list left the list open behind it",
+        guards="a show opened without a spin sits beside an open list",
+    ),
+    Mutation(
+        name="on a phone the drawers stay open behind the show",
+        path=RANDOMIZE,
+        find="      unwatchedCollapsed = true;\n      watchedCollapsed = true;\n    }\n  }",
+        replace="      void 0; // mutation\n    }\n  }",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="opening a show left the Unwatched list open behind it on a phone",
+        guards="closing the sheet on a phone lands back on a list instead of the "
+               "wheel",
+    ),
+    Mutation(
+        name="the expanded ranking leaves the Unwatched list open",
+        path=RANDOMIZE,
+        find="    closeListsForShow();\n    rankExpanded = true;",
+        replace="    rankExpanded = true; // mutation",
+        flows=("expanded ranking",),
+        test=T_UI,
+        expect="opening the expanded ranking left the Unwatched list open behind it",
+        guards="the ranking overlay covers a list that is still open and "
+               "clickable through its edge",
+    ),
+    Mutation(
         name="copy list repeats a show two accounts both ranked",
         path=COPY_LIB,
         find="    const fresh = list.entries.map((e) => e.mediaId).filter((id) => !seen.has(id));",

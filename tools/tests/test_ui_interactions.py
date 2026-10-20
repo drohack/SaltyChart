@@ -3632,6 +3632,16 @@ def pane_title(page) -> str:
     return page.evaluate("() => document.querySelector('[data-inline-card] h3')?.innerText ?? ''")
 
 
+def unwatched_list_open(page) -> bool:
+    """Is the Unwatched list on screen? Tucked (PC) or shut (phone), its
+    right edge is at or near 0 - the PC strip beside it is 2rem wide."""
+    return page.evaluate("""() => {
+        const a = [...document.querySelectorAll('aside')]
+            .find(x => /^\\s*Unwatched/.test(x.querySelector('h3')?.innerText ?? ''));
+        return !!a && a.getBoundingClientRect().right > 40;
+    }""")
+
+
 def held_show(backend: str, token: str) -> int | None:
     """A show in the seeded season that the library HOLDS, or None.
 
@@ -3692,8 +3702,12 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         open_random(page, frontend, token, {"width": 375, "height": 667})
         page.click('button[aria-label="Show Unwatched list"]', timeout=30_000)
         page.wait_for_timeout(400)
+        assert unwatched_list_open(page), "the Unwatched drawer did not open from its tab"
         open_show(page)
         page.wait_for_timeout(800)
+        assert not unwatched_list_open(page), (
+            "opening a show left the Unwatched list open behind it on a phone - every "
+            "way of opening a show must close the lists")
 
         step(40, "step 2/6: the sheet covers the whole screen, over the lists")
         cover = page.evaluate("""() => {
@@ -3976,8 +3990,13 @@ def test_expanded_ranking(page, backend: str, frontend: str, token: str):
         open_random(page, frontend, token, {"width": 1600, "height": 950})
         page.evaluate("() => localStorage.removeItem('randomizeRankView')")
         page.wait_for_selector("[data-rank-expand]", timeout=30_000)
+        page.wait_for_timeout(500)
+        assert unwatched_list_open(page), "the Unwatched list is not docked before a spin"
         page.click("[data-rank-expand]")
         page.wait_for_selector("[data-rank-collapse]", timeout=10_000)
+        page.wait_for_timeout(500)
+        assert not unwatched_list_open(page), (
+            "opening the expanded ranking left the Unwatched list open behind it")
 
         step(48, "step 2/6: Posters and List both draw every show, and the choice is remembered")
         page.click("[data-rank-view] button:has-text('Posters')")
@@ -4059,7 +4078,7 @@ def test_slice_double_click(page, backend: str, frontend: str, token: str):
     a sign error opens a DIFFERENT show - which looks like it worked. This clicks
     at a slice's own label and checks the pane is that show.
     """
-    step(49, "step 1/2: seeding a list and opening /random at 1600x950")
+    step(49, "step 1/3: seeding a list and opening /random at 1600x950")
     ids = season_ids(backend, 5)
     seed_list(backend, token, ids)
     unhide(backend, token, ids)
@@ -4069,18 +4088,38 @@ def test_slice_double_click(page, backend: str, frontend: str, token: str):
         page.wait_for_selector("#wheel-wrapper svg text", timeout=30_000)
         page.wait_for_timeout(800)
 
-        step(49, "step 2/2: double-clicking two different slices opens each one's show")
+        step(49, "step 2/3: a show opened from the docked Unwatched list tucks the list")
+        # Before a spin the list is docked. A spin tucks it; every other way of
+        # opening a show must too, or the list stays open behind the show.
+        assert unwatched_list_open(page), "the Unwatched list is not docked before a spin"
+        open_show(page)
+        page.wait_for_timeout(600)
+        assert not unwatched_list_open(page), (
+            "opening a show from the Unwatched list left the list open behind it")
+        page.click("[data-popup-close]")
+        page.wait_for_selector("[data-inline-card]", state="detached", timeout=5_000)
+        page.click('button[aria-label="Show the Unwatched list"]')
+        page.wait_for_timeout(600)
+        assert unwatched_list_open(page), "the strip did not dock the Unwatched list again"
+
+        step(49, "step 3/3: double-clicking two different slices opens each one's show, list tucked")
         labels = page.evaluate("""() => [...document.querySelectorAll('#wheel-wrapper svg text')]
             .map(t => { const r = t.getBoundingClientRect();
                 return { text: t.textContent.trim(), x: r.left + r.width / 2, y: r.top + r.height / 2 }; })
             .filter(l => l.text)""")
         assert len(labels) >= 2, f"the wheel has {len(labels)} labelled slices"
         for lab in (labels[0], labels[len(labels) // 2]):
+            if not unwatched_list_open(page):
+                page.click('button[aria-label="Show the Unwatched list"]')
+                page.wait_for_timeout(600)
             page.mouse.dblclick(lab["x"], lab["y"])
             try:
                 page.wait_for_selector("[data-inline-card]", timeout=5_000)
             except Exception:
                 raise AssertionError(f"double-clicking the slice {lab['text']!r} did not open its show")
+            page.wait_for_timeout(600)
+            assert not unwatched_list_open(page), (
+                "double-clicking a slice left the Unwatched list open behind the show")
             want = lab["text"].replace("...", "").replace("\u2026", "").strip()
             got = pane_title(page)
             assert got.startswith(want[:12]), (
