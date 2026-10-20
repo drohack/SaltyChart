@@ -300,7 +300,7 @@ chronological order; all features listed are live.
 - **The rolled show replaces the wheel** instead of popping up over the page:
   the poster is the video's cover until you press Watch, the episode plays in
   the same box, and other people's nicknames sit beside it. On a phone it opens
-  as a full-screen sheet. However a show is opened - a spin, a click in the
+  as a full-screen sheet, with Watch on its own row under the poster. However a show is opened - a spin, a click in the
   Unwatched list, a slice - the lists close behind it. Escape doesn't close a
   playing episode - the X does.
 - **Rank it** marks the show watched without closing it (the episode keeps

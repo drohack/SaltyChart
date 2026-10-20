@@ -663,6 +663,20 @@ let hideWriteError = '';
     }
   }
   $: if (showModal) closeListsForShow();
+
+  // Below `sm` the show is a full-screen sheet, and Watch moves off the poster
+  // onto its own row above the buttons: a big button over the poster hid most
+  // of it on a phone (the owner's call). The query matches the sheet's CSS
+  // breakpoint exactly, so the two can never disagree about which layout this is.
+  const PHONE_QUERY = '(max-width: 639.98px)';
+  let isPhone = false;
+  onMount(() => {
+    const mq = window.matchMedia(PHONE_QUERY);
+    const sync = () => (isPhone = mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  });
   function tuckUnwatched() {
     // Phones: the list slides over the page and this just closes it. Desktop:
     // the same tucked state the first spin produces, without spinning.
@@ -1133,6 +1147,7 @@ import SliceWorker from '../workers/slice-worker?worker';
   import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
   import RankingExpanded from '../components/RankingExpanded.svelte';
   import CopyListPanel from '../components/CopyListPanel.svelte';
+  import WatchControl from '../components/WatchControl.svelte';
 import { onDestroy } from 'svelte';
 const sliceWorker: Worker = new SliceWorker();
 
@@ -2608,24 +2623,11 @@ $: {
                 <!-- The poster IS the video's cover until Watch. -->
                 <img class="absolute inset-y-0 left-1/2 -translate-x-1/2 h-full w-auto shadow-2xl" alt={getDisplayTitle(selected)}
                   src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} />
-                <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4">
-                  {#if watchInfo?.available}
-                    <button class="btn btn-accent btn-lg gap-2 shadow-lg" class:btn-disabled={openingPlayer} on:click={openPlayer} data-watch>
-                      {#if openingPlayer}<span class="loading loading-spinner loading-sm"></span> Opening...{:else}<svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg> Watch{/if}
-                      {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}{/if}
-                    </button>
-                  {:else if $mediaConfigured && watchInfo?.unknown}
-                    <span class="opacity-80">Couldn't reach the media server - try again shortly</span>
-                  {:else if $mediaConfigured && watchInfo?.notAired}
-                    <span class="opacity-80" data-not-aired>Not aired yet</span>
-                  {:else if $mediaConfigured && watchInfo && !watchInfo.available}
-                    <span class="opacity-80">Not in library{watchInfo.libraryTitle ? ` (found "${watchInfo.libraryTitle}" but not this season)` : ''}</span>
-                  {:else if $mediaConfigured}
-                    <span class="loading loading-spinner loading-md"></span>
-                  {:else}
-                    <span class="opacity-70">No media server set up</span>
-                  {/if}
-                </div>
+                {#if !isPhone}
+                  <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4">
+                    <WatchControl {watchInfo} {openingPlayer} mediaConfigured={$mediaConfigured} on:watch={openPlayer} />
+                  </div>
+                {/if}
               {/if}
             </div>
           </div>
@@ -2657,6 +2659,11 @@ $: {
               </div>
             {/if}
           </div>
+          {#if isPhone && !showPlayer}
+            <div class="pg-watch flex justify-center text-sm text-center" data-watch-row>
+              <WatchControl variant="row" {watchInfo} {openingPlayer} mediaConfigured={$mediaConfigured} on:watch={openPlayer} />
+            </div>
+          {/if}
           <div class="pg-nicks min-h-0 overflow-y-auto text-sm" data-nickname-col>
             <h4 class="font-semibold mb-1">Other users' nicknames</h4>
             <ul class="flex flex-col gap-1">
@@ -2922,9 +2929,10 @@ $: {
     .pg-video .pane-video { width: 100%; }
     .pg-ep { order: 2; }
     .ep-row { height: auto; flex-wrap: wrap; }
-    .pg-acts { order: 3; align-self: stretch; }
+    .pg-watch { order: 3; }
+    .pg-acts { order: 4; align-self: stretch; }
     .pg-acts > :global(*) { flex: 1 1 0; min-width: 0; margin: 0; padding-inline: 0.5rem; }
-    .pg-nicks { order: 4; overflow: visible; }
+    .pg-nicks { order: 5; overflow: visible; }
   }
 
   /* Button background image via pseudo-element to layer above triangle */

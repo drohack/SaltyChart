@@ -3726,6 +3726,18 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         assert video_w >= 375 * 0.8, (
             f"the video is squeezed on a phone ({video_w:.0f}px of 375) - the PC grid's "
             "nickname column is taking the width")
+        # Watch - or the reason there is nothing to watch - has its own row on a
+        # phone. Over the poster, a full-size button hid most of it.
+        cover = page.evaluate("""() => {
+            const v = document.querySelector('[data-video-box]').getBoundingClientRect();
+            const row = document.querySelector('[data-watch-row]');
+            return { onPoster: !!document.querySelector('[data-video-box] [data-watch], [data-video-box] [data-not-aired]')
+                       || [...document.querySelectorAll('[data-video-box] .loading, [data-video-box] span.opacity-80')].length > 0,
+                     row: !!row, rowTop: row ? Math.round(row.getBoundingClientRect().top) : null, videoBottom: Math.round(v.bottom) };
+        }""")
+        assert cover["row"] and not cover["onPoster"] and cover["rowTop"] >= cover["videoBottom"], (
+            f"Watch covers the poster on a phone ({cover}) - it belongs on its own row "
+            "under the video")
         reach = page.evaluate("""() => [...document.querySelectorAll(
                 '[data-popup-close], [data-pane-actions] button, [data-watch]')]
             .map(b => { const r = b.getBoundingClientRect();
