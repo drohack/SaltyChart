@@ -693,7 +693,10 @@ def main():
             browser.close()
             print(f"Player: steps {sorted(ONLY or [])} passed - OK", flush=True)
             return
-        page.locator("li", has_text=target["title"][:24]).first.click()
+        # Opening the show tucked the Unwatched list off-screen (every way of
+        # opening a show closes the lists), so the row is clicked on the
+        # element, not at a screen position the list has slid away from.
+        page.locator("li", has_text=target["title"][:24]).first.evaluate("el => el.click()")
         watch2 = page.locator("[data-watch]").first
         watch2.wait_for(timeout=30_000)
         watch2.click()
