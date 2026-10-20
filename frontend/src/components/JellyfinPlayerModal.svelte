@@ -29,9 +29,6 @@
   export let itemId: string;
   /** Which media source (a file) of that item to play. */
   export let mediaSourceId: string;
-  /** Series display name (custom nickname or title). */
-  export let title: string;
-  export let episodeTitle = '';
 
   const dispatch = createEventDispatcher();
 
@@ -249,7 +246,6 @@
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
     if (e.key === ']') changeRate(+0.1);
     else if (e.key === '[') changeRate(-0.1);
-    else if (e.key === 'Escape' && !player?.isFullscreen?.()) dispatch('close');
     else return;
     e.stopPropagation();
     e.preventDefault();
@@ -260,7 +256,7 @@
    *
    * `play()` rejects for two very different reasons and only one of them means
    * the viewer has to do something:
-   *   - `NotAllowedError` - autoplay policy. The gesture that opened the modal
+   *   - `NotAllowedError` - autoplay policy. The gesture that started the player
    *     is too old, nothing will start without a click, so show the button.
    *   - `AbortError` - the play was interrupted by a `pause()` or a new
    *     `load()`. That happens on every deliberate stream rebuild, and playback
@@ -390,8 +386,8 @@
   /**
    * Tell Jellyfin to tear a transcode down.
    *
-   * Needed on two paths, and it is the same call for both: closing the modal,
-   * and abandoning a session mid-playback to rebuild the stream. Nothing else
+   * Needed on two paths, and it is the same call for both: the player going
+   * away (the show pane closing, or the page itself), and abandoning a session mid-playback to rebuild the stream. Nothing else
    * stops these - Jellyfin only reclaims a session on its own idle timeout, and
    * its ffmpeg keeps writing to the transcode cache in the meantime.
    *
@@ -494,7 +490,7 @@
       // The session we walked away from still has an ffmpeg attached, and
       // Jellyfin's writes to the transcode cache until the whole episode is
       // done regardless of where anyone is watching (jellyfin#16608). Closing
-      // the modal only ever stopped the *current* session, so before this every
+      // the player only ever stopped the *current* session, so before this every
       // quality or subtitle change left one behind re-encoding a ~1 GB episode
       // for nobody.
       //
@@ -554,7 +550,7 @@
       experimentalSvgIcons: true,
       controlBar: {
         // PiP removed deliberately - the browser's mini-player fights the
-        // modal and the transcode session; use fullscreen instead.
+        // pane and the transcode session; use fullscreen instead.
         pictureInPictureToggle: false,
         skipButtons: { forward: 10, backward: 10 },
       },
@@ -645,7 +641,7 @@
     });
 
     // The session id and subtitle tracks - normally already
-    // resolved, because the show pop-up asked for them when it opened.
+    // resolved, because the show pane asked for them when it opened.
     // The first call tells us which tracks exist; the chosen one then has to
     // be baked into the stream, so the request we actually play is the second.
     const probe = await playbackInfo(itemId, mediaSourceId, { quality });
@@ -724,34 +720,12 @@
   });
 </script>
 
-<dialog open class="modal z-[999]">
-  <!-- Sized like the trailer modal, which scales with the viewport. This was
-       `max-w-5xl`, a hard 64rem cap at any screen size - ~1024px of video on a
-       1905px display against the trailer's ~1524px.
-       The video itself is fully fluid - it is always a percentage of the window
-       and never a fixed size. The one constant is the `8rem` allowance for the
-       title row, the hint and the padding, used to stop a *tall* video pushing
-       the modal past the viewport on a short screen. It is a bound, not a size:
-       it only binds when height would otherwise be the limit, and being a little
-       generous just means a slightly smaller video, never an overlap.
-       Constraining height directly instead (forcing the player to fill a
-       fixed-height box) is what letterboxed the picture and stranded the control
-       bar in the dead space below it.
-       Randomize's show pop-up (`.show-popup` in Randomize.svelte) mirrors this
-       box's size so it is never taller than the player; change both together. -->
-  <div class="modal-box w-[95%] md:w-5/6 lg:w-4/5 max-w-[calc((92vh-8rem)*16/9)] p-3 pb-1.5 flex flex-col gap-1.5">
-    <div class="shrink-0 flex items-center justify-between gap-2">
-      <h3 class="font-bold text-lg truncate">
-        {title}
-        {#if episodeTitle}<span class="opacity-60 font-normal"> - {episodeTitle}</span>{/if}
-      </h3>
-      <button
-        class="btn btn-sm btn-circle btn-ghost shrink-0"
-        aria-label="Close player"
-        on:click={() => dispatch('close')}>&#10005;</button
-      >
-    </div>
-
+<!-- Renders inside Randomize's show pane, which owns the size (`.pane-video`,
+     a 16:9 box), the title, the close button and the speed-key hint. The player
+     only has to fill the width it is given. Constraining height directly instead
+     (forcing the player to fill a fixed-height box) is what once letterboxed the
+     picture and stranded the control bar in the dead space below it. -->
+<div class="sc-inline w-full">
     <div class="sc-stage relative">
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={videoEl} class="video-js vjs-big-play-centered w-full" playsinline></video>
@@ -807,15 +781,7 @@
         x{rate.toFixed(2)}
       </div>
     </div>
-
-    <!-- 6px above (the column's `gap-1.5`) and 6px below (`pb-1.5` overriding
-         the modal's `p-3`), so the hint sits in an evenly balanced band and the
-         video gets the space instead. -->
-    <p class="shrink-0 text-xs opacity-50 m-0 text-center">
-      <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10&times;
-    </p>
-  </div>
-</dialog>
+</div>
 
 <style>
   /*
@@ -852,6 +818,16 @@
    */
   :global(.video-js.sc-rebuilding .vjs-play-progress) {
     width: var(--sc-resume, 0%) !important;
+  }
+  /* In the pane the player is ~430px wide on a laptop and the full bar needs
+     ~520px - the box clipped quality and fullscreen off the end. Out of
+     fullscreen, drop what fullscreen brings back. */
+  :global(.sc-inline .video-js:not(.vjs-fullscreen) .vjs-control-bar .vjs-skip-backward-10),
+  :global(.sc-inline .video-js:not(.vjs-fullscreen) .vjs-control-bar .vjs-skip-forward-10),
+  :global(.sc-inline .video-js:not(.vjs-fullscreen) .vjs-control-bar .vjs-remaining-time),
+  :global(.sc-inline .video-js:not(.vjs-fullscreen) .vjs-control-bar .vjs-time-divider),
+  :global(.sc-inline .video-js:not(.vjs-fullscreen) .vjs-control-bar .vjs-duration) {
+    display: none !important;
   }
   /* The default skin hides these; they're the most useful readouts there are. */
   :global(.video-js .vjs-control-bar .vjs-current-time),
@@ -893,7 +869,7 @@
   /* Fullscreen needs its own rule. The flash is re-parented into `player.el()`
      on mount (so it survives fullscreen at all - the overlay would otherwise be
      outside the fullscreen subtree), but `.sc-stage` stays laid out at the
-     modal's size while `.video-js` fills the screen. A container query would
+     pane's size while `.video-js` fills the screen. A container query would
      therefore resolve against the *small* box and render the smallest text
      exactly when the screen is largest. In fullscreen the player is the
      viewport, so viewport units are the honest measure. */

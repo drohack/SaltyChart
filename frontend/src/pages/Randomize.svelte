@@ -187,7 +187,7 @@ let hideWriteError = '';
       // Title-only (`matchedBy === 'title'`) matches need no guard here: they
       // report `available: true`, so this only ever *keeps* them. That is the
       // conservative direction - an unconfirmed match's danger is playing the
-      // wrong series, which the popup warns about, not vanishing from the wheel.
+      // wrong series, which the show pane warns about, not vanishing from the wheel.
       //
       // An unaired show is asked like any other: "not in the library" means no
       // file, whatever the calendar says. Unaired shows used to be kept without
@@ -295,7 +295,7 @@ let hideWriteError = '';
     if (failed.length) revertHidden(failed, !targetHidden, 1);
   }
 
-  // Fetch nickname list whenever modal opens (and selected differs). Guarded by
+  // Fetch nickname list whenever the show pane opens (and selected differs). Guarded by
   // the id it was asked for: opening a second show before the first answered
   // let the first show's nicknames land last.
   $: if (showModal && selected) loadNicknames(selected.id);
@@ -311,7 +311,7 @@ let hideWriteError = '';
     }
   }
 
-  // -- Library availability (never blocks the modal) -------------------
+  // -- Library availability (never blocks the pane) -------------------
   let watchInfo: MediaAvailability | null = null;
   let showPlayer = false;
   let JellyfinPlayerModal: any = null;
@@ -327,14 +327,21 @@ let hideWriteError = '';
     const airing = { status: selected.status, startDate: selected.startDate };
     watchInfo = null;
     // Reopening a show must not land in the picker someone left open on a
-    // previous one - the state belongs to this pop-up, not the page.
+    // previous one - the state belongs to this pane, not the page.
     closePicker();
+    // The pane leaves the lists clickable while an episode plays, so another
+    // show can be opened mid-episode. `watchInfo = null` above unmounts the old
+    // player (its onDestroy stops the transcode), but a still-true `showPlayer`
+    // would mount the new show's player as soon as its lookup resolved -
+    // starting a transcode nobody asked for. Each show starts at its Watch.
+    closePlayer();
+    endPlacementUnless(id);
     checkAvailability(id, titles, false, airing)
       .then((info) => {
         // Guard against a stale resolve after the user opened a different show.
         if (selected?.id !== id) return;
         watchInfo = info;
-        // This pop-up stays open while its synopsis is read, so spend that time
+        // This pane stays open while the show is looked over, so spend that time
         // on what the player will want - what is warmed, and why nothing ever
         // touches the HLS manifest, is jellyfinPrewarm.ts's module header.
         if (info.available && info.itemId && info.mediaSourceId) {
@@ -364,7 +371,7 @@ let hideWriteError = '';
    * a file and Jellyfin rescans it, the episode comes back under a NEW item id
    * (PANDOROBO S01E01, 2026-10-09) - and both the session cache here and the
    * server's hour-long one kept offering the dead id, so Watch opened a black
-   * player and a hard reload did not help. Healing it while the synopsis is
+   * player and a hard reload did not help. Healing it while the pane is
    * being read means the viewer never sees it.
    */
   async function warmOrHeal(
@@ -441,7 +448,7 @@ let hideWriteError = '';
   /**
    * "Not the right show?" - let the viewer pin this entry to a library item.
    *
-   * This pop-up is where a wrong match is actually noticed; /admin/matching is
+   * This pane is where a wrong match is actually noticed; /admin/matching is
    * where it could be fixed, and nobody goes there. A pick is written as an
    * identity override, so it is remembered FOR EVERYONE and lands in the admin
    * review queue rather than being one person's private workaround.
@@ -576,7 +583,7 @@ let hideWriteError = '';
       );
       closePicker();
       // Re-resolve so the Watch button points at the picked show's episode.
-      // `fresh` bypasses both caches; the pop-up's own staleness guard applies
+      // `fresh` bypasses both caches; the pane's own staleness guard applies
       // because the viewer may have moved on while this was in flight.
       const info = await checkAvailability(id, titles, true, airing);
       if (selected?.id !== id) return;
@@ -599,6 +606,19 @@ let hideWriteError = '';
     if (showPlayer) showPlayer = false;
   }
 
+  /**
+   * Opening a different show ends the last one's placement. Left running, the
+   * new show's pane had no Enter, its arrows nudged the previous show around
+   * the rail, and every rail click moved that show - until the next spin.
+   * Closing the pane does NOT end it: on a phone the rail is a drawer, and the
+   * show is placed after the sheet is closed. A plain function, so the reactive
+   * block calling it does not depend on `placingId` (Rank it sets that, and a
+   * re-run would unmount the playing episode).
+   */
+  function endPlacementUnless(id: number) {
+    if (placingId != null && placingId !== id) placingId = null;
+  }
+
   // Loading state while fetching list & anime
   let loading = false;
 
@@ -608,6 +628,40 @@ let hideWriteError = '';
 
   let unwatchedCollapsed = true;
   let watchedCollapsed = true;
+
+  // After the first spin the page is "in session": the Unwatched list tucks
+  // into a pull-out strip and the show pane replaces the wheel in place.
+  let sessionMode = false;
+  /** The just-watched show being placed in the rank list, or null. */
+  let placingId: number | null = null;
+  let rankSidebar: any;
+  $: unwatchedOnScreen = !sessionMode;
+  function stripClick() {
+    // A show opened from the docked list: the strip reads "hide the list", so
+    // it tucks the list and the show keeps the room. Closing the show here is
+    // only for when the list is already tucked away.
+    if (showModal && !unwatchedOnScreen) {
+      showModal = false; // closes the player with it
+      sessionMode = false;
+    } else {
+      sessionMode = !sessionMode;
+    }
+  }
+  function tuckUnwatched() {
+    // Phones: the list slides over the page and this just closes it. Desktop:
+    // the same tucked state the first spin produces, without spinning.
+    if (window.matchMedia('(min-width: 1024px)').matches) sessionMode = true;
+    else unwatchedCollapsed = true;
+  }
+  // Changing season starts setup again - the Unwatched list docks back
+  // (and the wheel glides over to make room) so the new season can be prepared.
+  function endSession(..._deps: unknown[]) {
+    sessionMode = false;
+    placingId = null;
+    showModal = false; // the pane belongs to the old season
+    rankExpanded = false;
+  }
+  $: endSession(season, year);
 
   onMount(() => {
     if (window.matchMedia('(min-width: 1024px)').matches) {
@@ -627,12 +681,12 @@ let hideWriteError = '';
   /**
    * The player's page-level weight: the video.js chunk (~0.66 MB built, 1.6 MB
    * unminified from the dev server). It doesn't depend on which show is picked,
-   * so waiting for a pop-up throws away all the time someone spends choosing
+   * so waiting for the show pane throws away all the time someone spends choosing
    * one - and over the web, rather than localhost, that gap is long enough that
    * pressing Watch looks broken.
    *
    * Per-episode data (the episode's PlaybackInfo) can't be fetched this early
-   * and is warmed when the pop-up opens instead.
+   * and is warmed when the pane opens instead.
    *
    * Only for viewers who can actually play something, on idle so it never
    * competes with the page's own images, and never on a metered connection -
@@ -893,11 +947,11 @@ $: unwatchedEntries = watchList.filter((w) => !w.watched && !w.hidden);
     .filter(Boolean);
 
   // Warm the availability cache for every wheel item as soon as the
-  // list is ready, so the popup's watch row is there instantly instead of
+  // list is ready, so the pane's Watch button is there instantly instead of
   // popping in ~1s after open. The store dedups + caches per mediaId, so
   // re-runs of this reactive block are no-ops.
   // mediaId -> is it in the library (absent = not checked yet). Drives both
-  // the popup row and the "Hide Not in Library" button's enabled state.
+  // the Watch button and the "Hide Not in Library" button's enabled state.
   let libraryAvailability = new Map<number, boolean>();
 
   /**
@@ -1061,6 +1115,8 @@ import SliceWorker from '../workers/slice-worker?worker';
 
 
   import WatchedRankingSidebar from '../components/WatchedRankingSidebar.svelte';
+  import RankingExpanded from '../components/RankingExpanded.svelte';
+  import CopyListPanel from '../components/CopyListPanel.svelte';
 import { onDestroy } from 'svelte';
 const sliceWorker: Worker = new SliceWorker();
 
@@ -1279,7 +1335,10 @@ const sliceWorker: Worker = new SliceWorker();
   const LABEL_CHAR_LIMIT = 24;
 
   function spin() {
-    if (!wheelItems.length || spinning) return;
+    // While `loading` the wheel's svg is not mounted, so no transition would
+    // run, `transitionend` would never fire and `spinning` would stick - a dead
+    // Spin button until the season changed.
+    if (!wheelItems.length || spinning || loading) return;
 
     // Drop keyboard focus from whatever was clicked (usually this button) -
     // a still-focused Spin button re-activates on any later Space/Enter
@@ -1294,6 +1353,12 @@ const sliceWorker: Worker = new SliceWorker();
     // Soft initial click on user interaction (after context resumed)
     playStartClick();
     spinning = true;
+    // The first spin ends setup.
+    sessionMode = true;
+    // Every spin folds the options panel to its one-line header (not
+    // saved - the viewer's own fold choice in localStorage is left alone).
+    optionsCollapsed = true;
+    placingId = null;
 
     let idx = Math.floor(Math.random() * wheelItems.length);
     if (wheelItems.length > 1 && lastSelectedId !== null && wheelItems[idx].id === lastSelectedId) {
@@ -1350,19 +1415,52 @@ const sliceWorker: Worker = new SliceWorker();
     }
   }
 
+  /**
+   * Double-click a slice to open that show, the same as clicking it in the
+   * Unwatched list. The slice comes from the click's angle: item i's slice is
+   * centred (i + 0.5) slices clockwise from 12 o'clock in the wheel's own frame
+   * (the inverse of spin()'s targetAngle), so subtract the wheel's rotation.
+   * Ignored while spinning and on the Spin button, whose clicks bubble here.
+   */
+  function openSliceAt(e: MouseEvent) {
+    if (spinning || !wheelItems.length || (e.target as Element).closest('.spin-button')) return;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    if (Math.hypot(dx, dy) > r.width / 2) return; // outside the wheel's circle
+    const screenDeg = (Math.atan2(dx, -dy) * 180) / Math.PI;
+    const wheelDeg = (((screenDeg - rotation) % 360) + 360) % 360;
+    const item = wheelItems[Math.floor(wheelDeg / (360 / wheelItems.length)) % wheelItems.length];
+    if (!item) return;
+    selected = item;
+    showModal = true;
+  }
+
   let showModal = false;
   $: selectedWatched = !!selected &&
     !!(selected.watched || watchList.find((w) => w.mediaId === selected.id)?.watched);
 
-// Global key handler (attached while modal is open) so the Enter key triggers
-// the same action irrespective of which element currently has focus.
+// Global key handler (attached while the show pane, the upload modal or the
+// expanded ranking is open) so Enter and Escape act irrespective of which
+// element currently has focus.
 function handleModalKey(e: KeyboardEvent) {
-  // While the player is open it owns the keyboard (Space/Esc/[/]) -
-  // Enter here would mark-watched and close the modal underneath it, and Escape
-  // is how you leave the player, not the pop-up behind it.
+  // The expanded ranking sits over everything, so it answers first:
+  // Escape collapses it (it never closes the show), arrows nudge the show
+  // being placed. Checked before the player guard - the player is paused
+  // underneath and must not take the key.
+  if (rankExpanded) {
+    if (e.key === 'Escape') { e.preventDefault(); collapseRanking(); }
+    else if (placingId != null && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      e.preventDefault();
+      rankExpandedRef?.nudge(e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 1);
+    }
+    return;
+  }
+  // While an episode plays the keyboard belongs to the video (Space, [ and ]):
+  // Enter here would rank the show, and Escape would close the pane and the
+  // episode with it - one stray key ending what someone is watching.
   if (showPlayer) return;
   // The upload modal is its own dialog, opened from the page rather than from
-  // the pop-up. It is rendered as `<dialog open>` rather than via showModal(),
+  // the show pane. It is rendered as `<dialog open>` rather than via showModal(),
   // so it gets no native Escape behaviour while its `.modal` backdrop still
   // covers the viewport - Escape did nothing on it for as long as it existed,
   // and Done was the only way out. It takes priority because when it is open it
@@ -1377,28 +1475,36 @@ function handleModalKey(e: KeyboardEvent) {
   if (pickOpen) {
     // Pick mode owns the keyboard too: Enter is someone typing into the
     // library search, and this window-level handler would mark the show
-    // watched and close the pop-up out from under them. Escape leaves the
-    // picker rather than the whole pop-up.
+    // watched out from under them. Escape leaves the picker rather than the
+    // whole pane.
     if (e.key === 'Escape') {
       e.preventDefault();
       closePicker();
     }
     return;
   }
-  if (e.key === 'Enter') {
+  if (placingId != null && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     e.preventDefault();
-    markWatched();
+    rankSidebar?.nudge(e.key === 'ArrowUp' ? -1 : 1);
+  } else if (e.key === 'Enter') {
+    // Enter on a focused control is that control's own action. The lists stay
+    // usable beside the pane, so Enter on an Unwatched row opened that show AND
+    // ranked it unseen, and Enter on the X or Hide ranked the open show. Spin
+    // drops focus, so straight after a spin Enter still means Rank it.
+    const target = e.target as HTMLElement | null;
+    if (e.defaultPrevented || target?.closest?.('button, a, input, select, textarea, [role="button"]')) return;
+    e.preventDefault();
+    if (placingId == null) rankIt(); // while placing, Enter does nothing - no accidental spin
   } else if (e.key === 'Escape') {
-    // The pop-up's own overlay carried a keydown handler on a tabindex="-1"
-    // div that never received focus, so Escape did nothing. This listener is
-    // already window-level and already lifecycle-managed below, so Escape only
-    // ever needed to be handled here.
+    // Window-level, because a handler on the pane itself only fires when focus
+    // is inside it - the old pop-up's tabindex="-1" overlay never got focus,
+    // so Escape did nothing on it at all.
     e.preventDefault();
     showModal = false;
   }
 }
 
-// Clean-up in case the component is destroyed while the modal is open
+// Clean-up in case the component is destroyed while the pane is open
 onDestroy(() => {
   window.removeEventListener('keydown', handleModalKey);
   // Both are created per visit; without these every trip to /random left one
@@ -1407,43 +1513,24 @@ onDestroy(() => {
   audioCtx?.close().catch(() => {});
 });
 
-// Dynamically attach / detach the listener whenever modal visibility changes.
-// The upload modal needs it too (it owns Escape now), so the listener's
-// lifecycle covers both - but `closePlayer()` below still keys off the pop-up
-// specifically, since the player only ever lives inside that one.
+// Dynamically attach / detach the listener whenever the pane, the upload modal
+// or the expanded ranking opens or closes.
 $: {
-  if (showModal || showImageUploadModal) {
+  if (showModal || showImageUploadModal || rankExpanded) {
     window.addEventListener('keydown', handleModalKey);
   } else {
     window.removeEventListener('keydown', handleModalKey);
-    // The player lives outside this dialog, so closing the parent has to tear
-    // it down explicitly - a stuck `showPlayer` would make handleModalKey
-    // swallow Enter for every future popup.
+    // Closing the pane unmounts the player with it, but the flag would stay
+    // set - and handleModalKey ignores every key while it is, so Enter and
+    // Escape would be dead on every pane opened after.
     closePlayer();
   }
 }
 
   /**
-   * Mark the currently selected series as watched.
-   *
-   * 1. Update local state so the UI reflects the change immediately.
-   * 2. Notify backend so the change is persisted.
-   */
-  async function markWatched() {
-    if (!selected) return;
-
-    // Close the modal immediately so the UI feels responsive.
-    showModal = false;
-
-    // Update local + remote state without blocking the UI. The helper updates
-    // local lists synchronously, while the fetch runs in the background.
-    toggleWatched(selected.id, true);
-  }
-
-  /**
-   * Hide the currently selected series from the wheel. This is called from the
-   * modal and provides an alternative to marking the series as watched when the
-   * user decides they don't want to see it in the randomizer.
+   * Hide the currently selected series from the wheel. Called from the show
+   * pane: the alternative to ranking it when the viewer decides they don't want
+   * it in the randomizer.
    */
   async function hideSelectedSeries() {
     if (!selected) return;
@@ -1453,12 +1540,123 @@ $: {
     const entry = unwatchedDetailed.find((item) => item.id === selected.id);
 
     if (entry) {
-      // Close modal immediately for responsive UI
+      // Close the pane immediately for responsive UI
       showModal = false;
 
       // Call existing toggleHide which handles optimistic update + API call
       toggleHide(entry);
     }
+  }
+
+  // Rank it marks the show watched WITHOUT closing the pane - the episode
+  // keeps playing - and starts placing it in the rank list.
+  let spinNextArmed = true;
+  let armTimer: ReturnType<typeof setTimeout> | null = null;
+  function rankIt() {
+    if (!selected) return;
+    if (!selectedWatched) toggleWatched(selected.id, true);
+    placingId = selected.id;
+    // The rail sits beside the pane only on a PC. Narrower, the Watched list
+    // is a drawer that would slide over the pane and its buttons, so it stays
+    // shut - the show is still being placed when the viewer opens it.
+    if (window.matchMedia('(min-width: 1024px)').matches) watchedCollapsed = false;
+    // A double-click on Rank it must not land on Spin next.
+    spinNextArmed = false;
+    if (armTimer) clearTimeout(armTimer);
+    armTimer = setTimeout(() => (spinNextArmed = true), 600);
+  }
+  // The live rank of the show being placed, for the label in Rank it's spot.
+  $: placingRank = placingId == null ? null : watchedRank.findIndex((it) => it.id === placingId) + 1 || null;
+  function spinNext() {
+    if (!spinNextArmed) return;
+    rankExpanded = false;
+    pausedByExpand = false;
+    placingId = null;
+    showModal = false;
+    tick().then(spin);
+  }
+
+  /**
+   * Save a new Watched order - from the rail or the expanded ranking alike.
+   * Keeps `watchList` in step so later reactive passes (e.g. marking another
+   * show watched) keep the user's order. A failed save re-reads the season (the
+   * server is the truth) and says so, as `toggleWatched` does.
+   */
+  function applyRankOrder(idOrder: number[]) {
+    watchedRank = idOrder.map((id) => watchedRank.find((it) => it.id === id)).filter(Boolean);
+    watchList = watchList.map((entry) => {
+      const idx = idOrder.indexOf(entry.mediaId);
+      return idx !== -1 ? { ...entry, watchedRank: idx } : entry;
+    });
+    if ($authToken) queueRankSave({ season, year, ids: idOrder });
+  }
+
+  // Rank saves are debounced and sent one at a time. Each arrow press used to
+  // PATCH at once: a held arrow repeats ~30/s against production's 120/min
+  // per-IP limit (shared by the whole group on one connection), and with no
+  // ordering two saves could land in either order, leaving the server on an
+  // order the screen no longer showed. Only the latest order matters, so a
+  // newer one replaces a waiting one. The season is captured when queued, so a
+  // save straddling a season change still goes to the season it belongs to.
+  type RankSave = { season: string; year: number; ids: number[] };
+  let rankSavePending: RankSave | null = null;
+  let rankSaveInFlight = false;
+  let rankSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function queueRankSave(save: RankSave) {
+    rankSavePending = save;
+    if (rankSaveTimer) clearTimeout(rankSaveTimer);
+    rankSaveTimer = setTimeout(() => void flushRankSave(), 400);
+  }
+  async function flushRankSave() {
+    if (rankSaveInFlight || !rankSavePending) return;
+    const save = rankSavePending;
+    rankSavePending = null;
+    rankSaveInFlight = true;
+    try {
+      const res = await apiFetch('/api/list/rank', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${$authToken}` },
+        body: JSON.stringify(save)
+      }, { timeoutMs: QUICK, retries: 0, label: 'watched rank' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.error('[Randomize] rank order not saved', err);
+      hideWriteError = "Couldn't save the new order - put back.";
+      setTimeout(() => (hideWriteError = ''), 8000);
+      // The server is the truth. Re-reading alone did not put it back:
+      // `watchedRank` is rebuilt only when its SET of ids changes, and a
+      // reorder never changes the set, so the rail kept the unsaved order.
+      // Emptying it forces the rebuild from what the server returned.
+      rankSavePending = null;
+      if (save.season === season && save.year === year) {
+        await fetchBoth();
+        watchedRank = [];
+      }
+    } finally {
+      rankSaveInFlight = false;
+      if (rankSavePending) void flushRankSave();
+    }
+  }
+
+  // The expanded ranking (the rail's "Expand ranking"). Opening it while
+  // the episode plays pauses it; Collapse resumes only what it paused.
+  let rankExpanded = false;
+  let rankExpandedRef: any;
+  let pausedByExpand = false;
+  function inlineVideo(): HTMLVideoElement | null {
+    return document.querySelector('[data-video-box] video');
+  }
+  function openRanking() {
+    const v = inlineVideo();
+    pausedByExpand = !!v && !v.paused;
+    if (pausedByExpand) v!.pause();
+    rankExpanded = true;
+  }
+  function collapseRanking() {
+    rankExpanded = false;
+    const v = inlineVideo();
+    if (pausedByExpand && v) void v.play().catch(() => {});
+    pausedByExpand = false;
   }
 
   function handleSpinImageFile(e: Event) {
@@ -1694,11 +1892,11 @@ $: {
     if (lang === 'NATIVE') return item.title?.native || item.title?.english || item.title?.romaji || '';
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  // For modal display - ignores the user's title-language preference.
+  // For the show pane - ignores the user's title-language preference.
   function getEnglishTitle(item: any): string {
     return item.title?.english || item.title?.romaji || item.title?.native || '';
   }
-  // For modal display - ignores the user's title-language preference.
+  // For the show pane - ignores the user's title-language preference.
   function getRomajiTitle(item: any): string {
     return item.title?.romaji || item.title?.english || item.title?.native || '';
   }
@@ -1718,9 +1916,9 @@ $: {
 
 </script>
 
-<main class="pb-0 flex flex-col gap-8">
+<main class="pb-0 flex flex-col gap-2">
   <!-- Controls aligned to header (matches the width pattern on Home and Compare) -->
-  <div class="w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] sm:mx-auto">
+  <div class="w-full sm:max-w-[calc(100vw-32rem)] 2cols:sm:max-w-[calc(100vw-40rem)] sm:mx-auto [&>*]:!mb-0">
     <SeasonSelect
       bind:season
       bind:year
@@ -1737,8 +1935,8 @@ $: {
        lists, so the wheel centres in the space between them, not on the page.
        Absolutely positioned children (the lists, the background) ignore the
        padding - they sit against the padding edge as before. -->
-  <div class="wheel-area relative w-full flex justify-center items-center overflow-visible flex-1 lg:pl-[calc(16rem+7px)] 3cols:lg:pl-[calc(20rem+7px)] lg:pr-[calc(21rem+7px)]" style="min-height: var(--area-size);">
-    <div class="flex flex-col items-center mx-auto">
+  <div class="wheel-area relative w-full flex justify-center items-center overflow-visible flex-1 lg:pl-[calc(16rem+7px)] 3cols:lg:pl-[calc(20rem+7px)] lg:pr-[calc(21rem+7px)]" class:session-pad={sessionMode} style="min-height: var(--area-size);">
+    <div class="flex flex-col items-center mx-auto" class:invisible={showModal && !!selected}>
       {#if loading}
         <LoadingSpinner size="lg" />
       {:else if loadError}
@@ -1746,6 +1944,10 @@ $: {
           <p class="opacity-70 mb-3">Couldn't load this season - the server didn't answer.</p>
           <button class="btn btn-sm btn-outline" on:click={fetchBoth}>Retry</button>
         </div>
+      {:else if !wheelItems.length && !watchList.length && $authToken}
+        <!-- No list at all: offer someone else's. A list whose shows are all
+             watched or hidden is not empty and keeps the message below. -->
+        <CopyListPanel {season} {year} {anime} token={$authToken} self={$activeUserName} on:copied={fetchBoth} />
       {:else if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
       {:else}
@@ -1763,10 +1965,13 @@ $: {
           ></div>
         {/if}
 
-        <!-- Wheel -->
+        <!-- Wheel. Double-clicking a slice opens that show; the Unwatched list
+             is the keyboard route to the same thing. -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           id="wheel-wrapper"
           class="relative mx-auto overflow-visible select-none"
+          on:dblclick={openSliceAt}
           style="
             width: var(--wheel-size);
             height: var(--wheel-size);
@@ -1785,7 +1990,7 @@ $: {
           if (spinning) {
             spinning = false;
             celebrate();
-            // Slight delay before showing modal so confetti is visible underneath
+            // Slight delay before showing the pane so confetti is visible underneath
             setTimeout(() => (showModal = true), 50);
           }
         }}
@@ -1854,6 +2059,8 @@ $: {
     <aside
       class="fixed z-40 top-0 bottom-0 left-0 bg-base-200 pr-4 pl-4 py-3 shadow-lg flex flex-col w-full max-w-[20rem] lg:absolute lg:mt-0 lg:w-64 3cols:lg:w-80 transform transition-transform duration-300 overflow-hidden lg:translate-x-0"
       class:-translate-x-full={unwatchedCollapsed}
+      class:session-tucked={sessionMode}
+      class:desk-docked={!sessionMode}
       style="max-height: calc(100dvh - 0px);"
     >
       {#if unwatchedDetailed.length}
@@ -1873,10 +2080,10 @@ $: {
 
             <!-- Hide tab (mobile only) -->
             <button
-              class="lg:hidden absolute right-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-r px-1 py-6 shadow flex items-center justify-center z-50"
+              class="lg:hidden absolute right-0 top-1/2 -translate-y-1/2 bg-base-200 hover:bg-base-300 rounded-r px-1 py-6 shadow flex items-center justify-center z-50"
               style="width: 1.25rem;"
               aria-label="Hide Unwatched list"
-              on:click={() => (unwatchedCollapsed = true)}
+              on:click={tuckUnwatched}
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <!-- Chevron pointing left (<) -->
@@ -2017,7 +2224,7 @@ $: {
 
               {#key $options.titleLanguage + '-' + item.id}
                 <span
-                  class="text-sm flex-1 whitespace-normal break-words force-wrap"
+                  class="text-sm flex-1 min-w-0 line-clamp-2 break-words"
                   title={getDisplayTitle(item)}
                   data-lang={$options.titleLanguage}
                   >{item.customName || getDisplayTitle(item)}</span
@@ -2051,6 +2258,23 @@ $: {
         </ul>
       {/if}
     </aside>
+
+    <!-- On desktop this strip is the ONE control for the Unwatched list:
+         it docks the list (the wheel glides over to make room) and tucks it away
+         again (the wheel glides back to the middle). Every spin tucks it. With a
+         show's pane up and the list tucked, a click closes the pane and docks
+         the list beside the wheel - the wheel is what matters if someone reaches
+         for the list. With the list docked beside a pane, it only tucks the list. -->
+    <button
+      class="hidden lg:flex absolute z-[45] left-0 top-0 bottom-0 w-8 bg-base-200 hover:bg-base-300 shadow items-center justify-center"
+      aria-label={unwatchedOnScreen ? 'Hide the Unwatched list' : 'Show the Unwatched list'}
+      data-unwatched-drawer
+      on:click={stripClick}
+    >
+      <span class="[writing-mode:vertical-rl] rotate-180 text-xs tracking-widest opacity-70 whitespace-nowrap">
+        {@html unwatchedOnScreen ? '&lsaquo;' : '&rsaquo;'} UNWATCHED ({unwatchedShownCount})
+      </span>
+    </button>
 
     <!-- The restore tabs show only while BOTH lists are shut. Each list's own
          hide tab sits on its inner edge, which on a 320px phone (the lists are
@@ -2093,49 +2317,14 @@ $: {
 
       <div class="flex-1 min-h-0 overflow-hidden pr-1">
         <WatchedRankingSidebar
+          bind:this={rankSidebar}
+          {placingId}
           list={watchedRank}
-      on:update={(e) => {
-        // e.detail is an ordered array of anime IDs
-        const idOrder = e.detail;
-        // Reorder watchedRank to reflect emitted order
-        watchedRank = idOrder.map((id) => watchedRank.find((it) => it.id === id)).filter(Boolean);
-
-        // ------------------------------------------------------------------
-        // Keep the primary watchList array in sync with the new ranking so
-        // future reactive computations (e.g. after marking another show as
-        // watched) preserve the user-defined order instead of falling back to
-        // the default list ordering.
-        // ------------------------------------------------------------------
-
-        watchList = watchList.map((entry) => {
-          const idx = idOrder.indexOf(entry.mediaId);
-          // Only update rank for entries that are part of the watched list.
-          return idx !== -1 ? { ...entry, watchedRank: idx } : entry;
-        });
-
-        // Persist watched ranking via dedicated endpoint. A failure re-reads the
-        // season (the server is the truth) and says so, as `toggleWatched` does.
-        if ($authToken) {
-          apiFetch('/api/list/rank', {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${$authToken}`
-            },
-            body: JSON.stringify({ season, year, ids: idOrder })
-          }, { timeoutMs: QUICK, retries: 0, label: 'watched rank (drag)' })
-            .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); })
-            .catch((err) => {
-              console.error('[Randomize] rank order not saved', err);
-              hideWriteError = "Couldn't save the new order - put back.";
-              setTimeout(() => (hideWriteError = ''), 8000);
-              void fetchBoth();
-            });
-        }
-      }}
+          on:update={(e) => applyRankOrder(e.detail)}
+          on:expand={openRanking}
           on:unwatch={(e) => toggleWatched(e.detail, false)}
           on:view={(e) => {
-            // Double-click on watched item opens modal
+            // Double-click on watched item opens the pane
             selected = e.detail;
             showModal = true;
           }}
@@ -2165,7 +2354,7 @@ $: {
          so unfolding returns it to exactly the same size.
          Desktop-only ON PURPOSE: a folded bar floating over the wheel on phones
          and tablets was tried and judged clutter - the defaults serve there. -->
-    <div class="absolute top-0 mt-0 w-52 max-h-[80vh] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm z-30 hidden lg:block right-[calc(21rem+7px)]">
+    <div class="absolute top-0 mt-0 w-52 max-h-[var(--area-size)] overflow-y-auto bg-base-200/90 rounded-lg shadow-lg p-3 text-sm z-30 hidden lg:block right-[calc(21rem+7px)]">
       <button
         type="button"
         class="w-full flex items-center justify-between gap-2 text-left font-semibold rounded hover:bg-base-300/60"
@@ -2243,36 +2432,29 @@ $: {
         </div>
       {/if}
     </div>
-  </div> <!-- end flex container -->
 
   {#if showModal && selected}
-    <dialog open class="modal">
-      <!-- 100dvh, not DaisyUI's 100vh: on a phone 100vh is the viewport with the
-           address bar hidden, so the box could start underneath it. -->
-      <!-- `show-popup` (see <style>) sizes the side-by-side view from the
-           video player's pop-up, so this is never the taller of the two. Pick
-           mode keeps a plain width: it is a search list, not a poster. -->
-      <div class="modal-box w-full max-h-[calc(100dvh-2rem)] {pickOpen ? 'max-w-4xl' : 'show-popup sm:w-fit sm:max-w-[95vw]'}">
-        <!-- Sticky, not absolute. `.modal-box` scrolls its own overflow, and on a
-             phone the pop-up is taller than the screen: an absolute X scrolled
-             away with the content (measured at 375x667: y=-114 once Mark as
-             watched was in view), leaving only buttons that change your list.
-             The zero-height row keeps it from pushing the title down. -->
-        <div class="sticky top-0 z-10 h-0 flex justify-end">
-          <button
-            class="btn btn-sm btn-circle btn-ghost bg-base-100/80 -mr-4 -mt-4"
-            aria-label="Close"
-            data-popup-close
-            on:click={() => (showModal = false)}>&#10005;</button>
+    <!-- The show REPLACES the wheel: a pane filling the wheel area, one
+         fixed layout from the moment the spin lands (poster, a 16:9 video box,
+         titles and actions on top). Watch only starts the video inside the box,
+         so nothing moves. Sized from --area-size, so it never scrolls.
+         The layout is built for a PC. On a phone (below `sm`) it is a
+         full-screen sheet instead - see `.pane-box` in the styles. -->
+    <div class="inline-card absolute inset-0 z-[35] lg:pr-[calc(21rem+7px)]" class:pane-tucked={sessionMode} data-inline-card>
+      <div class="pane-box relative bg-base-100 rounded-box px-5 py-4 flex flex-col gap-3 {pickOpen ? 'overflow-y-auto' : 'overflow-hidden'}">
+        <div class="pane-head relative shrink-0 flex items-start gap-3 h-12">
+          <div class="min-w-0 flex-1">
+            <h3 class="font-bold text-lg leading-tight truncate" title={selected.customName || getEnglishTitle(selected)}>
+              {selected.customName || getEnglishTitle(selected)}
+              {#if myRank != null}<span class="text-base font-normal opacity-70">(#{myRank})</span>{/if}
+            </h3>
+            <p class="text-sm text-base-content/70 truncate">
+              {#if selected.customName}{getEnglishTitle(selected)}{/if}{#if selected.customName && !titlesAreSame(selected)} &middot; {/if}{#if !titlesAreSame(selected)}{getRomajiTitle(selected)}{/if}
+            </p>
+          </div>
+          <button class="btn btn-sm btn-circle btn-ghost shrink-0" aria-label="Back to the wheel"
+            title="Back to the wheel" data-popup-close on:click={() => (showModal = false)}>&#10005;</button>
         </div>
-
-        <!-- Main title: custom name if exists, otherwise English title -->
-        <h3 class="font-bold text-lg mb-4 pr-8">
-          {selected.customName || getEnglishTitle(selected)}
-          {#if myRank != null}
-            <span class="text-base font-normal opacity-70">(#{myRank})</span>
-          {/if}
-        </h3>
 
         {#if pickOpen}
           <!-- Pick mode has no right column to hold it, so the English title
@@ -2280,10 +2462,10 @@ $: {
           <p class="-mt-3 mb-1 text-base text-base-content/70">
             {getEnglishTitle(selected)}
           </p>
-          <!-- Pick mode REPLACES the pop-up body rather than floating over it.
-               `.modal-box` is itself a scroll container, so a dropdown inside
-               it produced two competing scrollbars, clipped the results, and
-               pushed Mark as Watched out of reach. Here the results list owns
+          <!-- Pick mode REPLACES the pane's body rather than floating over it.
+               A dropdown inside a scrolling box (the old pop-up's
+               `.modal-box`) produced two competing scrollbars, clipped the
+               results, and pushed the actions out of reach. Here the results list owns
                the only scrollbar and it is bounded, so a long list scrolls in
                place instead of running off the page. -->
           <div class="flex gap-4 mt-3" data-pick-dropdown role="group"
@@ -2371,194 +2553,139 @@ $: {
             </div>
           </div>
         {:else}
-
-        <!-- One column on a phone; from `sm` the cover moves to the left with
-             everything else beside it. Stacked, the pop-up is ~705px tall with a
-             Watch button and two nickname rows, so on a laptop (a 1366x768
-             screen leaves ~657px of page) Watch and Mark as watched were below
-             the fold - in a box 768px wide with the cover alone in the middle.
-             The grid, not two flex columns, keeps the phone order: titles,
-             nicknames, cover, then the rest. Only the main title spans the top:
-             the English and romaji names head the right column, so the whole
-             left side is poster. The poster's size is `--poster-w` /
-             `--poster-h` from `.show-popup` in <style>.
-             On `sm` the body has a FIXED height (the poster's), so the right
-             column cannot outgrow it: Watch and the actions are the `auto` row
-             at the bottom, and the titles and nicknames above take what is left
-             and scroll inside it. With six nickname rows the column was ~548px,
-             and every window up to 1366x768 pushed Hide and Mark out of view. -->
-        <div class="grid grid-cols-1 sm:grid-cols-[var(--poster-w)_minmax(0,28rem)] sm:grid-rows-[minmax(0,1fr)_auto] sm:h-[var(--body-h)] sm:gap-x-6"
-          data-popup-body>
-        <div class="sm:col-start-2 sm:row-start-1 sm:min-h-0 sm:overflow-y-auto">
-        <!-- Always show the English title (non-bold); romaji only when it differs -->
-        <p class="mb-1 text-base text-base-content/70">
-          {getEnglishTitle(selected)}
-        </p>
-        {#if !titlesAreSame(selected)}
-          <p class="mb-4 text-base text-base-content/70">
-            {getRomajiTitle(selected)}
-          </p>
-        {:else}
-          <div class="mb-4"></div>
-        {/if}
-        {#if nicknameList.length}
-          <div class="mb-6 sm:mb-4">
-            <h4 class="font-semibold mb-1 text-sm">Other users' nicknames:</h4>
-            <ul class="list-disc list-inside space-y-1 text-sm">
-              {#each nicknameList.filter(n => $nicknameSelected.has(n.userName) && n.userName !== $activeUserName) as n}
-                <li data-nickname-row={n.userName}>
-                  <span class="font-medium">{n.userName}</span>:
-                  {#if n.nickname}
-                    {` ${n.nickname}`} {#if n.rank != null}(<span class="opacity-70">#{n.rank}</span>){/if}
+        <!-- The pane's body - video (the poster is its cover until Watch),
+             nicknames beside it, the episode line and buttons below. -->
+        <div class="pane-grid flex-1 min-h-0" data-popup-body>
+          <div class="pg-video">
+            <div class="pane-video relative rounded overflow-hidden bg-black" data-video-box>
+              {#if showPlayer && JellyfinPlayerModal && watchInfo?.itemId && watchInfo?.mediaSourceId}
+                <svelte:component
+                  this={JellyfinPlayerModal}
+                  itemId={watchInfo.itemId}
+                  mediaSourceId={watchInfo.mediaSourceId}
+                  on:itemGone={onItemGone}
+                />
+              {:else}
+                <!-- Before play: the poster, blurred, with the Watch button on it.
+                     The library only serves 180px episode thumbnails, which would
+                     blur worse stretched to this box. -->
+                <div class="absolute inset-0 bg-center bg-cover scale-125 blur-xl opacity-70"
+                  style="background-image: url({selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium});"></div>
+                <!-- The poster IS the video's cover until Watch. -->
+                <img class="absolute inset-y-0 left-1/2 -translate-x-1/2 h-full w-auto shadow-2xl" alt={getDisplayTitle(selected)}
+                  src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} />
+                <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4">
+                  {#if watchInfo?.available}
+                    <button class="btn btn-accent btn-lg gap-2 shadow-lg" class:btn-disabled={openingPlayer} on:click={openPlayer} data-watch>
+                      {#if openingPlayer}<span class="loading loading-spinner loading-sm"></span> Opening...{:else}&#9654; Watch{/if}
+                      {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}{/if}
+                    </button>
+                  {:else if $mediaConfigured && watchInfo?.unknown}
+                    <span class="opacity-80">Couldn't reach the media server - try again shortly</span>
+                  {:else if $mediaConfigured && watchInfo?.notAired}
+                    <span class="opacity-80" data-not-aired>Not aired yet</span>
+                  {:else if $mediaConfigured && watchInfo && !watchInfo.available}
+                    <span class="opacity-80">Not in library{watchInfo.libraryTitle ? ` (found "${watchInfo.libraryTitle}" but not this season)` : ''}</span>
+                  {:else if $mediaConfigured}
+                    <span class="loading loading-spinner loading-md"></span>
                   {:else}
-                    {#if n.rank != null}
-                      (<span class="opacity-70">#{n.rank}</span>)
-                    {/if}
+                    <span class="opacity-70">No media server set up</span>
                   {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
+          <div class="pg-ep flex flex-col gap-1">
+            <div class="ep-row flex items-center justify-between gap-3 text-sm h-5">
+              <span class="min-w-0 truncate" data-episode-line
+                title={watchInfo?.episodeTitle ?? ''}>
+                {#if watchInfo?.available && watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
+                  <span class="font-semibold">S{watchInfo.seasonNumber} E{watchInfo.episodeNumber}</span>{#if watchInfo.episodeTitle}<span class="opacity-80">&nbsp;&middot; {watchInfo.episodeTitle}</span>{/if}
+                {/if}
+              </span>
+              {#if watchInfo?.available}
+                <span class="shrink-0 text-xs opacity-50 whitespace-nowrap" data-speed-hint>
+                  <kbd class="kbd kbd-xs">[</kbd> / <kbd class="kbd kbd-xs">]</kbd> change speed by 0.10&times;
+                </span>
+              {/if}
+            </div>
+            {#if watchInfo && ((watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0) || watchInfo.unverified
+                || ($mediaConfigured && $authToken && !watchInfo.unknown && !watchInfo.notAired && !watchInfo.idConfident))}
+              <div class="flex items-center gap-2 text-xs h-6">
+                {#if (watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0) || watchInfo.unverified}
+                  <span class="text-warning/80 truncate" title={`Matched to "${watchInfo.libraryTitle ?? ''}" without an id to confirm it.`}>&#9888; Might be the wrong show</span>
+                {/if}
+                {#if $mediaConfigured && $authToken && !watchInfo.unknown && !watchInfo.notAired && !watchInfo.idConfident}
+                  <button class="btn btn-xs btn-outline normal-case shrink-0" data-pick-open on:click={openPicker}>
+                    {watchInfo.available ? 'Not the right show?' : 'Find it in my library'}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </div>
+          <div class="pg-nicks min-h-0 overflow-y-auto text-sm" data-nickname-col>
+            <h4 class="font-semibold mb-1">Other users' nicknames</h4>
+            <ul class="flex flex-col gap-1">
+              {#each nicknameList.filter(n => $nicknameSelected.has(n.userName) && n.userName !== $activeUserName) as n}
+                <li class="rounded bg-base-200 px-2 py-1" data-nickname-row={n.userName}>
+                  <div class="flex items-baseline justify-between gap-2">
+                    <span class="font-medium truncate">{n.userName}</span>
+                    {#if n.rank != null}<span class="text-xs opacity-60 shrink-0">#{n.rank}</span>{/if}
+                  </div>
+                  {#if n.nickname}<div class="break-words leading-snug">{n.nickname}</div>{/if}
                 </li>
               {:else}
                 <li class="italic opacity-60">None selected</li>
               {/each}
             </ul>
           </div>
-        {/if}
-        </div>
-        <img src={selected.coverImage?.extraLarge ?? selected.coverImage?.large ?? selected.coverImage?.medium} alt={getDisplayTitle(selected)}
-          class="w-56 mx-auto mb-6 sm:w-full sm:h-full sm:object-contain sm:object-left-top sm:m-0 sm:col-start-1 sm:row-start-1 sm:row-span-2" />
-        <!-- The bottom row: Watch, the library line and the actions sit together
-             at the foot of the cover, so everything you can press is in one
-             place and never scrolls; the nicknames above are reading, not doing. -->
-        <!-- The divider marks where the scrolling titles/nicknames end. -->
-        <div class="flex flex-col sm:col-start-2 sm:row-start-2 sm:mt-2 sm:pt-3 sm:border-t sm:border-base-300">
-        {#if watchInfo?.available}
-          <div class="flex flex-col items-center gap-1 mb-4">
-            <!-- The player chunk is heavy (weight on `warmPlayerAssets`), so on
-                 anything but localhost there is a real gap between the click
-                 and the modal. Without this the button looks broken. -->
-            <button
-              class="btn btn-sm btn-accent"
-              class:btn-disabled={openingPlayer}
-              on:click={openPlayer}
-            >
-              {#if openingPlayer}
-                <span class="loading loading-spinner loading-xs"></span>
-                Opening...
+          <div class="pg-acts flex items-center gap-2" data-pane-actions>
+              {#if placingId === selected.id}
+                <!-- Same slots as before Rank it was pressed: Spin next takes Spin
+                     again's place, and Rank it's place becomes a label - nothing
+                     clickable sits where the second click of a double-click lands. -->
+                <button class="btn btn-primary min-w-[8.5rem] ml-auto" data-spin-next
+                  class:btn-disabled={!spinNextArmed} on:click={spinNext}>Spin next</button>
+                <span class="min-w-[7.5rem] h-12 px-3 rounded-btn border-2 border-primary text-primary font-semibold flex items-center justify-center"
+                  data-ranked-label>Ranked #<span class="inline-block min-w-[2ch] text-left tabular-nums">{placingRank ?? '?'}</span></span>
+              {:else if selectedWatched}
+                <button class="btn btn-secondary ml-auto" on:click={() => { showModal = false; toggleWatched(selected.id, false); }}>
+                  Mark as Unwatched
+                </button>
               {:else}
-                &#9654; Watch here (via Jellyfin)
+                <button class="btn btn-secondary mr-auto" data-popup-hide on:click={hideSelectedSeries}>
+                  <span class="flex flex-col items-center leading-tight">
+                    <span>Hide Series</span>
+                    <span class="text-xs opacity-70">(Unwatched)</span>
+                  </span>
+                </button>
+                <button class="btn btn-outline min-w-[8.5rem]" on:click={spinNext}>Spin again</button>
+                <button class="btn btn-primary min-w-[7.5rem]" data-rank-it on:click={rankIt}>Rank it</button>
               {/if}
-              {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
-                - S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
-              {/if}
-            </button>
-            {#if watchInfo.libraryTitle}
-              <!-- Everything here is the library's own metadata for the episode we
-                   resolved, so a wrong match or wrong season is visible
-                   before you click play. -->
-              <span class="text-xs opacity-60">
-                Library: {watchInfo.libraryTitle}
-                {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}
-                  - S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}
-                {/if}
-                {#if watchInfo.episodeTitle}
-                  - {watchInfo.episodeTitle}
-                {/if}
-              </span>
-              {#if (watchInfo.matchedBy === 'title' && watchInfo.titleTier !== 0) || watchInfo.unverified}
-                <!-- Matched on a *partial* title, with no id to confirm it. That
-                     is how a 2026 entry once resolved to a 2004 series of
-                     similar name ("Firefly Wedding" -> "Firefly"), so say so
-                     rather than present it as fact.
-                     Tier 0 - a normalised exact title - is deliberately not
-                     warned about. It used to be, which meant the common and
-                     entirely correct case ("Mebius Dust" -> "Mebius Dust", whose
-                     only sin is that the community AniList->TVDB map hasn't
-                     caught up with a three-week-old show) carried the same
-                     warning as the genuinely dangerous prefix hits. A warning
-                     that fires on the ordinary case is a warning nobody reads. -->
-                <span
-                  class="text-xs text-warning/80"
-                  title={watchInfo.unverified
-                    ? 'Matched by an id we looked up ourselves rather than one from the community map, and nobody has confirmed it yet. Check the title above is really the show you meant.'
-                    : 'Matched on a partial title, and no AniList/TVDB id links this entry to that series. Check the title above is really the show you meant.'}
-                >
-                  &#9888; unconfirmed match
-                </span>
-              {/if}
-            {/if}
           </div>
-        {:else if $mediaConfigured && watchInfo?.unknown}
-          <p class="text-center text-xs opacity-50 mb-4">Couldn't reach the media server - try again shortly</p>
-        {:else if $mediaConfigured && watchInfo?.notAired}
-          <!-- Looked up and not held: the show simply isn't out yet. -->
-          <p class="text-center text-xs opacity-50 mb-4" data-not-aired>Not aired yet</p>
-        {:else if $mediaConfigured && watchInfo && !watchInfo.available}
-          <p class="text-center text-xs opacity-50 mb-4">
-            Not in library{watchInfo.libraryTitle
-              ? ` (found "${watchInfo.libraryTitle}" but not this season)`
-              : ''}
-          </p>
-        {/if}
-        {#if $mediaConfigured && $authToken && watchInfo && !watchInfo.unknown && !watchInfo.notAired && !watchInfo.idConfident}
-          <!-- Offered only when the identity is UNCERTAIN - a resolver guess or
-               a title match. A community-map id, a human decision or a manual
-               override needs no correcting, and that holds even when we don't
-               hold the show: the question is "do we know what this is", not
-               "can you watch it". The correction belongs where the mistake is
-               seen: a pick is
-               remembered for everyone and queued for admin review, so one
-               viewer fixing it fixes it for the next. Hidden from guests -
-               the write needs a token, and a control that 401s is worse than
-               no control. Opening it swaps the pop-up into pick mode rather
-               than dropping a menu inside it; `.modal-box` scrolls its own
-               overflow, so an absolutely-positioned panel fought that scroll
-               and pushed the action buttons out of reach. -->
-          <div class="flex justify-center mb-4">
-            <button class="btn btn-sm btn-outline normal-case" data-pick-open
-              on:click={openPicker}>
-              {watchInfo.available ? 'Not the right show?' : 'Find it in my library'}
-            </button>
-          </div>
-        {/if}
-        <div class="modal-action flex flex-wrap items-center gap-2 sm:mt-2"
-          class:justify-center={selectedWatched}
-          class:justify-between={!selectedWatched}>
-          {#if selectedWatched}
-            <!-- Watched series: only show unwatch button (same pink color as Hide Series) -->
-            <button class="btn btn-secondary" on:click={() => { showModal = false; toggleWatched(selected.id, false); }}>
-              Mark as Unwatched
-            </button>
-          {:else}
-            <!-- Unwatched series: Hide at one end, Mark at the other, in normal
-                 flow. Hide used to be `absolute left-0` beside a centred Mark;
-                 on a phone the two overlapped by 37px at 375 wide. -->
-            <button class="btn btn-secondary" data-popup-hide on:click={hideSelectedSeries}>
-              <span class="flex flex-col items-center leading-tight">
-                <span>Hide Series</span>
-                <span class="text-xs opacity-70">(Unwatched)</span>
-              </span>
-            </button>
-            <button class="btn btn-primary" on:click={markWatched}>Mark as watched</button>
-          {/if}
-        </div>
-        </div>
         </div>
         {/if}
       </div>
-    </dialog>
+    </div>
   {/if}
-
-  <!-- In-page player (lazy-loaded chunk; stacks above the show modal) -->
-  {#if showPlayer && watchInfo?.itemId && watchInfo?.mediaSourceId && selected}
-    <svelte:component
-      this={JellyfinPlayerModal}
-      itemId={watchInfo.itemId}
-      mediaSourceId={watchInfo.mediaSourceId}
-      title={selected.customName || getEnglishTitle(selected)}
-      episodeTitle={watchInfo.episodeTitle ?? ''}
-      on:close={closePlayer}
-      on:itemGone={onItemGone}
-    />
+  {#if rankExpanded}
+    <div class="inline-card hidden lg:block absolute inset-0 z-[44] lg:pr-4" class:pane-tucked={sessionMode}>
+      <div style="height: var(--area-size);">
+        <RankingExpanded
+          bind:this={rankExpandedRef}
+          list={watchedRank}
+          {placingId}
+          {spinNextArmed}
+          videoPaused={pausedByExpand}
+          on:update={(e) => applyRankOrder(e.detail)}
+          on:collapse={collapseRanking}
+          on:spinnext={spinNext}
+          on:view={(e) => { rankExpanded = false; selected = e.detail; showModal = true; }}
+        />
+      </div>
+    </div>
   {/if}
+  </div> <!-- end flex container (it closes below the show pane, which overlays the wheel area) -->
 
   <!-- Image Upload Modal -->
   {#if showImageUploadModal}
@@ -2638,7 +2765,8 @@ $: {
 
   <!-- Upload Images Button (aligned with background image left edge, desktop only) -->
   <button
-    class="btn btn-sm btn-outline absolute bottom-4 z-20 normal-case hidden lg:block lg:left-[calc(16rem+7px+1rem)] 3cols:lg:left-[calc(20rem+7px+1rem)]"
+    class="upload-btn btn btn-sm btn-outline absolute bottom-4 z-20 normal-case hidden lg:block"
+    class:upload-tucked={sessionMode}
     on:click={() => showImageUploadModal = true}
     type="button"
   >
@@ -2653,75 +2781,116 @@ $: {
 <style>
   /* Two sizes, deliberately separate. `--area-size` is the wheel area's
      height, and the docked lists stretch to it (`top-0 bottom-0`), as does the
-     background: it follows the window's HEIGHT only. 195px is 52 header + 72
-     season selector + 52 extra + 19 buffer. `--wheel-size` is the wheel itself:
+     background: it follows the window's HEIGHT only. 132px is the header and
+     season selector above it with an 8px gap under each of the selector and the
+     page; it was 195px while a 56px gap sat under the selector and 23px of
+     nothing under the page, which the show pane - now the same size as the
+     wheel area - made obvious. `--wheel-size` is the wheel itself:
      the same, and from `lg` also no wider than the space between the DOCKED
      lists (16rem + 7px on the left, 20rem from `3cols`; 21rem + 7px on the
-     right) less 2rem. Without that cap, narrowing a desktop window slid the
+     right), the 2rem pull-out strip beside the Unwatched list, and 2rem
+     more. Without that cap, narrowing a desktop window slid the
      wheel under the lists (247px of it at 1100x950). With ONE variable for
      both, the cap also shrank the area, and the lists with it - 760px tall at
      1600x950, 391px at 1024x950 - for a change that was only ever about width.
      Below `lg` the lists slide over the page, so the full width is the wheel's. */
   .wheel-area {
-    --area-size: min(95vmin, calc(100dvh - 195px));
+    --area-size: min(95vmin, calc(100dvh - 132px));
     --wheel-size: var(--area-size);
   }
   @media (min-width: 1024px) {
     .wheel-area {
-      --wheel-size: min(var(--area-size), calc(100vw - 37rem - 14px - 2rem));
+      --wheel-size: min(var(--area-size), calc(100vw - 39rem - 14px - 2rem));
     }
   }
   @media (min-width: 1732px) {
     .wheel-area {
-      --wheel-size: min(var(--area-size), calc(100vw - 41rem - 14px - 2rem));
+      --wheel-size: min(var(--area-size), calc(100vw - 43rem - 14px - 2rem));
     }
   }
 
-  /* The show pop-up, side by side (`sm` and up), is sized from the video
-     player's pop-up so it is never the taller of the two - and so it grows with
-     the screen instead of stopping at a fixed size. `--player-w` / `--player-h`
-     mirror `JellyfinPlayerModal.svelte`'s `.modal-box` (95% / 5/6 / 4/5 of the
-     window, never wider than `(92vh - 8rem) * 16/9`): 16:9 video plus 81px of
-     title row, hint and padding, measured 2026-10-11 at nine window sizes from
-     640x700 to 2560x1271 (410px to 1109px tall). Change that box and this
-     follows only if this is changed too.
-     The poster takes the player's height less 7.5rem (the box padding and a
-     main title of up to two lines). Its width is capped at 460px, the
-     resolution AniList serves covers at (measured: every one 460 wide), so it
-     never upscales into blur, and at 40vw so the right column keeps room for
-     Hide and Mark on one line. 0.68 is the narrowest cover ratio measured
-     (460x672); `max-height` on the image catches anything narrower still.
-     Phones keep the stacked, scrolling layout: a phone's player is ~270px
-     tall, and capping the pop-up to that would make it all scroll. */
-  .show-popup {
-    --player-w: min(95vw, calc((92vh - 8rem) * 16 / 9));
-    --player-h: calc((var(--player-w) - 24px) * 9 / 16 + 81px);
-    --poster-h: calc(var(--player-h) - 7.5rem);
-    --poster-w: min(460px, 40vw, calc(var(--poster-h) * 0.68));
-    /* The body is as tall as the poster actually drawn: its height when height
-       is the limit, else its width over a typical cover's 0.705. Taller than
-       the cover would leave a gap under it; shorter would clip it. */
-    --body-h: min(var(--poster-h), calc(var(--poster-w) / 0.705));
-  }
-  @media (min-width: 640px) {
-    .show-popup {
-      max-height: min(calc(100dvh - 2rem), var(--player-h));
-    }
-  }
-  @media (min-width: 768px) {
-    .show-popup {
-      --player-w: min(83.333vw, calc((92vh - 8rem) * 16 / 9));
-    }
-  }
+  /* Session layout on desktop: after the first spin the Unwatched list tucks
+     away behind a pull-out strip and the wheel area takes the space. */
   @media (min-width: 1024px) {
-    .show-popup {
-      --player-w: min(80vw, calc((92vh - 8rem) * 16 / 9));
-    }
+    .wheel-area { padding-left: calc(16rem + 7px + 2rem); }
+    .wheel-area.session-pad { padding-left: 2.5rem; }
+    .desk-docked { transform: translateX(2rem); }
+    /* The wheel glides into the freed space with the list's own slide
+       (Tailwind's duration-300 + default ease) instead of jumping. */
+    .wheel-area { transition: padding-left 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+    .session-tucked { transform: translateX(-100%); }
   }
+  @media (min-width: 1732px) {
+    .wheel-area { padding-left: calc(20rem + 7px + 2rem); }
+    .wheel-area.session-pad { padding-left: 2.5rem; }
+  }
+  /* The show pane starts beside the Unwatched list when it is docked
+     (opening a show from the list during setup put the pane UNDER the list,
+     hiding the poster) and beside the strip when tucked - same glide. */
+  @media (min-width: 1024px) {
+    .inline-card { padding-left: calc(16rem + 7px + 2rem); transition: padding-left 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+    .inline-card.pane-tucked { padding-left: 2.5rem; }
+  }
+  @media (min-width: 1732px) {
+    .inline-card { padding-left: calc(20rem + 7px + 2rem); }
+    .inline-card.pane-tucked { padding-left: 2.5rem; }
+  }
+  /* Upload Images sits 1rem right of the list's edge and glides with it. */
+  @media (min-width: 1024px) {
+    .upload-btn { left: calc(16rem + 7px + 2rem + 1rem); transition: left 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+    .upload-btn.upload-tucked { left: 3.5rem; }
+  }
+  @media (min-width: 1732px) {
+    .upload-btn { left: calc(20rem + 7px + 2rem + 1rem); }
+    .upload-btn.upload-tucked { left: 3.5rem; }
+  }
+  /* The show pane. The video cell is a size container, so the 16:9 box is
+     as large as its cell allows and never overflows it. Its column is as wide
+     as a video of the row's height needs (the row is the pane less its header,
+     the episode line, the buttons and the gaps: area less 11.5rem), and the
+     nicknames take everything left - at least 14rem. A fixed 14rem column left
+     ~100px of nothing between a height-bound video and the nicknames. */
+  .inline-card { --pane-video-h: calc(var(--area-size) - 11.5rem); }
+  .pane-box { height: var(--area-size); }
+  .pane-grid {
+    display: grid; gap: 0.75rem 1rem;
+    grid-template-columns: min(calc(var(--pane-video-h) * 16 / 9), calc(100% - 15rem)) minmax(14rem, 1fr);
+    grid-template-rows: 1fr auto auto;
+    grid-template-areas: "video nicks" "ep nicks" "acts acts";
+  }
+  .pane-grid > * { min-width: 0; min-height: 0; }
+  .pg-video { grid-area: video; container-type: size; }
+  .pg-video .pane-video { width: min(100cqw, calc(100cqh * 16 / 9)); aspect-ratio: 16 / 9; }
+  .pg-ep { grid-area: ep; }
+  .pg-nicks { grid-area: nicks; }
+  .pg-acts { grid-area: acts; justify-content: flex-end; align-self: end; }
 
-  /* Ensure extremely long words wrap while still preferring spaces */
-  .force-wrap {
-    overflow-wrap: anywhere; /* allows break inside long words only if needed */
+  /* Phones get a full-screen sheet, as the old pop-up was. The pane above is a
+     PC layout: at 375px its nickname column took everything but 95px, so the
+     poster and Watch were a thumbnail, Hide sat 31px off the left edge, and a
+     show opened from the Unwatched list stayed UNDER that list (z-40) with all
+     three buttons covered. Here it sits over the lists and their edge tabs,
+     stacks video -> episode -> buttons -> nicknames so the buttons are reached
+     without scrolling, and scrolls under a pinned title row. */
+  @media (max-width: 639.98px) {
+    .inline-card { position: fixed; inset: 0; z-index: 60; padding: 0; }
+    .pane-box {
+      height: 100dvh; border-radius: 0; padding-top: 0;
+      overflow-y: auto; overscroll-behavior: contain;
+    }
+    .pane-head {
+      position: sticky; top: 0; z-index: 10; height: auto;
+      padding-top: 1rem; padding-bottom: 0.5rem;
+      background-color: hsl(var(--b1));
+    }
+    .pane-grid { display: flex; flex-direction: column; flex: none; }
+    .pg-video { order: 1; container-type: normal; }
+    .pg-video .pane-video { width: 100%; }
+    .pg-ep { order: 2; }
+    .ep-row { height: auto; flex-wrap: wrap; }
+    .pg-acts { order: 3; align-self: stretch; }
+    .pg-acts > :global(*) { flex: 1 1 0; min-width: 0; margin: 0; padding-inline: 0.5rem; }
+    .pg-nicks { order: 4; overflow: visible; }
   }
 
   /* Button background image via pseudo-element to layer above triangle */

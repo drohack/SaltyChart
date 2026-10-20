@@ -1,6 +1,7 @@
 <script lang="ts">
   import { options } from '../stores/options';
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, afterUpdate } from 'svelte';
+  import { moveIndex, nudgeTarget } from '../lib/rankPlacement';
 
   /**
    * An extremely light-weight sidebar that lets the user rank their watched
@@ -9,7 +10,65 @@
    */
 
   export let list: any[] = [];
+  /** Id of the just-watched show being placed, or null. */
+  export let placingId: number | null = null;
   const dispatch = createEventDispatcher();
+
+  // Placement without a long drag - arrows, or click the row it should
+  // take the place of. Both go through move(), so they save like a drag does.
+  // An arrow press moves the row out from under the mouse, so the next click of
+  // a repeated press landed on whichever show slid into its place (and two of
+  // them made a double-click, which opened that show). The list is scrolled by
+  // the distance the row moved, so the arrows stay under the pointer; where the
+  // list can't scroll (its very top or bottom), clicks on other rows are
+  // ignored for a moment instead.
+  let anchorTop: number | null = null;
+  let lastNudgeAt = 0;
+  const NUDGE_GUARD_MS = 500;
+  export function nudge(d: number) {
+    const i = list.findIndex((it) => it.id === placingId);
+    if (i === -1) return;
+    lastNudgeAt = Date.now();
+    const to = nudgeTarget(i, d, list.length);
+    // At either end nothing moves and afterUpdate never consumes the anchor,
+    // so setting it anyway left a stale one that skewed the next placement.
+    if (to == null) return;
+    anchorTop = (listEl?.querySelector('[data-placing]') as HTMLElement | null)?.getBoundingClientRect().top ?? null;
+    move(i, to);
+  }
+  function placeLast() {
+    const i = list.findIndex((it) => it.id === placingId);
+    if (i === -1 || i === list.length - 1) return;
+    if (Date.now() - lastNudgeAt < NUDGE_GUARD_MS) return;
+    lastNudgeAt = Date.now();
+    move(i, list.length);
+  }
+  function placeAt(target: number) {
+    const i = list.findIndex((it) => it.id === placingId);
+    if (i === -1 || target === i) return;
+    lastNudgeAt = Date.now(); // a double-click is one pick, not two
+    move(i, target);
+  }
+  // Keep the row being placed in view when the arrows or a click move it -
+  // never during a drag, or this snaps the list back against the drag's own
+  // edge auto-scroll and the row can never be dragged off screen.
+  let lastPlacingIdx = -1;
+  afterUpdate(() => {
+    const idx = placingId == null ? -1 : list.findIndex((it) => it.id === placingId);
+    if (idx === lastPlacingIdx) return;
+    lastPlacingIdx = idx;
+    if (anchorTop != null) {
+      const el = listEl?.querySelector('[data-placing]') as HTMLElement | null;
+      if (el) listEl.scrollTop += el.getBoundingClientRect().top - anchorTop;
+      anchorTop = null;
+      return;
+    }
+    if (idx === -1 || dragIdx !== -1 || isTouchDragging) return;
+    const el = listEl?.querySelector('[data-placing]') as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect(), L = listEl.getBoundingClientRect();
+    if (r.top < L.top + 8 || r.bottom > L.bottom - 8) listEl.scrollTop += r.top - L.top - L.height / 2;
+  });
 
   // Index of the item currently being dragged; -1 when none.
   let dragIdx: number = -1;
@@ -42,12 +101,8 @@
    * Move an item inside the list and emit the new order to the parent.
    */
   function move(from: number, to: number) {
-    if (from === to || from < 0 || from >= list.length) return;
-    const dest = from < to ? to - 1 : to;
-
-    const updated = [...list];
-    const [spliced] = updated.splice(from, 1);
-    updated.splice(dest, 0, spliced);
+    const updated = moveIndex(list, from, to);
+    if (!updated) return;
     list = updated;
 
     // Notify parent with the *ordered* array of IDs so it can persist.
@@ -192,12 +247,20 @@
 </script>
 
 <aside
-  class="flex flex-col h-full w-full lg:max-h-[calc(100dvh-195px)]"
+  class="flex flex-col h-full w-full lg:max-h-[calc(100dvh-132px)]"
 >
   {#if list.length}
-    <h3 class="text-lg font-bold mb-4 text-center md:text-left">Watched</h3>
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <h3 class="text-lg font-bold text-center md:text-left">Watched <span class="text-xs font-normal opacity-60">{list.length} ranked</span></h3>
+      <!-- The one way into the expanded ranking (desktop only). -->
+      <button type="button" class="hidden lg:inline-flex btn btn-xs btn-outline normal-case shrink-0"
+        data-rank-expand on:click={() => dispatch('expand')}>Expand ranking</button>
+    </div>
+    {#if placingId != null}
+      <p class="text-xs mb-2 text-primary">Rough spot for now: click the show it beats, or use the arrows.</p>
+    {/if}
     <ul
-      class="flex-1 flex flex-col gap-2 overflow-y-auto pb-8 pr-1"
+      class="flex-1 flex flex-col gap-1 overflow-y-auto pt-1 pb-8 pr-1"
       bind:this={listEl}
       on:dragover={(e) => {
         e.preventDefault();
@@ -214,12 +277,19 @@
       {#each list as item, i (item.id)}
         <!-- Placeholder before -->
         {#if placeholder === i}
-          <li class="h-3 bg-primary/40 rounded transition-all"></li>
+          <li class="shrink-0 h-1 my-0.5 mx-1 bg-primary rounded-full shadow-[0_0_6px_0] shadow-primary"></li>
         {/if}
 
+        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
         <li
           data-rank-row={item.id}
-          class={`group p-1 rounded text-sm shadow flex items-center gap-2 cursor-grab bg-base-100 w-full ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
+          data-placing={item.id === placingId ? '' : undefined}
+          class={`group pl-3 pr-1 py-0.5 rounded text-sm shadow flex items-center gap-2 bg-base-100 w-full ${item.id === placingId ? 'ring-2 ring-inset ring-primary bg-primary/20' : placingId != null ? "cursor-pointer relative before:content-[''] before:absolute before:inset-x-1 before:-top-[4px] before:h-1 before:rounded-full before:bg-primary before:opacity-0 hover:before:opacity-100" : 'cursor-grab'} ${dragIdx === i && placeholder !== -1 ? 'invisible' : ''}`}
+          on:click={() => {
+            if (placingId == null || item.id === placingId) return;
+            if (Date.now() - lastNudgeAt < NUDGE_GUARD_MS) return; // a repeated arrow press, not a pick
+            placeAt(i);
+          }}
           class:opacity-50={dragIdx === i}
           class:scale-105={isTouchDragging && dragIdx === i}
           draggable="true"
@@ -254,7 +324,7 @@
           on:touchstart={(e) => handleTouchStart(e, i)}
           on:touchmove={(e) => handleTouchMove(e, i)}
           on:touchend={handleTouchEnd}
-          on:dblclick={() => dispatch('view', item)}
+          on:dblclick={() => { if (placingId == null) dispatch('view', item); }}
         >
           <!-- Drag handle icon -->
           <svg
@@ -269,43 +339,49 @@
             <path d="M10 4a2 2 0 11-4 0 2 2 0 014 0zm0 8a2 2 0 11-4 0 2 2 0 014 0zm-2 8a2 2 0 100-4 2 2 0 000 4zm8-16a2 2 0 114 0 2 2 0 01-4 0zm0 8a2 2 0 114 0 2 2 0 01-4 0zm2 8a2 2 0 100-4 2 2 0 000 4z" />
           </svg>
 
+          <span class="w-5 text-right text-xs opacity-60 tabular-nums shrink-0">{i + 1}</span>
           <!-- Cover image -->
           <img
             src={item.coverImage?.small ?? item.coverImage?.medium ?? item.coverImage?.large}
             alt=""
-            class="w-12 h-16 object-cover rounded shrink-0 md:pointer-events-auto pointer-events-none"
+            class="w-10 h-14 object-cover rounded shrink-0 md:pointer-events-auto pointer-events-none"
             loading="lazy"
           />
 
           {#key $options.titleLanguage + '-' + item.id}
             <span
-              class="flex-1 whitespace-normal break-words force-wrap"
+              class="flex-1 min-w-0 line-clamp-2 break-words"
               title={getDisplayTitle(item)}
               data-lang={$options.titleLanguage}
               >{getDisplayTitle(item)}</span
             >
           {/key}
 
+          {#if item.id === placingId}
+            <span class="flex flex-col gap-0.5 shrink-0">
+              <button class="btn btn-xs btn-square btn-outline btn-primary" aria-label="Move up" on:click|stopPropagation={() => nudge(-1)}>&#9650;</button>
+              <button class="btn btn-xs btn-square btn-outline btn-primary" aria-label="Move down" on:click|stopPropagation={() => nudge(1)}>&#9660;</button>
+            </span>
+          {:else if placingId == null}<!-- no X on other rows while ranking -->
           <!-- Unwatch button appears on hover -->
           <button
             class="ml-auto opacity-0 group-hover:opacity-100 transition-opacity btn btn-xs btn-circle btn-ghost"
             on:click={() => dispatch('unwatch', item.id)}
             aria-label="Mark as unwatched"
           >&#10005;</button>
+          {/if}
         </li>
       {/each}
 
       <!-- Placeholder at end -->
+      {#if placingId != null}
+        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
+        <li class="shrink-0 h-12 cursor-pointer relative before:content-[''] before:absolute before:inset-x-1 before:-top-[4px] before:h-1 before:rounded-full before:bg-primary before:opacity-0 hover:before:opacity-100"
+          data-place-last title="Put it last" on:click={placeLast}></li>
+      {/if}
       {#if placeholder === list.length}
-        <li class="h-3 bg-primary/40 rounded transition-all"></li>
+        <li class="shrink-0 h-1 my-0.5 mx-1 bg-primary rounded-full shadow-[0_0_6px_0] shadow-primary"></li>
       {/if}
     </ul>
   {/if}
 </aside>
-
-<style>
-  /* Ensure extremely long words wrap while still preferring spaces */
-  .force-wrap {
-    overflow-wrap: anywhere;
-  }
-</style>

@@ -10,6 +10,14 @@ html, body {
   overflow-x: clip;
 }
 
+/* The page colour lives on <body> (`bg-base-200` in index.html), and <html>
+   paints the theme's base-100 white. A page shorter than the window - Randomize
+   on a phone is 546px of a 667px screen - showed that white as a block under
+   the content. Filling the window with the body keeps it one colour. */
+body {
+  min-height: 100dvh;
+}
+
 /* Combobox tweaks for Compare page */
 .svelte-select {
   @apply input w-full bg-base-200 text-gray-700;
