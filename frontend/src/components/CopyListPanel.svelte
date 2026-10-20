@@ -76,6 +76,14 @@
 
   $: byCount = [...lists].sort((a, b) => b.entries.length - a.entries.length || a.user.localeCompare(b.user));
   $: copied = mainUser ? buildCopiedList(lists, mainUser, excluded) : { items: [], bonus: [] };
+  // The footer says where the total comes from, because with many accounts the
+  // extras' checkboxes scroll out of view - and they are part of the copy.
+  $: fromMain = mainUser ? copied.items.length - copied.bonus
+      .filter((b) => !excluded.has(b.user)).reduce((n, b) => n + b.mediaIds.length, 0) : 0;
+  $: extraUsers = copied.bonus.filter((b) => !excluded.has(b.user)).length;
+  $: split = `${fromMain} from ${mainUser}` + (extraUsers
+    ? ` + ${copied.items.length - fromMain} from ${extraUsers} other${extraUsers === 1 ? '' : 's'}`
+    : '');
 
   $: titleById = new Map(anime.map((a) => [a.id, a]));
   function titleFor(id: number, lang: string): string | null {
@@ -150,7 +158,13 @@
   }
 </script>
 
-<div class="mt-16 w-full max-w-md mx-auto px-6 sm:px-0 text-left" data-copy-list>
+<!-- The card is capped to the wheel area's height and scrolls in the middle,
+     so the title and the Copy button are always on screen: uncapped, ten
+     accounts ran the button past the bottom of a 1366x768 laptop. Choosing
+     whose list to copy is the decision; the extra accounts below it are
+     secondary - smaller, but shown and ticked by default, since combining
+     every account is the point and not an option tucked away. -->
+<div class="mt-4 sm:mt-8 w-full max-w-md mx-auto px-4 sm:px-0 text-left" data-copy-list>
   {#if loading}
     <div class="flex justify-center"><LoadingSpinner size="lg" /></div>
   {:else if loadError}
@@ -164,41 +178,44 @@
       <p class="text-sm mt-1">Nobody else has ranked this season yet.</p>
     </div>
   {:else}
-    <div class="card bg-base-200 shadow">
-      <div class="card-body gap-4 p-5">
-        <div>
-          <h2 class="card-title text-lg">Copy a trailer list for {seasonLabel} {year}</h2>
-          <p class="text-sm opacity-70">Your list for this season is empty. Start from someone else's.</p>
-        </div>
+    <div class="copy-card card bg-base-200 shadow flex flex-col overflow-hidden">
+      <div class="shrink-0 px-5 pt-4 pb-3">
+        <h2 class="card-title text-lg">Copy a trailer list for {seasonLabel} {year}</h2>
+        <p class="text-sm opacity-70">Your list for this season is empty. Start from someone else's.</p>
+      </div>
 
+      <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-5 pb-4 flex flex-col gap-4" data-copy-scroll>
         <fieldset>
-          <legend class="font-semibold text-sm mb-1">Copy from</legend>
-          {#each byCount as list (list.user)}
-            <label class="flex items-center gap-3 py-1 cursor-pointer">
-              <input type="radio" class="radio radio-sm radio-primary" name="copy-main"
-                value={list.user} bind:group={mainUser} data-copy-main={list.user} />
-              <span class="flex-1 truncate">{list.user}</span>
-              <span class="text-sm opacity-60 tabular-nums">
-                {list.entries.length} trailer{list.entries.length === 1 ? '' : 's'}
-              </span>
-            </label>
-          {/each}
+          <legend class="font-semibold mb-1.5">Copy from</legend>
+          <div class="flex flex-col gap-1">
+            {#each byCount as list (list.user)}
+              <label class="flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer transition-colors
+                {mainUser === list.user ? 'border-primary bg-primary/10' : 'border-transparent hover:bg-base-300'}">
+                <input type="radio" class="radio radio-sm radio-primary" name="copy-main"
+                  value={list.user} bind:group={mainUser} data-copy-main={list.user} />
+                <span class="flex-1 truncate font-medium">{list.user}</span>
+                <span class="text-sm opacity-60 tabular-nums shrink-0">
+                  {list.entries.length} trailer{list.entries.length === 1 ? '' : 's'}
+                </span>
+              </label>
+            {/each}
+          </div>
         </fieldset>
 
         {#if copied.bonus.length}
-          <fieldset>
-            <legend class="font-semibold text-sm mb-1">Plus these shows from other users</legend>
+          <div class="pt-3 border-t border-base-300"><fieldset>
+            <legend class="text-xs font-semibold uppercase tracking-wide opacity-60 mb-1">Plus these shows from other users</legend>
             {#each copied.bonus as b, i (b.user)}
               {@const names = bonusNames(b.mediaIds, $options.titleLanguage)}
               {@const open = expanded.has(b.user) || names.length <= BONUS_NAMED + 1}
-              <div class="flex items-start gap-3 py-1">
-                <input type="checkbox" id="copy-bonus-{i}" class="checkbox checkbox-sm checkbox-primary mt-0.5"
+              <div class="flex items-start gap-2 py-1">
+                <input type="checkbox" id="copy-bonus-{i}" class="checkbox checkbox-xs checkbox-primary mt-0.5"
                   checked={!excluded.has(b.user)} on:change={() => toggle(b.user)} data-copy-bonus={b.user} />
-                <div class="text-sm" class:opacity-50={excluded.has(b.user)}>
+                <div class="min-w-0 text-xs leading-snug break-words" class:opacity-50={excluded.has(b.user)}>
                   <label for="copy-bonus-{i}" class="cursor-pointer">
                     <span class="font-medium">{b.user}</span>
                     <span class="opacity-60">({b.mediaIds.length})</span> -
-                    {(open ? names : names.slice(0, BONUS_NAMED)).join(', ')}
+                    <span class="opacity-80">{(open ? names : names.slice(0, BONUS_NAMED)).join(', ')}</span>
                   </label>
                   {#if names.length > BONUS_NAMED + 1}
                     <button type="button" class="link link-hover opacity-70 ml-1" on:click={() => toggleExpanded(b.user)}>
@@ -208,14 +225,17 @@
                 </div>
               </div>
             {/each}
-          </fieldset>
+          </fieldset></div>
         {/if}
+      </div>
 
+      <div class="shrink-0 border-t border-base-300 px-5 py-3 flex flex-col gap-2">
         <div class="flex items-center justify-between gap-3">
-          <span class="text-sm opacity-70 tabular-nums" data-copy-total>
-            {copied.items.length} show{copied.items.length === 1 ? '' : 's'} in total
-          </span>
-          <button class="btn btn-primary btn-sm" on:click={copy} disabled={saving || !copied.items.length} data-copy-save>
+          <div class="min-w-0 tabular-nums">
+            <div class="text-sm font-semibold" data-copy-total>{copied.items.length} show{copied.items.length === 1 ? '' : 's'}</div>
+            <div class="text-xs opacity-70 leading-snug break-words" data-copy-split>{split}</div>
+          </div>
+          <button class="btn btn-primary btn-sm shrink-0" on:click={copy} disabled={saving || !copied.items.length} data-copy-save>
             {saving ? 'Copying...' : 'Copy list'}
           </button>
         </div>
@@ -224,3 +244,14 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* As tall as the wheel area it stands in for. On a phone that area is the
+     square wheel's (~300px), which left the account list 104px at 320x568
+     with the rest of the screen empty below - so there it takes the screen's
+     height less the header and season row above it. */
+  .copy-card { max-height: calc(var(--area-size, 70vh) - 2rem); }
+  @media (max-width: 639.98px) {
+    .copy-card { max-height: calc(100dvh - 14rem); }
+  }
+</style>

@@ -1458,6 +1458,15 @@ function handleModalKey(e: KeyboardEvent) {
   // While an episode plays the keyboard belongs to the video (Space, [ and ]):
   // Enter here would rank the show, and Escape would close the pane and the
   // episode with it - one stray key ending what someone is watching.
+  // Placing still answers Up/Down, though: the rail's hint says "use the
+  // arrows", and with focus outside the player (where it almost always is)
+  // they did nothing at all. Inside the player they stay video.js's.
+  if (showPlayer && placingId != null && (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+      && !(e.target as HTMLElement | null)?.closest?.('.video-js')) {
+    e.preventDefault();
+    rankSidebar?.nudge(e.key === 'ArrowUp' ? -1 : 1);
+    return;
+  }
   if (showPlayer) return;
   // The upload modal is its own dialog, opened from the page rather than from
   // the show pane. It is rendered as `<dialog open>` rather than via showModal(),
@@ -1947,7 +1956,15 @@ $: {
       {:else if !wheelItems.length && !watchList.length && $authToken}
         <!-- No list at all: offer someone else's. A list whose shows are all
              watched or hidden is not empty and keeps the message below. -->
-        <CopyListPanel {season} {year} {anime} token={$authToken} self={$activeUserName} on:copied={fetchBoth} />
+        <!-- Centred in the room LEFT of the options panel (absolute, `w-52`,
+             z-30): centred in the whole area, its right side and Copy list sat
+             under that panel on a 1366px laptop. Below `xl` there is no such
+             room (246px at 1100), so it is simply above the panel and the
+             Upload Images button instead - with no list, neither has anything
+             to act on yet. -->
+        <div class="relative z-[31] w-full xl:pr-52">
+          <CopyListPanel {season} {year} {anime} token={$authToken} self={$activeUserName} on:copied={fetchBoth} />
+        </div>
       {:else if !wheelItems.length}
         <div class="mt-24 text-center opacity-70">My List for this season is empty.</div>
       {:else}
@@ -2577,7 +2594,7 @@ $: {
                 <div class="absolute inset-0 flex flex-col items-center justify-end gap-2 text-white text-center p-4">
                   {#if watchInfo?.available}
                     <button class="btn btn-accent btn-lg gap-2 shadow-lg" class:btn-disabled={openingPlayer} on:click={openPlayer} data-watch>
-                      {#if openingPlayer}<span class="loading loading-spinner loading-sm"></span> Opening...{:else}&#9654; Watch{/if}
+                      {#if openingPlayer}<span class="loading loading-spinner loading-sm"></span> Opening...{:else}<svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg> Watch{/if}
                       {#if watchInfo.seasonNumber != null && watchInfo.episodeNumber != null}S{watchInfo.seasonNumber}E{watchInfo.episodeNumber}{/if}
                     </button>
                   {:else if $mediaConfigured && watchInfo?.unknown}

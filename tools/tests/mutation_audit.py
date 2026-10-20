@@ -3582,6 +3582,40 @@ MUTATIONS: list[Mutation] = [
         guards="a list ranked on another device is wiped by a copy",
     ),
     Mutation(
+        name="the options panel covers Copy list on a laptop",
+        path=RANDOMIZE,
+        # Found by the 2026-10-20 exploratory pass: centred in the whole area,
+        # the copy card's right side sat under the options panel (z-30).
+        find='        <div class="relative z-[31] w-full xl:pr-52">',
+        replace='        <div class="w-full"><!-- mutation -->',
+        flows=("copy list",),
+        test=T_UI,
+        expect="Copy list is covered on a 1366x768 laptop",
+        guards="on a laptop the button that does the copy cannot be clicked",
+    ),
+    Mutation(
+        name="the copy panel grows past the window instead of scrolling",
+        path=COPY_PANEL,
+        find="  .copy-card { max-height: calc(var(--area-size, 70vh) - 2rem); }",
+        replace="  .copy-card { max-height: none; } /* mutation */",
+        flows=("copy list",),
+        test=T_UI,
+        expect="Copy list is below the fold on a 1366x768 laptop",
+        guards="with many accounts the Copy list button is off the bottom of "
+               "the screen",
+    ),
+    Mutation(
+        name="the arrows stop placing a show while its episode plays",
+        path=RANDOMIZE,
+        find="  if (showPlayer && placingId != null && (e.key === 'ArrowUp' || e.key === 'ArrowDown')",
+        replace="  if (false && showPlayer && placingId != null && (e.key === 'ArrowUp' || e.key === 'ArrowDown')",
+        flows=("pane replaces the wheel",),
+        test=T_UI,
+        expect="the arrows did not move the show being placed while its episode plays",
+        guards="the rail says to use the arrows, and they do nothing until the "
+               "episode is closed",
+    ),
+    Mutation(
         name="copy list repeats a show two accounts both ranked",
         path=COPY_LIB,
         find="    const fresh = list.entries.map((e) => e.mediaId).filter((id) => !seen.has(id));",

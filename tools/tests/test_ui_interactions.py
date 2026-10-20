@@ -3880,11 +3880,14 @@ def test_pane_replaces_the_wheel(page, backend: str, frontend: str, token: str):
         if held is None:
             step(47, "step 6/6: SKIP - Jellyfin not configured or nothing in the season is held")
         else:
-            # Step 4 may have ranked the held show; it has to be on the wheel again.
+            # Step 4 may have ranked the held show; it has to be on the wheel
+            # again. And the placement below needs a show to move past, so one
+            # other show is ranked whatever step 4 picked.
             requests.patch(f"{backend}/api/list/watched", timeout=15,
                            headers={"Authorization": f"Bearer {token}"},
                            json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
                                  "mediaId": held, "watched": False}).raise_for_status()
+            mark_watched(backend, token, [next(m for m in order if m != held)])
             page.reload()
             page.wait_for_selector('aside li[role=button][tabindex="0"]', timeout=30_000)
             title_of = requests.get(f"{backend}/api/anime", timeout=120,
@@ -3896,6 +3899,29 @@ def test_pane_replaces_the_wheel(page, backend: str, frontend: str, token: str):
             page.click("[data-watch]")
             page.wait_for_selector("[data-video-box] .video-js", timeout=30_000)
             page.wait_for_timeout(2500)
+            # Rank it mid-episode, then the arrows. The rail's hint says "use
+            # the arrows", and while an episode played they did nothing at all.
+            # Up then Down: whichever end Rank it put the show at, one of the
+            # two moves it, and the debounced save carries the result.
+            ranks: list = []
+            def on_rank(req):
+                if req.method == "PATCH" and req.url.rstrip("/").endswith("/api/list/rank"):
+                    ranks.append(req.url)
+            page.on("request", on_rank)
+            try:
+                page.click("[data-rank-it]")
+                page.wait_for_timeout(1500)
+                ranks.clear()
+                page.keyboard.press("ArrowUp")
+                page.wait_for_timeout(100)
+                page.keyboard.press("ArrowDown")
+                page.wait_for_timeout(1500)
+            finally:
+                page.remove_listener("request", on_rank)
+            assert ranks, ("the arrows did not move the show being placed while its "
+                           "episode plays - the rail says to use them")
+            assert page.locator("[data-video-box] .video-js").count(), \
+                "the arrows ended the episode instead of placing the show"
             sent.clear()
             nxt = page.locator('aside li[role=button][tabindex="0"]').filter(
                 has_not_text=(held_name or "")[:20]).first
@@ -3906,6 +3932,12 @@ def test_pane_replaces_the_wheel(page, backend: str, frontend: str, token: str):
                 "pressed Watch for")
             assert [u for u in sent if "playback/stop" in u], (
                 "opening another show mid-episode did not stop the old transcode")
+            requests.patch(f"{backend}/api/list/watched", timeout=15,
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                                 "mediaId": held, "watched": False}).raise_for_status()
+            page.reload()
+            page.wait_for_selector('aside li[role=button][tabindex="0"]', timeout=30_000)
             open_show(page, (held_name or "")[:20] or None)
             page.wait_for_selector("[data-watch]", timeout=30_000)
             page.click("[data-watch]")
@@ -4067,14 +4099,19 @@ def untick_all(page, keep: str | None = None) -> None:
     shared with a later account is that account's to offer - which can bring a
     new, ticked account onto the panel. Repeat until nothing else is ticked.
     """
-    for _ in range(20):
-        boxes = [b for b in page.locator("[data-copy-bonus]").all()
-                 if b.get_attribute("data-copy-bonus") != keep and b.is_checked()]
-        if not boxes:
+    # Every UI run leaves `ui_test_` accounts with lists in the seeded season,
+    # so there can be dozens: click them in the page rather than one locator
+    # round trip each.
+    for _ in range(500):
+        n = page.evaluate("""keep => {
+            const box = [...document.querySelectorAll('[data-copy-bonus]')]
+                .find(b => b.checked && b.getAttribute('data-copy-bonus') !== keep);
+            if (box) box.click();
+            return box ? 1 : 0;
+        }""", keep)
+        if not n:
             return
-        boxes[0].uncheck()
-        page.wait_for_timeout(100)
-    raise AssertionError("bonus accounts kept appearing ticked after 20 unticks")
+    raise AssertionError("bonus accounts kept appearing ticked after 500 unticks")
 
 
 def test_copy_list(page, backend: str, frontend: str):
@@ -4087,7 +4124,7 @@ def test_copy_list(page, backend: str, frontend: str):
     The guard matters more than the copy: `PUT /api/list` replaces the whole
     season, so a list made in another tab after the panel opened must survive.
     """
-    step(50, "step 1/4: seeding a source list, a bonus list and two empty viewers")
+    step(50, "step 1/5: seeding a source list, a bonus list and two empty viewers")
     ids = season_ids(backend, 6)
     stamp = int(time.time())
     def account(name: str) -> str:
@@ -4113,7 +4150,26 @@ def test_copy_list(page, backend: str, frontend: str):
             puts.append(req.url)
     page.on("request", on_req)
     try:
-        step(50, "step 2/4: the panel offers the source, and copies it plus the bonus shows")
+        step(50, "step 2/5: on a 1366x768 laptop Copy list is on screen and on top")
+        # Every account with a list this season is offered - the dev database
+        # holds dozens - so the panel must fit and scroll inside itself. Before
+        # that, ten accounts ran Copy list past the bottom of the window, and
+        # the options panel (absolute, z-30) sat on top of its right side.
+        open_random(page, frontend, viewer, {"width": 1366, "height": 657})
+        page.wait_for_selector("[data-copy-save]", timeout=30_000)
+        page.wait_for_timeout(800)
+        fit = page.evaluate("""() => {
+            const btn = document.querySelector('[data-copy-save]'), b = btn.getBoundingClientRect();
+            const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+            return { bottom: Math.round(b.bottom), vh: innerHeight, onTop: !!hit && (hit === btn || btn.contains(hit)),
+                     by: hit ? (hit.className || hit.tagName).toString().slice(0, 50) : 'nothing (off screen)' };
+        }""")
+        assert fit["bottom"] <= fit["vh"], (
+            f"Copy list is below the fold on a 1366x768 laptop (bottom {fit['bottom']}px of "
+            f"{fit['vh']}) - the panel grows with the accounts instead of scrolling")
+        assert fit["onTop"], f"Copy list is covered on a 1366x768 laptop, by {fit['by']}"
+
+        step(50, "step 3/5: the panel offers the source, and copies it plus the bonus shows")
         open_random(page, frontend, viewer, {"width": 1600, "height": 950})
         page.wait_for_selector(f"[data-copy-main='{src_user}']", timeout=30_000)
         page.check(f"[data-copy-main='{src_user}']")
@@ -4129,7 +4185,7 @@ def test_copy_list(page, backend: str, frontend: str):
             f"the copied list is wrong: the server has {got}, expected {expected} - the "
             "source's shows, order and nicknames, then the bonus account's new shows in its own order")
 
-        step(50, "step 3/4: unticking an account leaves its shows out")
+        step(50, "step 4/5: unticking an account leaves its shows out")
         open_random(page, frontend, viewer2, {"width": 1600, "height": 950})
         page.wait_for_selector(f"[data-copy-main='{src_user}']", timeout=30_000)
         page.check(f"[data-copy-main='{src_user}']")
@@ -4137,7 +4193,7 @@ def test_copy_list(page, backend: str, frontend: str):
         total = page.inner_text("[data-copy-total]")
         assert total.strip().startswith("3 "), f"with every extra unticked the total reads {total!r}, not 3"
 
-        step(50, "step 4/4: a list made in another tab before Copy is never overwritten")
+        step(50, "step 5/5: a list made in another tab before Copy is never overwritten")
         requests.put(f"{backend}/api/list", timeout=15, headers={"Authorization": f"Bearer {viewer2}"},
                      json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
                            "items": [{"mediaId": ids[5]}]}).raise_for_status()
