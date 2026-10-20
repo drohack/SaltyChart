@@ -3688,7 +3688,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
     buttons on top of each other - so this asserts what a phone user can
     reach, not how it is built.
     """
-    step(40, "step 1/6: seeding an unwatched list and opening /random at 375x667")
+    step(40, "step 1/7: seeding an unwatched list and opening /random at 375x667")
     # A show the library holds goes first, so the sheet opens with Watch on it.
     held = held_show(backend, token)
     ids = season_ids(backend, 3)
@@ -3713,7 +3713,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
             "opening a show left the Unwatched list open behind it on a phone - every "
             "way of opening a show must close the lists")
 
-        step(40, "step 2/6: the sheet covers the whole screen, over the lists")
+        step(40, "step 2/7: the sheet covers the whole screen, over the lists")
         cover = page.evaluate("""() => {
             const c = document.querySelector('[data-inline-card]').getBoundingClientRect();
             const pts = [[20, 20], [innerWidth - 20, innerHeight / 2], [20, innerHeight - 20]];
@@ -3725,7 +3725,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
             f"the show sheet does not cover a phone screen ({cover}) - the list it was "
             "opened from, or the page, shows through and takes the taps")
 
-        step(40, "step 3/6: the video spans the screen; the X and every button are on screen and on top")
+        step(40, "step 3/7: the video spans the screen; the X and every button are on screen and on top")
         video_w = page.evaluate("() => document.querySelector('[data-video-box]').getBoundingClientRect().width")
         assert video_w >= 375 * 0.8, (
             f"the video is squeezed on a phone ({video_w:.0f}px of 375) - the PC grid's "
@@ -3734,7 +3734,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         # "Watch S1E1" button hid most of it, and a row of its own under the
         # video vanished when the episode started and moved everything up.
         if held is None:
-            step(40, "step 3/6: Watch check SKIPPED - Jellyfin not configured or nothing in the season is held")
+            step(40, "step 3/7: Watch check SKIPPED - Jellyfin not configured or nothing in the season is held")
         else:
             page.wait_for_selector("[data-watch]", timeout=30_000)
             play = page.evaluate("""() => {
@@ -3760,7 +3760,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         hidden = [b for b in reach if not b["onTop"] or b["t"] < 0 or b["b"] > 667]
         assert not hidden, f"a pane button is covered or below the fold on a phone: {hidden}"
 
-        step(40, "step 4/6: the three actions sit side by side, not on each other")
+        step(40, "step 4/7: the three actions sit side by side, not on each other")
         acts = [b for b in reach if b["name"] and b["name"] not in ("Back to the wheel",)
                 and "WATCH" not in b["name"].upper()]
         for i, a in enumerate(acts):
@@ -3769,7 +3769,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
                 oy = min(a["b"], b["b"]) - max(a["t"], b["t"])
                 assert ox <= 0 or oy <= 0, f"{a['name']} and {b['name']} overlap on a phone"
 
-        step(40, "step 5/6: X closes it and writes nothing")
+        step(40, "step 5/7: X closes it and writes nothing")
         writes.clear()
         page.click("[data-popup-close]")
         page.wait_for_selector("[data-inline-card]", state="detached", timeout=5_000)
@@ -3778,6 +3778,36 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         changed = [w["mediaId"] for w in server_list(backend, token) if w.get("watched") or w.get("hidden")]
         assert not changed, f"closing the show sheet left entries watched or hidden: {changed}"
 
+        # Rank it on a phone pauses the episode and opens the Watched list over
+        # the show with the show already being placed; closing the list goes
+        # straight back to it. It used to leave the list shut, so placing meant
+        # closing the show, opening the list and finding the show by hand.
+        step(40, "step 6/7: Rank it opens the Watched list over the show, ready to place it")
+        open_show(page)
+        page.click("[data-rank-it]")
+        page.wait_for_timeout(1200)
+        drawer = page.evaluate("""() => {
+            const d = document.querySelector('[data-watched-drawer]').getBoundingClientRect();
+            const hit = document.elementFromPoint(d.left + d.width / 2, d.top + d.height / 2);
+            const p = document.querySelector('[data-watched-drawer] [data-placing]')?.getBoundingClientRect();
+            return { onTop: !!hit && !!hit.closest('[data-watched-drawer]'),
+                     placingVisible: !!p && p.top >= 0 && p.bottom <= innerHeight };
+        }""")
+        assert drawer["onTop"] and drawer["placingVisible"], (
+            f"Rank it on a phone did not open the Watched list over the show ({drawer}) - "
+            "placing it means closing the show and finding it by hand")
+        page.click('button[aria-label="Hide Watched list"]')
+        page.wait_for_timeout(800)
+        assert page.locator("[data-spin-next]").count() and page.locator("[data-inline-card]").count(), (
+            "closing the Watched list did not go back to the show")
+        page.click("[data-popup-close]")
+        page.wait_for_selector("[data-inline-card]", state="detached", timeout=5_000)
+        # Put it back: the laptop step below opens the first unwatched show.
+        requests.patch(f"{backend}/api/list/watched", timeout=15,
+                       headers={"Authorization": f"Bearer {token}"},
+                       json={"season": SEEDED_SEASON, "year": SEEDED_YEAR,
+                             "mediaId": ids[0], "watched": False}).raise_for_status()
+
         # A 1366x768 laptop leaves ~657px of page. The pane replaces the wheel
         # and is sized from the wheel area, so everything in it has to fit that
         # height: nothing scrolls, and `overflow: hidden` would silently CUT a
@@ -3785,7 +3815,7 @@ def test_phone_show_sheet(page, backend: str, frontend: str, token: str):
         # six fit the pane's nickname column without scrolling, which would
         # leave its own scrollbar untested; it must scroll, not push the buttons
         # out. Throwaway `ui_test_` accounts - cleanup_users.py removes them.
-        step(40, "step 6/6: on a 1366x768 laptop the whole pane fits, nothing cut off")
+        step(40, "step 7/7: on a 1366x768 laptop the whole pane fits, nothing cut off")
         stamp = int(time.time())
         for k in range(12):
             r = requests.post(f"{backend}/api/auth/signup", timeout=15,

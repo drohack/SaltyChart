@@ -181,9 +181,13 @@ happen with only a console line. Flow 45.
   again's slot and Rank it's slot becomes a "Ranked #n" label, so the second
   click of a double-click lands on nothing. Placing happens in the Watched
   rail (`WatchedRankingSidebar.svelte`): the arrows, or click the show it
-  beats. Below `lg` the rail is a drawer that would cover the pane, so Rank it
-  leaves it shut; placement survives closing the pane and is finished in the
-  drawer. **Opening a different show ends the last one's placement**
+  beats. Below `lg` the rail is a drawer, and **Rank it pauses the episode and
+  opens that drawer over the show** (`.over-show`, above the sheet's z-60) with
+  the show already being placed; its close tab (`closeWatchedDrawer`) goes
+  straight back to the show and resumes what Rank it paused - the same
+  pause/resume as the PC's expanded ranking. It first left the drawer shut,
+  which made a phone close the show, open the list and find the show by hand
+  (the owner's complaint, 2026-10-20). Flow 40 step 6. **Opening a different show ends the last one's placement**
   (`endPlacementUnless`) - left running, the new show had no Enter and its
   arrows moved the old show. Only spin, Spin next, a season change or another
   show end it.

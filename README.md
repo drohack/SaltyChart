@@ -305,7 +305,9 @@ chronological order; all features listed are live.
   playing episode - the X does.
 - **Rank it** marks the show watched without closing it (the episode keeps
   playing) and starts placing it in the Watched list: use the arrows, or click
-  the show it beats. **Expand ranking** shows the whole Watched list at once
+  the show it beats. On a phone, Rank it pauses the episode and slides the
+  Watched list open over it; closing the list goes back to the episode.
+  **Expand ranking** shows the whole Watched list at once
   over the wheel, as posters or a list - drag any show to a new place, click
   the space after the last show to put one last.
 - Double-click a slice of the wheel to open that show without spinning.

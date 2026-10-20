@@ -1596,14 +1596,33 @@ $: {
     if (!selected) return;
     if (!selectedWatched) toggleWatched(selected.id, true);
     placingId = selected.id;
-    // The rail sits beside the pane only on a PC. Narrower, the Watched list
-    // is a drawer that would slide over the pane and its buttons, so it stays
-    // shut - the show is still being placed when the viewer opens it.
-    if (window.matchMedia('(min-width: 1024px)').matches) watchedCollapsed = false;
+    // On a PC the rail sits beside the pane. Narrower, the Watched list is a
+    // drawer: Rank it pauses the episode and opens it over the show, so the
+    // show is placed in one motion, and closing the drawer goes straight back
+    // to the episode (closeWatchedDrawer resumes what this paused). Leaving the
+    // drawer shut made a phone close the show, open the list and find the show
+    // by hand - the owner's complaint, 2026-10-20.
+    if (window.matchMedia('(min-width: 1024px)').matches) {
+      watchedCollapsed = false;
+    } else {
+      const v = inlineVideo();
+      pausedByRank = !!v && !v.paused;
+      if (pausedByRank) v!.pause();
+      unwatchedCollapsed = true;
+      watchedCollapsed = false;
+    }
     // A double-click on Rank it must not land on Spin next.
     spinNextArmed = false;
     if (armTimer) clearTimeout(armTimer);
     armTimer = setTimeout(() => (spinNextArmed = true), 600);
+  }
+  let pausedByRank = false;
+  /** The Watched drawer's close tab (phones and tablets): back to the show, playing again if Rank it paused it. */
+  function closeWatchedDrawer() {
+    watchedCollapsed = true;
+    const v = inlineVideo();
+    if (pausedByRank && v) void v.play().catch(() => {});
+    pausedByRank = false;
   }
   // The live rank of the show being placed, for the label in Rank it's spot.
   $: placingRank = placingId == null ? null : watchedRank.findIndex((it) => it.id === placingId) + 1 || null;
@@ -2350,13 +2369,15 @@ $: {
     <div
       class="fixed z-40 top-0 bottom-0 right-0 bg-base-200 pl-4 pr-3 py-3 shadow-lg flex flex-col w-full max-w-[20rem] lg:absolute lg:top-0 lg:bottom-0 lg:mt-0 lg:right-4 lg:w-80 transform transition-transform duration-300 overflow-hidden lg:translate-x-0"
       class:translate-x-full={watchedCollapsed}
+      class:over-show={showModal}
+      data-watched-drawer
     >
       <!-- Hide tab (mobile only) -->
       <button
         class="lg:hidden absolute left-0 top-1/2 -translate-y-1/2 bg-base-200 rounded-l px-1 py-6 shadow flex items-center justify-center z-50"
         style="width: 1.25rem;"
         aria-label="Hide Watched list"
-        on:click={() => (watchedCollapsed = true)}
+        on:click={closeWatchedDrawer}
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <!-- Chevron pointing right (>) -->
@@ -2925,6 +2946,11 @@ $: {
     .pg-acts { order: 3; align-self: stretch; }
     .pg-acts > :global(*) { flex: 1 1 0; min-width: 0; margin: 0; padding-inline: 0.5rem; }
     .pg-nicks { order: 4; overflow: visible; }
+  }
+  /* Below `lg` the Watched list is a drawer. Opened by Rank it while a show is
+     up, it has to sit over the show's sheet (z-60), not under it. */
+  @media (max-width: 1023.98px) {
+    .over-show { z-index: 65; }
   }
 
   /* Button background image via pseudo-element to layer above triangle */

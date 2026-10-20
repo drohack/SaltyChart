@@ -3470,8 +3470,8 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="Rank it closes the pane",
         path=RANDOMIZE,
-        find="    placingId = selected.id;\n    // The rail sits beside",
-        replace="    placingId = selected.id; showModal = false; // mutation\n    // The rail sits beside",
+        find="    placingId = selected.id;\n    // On a PC the rail sits beside",
+        replace="    placingId = selected.id; showModal = false; // mutation\n    // On a PC the rail sits beside",
         flows=("pane replaces the wheel",),
         test=T_UI,
         expect="Rank it closed the pane",
@@ -3660,6 +3660,29 @@ MUTATIONS: list[Mutation] = [
         test=T_UI,
         expect="Watch is a big button over the poster on a phone",
         guards="on a phone the Watch button hides most of the poster",
+    ),
+    Mutation(
+        name="Rank it on a phone leaves the Watched list shut",
+        path=RANDOMIZE,
+        # The owner's ask: placing on a phone in one motion, not close the
+        # show, open the list and find the show by hand.
+        find="      unwatchedCollapsed = true;\n      watchedCollapsed = false;\n    }",
+        replace="      unwatchedCollapsed = true;\n    } // mutation",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="Rank it on a phone did not open the Watched list over the show",
+        guards="placing a show on a phone means closing it and finding it in the "
+               "list by hand",
+    ),
+    Mutation(
+        name="the Watched drawer opens under the phone's show sheet",
+        path=RANDOMIZE,
+        find="    .over-show { z-index: 65; }",
+        replace="    .over-show { z-index: 40; } /* mutation */",
+        flows=("phone show sheet",),
+        test=T_UI,
+        expect="Rank it on a phone did not open the Watched list over the show",
+        guards="Rank it opens the list where nobody can see or reach it",
     ),
     Mutation(
         name="copy list repeats a show two accounts both ranked",
