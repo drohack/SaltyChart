@@ -3933,6 +3933,30 @@ MUTATIONS: list[Mutation] = [
         guards="the window opening at the wrong hour, holding real outage mail and "
                "letting the backup's own stop mail anyway",
     ),
+    Mutation(
+        name="health writes overlap again",
+        path="backend/src/lib/upstreamHealth.ts",
+        # 2026-10-21: two records of one AniList failure both read the row
+        # before either saved, so both crossed and the owner got the outage
+        # mail twice in one minute. Offline, against a throwaway SQLite file.
+        find="  return serialized(() => recordNow(id, ok, detail));",
+        replace="  return recordNow(id, ok, detail); /* mutation: writes overlap */",
+        test=T_UNIT,
+        expect="two failures arriving together must announce the outage once",
+        guards="every outage mailing once per concurrent failure - three for a season's three-page wave",
+    ),
+    Mutation(
+        name="the AniList probe's fetch records its own result too",
+        path="backend/src/routes/anime.ts",
+        # The probe runner records every probe once; letting fetchAniListPage
+        # record as well counts each probe twice - "10 failures in a row" that
+        # were 5 - and was the other half of the double mail.
+        find="      {}, 1, { record: false });",
+        replace="      {}, 1); /* mutation: the probe's fetch records too */",
+        test=T_UNIT,
+        expect="the probe's own fetch recorded the failure",
+        guards="every AniList probe counting twice in the health record",
+    ),
 ]
 
 

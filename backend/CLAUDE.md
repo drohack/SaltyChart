@@ -1045,7 +1045,12 @@ while failing, so a dead one keeps recording failures and crosses on its own.
 YouTube's window is **0**: `downloadHealth` owns that verdict. Because the
 streak and the window become true in either order, "once" is a stored flag
 (`downAlertedAt`), and recovery is keyed off the same flag so a recovery mail
-can never arrive for an outage nobody was told about. Mutation rows guard the
+can never arrive for an outage nobody was told about. **The flag only holds if writes
+never overlap**: every service shares one `upstreamHealth` row, so every record
+is a read-modify-write of all of them, and `recordUpstream` / `recordSkip` run
+through one in-process queue (`serialized`). Without it two failures arriving
+together both read "not mailed" and both mailed - AniList's 2026-10-21 shutdown
+reached the owner twice in one minute - and each overlap lost a count. Mutation rows guard the
 once-rule, the window, the clock it is timed by, and the badge using the same
 rule.
 
@@ -1079,7 +1084,9 @@ argument was wrong (one request a day is 0.002%), and AniList is called only
 from `/api/anime`, so a quiet server would never check it (the argument is at
 AniList's spec in `upstreamHealth.ts`). `pingAniList` goes through
 `fetchAniListPage`, so it exercises the same headers, budget recording and 429
-handling a viewer's page load does. A 429 that exhausts the retries is reported
+handling a viewer's page load does - with `record: false`, because the probe
+runner records every result once and the fetch recording it too counted each
+probe twice. A 429 that exhausts the retries is reported
 as **healthy** - AniList is talking to us and rate-limiting. The probe query
 must select a content field, not just `pageInfo` (see `pingAniList` in
 `routes/anime.ts`).

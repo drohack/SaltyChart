@@ -122,7 +122,9 @@ interface SeasonQuery {
 /** Non-429 AniList failure; carries the upstream HTTP status for passthrough. */
 class UpstreamError extends Error {
   constructor(public status: number) {
-    super(`AniList responded ${status}`);
+    // Worded like the health record's reason below, so a probe's failure and
+    // a viewer's read the same in the outage mail.
+    super(`AniList answered ${status}`);
   }
 }
 
@@ -139,8 +141,17 @@ class RateLimitedError extends Error {
 /**
  * Fetch one AniList page with 429 retry/backoff. Returns the GraphQL `Page`
  * object ({ pageInfo, media }). Throws UpstreamError on non-200/non-429.
+ *
+ * Records the outcome in the health record unless `record` is false, which only
+ * the probe passes: the probe runner records every probe's result itself, and
+ * recording it here too counted each probe twice and mailed twice (2026-10-21).
  */
-async function fetchAniListPage(query: string, baseVariables: Record<string, unknown>, page: number) {
+async function fetchAniListPage(
+  query: string,
+  baseVariables: Record<string, unknown>,
+  page: number,
+  { record = true }: { record?: boolean } = {},
+) {
   let attempt = 0;
   while (true) {
     const response = await axios.post(
@@ -163,14 +174,16 @@ async function fetchAniListPage(query: string, baseVariables: Record<string, unk
     recordBudget(readBudget(response.headers as Record<string, unknown>));
 
     if (response.status === 200) {
-      void recordUpstream('anilist', true);
+      if (record) void recordUpstream('anilist', true);
       return response.data?.data?.Page ?? {};
     }
     if (response.status !== 429) {
-      void recordUpstream('anilist', false, {
-        reason: `AniList answered ${response.status}`,
-        status: response.status,
-      });
+      if (record) {
+        void recordUpstream('anilist', false, {
+          reason: `AniList answered ${response.status}`,
+          status: response.status,
+        });
+      }
       throw new UpstreamError(response.status);
     }
     // A 429 is AniList working normally under a shared IP budget - the backoff
@@ -223,7 +236,7 @@ const MAX_SEASON_PAGES = 20;
  * from the `/api/anime` route, never on a timer, so on a quiet server nothing
  * would ever report and the row would sit at "not checked" for ever.
  */
-export async function pingAniList(): Promise<{ ok: boolean; reason?: string; skipped?: string }> {
+export async function pingAniList(): Promise<{ ok: boolean; reason?: string; status?: number; skipped?: string }> {
   try {
     // `media` is required, not decoration: AniList answers 400 "No field
     // provided" for a Page that selects only pageInfo, which is exactly what
@@ -233,13 +246,14 @@ export async function pingAniList(): Promise<{ ok: boolean; reason?: string; ski
     // sees this request too.
     await fetchAniListPage(
       'query ($page: Int) { Page(page: $page, perPage: 1) { pageInfo { total } media(id: 1) { id } } }',
-      {}, 1);
+      {}, 1, { record: false });
     return { ok: true };
   } catch (err: any) {
     // A 429 that exhausts the retries means AniList IS talking to us and is
     // rate-limiting, which is normal operation under a shared IP - not an
     // outage, and not something to paint red every busy evening.
     if (err instanceof RateLimitedError) return { ok: true, skipped: 'rate-limited right now, which means it is answering' };
+    if (err instanceof UpstreamError) return { ok: false, reason: err.message, status: err.status };
     return { ok: false, reason: err?.message ?? String(err) };
   }
 }

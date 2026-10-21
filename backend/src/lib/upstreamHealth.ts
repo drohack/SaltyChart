@@ -504,6 +504,23 @@ async function writeAll(map: HealthMap): Promise<void> {
   });
 }
 
+/**
+ * Every read-modify-write of the record runs one at a time. Callers fire and
+ * forget, so two records arrive together routinely - a season's pages are
+ * fetched three at once - and when both read before either saved, both saw
+ * "not mailed yet" and both mailed: the owner got "AniList is not responding"
+ * twice in one minute on 2026-10-21, and each overlap also lost a count. All
+ * services share one row, so one queue for all of them, not one per service.
+ * In-process only; a second backend on the same file is a different bug (see
+ * the stale ts-node-dev note in the root guide).
+ */
+let healthQueue: Promise<unknown> = Promise.resolve();
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = healthQueue.then(fn, fn);
+  healthQueue = run.catch(() => undefined);
+  return run;
+}
+
 // --- Recording ---------------------------------------------------------------
 
 /**
@@ -511,12 +528,21 @@ async function writeAll(map: HealthMap): Promise<void> {
  * this sits on request paths and on a timer, and a health write turning into a
  * second incident is the one outcome worse than no health record at all.
  *
- * Callers use `void recordUpstream(...)` and do not await it.
+ * Callers use `void recordUpstream(...)` and do not await it. That is safe
+ * because the write queues behind any other (`serialized`).
  */
-export async function recordUpstream(
+export function recordUpstream(
   id: string,
   ok: boolean,
   detail: { reason?: string; status?: number | null } = {},
+): Promise<void> {
+  return serialized(() => recordNow(id, ok, detail));
+}
+
+async function recordNow(
+  id: string,
+  ok: boolean,
+  detail: { reason?: string; status?: number | null },
 ): Promise<void> {
   try {
     const spec = upstreamById(id);
@@ -583,16 +609,18 @@ export async function recordUpstream(
  * an unconfigured service green) and not a failure (it would paint a
  * deliberate choice red and train the reader to ignore the page).
  */
-export async function recordSkip(id: string, why: string): Promise<void> {
-  try {
-    if (!upstreamById(id)) return;
-    const map = await readAll();
-    const rec = map[id] ?? { ...EMPTY_RECORD };
-    map[id] = { ...rec, lastCheckedAt: new Date().toISOString(), lastSkipped: why.slice(0, 200) };
-    await writeAll(map);
-  } catch (err: any) {
-    console.warn(`[upstream] could not record skip for ${id}: ${err?.message ?? err}`);
-  }
+export function recordSkip(id: string, why: string): Promise<void> {
+  return serialized(async () => {
+    try {
+      if (!upstreamById(id)) return;
+      const map = await readAll();
+      const rec = map[id] ?? { ...EMPTY_RECORD };
+      map[id] = { ...rec, lastCheckedAt: new Date().toISOString(), lastSkipped: why.slice(0, 200) };
+      await writeAll(map);
+    } catch (err: any) {
+      console.warn(`[upstream] could not record skip for ${id}: ${err?.message ?? err}`);
+    }
+  });
 }
 
 function minutesSince(iso: string | null): number {
